@@ -187,6 +187,7 @@ class MuhasebeApp(tk.Tk):
             stil.theme_use("vista")
         stil.configure("Baslik.TLabel", font=("Segoe UI", 18, "bold"))
         stil.configure("Menu.TButton", anchor="w", padding=(14, 10))
+        stil.configure("AltMenu.TButton", anchor="w", padding=(16, 12))
         stil.configure("SeciliMenu.TButton", anchor="w", padding=(14, 10), foreground="#ffffff", background="#1f6aa5")
         stil.map(
             "SeciliMenu.TButton",
@@ -252,8 +253,35 @@ class MuhasebeApp(tk.Tk):
                 wraplength=760,
                 justify="left",
             ).pack(anchor="w")
+        elif anahtar == "satislar":
+            self.satislar_menusu_goster()
         else:
             ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
+
+    def satislar_menusu_goster(self):
+        alt_menu = ttk.Frame(self.icerik)
+        alt_menu.pack(fill="x", pady=(24, 0))
+        alt_menu.columnconfigure(0, weight=1)
+
+        alt_menu_ogeleri = (
+            ("MÜŞTERİ KARTLARI", self.cariler_goster),
+            ("SATIŞ SİPARİŞLERİ", lambda: self.satis_alt_sayfasi_goster("SATIŞ SİPARİŞLERİ")),
+            ("SATIŞ İRSALİYELERİ", lambda: self.satis_alt_sayfasi_goster("SATIŞ İRSALİYELERİ")),
+            ("SATIŞ FATURALARI", lambda: self.satis_alt_sayfasi_goster("SATIŞ FATURALARI")),
+            ("RAPORLAR", lambda: self.satis_alt_sayfasi_goster("RAPORLAR")),
+        )
+        for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
+            ttk.Button(
+                alt_menu,
+                text=baslik,
+                style="AltMenu.TButton",
+                command=komut,
+            ).grid(row=satir, column=0, sticky="ew", pady=4)
+
+    def satis_alt_sayfasi_goster(self, baslik):
+        self._icerigi_temizle()
+        ttk.Label(self.icerik, text=baslik, style="Baslik.TLabel").pack(anchor="w")
+        ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
 
     def firmalar_goster(self):
         self._icerigi_temizle()
@@ -334,7 +362,7 @@ class MuhasebeApp(tk.Tk):
 
     def cariler_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="Cari Kartlar", style="Baslik.TLabel").pack(anchor="w")
+        ttk.Label(self.icerik, text="MÜŞTERİ KARTLARI", style="Baslik.TLabel").pack(anchor="w")
         ust = ttk.Frame(self.icerik)
         ust.pack(fill="x", pady=14)
         ttk.Label(ust, text="Ara (en az 3 karakter):").pack(side="left")
