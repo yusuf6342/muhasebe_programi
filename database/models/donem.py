@@ -1,9 +1,13 @@
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
+
+if TYPE_CHECKING:
+    from database.models.firma import Firma
 
 
 class Donem(Base):
@@ -44,4 +48,9 @@ class Donem(Base):
         DateTime,
         default=datetime.now,
         nullable=False
+    )
+
+    firma: Mapped["Firma"] = relationship(
+        "Firma",
+        back_populates="donemler"
     )

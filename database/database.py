@@ -1,4 +1,6 @@
 from pathlib import Path
+from contextlib import contextmanager
+from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -31,5 +33,19 @@ class Base(DeclarativeBase):
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
-    autocommit=False
+    autocommit=False,
+    expire_on_commit=False
 )
+
+
+@contextmanager
+def get_session() -> Generator:
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
