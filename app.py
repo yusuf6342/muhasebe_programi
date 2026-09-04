@@ -185,13 +185,22 @@ class CariDialog(tk.Toplevel):
         ttk.Label(bilgi, text=agirlikli_ortalama, font=("Segoe UI", 10, "bold"), foreground="#1f6aa5").pack(side="left", padx=8)
 
         kolonlar = ("tarih", "tur", "belge", "aciklama", "borc", "alacak", "bakiye", "gun")
-        tablo = ttk.Treeview(parent, columns=kolonlar, show="headings")
+        tablo_cercevesi = ttk.Frame(parent)
+        tablo_cercevesi.pack(fill="both", expand=True)
+        tablo = ttk.Treeview(tablo_cercevesi, columns=kolonlar, show="headings")
         basliklar = {"tarih": "Tarih", "tur": "Belge Türü", "belge": "Belge Numarası", "aciklama": "Açıklama", "borc": "Borç", "alacak": "Alacak", "bakiye": "Kalan Bakiye", "gun": "Geçen Gün"}
-        genislikler = {"tarih": 85, "tur": 90, "belge": 115, "aciklama": 120, "borc": 100, "alacak": 100, "bakiye": 110, "gun": 105}
+        genislikler = {"tarih": 95, "tur": 110, "belge": 145, "aciklama": 160, "borc": 115, "alacak": 115, "bakiye": 135, "gun": 115}
         for kolon in kolonlar:
             tablo.heading(kolon, text=basliklar[kolon])
             tablo.column(kolon, width=genislikler[kolon], anchor="w")
-        tablo.pack(fill="both", expand=True)
+        dikey_kaydirma = ttk.Scrollbar(tablo_cercevesi, orient="vertical", command=tablo.yview)
+        yatay_kaydirma = ttk.Scrollbar(tablo_cercevesi, orient="horizontal", command=tablo.xview)
+        tablo.configure(yscrollcommand=dikey_kaydirma.set, xscrollcommand=yatay_kaydirma.set)
+        tablo.grid(row=0, column=0, sticky="nsew")
+        dikey_kaydirma.grid(row=0, column=1, sticky="ns")
+        yatay_kaydirma.grid(row=1, column=0, sticky="ew")
+        tablo_cercevesi.rowconfigure(0, weight=1)
+        tablo_cercevesi.columnconfigure(0, weight=1)
         if not self.cari:
             return
         detay = CariService.detay(self.cari.id)
