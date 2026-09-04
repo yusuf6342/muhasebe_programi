@@ -4,6 +4,7 @@ from database.database import Base, cari_kart_schemasini_guncelle, engine, muste
 from database.models.firma import Firma
 from database.models.donem import Donem
 from database.models.cari import Cari, SatisHareketi
+from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
 from app import MuhasebeApp
 
 
