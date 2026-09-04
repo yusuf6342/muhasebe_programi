@@ -5,6 +5,7 @@ from database.models.firma import Firma
 from database.models.donem import Donem
 from database.models.cari import Cari, SatisHareketi
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
+from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from app import MuhasebeApp
 
 

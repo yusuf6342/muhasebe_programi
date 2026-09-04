@@ -106,8 +106,8 @@ class SatisSiparisiService:
                     ortalama_birim_maliyeti=decimal(veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyeti", Decimal("0")),
                     agirlikli_ortalama_birim_maliyeti=decimal(veri.get("agirlikli_ortalama_birim_maliyeti", 0), "Ağırlıklı maliyeti", Decimal("0")),
                 )
-                satir.irsaliyelenen_miktar = Decimal("0")
-                satir.faturalanan_miktar = Decimal("0")
+                satir.irsaliyelenen_miktar = decimal(veri.get("irsaliyelenen_miktar", 0), "İrsaliyelenen miktar", Decimal("0"))
+                satir.faturalanan_miktar = decimal(veri.get("faturalanan_miktar", 0), "Faturalanan miktar", Decimal("0"))
                 siparis.satirlar.append(satir)
             toplam = SatisSiparisiService.siparis_toplami(siparis.satirlar)
             tahsilat_toplam = Decimal("0")
