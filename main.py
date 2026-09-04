@@ -1,4 +1,4 @@
-from database.database import Base, engine
+from database.database import Base, cari_kart_schemasini_guncelle, engine, musteri_gruplarini_hazirla
 
 # Modelleri sisteme tanıtıyoruz
 from database.models.firma import Firma
@@ -11,6 +11,8 @@ def main():
     print("Veritabanı tabloları oluşturuluyor...")
 
     Base.metadata.create_all(engine)
+    cari_kart_schemasini_guncelle()
+    musteri_gruplarini_hazirla()
 
     print("Tablolar başarıyla oluşturuldu!")
     print(f"Veritabanı: {engine.url}")

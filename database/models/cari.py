@@ -13,9 +13,13 @@ class Cari(Base):
     cari_kodu: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     unvan: Mapped[str] = mapped_column(String(200), nullable=False)
     cari_turu: Mapped[str] = mapped_column(String(20), nullable=False)
+    vergi_dairesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    vergi_numarasi: Mapped[str | None] = mapped_column(String(20), nullable=True)
     telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    musteri_grubu: Mapped[str | None] = mapped_column(String(100), nullable=True)
     adres: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ozel_notlar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     satis_hareketleri: Mapped[list["SatisHareketi"]] = relationship(
@@ -23,6 +27,13 @@ class Cari(Base):
         back_populates="cari",
         cascade="all, delete-orphan",
     )
+
+
+class MusteriGrubu(Base):
+    __tablename__ = "musteri_gruplari"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ad: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 
 
 class SatisHareketi(Base):

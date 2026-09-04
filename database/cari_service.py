@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import unicodedata
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -10,6 +11,36 @@ from database.models.cari import Cari, SatisHareketi
 
 
 class CariService:
+    @staticmethod
+    def _grup_anahtari(ad: str) -> str:
+        normal = unicodedata.normalize("NFKD", ad.strip())
+        return "".join(karakter for karakter in normal if not unicodedata.combining(karakter)).casefold()
+
+    @staticmethod
+    def gruplari_listele() -> list[str]:
+        from database.models.cari import MusteriGrubu
+
+        with get_session() as session:
+            return list(session.scalars(select(MusteriGrubu.ad).order_by(MusteriGrubu.ad)).all())
+
+    @staticmethod
+    def grup_ekle(ad: str) -> str:
+        from database.models.cari import MusteriGrubu
+
+        ad = ad.strip()
+        if not ad:
+            raise ValueError("Müşteri grup adı boş olamaz.")
+        with get_session() as session:
+            mevcut = next(
+                (grup for grup in session.scalars(select(MusteriGrubu)) if CariService._grup_anahtari(grup.ad) == CariService._grup_anahtari(ad)),
+                None,
+            )
+            if mevcut:
+                raise ValueError("Bu müşteri grubu zaten mevcut.")
+            session.add(MusteriGrubu(ad=ad))
+            session.flush()
+            return ad
+
     @staticmethod
     def _arama_kontrol(arama: str) -> str:
         arama = arama.strip()
@@ -47,11 +78,11 @@ class CariService:
                 return None
             return {
                 "cari": cari,
-                "hareketler": [
-                    hareket
-                    for hareket in sorted(cari.satis_hareketleri, key=lambda item: item.satis_tarihi, reverse=True)
-                    if hareket.kalan_acik_tutar > 0
-                ],
+                "hareketler": sorted(
+                    cari.satis_hareketleri,
+                    key=lambda item: item.satis_tarihi,
+                    reverse=True,
+                ),
             }
 
     @staticmethod
