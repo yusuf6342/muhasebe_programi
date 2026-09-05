@@ -880,23 +880,6 @@ class CariVirmanDialog(tk.Toplevel):
         if tutar <= 0:
             messagebox.showerror("Geçersiz tutar", "Virman tutarı pozitif olmalıdır.", parent=self)
             return
-        kaynak_bakiye = self.bakiyeler.get(kaynak.id, Decimal("0"))
-        if kaynak_bakiye <= 0:
-            messagebox.showerror(
-                "Bakiye yetersiz",
-                "Kaynak carinin açık bakiyesi yok; bakiye veren virman fişi kaydedilemez.",
-                parent=self,
-            )
-            return
-        if tutar > kaynak_bakiye:
-            messagebox.showerror(
-                "Bakiye veren fiş",
-                f"Virman tutarı kaynak bakiyeyi aşıyor.\n"
-                f"Kaynak bakiye: {para_goster(kaynak_bakiye)}\n"
-                f"Girilen tutar: {para_goster(tutar)}",
-                parent=self,
-            )
-            return
         try:
             tarih = datetime.strptime(self.girdiler["tarih"].get().strip(), "%d.%m.%Y").date()
             self.result = CariService.virman_yap(
@@ -3020,7 +3003,7 @@ class MuhasebeApp(tk.Tk):
         ttk.Label(self.icerik, text="CARİ VİRMAN FİŞLERİ", style="Baslik.TLabel").pack(anchor="w")
         ttk.Label(
             self.icerik,
-            text="Alacak yazılan tutar karşı cariye aynı miktarda otomatik borç yazılır. Tutar, alacak carinin açık bakiyesini aşamaz.",
+            text="Alacak yazılan tutar karşı cariye aynı miktarda otomatik borç yazılır.",
         ).pack(anchor="w", pady=(8, 10))
 
         arama_cerceve = ttk.Frame(self.icerik)

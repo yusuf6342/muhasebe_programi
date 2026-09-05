@@ -244,25 +244,9 @@ class CariService:
             hedef = session.get(Cari, hedef_id)
             if kaynak is None or hedef is None:
                 raise ValueError("Kaynak veya hedef cari bulunamadı.")
-            acik_bakiye = sum(
-                (
-                    h.kalan_acik_tutar
-                    for h in session.scalars(
-                        select(SatisHareketi).where(
-                            SatisHareketi.cari_id == kaynak_id,
-                            SatisHareketi.kalan_acik_tutar > 0,
-                        )
-                    ).all()
-                ),
-                Decimal("0"),
-            )
-            if tutar > acik_bakiye:
-                raise ValueError(
-                    "Bakiye veren virman fişi kaydedilemez. "
-                    f"Kaynak açık bakiye {acik_bakiye:.2f} TL, girilen tutar {tutar:.2f} TL."
-                )
             belge_no = CariService._belge_no(session, "VRM")
             # Çift kayıt: kaynak ALACAK, karşı cari (hedef) aynı tutarda BORÇ
+            # Açık bakiye şartı yok; varsa FIFO uygulanır, yoksa yalnızca cari işlem yazılır.
             CariService._aciklara_uygula(session, kaynak_id, tutar)
             session.add(SatisHareketi(
                 cari_id=hedef_id, satis_tarihi=tarih, belge_no=belge_no,
