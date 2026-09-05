@@ -237,6 +237,8 @@ class AlisIadeFaturasiService:
                 raise ValueError("İade faturası bulunamadı.")
             if iade.durum == "İPTAL":
                 return
+            toplam = AlisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
+            CariService._aciklara_geri_al(session, iade.cari_id, toplam, iade.iade_no)
             StokService.fatura_cikislarini_geri_al(session, iade.iade_no)
             session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
             session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))

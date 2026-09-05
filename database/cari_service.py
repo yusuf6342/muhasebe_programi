@@ -432,10 +432,7 @@ class CariService:
 
     @staticmethod
     def aktif_tedarikciler() -> list[Cari]:
-        tedarikciler = CariService.aktif_cariler(cari_turu="Tedarikçi")
-        if tedarikciler:
-            return tedarikciler
-        return CariService.aktif_cariler()
+        return CariService.aktif_cariler(cari_turu="Tedarikçi")
 
     @staticmethod
     def aktif_musteriler() -> list[Cari]:

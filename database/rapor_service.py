@@ -10,20 +10,27 @@ from database.database import get_session
 from database.models.cari import Cari, CariIslem
 from database.models.satis_faturasi import SatisFaturasi
 from database.models.satis_iade_faturasi import SatisIadeFaturasi
+from database.models.alis_faturasi import AlisFaturasi
+from database.models.alis_iade_faturasi import AlisIadeFaturasi
 from database.models.stok import Depo, StokHareketi, StokKarti, StokLotu
 from database.satis_faturasi_service import SatisFaturasiService
 from database.satis_iade_faturasi_service import SatisIadeFaturasiService
+from database.alis_faturasi_service import AlisFaturasiService
+from database.alis_iade_faturasi_service import AlisIadeFaturasiService
 
 
 class RaporService:
     @staticmethod
-    def musteri_bakiye_durum() -> list[dict[str, Any]]:
-        """Müşteri bakiye durumu: bakiye + ortalama vade + ağırlıklı gün + geciken gün."""
+    def musteri_bakiye_durum(cari_turu: str | None = None) -> list[dict[str, Any]]:
+        """Cari bakiye durumu. cari_turu verilirse sadece o tür (Müşteri/Tedarikçi)."""
         bugun = date.today()
         sonuc = []
-        for ozet in CariService.listele():
+        for ozet in CariService.listele(cari_turu=cari_turu):
             cari = ozet["cari"]
-            vade_ozet = SatisFaturasiService.bakiye_ozeti(cari.id)
+            if (cari.cari_turu or "") == "Tedarikçi":
+                vade_ozet = AlisFaturasiService.bakiye_ozeti(cari.id)
+            else:
+                vade_ozet = SatisFaturasiService.bakiye_ozeti(cari.id)
             ortalama_vade = vade_ozet.get("ortalama_vade")
             if ortalama_vade and ortalama_vade < bugun and (ozet["bakiye"] or 0) > 0:
                 geciken_gun = (bugun - ortalama_vade).days
@@ -194,13 +201,100 @@ class RaporService:
                     "sira": iade.id,
                 })
 
+            # Alış faturaları (stok girişi)
+            alis_faturalar = session.scalars(
+                select(AlisFaturasi)
+                .where(AlisFaturasi.cari_id == cari_id, AlisFaturasi.durum != "İPTAL")
+                .options(selectinload(AlisFaturasi.satirlar))
+                .order_by(AlisFaturasi.fatura_tarihi, AlisFaturasi.id)
+            ).all()
+            for fatura in alis_faturalar:
+                toplam = AlisFaturasiService.toplam(fatura.satirlar)
+                stok_satirlari = []
+                for satir in fatura.satirlar:
+                    net = satir.miktar * satir.birim_fiyat * (
+                        Decimal("1") - (satir.iskonto_orani or 0) / Decimal("100")
+                    )
+                    kdv = net * (satir.kdv_orani or 0) / Decimal("100")
+                    genel = net + kdv
+                    stok_satirlari.append({
+                        "urun_kodu": satir.urun_kodu,
+                        "urun_adi": satir.urun_adi,
+                        "miktar": satir.miktar,
+                        "birim": satir.birim,
+                        "birim_fiyat": satir.birim_fiyat,
+                        "iskonto_orani": satir.iskonto_orani or Decimal("0"),
+                        "kdv_orani": satir.kdv_orani or Decimal("0"),
+                        "net": net,
+                        "kdv": kdv,
+                        "genel": genel,
+                        "fifo_birim_maliyeti": satir.fifo_birim_maliyeti or Decimal("0"),
+                        "lot_cikisi": satir.lot_girisi or "",
+                        "depo": fatura.depo,
+                    })
+                belgeler.append({
+                    "tarih": fatura.fatura_tarihi,
+                    "tur": "Alış Faturası",
+                    "belge_no": fatura.fatura_no,
+                    "aciklama": fatura.aciklama or f"Vade: {fatura.vade_tarihi:%d.%m.%Y}",
+                    "borc": toplam["genel_toplam"],
+                    "alacak": Decimal("0"),
+                    "stok_satirlari": stok_satirlari,
+                    "sira": fatura.id,
+                })
+
+            alis_iade_nolari: set[str] = set()
+            alis_iadeler = session.scalars(
+                select(AlisIadeFaturasi)
+                .where(AlisIadeFaturasi.cari_id == cari_id, AlisIadeFaturasi.durum != "İPTAL")
+                .options(selectinload(AlisIadeFaturasi.satirlar))
+                .order_by(AlisIadeFaturasi.iade_tarihi, AlisIadeFaturasi.id)
+            ).all()
+            for iade in alis_iadeler:
+                alis_iade_nolari.add(iade.iade_no)
+                toplam = AlisIadeFaturasiService.toplam(iade.satirlar)
+                stok_satirlari = []
+                for satir in iade.satirlar:
+                    net = satir.miktar * satir.birim_fiyat * (
+                        Decimal("1") - (satir.iskonto_orani or 0) / Decimal("100")
+                    )
+                    kdv = net * (satir.kdv_orani or 0) / Decimal("100")
+                    genel = net + kdv
+                    stok_satirlari.append({
+                        "urun_kodu": satir.urun_kodu,
+                        "urun_adi": satir.urun_adi,
+                        "miktar": satir.miktar,
+                        "birim": satir.birim,
+                        "birim_fiyat": satir.birim_fiyat,
+                        "iskonto_orani": satir.iskonto_orani or Decimal("0"),
+                        "kdv_orani": satir.kdv_orani or Decimal("0"),
+                        "net": net,
+                        "kdv": kdv,
+                        "genel": genel,
+                        "fifo_birim_maliyeti": satir.fifo_birim_maliyeti or Decimal("0"),
+                        "lot_cikisi": satir.lot_cikisi or satir.lot_no or "",
+                        "depo": iade.depo,
+                    })
+                belgeler.append({
+                    "tarih": iade.iade_tarihi,
+                    "tur": "Alış İadesi",
+                    "belge_no": iade.iade_no,
+                    "aciklama": iade.aciklama or "Satın alma iade faturası",
+                    "borc": Decimal("0"),
+                    "alacak": toplam["genel_toplam"],
+                    "stok_satirlari": stok_satirlari,
+                    "sira": iade.id,
+                })
+
             for islem in session.scalars(
                 select(CariIslem)
                 .where(CariIslem.cari_id == cari_id)
                 .order_by(CariIslem.tarih, CariIslem.id)
             ).all():
-                # İade faturası zaten stok satırlarıyla eklendi; CariIslem çift sayılmasın.
+                # İade faturaları stok satırlarıyla eklendi; CariIslem çift sayılmasın.
                 if islem.islem_turu == "Satış İadesi" and islem.belge_no in iade_belge_nolari:
+                    continue
+                if islem.islem_turu == "Alış İadesi" and islem.belge_no in alis_iade_nolari:
                     continue
                 belgeler.append({
                     "tarih": islem.tarih,
@@ -213,13 +307,14 @@ class RaporService:
                     "sira": islem.id,
                 })
 
-            belgeler.sort(
-                key=lambda b: (
-                    b["tarih"],
-                    0 if b["tur"] == "Satış Faturası" else (1 if b["tur"] == "Satış İadesi" else 2),
-                    b["sira"],
-                )
-            )
+            def _sira_tur(tur: str) -> int:
+                if tur in ("Satış Faturası", "Alış Faturası"):
+                    return 0
+                if tur in ("Satış İadesi", "Alış İadesi"):
+                    return 1
+                return 2
+
+            belgeler.sort(key=lambda b: (b["tarih"], _sira_tur(b["tur"]), b["sira"]))
             calisan = Decimal("0")
             for belge in belgeler:
                 calisan += (belge["borc"] or Decimal("0")) - (belge["alacak"] or Decimal("0"))
@@ -230,8 +325,8 @@ class RaporService:
                 "cari": cari,
                 "bakiye": ozet["bakiye"] if ozet else calisan,
                 "belgeler": list(reversed(belgeler)),
-                "fatura_sayisi": sum(1 for b in belgeler if b["tur"] == "Satış Faturası"),
-                "iade_sayisi": sum(1 for b in belgeler if b["tur"] == "Satış İadesi"),
+                "fatura_sayisi": sum(1 for b in belgeler if b["tur"] in ("Satış Faturası", "Alış Faturası")),
+                "iade_sayisi": sum(1 for b in belgeler if b["tur"] in ("Satış İadesi", "Alış İadesi")),
                 "belge_sayisi": len(belgeler),
                 "belge_turleri": sorted({b["tur"] for b in belgeler}),
             }
