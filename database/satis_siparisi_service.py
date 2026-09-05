@@ -27,7 +27,13 @@ ODEME_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTI")
 
 def decimal(deger: object, alan: str, minimum: Decimal | None = None) -> Decimal:
     try:
-        sonuc = Decimal(str(deger).replace(".", "").replace(",", "."))
+        if isinstance(deger, Decimal):
+            sonuc = deger
+        else:
+            metin = str(deger).strip()
+            if "," in metin:
+                metin = metin.replace(".", "").replace(",", ".")
+            sonuc = Decimal(metin)
     except (InvalidOperation, ValueError):
         raise ValueError(f"{alan} geçerli bir sayı olmalıdır.") from None
     if minimum is not None and sonuc < minimum:
@@ -61,7 +67,7 @@ class SatisSiparisiService:
         with get_session() as session:
             return session.scalar(
                 select(SatisSiparisi)
-                .options(selectinload(SatisSiparisi.satirlar), selectinload(SatisSiparisi.tahsilatlar))
+                .options(selectinload(SatisSiparisi.satirlar), selectinload(SatisSiparisi.tahsilatlar), selectinload(SatisSiparisi.cari))
                 .where(SatisSiparisi.id == siparis_id)
             )
 

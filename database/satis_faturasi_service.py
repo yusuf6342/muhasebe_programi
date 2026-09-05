@@ -12,6 +12,8 @@ from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
 from database.satis_siparisi_service import decimal
+from database.stok_service import StokService
+from database.finans_service import FinansService
 
 FATURA_DURUMLARI = ("AÇIK", "KAPALI", "İPTAL")
 TAHSILAT_SEKILLERI = ("KASA TAHSİLAT", "ALINAN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
@@ -67,6 +69,8 @@ class SatisFaturasiService:
                 if not fatura: raise ValueError("Fatura bulunamadı.")
                 if fatura.durum == "İPTAL": raise ValueError("İptal edilmiş fatura düzenlenemez.")
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
+                StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
+                FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
                 fatura.satirlar.clear()
             else:
                 fatura = SatisFaturasi(fatura_no=SatisFaturasiService.fatura_no())
@@ -90,16 +94,20 @@ class SatisFaturasiService:
                     if not kaynak or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
                         raise ValueError("Fatura miktarı siparişin kalan miktarından büyük olamaz.")
                     kaynak.faturalanan_miktar += miktar; kaynak.fatura_belge_baglantisi = fatura.fatura_no
+                stok_cikisi = StokService.fatura_cikisi(
+                    session, fatura.fatura_no, tarih, veri["urun_kodu"].strip(),
+                    fatura.depo, miktar, veri.get("lot_no") or "",
+                )
                 fatura.satirlar.append(SatisFaturasiSatiri(
                     siparis_satiri_id=sip_id, irsaliye_satiri_id=irs_id,
                     urun_kodu=veri["urun_kodu"].strip(), urun_adi=veri["urun_adi"].strip(),
                     barkod=veri.get("barkod") or None, aciklama=veri.get("aciklama") or None,
-                    lot_no=veri.get("lot_no") or None, lot_cikisi=veri.get("lot_cikisi") or veri.get("lot_no") or None,
+                    lot_no=veri.get("lot_no") or None, lot_cikisi=stok_cikisi["lot_cikisi"],
                     miktar=miktar, birim=veri.get("birim") or "Adet",
                     birim_fiyat=decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0")),
                     iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0")),
                     kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0")),
-                    fifo_birim_maliyeti=decimal(veri.get("fifo_birim_maliyeti", 0), "FIFO maliyeti", Decimal("0")),
+                    fifo_birim_maliyeti=stok_cikisi["fifo_birim_maliyeti"],
                     son_alis_birim_maliyeti=decimal(veri.get("son_alis_birim_maliyeti", 0), "Son alış maliyeti", Decimal("0")),
                     ortalama_birim_maliyeti=decimal(veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyet", Decimal("0")),
                     agirlikli_ortalama_birim_maliyeti=decimal(veri.get("agirlikli_ortalama_birim_maliyeti", 0), "Ağırlıklı maliyet", Decimal("0")),
@@ -114,6 +122,10 @@ class SatisFaturasiService:
                 session.add(hareket)
             hareket.cari_id, hareket.satis_tarihi = fatura.cari_id, tarih
             hareket.satis_tutari, hareket.kalan_acik_tutar = toplam, toplam - fatura.tahsilat_tutari
+            FinansService.fatura_tahsilati(
+                session, fatura.fatura_no, tarih, fatura.tahsilat_tutari,
+                fatura.tahsilat_sekli, fatura.tahsilat_hesabi,
+            )
             SatisFaturasiService._durumlari_guncelle(session, fatura)
             try: session.flush()
             except IntegrityError as hata: raise ValueError("Fatura kaydedilemedi.") from hata
@@ -126,6 +138,8 @@ class SatisFaturasiService:
             if not fatura: raise ValueError("Fatura bulunamadı.")
             if fatura.durum != "İPTAL":
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
+                StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
+                FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
                 session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
                 fatura.durum = "İPTAL"; SatisFaturasiService._durumlari_guncelle(session, fatura)
 
@@ -162,11 +176,24 @@ class SatisFaturasiService:
         return {"ara_toplam": ara, "iskonto": iskonto, "kdv": kdv, "genel_toplam": ara - iskonto + kdv}
 
     @staticmethod
-    def bakiye_ozeti(cari_id, eklenecek=Decimal("0"), vade=None):
+    def bakiye_ozeti(cari_id, eklenecek=Decimal("0"), vade=None, haric_fatura_no=None):
         with get_session() as session:
             hs = session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cari_id, SatisHareketi.kalan_acik_tutar > 0)).all()
-            bakiye = sum((h.kalan_acik_tutar for h in hs), Decimal("0")) + eklenecek
-            agirlik = sum((Decimal(h.satis_tarihi.toordinal()) * h.kalan_acik_tutar for h in hs), Decimal("0"))
+            faturalar = session.scalars(select(SatisFaturasi).where(
+                SatisFaturasi.cari_id == cari_id, SatisFaturasi.durum != "İPTAL"
+            ).options(selectinload(SatisFaturasi.satirlar))).all()
+            fatura_nolari = {f.fatura_no for f in faturalar}
+            bakiye = Decimal("0"); agirlik = Decimal("0")
+            for fatura in faturalar:
+                if fatura.fatura_no == haric_fatura_no: continue
+                acik = SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"] - fatura.tahsilat_tutari
+                if acik > 0:
+                    bakiye += acik; agirlik += Decimal(fatura.vade_tarihi.toordinal()) * acik
+            for h in hs:
+                if h.belge_no in fatura_nolari or h.belge_no == haric_fatura_no: continue
+                bakiye += h.kalan_acik_tutar
+                agirlik += Decimal(h.satis_tarihi.toordinal()) * h.kalan_acik_tutar
+            bakiye += eklenecek
             if eklenecek > 0: agirlik += Decimal((vade or date.today()).toordinal()) * eklenecek
             return {"bakiye": bakiye, "ortalama_vade": date.fromordinal(int(agirlik / bakiye)) if bakiye > 0 else None}
 
