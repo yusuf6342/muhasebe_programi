@@ -43,6 +43,31 @@ def decimal(deger: object, alan: str, minimum: Decimal | None = None) -> Decimal
 
 class SatisSiparisiService:
     @staticmethod
+    def durumu_guncelle(session, siparis_id: int | None) -> None:
+        if not siparis_id:
+            return
+        siparis = session.scalar(
+            select(SatisSiparisi)
+            .options(selectinload(SatisSiparisi.satirlar))
+            .where(SatisSiparisi.id == siparis_id)
+        )
+        if siparis is None or siparis.durum == "İPTAL":
+            return
+        if not siparis.satirlar:
+            siparis.durum = "AÇIK"
+            return
+        if all(s.faturalanan_miktar >= s.miktar for s in siparis.satirlar):
+            siparis.durum = "FATURALI"
+        elif any(s.faturalanan_miktar > 0 for s in siparis.satirlar):
+            siparis.durum = "KISMİ FATURALI"
+        elif all(s.irsaliyelenen_miktar >= s.miktar for s in siparis.satirlar):
+            siparis.durum = "İRSALİYELİ"
+        elif any(s.irsaliyelenen_miktar > 0 for s in siparis.satirlar):
+            siparis.durum = "KISMİ İRSALİYELİ"
+        else:
+            siparis.durum = "AÇIK"
+
+    @staticmethod
     def aktif_musterileri() -> list[Cari]:
         with get_session() as session:
             return list(session.scalars(select(Cari).where(Cari.aktif.is_(True)).order_by(Cari.cari_kodu)).all())

@@ -143,3 +143,53 @@ class StokService:
             maliyet += cikan * lot.birim_maliyet; kullanilan.append(f"{lot.lot_no}:{cikan}")
             session.add(StokHareketi(tarih=tarih, hareket_turu="FATURA ÇIKIŞ", belge_no=belge_no, stok_id=stok.id, depo_id=depo.id, lot_id=lot.id, miktar=cikan, birim_maliyet=lot.birim_maliyet))
         return {"lot_cikisi": ", ".join(kullanilan), "fifo_birim_maliyeti": maliyet / miktar}
+
+    @staticmethod
+    def fatura_girisi(session, belge_no, tarih, stok_kodu, depo_adi, miktar, birim_maliyet, tedarikci="", lot_no=""):
+        stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == stok_kodu))
+        depo = session.scalar(select(Depo).where(Depo.ad == depo_adi))
+        if not stok:
+            raise ValueError(f"{stok_kodu} kodlu ürünün stok kartı yok.")
+        if not depo:
+            raise ValueError(f"{depo_adi} deposu bulunamadı.")
+        miktar = decimal(miktar, "Giriş miktarı", Decimal("0.0001"))
+        maliyet = decimal(birim_maliyet, "Birim maliyet", Decimal("0"))
+        temel = (lot_no or "").strip() or StokService.otomatik_lot_no(tedarikci, tarih)
+        lot_adi, sira = temel, 1
+        while session.scalar(
+            select(StokLotu).where(
+                StokLotu.stok_id == stok.id, StokLotu.depo_id == depo.id, StokLotu.lot_no == lot_adi
+            )
+        ):
+            sira += 1
+            lot_adi = f"{temel}-{sira}"
+        lot = StokLotu(
+            stok_id=stok.id, depo_id=depo.id, lot_no=lot_adi,
+            tedarikci=tedarikci or None, giris_tarihi=tarih,
+            kalan_miktar=miktar, birim_maliyet=maliyet,
+        )
+        session.add(lot)
+        session.flush()
+        session.add(StokHareketi(
+            tarih=tarih, hareket_turu="FATURA GİRİŞ", belge_no=belge_no,
+            stok_id=stok.id, depo_id=depo.id, lot_id=lot.id,
+            miktar=miktar, birim_maliyet=maliyet,
+        ))
+        return {"lot_girisi": lot_adi, "birim_maliyet": maliyet}
+
+    @staticmethod
+    def fatura_girislerini_geri_al(session, belge_no):
+        hareketler = session.scalars(
+            select(StokHareketi).where(
+                StokHareketi.belge_no == belge_no, StokHareketi.hareket_turu == "FATURA GİRİŞ"
+            )
+        ).all()
+        for hareket in hareketler:
+            if hareket.lot_id:
+                lot = session.get(StokLotu, hareket.lot_id)
+                if lot:
+                    if lot.kalan_miktar == hareket.miktar:
+                        session.delete(lot)
+                    else:
+                        lot.kalan_miktar = max(Decimal("0"), lot.kalan_miktar - hareket.miktar)
+            session.delete(hareket)

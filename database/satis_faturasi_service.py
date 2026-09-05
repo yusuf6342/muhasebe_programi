@@ -88,7 +88,16 @@ class SatisFaturasiService:
                     kaynak = session.get(SatisIrsaliyesiSatiri, int(irs_id))
                     if not kaynak or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
                         raise ValueError("Fatura miktarı irsaliyenin kalan miktarından büyük olamaz.")
-                    kaynak.faturalanan_miktar += miktar; kaynak.fatura_belge_baglantisi = fatura.fatura_no
+                    kaynak.faturalanan_miktar += miktar
+                    kaynak.fatura_belge_baglantisi = fatura.fatura_no
+                    if kaynak.siparis_satiri_id:
+                        siparis_satiri = session.get(SatisSiparisiSatiri, kaynak.siparis_satiri_id)
+                        if siparis_satiri:
+                            if miktar > siparis_satiri.miktar - siparis_satiri.faturalanan_miktar:
+                                raise ValueError("Fatura miktarı siparişin kalan miktarından büyük olamaz.")
+                            siparis_satiri.faturalanan_miktar += miktar
+                            siparis_satiri.fatura_belge_baglantisi = fatura.fatura_no
+                        sip_id = kaynak.siparis_satiri_id
                 elif sip_id:
                     kaynak = session.get(SatisSiparisiSatiri, int(sip_id))
                     if not kaynak or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
@@ -146,23 +155,38 @@ class SatisFaturasiService:
     @staticmethod
     def _baglantilari_geri_al(session, satirlar):
         for satir in satirlar:
-            cls, kimlik = ((SatisIrsaliyesiSatiri, satir.irsaliye_satiri_id) if satir.irsaliye_satiri_id else (SatisSiparisiSatiri, satir.siparis_satiri_id))
-            if kimlik:
-                kaynak = session.get(cls, kimlik)
-                if kaynak: kaynak.faturalanan_miktar = max(Decimal("0"), kaynak.faturalanan_miktar - satir.miktar)
+            if satir.irsaliye_satiri_id:
+                kaynak = session.get(SatisIrsaliyesiSatiri, satir.irsaliye_satiri_id)
+                if kaynak:
+                    kaynak.faturalanan_miktar = max(Decimal("0"), kaynak.faturalanan_miktar - satir.miktar)
+                    if kaynak.siparis_satiri_id:
+                        siparis_satiri = session.get(SatisSiparisiSatiri, kaynak.siparis_satiri_id)
+                        if siparis_satiri:
+                            siparis_satiri.faturalanan_miktar = max(
+                                Decimal("0"), siparis_satiri.faturalanan_miktar - satir.miktar
+                            )
+            elif satir.siparis_satiri_id:
+                kaynak = session.get(SatisSiparisiSatiri, satir.siparis_satiri_id)
+                if kaynak:
+                    kaynak.faturalanan_miktar = max(Decimal("0"), kaynak.faturalanan_miktar - satir.miktar)
 
     @staticmethod
     def _durumlari_guncelle(session, fatura):
+        from database.satis_siparisi_service import SatisSiparisiService
+
+        siparis_id = fatura.siparis_id
         if fatura.irsaliye_id:
             belge = session.scalar(select(SatisIrsaliyesi).options(selectinload(SatisIrsaliyesi.satirlar)).where(SatisIrsaliyesi.id == fatura.irsaliye_id))
             if belge:
                 kalan = [s.miktar - s.faturalanan_miktar for s in belge.satirlar]
-                belge.durum = "FATURALANDI" if kalan and all(x <= 0 for x in kalan) else "KISMİ FATURALANDI" if any(s.faturalanan_miktar > 0 for s in belge.satirlar) else "AÇIK"
-        if fatura.siparis_id and not fatura.irsaliye_id:
-            belge = session.scalar(select(SatisSiparisi).options(selectinload(SatisSiparisi.satirlar)).where(SatisSiparisi.id == fatura.siparis_id))
-            if belge:
-                kalan = [s.miktar - s.faturalanan_miktar for s in belge.satirlar]
-                belge.durum = "FATURALANDI" if kalan and all(x <= 0 for x in kalan) else "KISMİ FATURALANDI"
+                belge.durum = (
+                    "FATURALANDI" if kalan and all(x <= 0 for x in kalan)
+                    else "KISMİ FATURALANDI" if any(s.faturalanan_miktar > 0 for s in belge.satirlar)
+                    else "AÇIK"
+                )
+                if not siparis_id:
+                    siparis_id = belge.siparis_id
+        SatisSiparisiService.durumu_guncelle(session, siparis_id)
 
     @staticmethod
     def toplam(satirlar):

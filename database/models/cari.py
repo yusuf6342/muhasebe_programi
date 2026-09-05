@@ -47,3 +47,22 @@ class SatisHareketi(Base):
     kalan_acik_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
 
     cari: Mapped["Cari"] = relationship("Cari", back_populates="satis_hareketleri")
+
+
+class CariIslem(Base):
+    """Tahsilat, ödeme, virman ve KK çekimi kayıtları."""
+
+    __tablename__ = "cari_islemleri"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    tarih: Mapped[date] = mapped_column(Date, nullable=False)
+    islem_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    borc: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    alacak: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    hesap_adi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    karsi_cari_id: Mapped[int | None] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=True)
+
+    cari: Mapped["Cari"] = relationship("Cari", foreign_keys=[cari_id])

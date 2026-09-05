@@ -34,9 +34,30 @@ class FinansService:
 
     @staticmethod
     def fatura_tahsilati(session, belge_no, tarih, tutar, odeme_sekli, hesap_adi):
+        FinansService.hareket_ekle(session, belge_no, tarih, tutar, "FATURA TAHSİLATI", hesap_adi, odeme_sekli)
+
+    @staticmethod
+    def fatura_odemesini_geri_al(session, belge_no):
+        session.execute(delete(FinansHareketi).where(
+            FinansHareketi.belge_no == belge_no,
+            FinansHareketi.hareket_turu.in_(("FATURA ÖDEMESİ", "CARİ ÖDEME")),
+        ))
+
+    @staticmethod
+    def fatura_odemesi(session, belge_no, tarih, tutar, odeme_sekli, hesap_adi):
+        FinansService.hareket_ekle(session, belge_no, tarih, tutar, "FATURA ÖDEMESİ", hesap_adi, odeme_sekli)
+
+    @staticmethod
+    def hareket_ekle(session, belge_no, tarih, tutar, hareket_turu, hesap_adi, aciklama=None):
         tutar = Decimal(tutar)
-        if tutar <= 0: return
+        if tutar <= 0:
+            return
+        if not hesap_adi:
+            raise ValueError("Kasa/banka hesabı seçin.")
         hesap = session.scalar(select(FinansHesabi).where(FinansHesabi.hesap_adi == hesap_adi))
         if not hesap:
-            raise ValueError("Tahsilat için geçerli bir kasa/banka hesabı seçin.")
-        session.add(FinansHareketi(hesap_id=hesap.id, tarih=tarih, hareket_turu="FATURA TAHSİLATI", belge_no=belge_no, tutar=tutar, aciklama=odeme_sekli))
+            raise ValueError("Geçerli bir kasa/banka hesabı seçin.")
+        session.add(FinansHareketi(
+            hesap_id=hesap.id, tarih=tarih, hareket_turu=hareket_turu,
+            belge_no=belge_no, tutar=tutar, aciklama=aciklama,
+        ))

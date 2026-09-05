@@ -65,10 +65,21 @@ def cari_kart_schemasini_guncelle() -> None:
         alan: tip for alan, tip in eklenecekler.items() if alan not in mevcut_sutunlar
     }
     if not eksikler:
-        return
-    with engine.begin() as connection:
-        for alan, tip in eksikler.items():
-            connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+        pass
+    else:
+        with engine.begin() as connection:
+            for alan, tip in eksikler.items():
+                connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    # İade satırına FIFO maliyet kolonu
+    iade_tablo = "satis_iade_faturasi_satirlari"
+    if inspect(engine).has_table(iade_tablo):
+        iade_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(iade_tablo)}
+        if "fifo_birim_maliyeti" not in iade_sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'ALTER TABLE "{iade_tablo}" ADD COLUMN "fifo_birim_maliyeti" NUMERIC(18, 4) DEFAULT 0 NOT NULL')
+                )
 
 
 def musteri_gruplarini_hazirla() -> None:
