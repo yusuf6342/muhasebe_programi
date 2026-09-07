@@ -2637,12 +2637,15 @@ class StokKartiDialog(tk.Toplevel):
             giris = ttk.Entry(self, width=38)
             giris.grid(row=satir, column=1, padx=12, pady=6)
             self.alanlar[alan] = giris
+        ttk.Button(self, text="EAN-13 Üret", command=self.ean13_uret).grid(
+            row=0, column=2, padx=(0, 12), pady=6, sticky="w"
+        )
         ttk.Label(self, text="Birim").grid(row=3, column=0, padx=12, pady=6, sticky="w")
         self.birim = ttk.Combobox(self, values=BIRIM_SECENEKLERI, state="readonly", width=35)
         self.birim.grid(row=3, column=1, padx=12, pady=6)
         self.birim.set("Adet")
         fiyat_cercevesi = ttk.LabelFrame(self, text="Satış Fiyatları", padding=8)
-        fiyat_cercevesi.grid(row=4, column=0, columnspan=2, padx=12, pady=8, sticky="ew")
+        fiyat_cercevesi.grid(row=4, column=0, columnspan=3, padx=12, pady=8, sticky="ew")
         self.fiyat_alanlari = {}
         for satir, fiyat_adi in enumerate(self.FIYAT_ADLARI):
             ttk.Label(fiyat_cercevesi, text=fiyat_adi).grid(row=satir, column=0, padx=6, pady=4, sticky="w")
@@ -2657,10 +2660,20 @@ class StokKartiDialog(tk.Toplevel):
                 if fiyat.fiyat_adi in self.fiyat_alanlari:
                     self.fiyat_alanlari[fiyat.fiyat_adi].insert(0, str(fiyat.tutar))
         butonlar = ttk.Frame(self)
-        butonlar.grid(row=5, column=0, columnspan=2, padx=12, pady=12, sticky="e")
-        ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
+        butonlar.grid(row=5, column=0, columnspan=3, padx=12, pady=12, sticky="e")
+        ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
         self.alanlar["stok_kodu"].focus_set()
+
+    def ean13_uret(self):
+        try:
+            kod = StokService.sonraki_ean13()
+        except ValueError as hata:
+            messagebox.showerror("EAN-13", str(hata), parent=self)
+            return
+        for alan in ("stok_kodu", "barkod"):
+            self.alanlar[alan].delete(0, "end")
+            self.alanlar[alan].insert(0, kod)
 
     def kaydet(self):
         veriler = {alan: giris.get().strip() for alan, giris in self.alanlar.items()}
@@ -2675,7 +2688,14 @@ class StokKartiDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("Stok kaydedilemedi", str(hata), parent=self)
             return
-        self.destroy()
+        # İlk kayıttan sonra kartı açık tut — fiyat girip tekrar kaydet güvenli olsun
+        self.stok = self.result
+        self.title("Stok Kartını Düzenle")
+        messagebox.showinfo(
+            "Kaydedildi",
+            "Stok kartı kaydedildi. İsterseniz fiyatları girip tekrar Kaydet diyebilirsiniz.",
+            parent=self,
+        )
 
 
 class StokGirisiDialog(tk.Toplevel):

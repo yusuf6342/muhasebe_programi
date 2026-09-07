@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.ean13 import generate_unique_ean13, is_valid_ean13, normalize_barcode
 from database.models.stok import Depo, StokFiyati, StokHareketi, StokKarti, StokLotu
 from database.satis_siparisi_service import decimal
 
@@ -43,26 +44,92 @@ class StokService:
             return list(session.scalars(q).all())
 
     @staticmethod
+    def kullanilan_kodlar():
+        """Stok kodu + barkod havuzu (EAN üretimi için)."""
+        with get_session() as session:
+            kartlar = session.scalars(select(StokKarti)).all()
+            kodlar: list[str] = []
+            for kart in kartlar:
+                if kart.stok_kodu:
+                    kodlar.append(kart.stok_kodu)
+                if kart.barkod:
+                    kodlar.append(kart.barkod)
+            return kodlar
+
+    @staticmethod
+    def sonraki_ean13(company_code: str = "4201") -> str:
+        return generate_unique_ean13(StokService.kullanilan_kodlar(), company_code=company_code)
+
+    @staticmethod
     def stok_kaydi(veriler, fiyatlar):
         with get_session() as session:
+            stok_kodu = veriler["stok_kodu"].strip()
+            barkod_ham = (veriler.get("barkod") or "").strip()
+            barkod = barkod_ham or None
+            # Aynı kartta stok kodu = barkod (EAN) serbest; sadece başka kartlarla çakışma yasak.
             stok_id = veriler.get("stok_id")
             stok = session.get(StokKarti, int(stok_id)) if stok_id else None
             if not stok:
-                stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == veriler["stok_kodu"].strip()))
+                stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == stok_kodu))
             if not stok:
-                stok = StokKarti(stok_kodu=veriler["stok_kodu"].strip()); session.add(stok)
-            stok.stok_kodu = veriler["stok_kodu"].strip()
+                stok = StokKarti(stok_kodu=stok_kodu)
+                session.add(stok)
+                session.flush()
+
+            kod_sorgu = select(StokKarti.id).where(StokKarti.stok_kodu == stok_kodu, StokKarti.id != stok.id)
+            if session.scalar(kod_sorgu):
+                raise ValueError("Bu stok kodu başka bir stok kartında kullanılıyor.")
+
+            if barkod:
+                barkod_sorgu = select(StokKarti.id).where(StokKarti.barkod == barkod, StokKarti.id != stok.id)
+                if session.scalar(barkod_sorgu):
+                    raise ValueError("Bu barkod başka bir stok kartında kullanılıyor.")
+                # Stok kodu başka kartın barkodu olmasın (tersi de)
+                if barkod != stok_kodu:
+                    ters = session.scalar(
+                        select(StokKarti.id).where(StokKarti.stok_kodu == barkod, StokKarti.id != stok.id)
+                    )
+                    if ters:
+                        raise ValueError("Bu barkod başka bir stok kartının stok kodu olarak kullanılıyor.")
+                kod_baska_barkod = session.scalar(
+                    select(StokKarti.id).where(StokKarti.barkod == stok_kodu, StokKarti.id != stok.id)
+                )
+                if kod_baska_barkod:
+                    raise ValueError("Bu stok kodu başka bir stok kartının barkodu olarak kullanılıyor.")
+
+            if barkod and len(normalize_barcode(barkod)) == 13 and not is_valid_ean13(normalize_barcode(barkod)):
+                raise ValueError("Barkod 13 haneli ama EAN-13 kontrol hanesi geçersiz.")
+
+            stok.stok_kodu = stok_kodu
             stok.stok_adi = veriler["stok_adi"].strip()
-            stok.barkod = veriler.get("barkod") or None
+            stok.barkod = barkod
             stok.birim = veriler.get("birim") or "Adet"
-            stok.fiyatlar.clear()
+
+            # Fiyatları yerinde güncelle — clear()+yeniden ekle, uq_stok_fiyat_adi
+            # yüzünden "barkod çakışması" gibi yanlış hata üretebiliyordu.
+            istenen: dict[str, Decimal] = {}
             for ad, tutar in fiyatlar:
                 if str(tutar).strip():
-                    stok.fiyatlar.append(StokFiyati(fiyat_adi=ad, tutar=decimal(tutar, ad, Decimal("0")), para_birimi="TL"))
+                    istenen[ad] = decimal(tutar, ad, Decimal("0"))
+            mevcut = {f.fiyat_adi: f for f in list(stok.fiyatlar)}
+            for ad, fiyat in list(mevcut.items()):
+                if ad not in istenen:
+                    stok.fiyatlar.remove(fiyat)
+            for ad, tutar in istenen.items():
+                if ad in mevcut:
+                    mevcut[ad].tutar = tutar
+                    mevcut[ad].para_birimi = "TL"
+                else:
+                    stok.fiyatlar.append(
+                        StokFiyati(fiyat_adi=ad, tutar=tutar, para_birimi="TL")
+                    )
+
             try:
                 session.flush()
             except IntegrityError as hata:
-                raise ValueError("Stok kodu veya barkod başka bir stok kartında kullanılıyor.") from hata
+                raise ValueError(
+                    "Kayıt çakışması: stok kodu, barkod veya fiyat satırı benzersiz değil."
+                ) from hata
             return stok
 
     @staticmethod
