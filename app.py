@@ -20,6 +20,19 @@ from database.satis_siparisi_service import (
 from product_provider import search_prices, search_products
 from database.stok_service import StokService
 from database.finans_service import FinansService
+from stok_ui import StokKartiDialog
+from depo_transfer_ui import depo_transfer_listesini_goster
+from stok_birlestir_ui import stok_birlestir_sayfasi_goster
+from stok_paket_ui import stok_paket_sayfasi_goster
+from stok_barkod_ui import stok_barkod_basimi_goster as barkod_basim_sayfasini_ac
+from stok_rapor_ui import stok_raporlari_menusu_goster
+from stok_toplu_fiyat_ui import toplu_fiyat_sayfasi_goster
+from finans_ui import finans_menusu_goster
+from ui_takvim import saat_dogrula, saat_varsayilan, takvim_butonu
+from urun_sec_ui import UrunSecDialog
+
+# Geriye dönük uyumluluk
+ProductSelectionDialog = UrunSecDialog
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 
@@ -494,67 +507,95 @@ class CariDialog(tk.Toplevel):
         self.destroy()
 
 
-class ProductSelectionDialog(tk.Toplevel):
-    def __init__(self, parent, query, on_select):
-        super().__init__(parent)
-        self.title("Ürün Seçimi")
-        self.geometry("780x360")
-        self.transient(parent)
-        self.grab_set()
-        ttk.Label(self, text=f"Ürün arama: {query}").pack(anchor="w", padx=12, pady=(12, 6))
-        kolonlar = ("kod", "ad", "birim", "stok", "fiyat", "kaynak")
-        self.tablo = ttk.Treeview(self, columns=kolonlar, show="headings")
-        for kolon, baslik, genislik in (("kod", "Ürün Kodu", 120), ("ad", "Ürün Adı", 220), ("birim", "Birim", 80), ("stok", "Mevcut Stok", 110), ("fiyat", "Varsayılan Satış Fiyatı", 150), ("kaynak", "Veri Kaynağı", 110)):
-            self.tablo.heading(kolon, text=baslik)
-            self.tablo.column(kolon, width=genislik)
-        self.tablo.pack(fill="both", expand=True, padx=12, pady=6)
-        urunler = search_products(query)
-        for sira, urun in enumerate(urunler):
-            self.tablo.insert("", "end", iid=str(sira), values=(urun.code, urun.name, urun.unit, urun.stock, urun.default_price, urun.source))
-        if not urunler:
-            ttk.Label(self, text="Ürün bulunamadı. Ürün verisi sağlayıcısı henüz boş.").pack(anchor="w", padx=12, pady=4)
-        self.tablo.bind("<Double-1>", lambda _event: self.sec())
-        ttk.Button(self, text="Seç", command=self.sec).pack(anchor="e", padx=12, pady=8)
-        self.on_select = on_select
-
-    def sec(self):
-        secim = self.tablo.selection()
-        if not secim:
-            return
-        self.on_select(self.tablo.item(secim[0], "values"))
-        self.destroy()
-
-
 class PriceSelectionDialog(tk.Toplevel):
-    def __init__(self, parent, product_code, on_select=None):
+    def __init__(self, parent, product_code, on_select=None, fiyat_turu=None):
+        """fiyat_turu: None=tümü, 'alis'=ALIŞ fiyatları, 'satis'=SATIŞ fiyatları."""
         super().__init__(parent)
-        self.title("Fiyat Seçimi")
+        baslik = "Fiyat Seçimi"
+        if fiyat_turu == "alis":
+            baslik = "Alış Fiyatı Seçimi"
+        elif fiyat_turu == "satis":
+            baslik = "Satış Fiyatı Seçimi"
+        self.title(baslik)
         self.geometry("620x300")
         self.transient(parent)
         self.grab_set()
+        self.on_select = on_select
+        self._son_secim = None
         ttk.Label(self, text=f"Ürün: {product_code}").pack(anchor="w", padx=12, pady=(12, 6))
         kolonlar = ("ad", "fiyat", "para", "tarih")
         self.tablo = ttk.Treeview(self, columns=kolonlar, show="headings")
-        for kolon, baslik, genislik in (("ad", "Fiyat Adı", 180), ("fiyat", "Fiyat", 120), ("para", "Para Birimi", 120), ("tarih", "Geçerlilik Tarihi", 150)):
-            self.tablo.heading(kolon, text=baslik)
+        for kolon, baslik_kolon, genislik in (("ad", "Fiyat Adı", 180), ("fiyat", "Fiyat", 120), ("para", "Para Birimi", 120), ("tarih", "Geçerlilik Tarihi", 150)):
+            self.tablo.heading(kolon, text=baslik_kolon)
             self.tablo.column(kolon, width=genislik)
         self.tablo.pack(fill="both", expand=True, padx=12, pady=6)
-        self.fiyatlar = search_prices(product_code)
+        if fiyat_turu == "alis":
+            self.fiyatlar = StokService.alis_fiyatlari(product_code)
+        elif fiyat_turu == "satis":
+            from database.stok_service import SATIS_FIYAT_ADLARI
+            satis_adlari = {(ad or "").strip().upper() for ad in SATIS_FIYAT_ADLARI}
+            self.fiyatlar = [
+                f for f in search_prices(product_code)
+                if (f.fiyat_adi or "").strip().upper() in satis_adlari
+            ]
+        else:
+            self.fiyatlar = search_prices(product_code)
         for sira, fiyat in enumerate(self.fiyatlar):
             self.tablo.insert("", "end", iid=str(sira), values=(fiyat.fiyat_adi, fiyat.tutar, fiyat.para_birimi, "Sürekli"))
         if not self.fiyatlar:
-            ttk.Label(self, text="Bu ürüne ait tanımlı fiyat bulunamadı").pack(anchor="w", padx=12, pady=4)
+            mesaj = "Bu ürüne ait tanımlı fiyat bulunamadı"
+            if fiyat_turu == "alis":
+                mesaj = "Bu ürüne ait tanımlı alış fiyatı bulunamadı"
+            elif fiyat_turu == "satis":
+                mesaj = "Bu ürüne ait tanımlı satış fiyatı bulunamadı"
+            ttk.Label(self, text=mesaj).pack(anchor="w", padx=12, pady=4)
+        else:
+            ilk = "0"
+            self.tablo.selection_set(ilk)
+            self.tablo.focus(ilk)
+            self.tablo.see(ilk)
+            self._son_secim = ilk
+        self.tablo.bind("<<TreeviewSelect>>", self._secim_kaydet)
         self.tablo.bind("<Double-1>", lambda _event: self.sec())
+        self.tablo.bind("<Return>", lambda _event: self.sec())
         alt = ttk.Frame(self); alt.pack(fill="x", padx=12, pady=8)
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
-        ttk.Button(alt, text="Fiyatı Seç", command=self.sec).pack(side="right", padx=8)
-        self.on_select = on_select
+        ttk.Button(alt, text="Fiyat Seç", command=self.sec).pack(side="right", padx=8)
+
+    def _secim_kaydet(self, _event=None):
+        secim = self.tablo.selection()
+        if secim:
+            self._son_secim = secim[0]
+
+    def _secili_iid(self):
+        secim = self.tablo.selection()
+        if secim:
+            return secim[0]
+        odak = self.tablo.focus()
+        if odak:
+            return odak
+        return self._son_secim
 
     def sec(self):
-        secim = self.tablo.selection()
-        if secim and self.on_select:
-            self.on_select(self.fiyatlar[int(secim[0])])
+        if not self.on_select:
             self.destroy()
+            return
+        iid = self._secili_iid()
+        if iid is None or not self.fiyatlar:
+            messagebox.showinfo("Fiyat", "Lütfen listeden bir fiyat seçin.", parent=self)
+            return
+        try:
+            fiyat = self.fiyatlar[int(iid)]
+            tutar = fiyat.tutar
+        except (ValueError, IndexError, TypeError, AttributeError):
+            messagebox.showinfo("Fiyat", "Lütfen listeden bir fiyat seçin.", parent=self)
+            return
+        # Düz değer: destroy sonrası ORM / grab kaynaklı sessiz hataları önle
+        secilen = type("_Fiyat", (), {"tutar": tutar})()
+        callback = self.on_select
+        self.on_select = None
+        self.destroy()
+        callback(secilen)
 
 
 class SiparisSatiriDialog(tk.Toplevel):
@@ -598,11 +639,16 @@ class SiparisSatiriDialog(tk.Toplevel):
 
     def urun_arama_ac(self, _event):
         widget = self.focus_get()
-        sorgu = widget.get().strip() if widget in (self.girdiler.get("urun_kodu"), self.girdiler.get("urun_adi")) else ""
-        if len(sorgu) < 3 or sorgu == self._son_urun_arama:
+        if widget not in (self.girdiler.get("urun_kodu"), self.girdiler.get("urun_adi")):
+            return
+        sorgu = widget.get().strip()
+        if len(sorgu) < 2 or sorgu == self._son_urun_arama:
             return
         self._son_urun_arama = sorgu
-        ProductSelectionDialog(self, sorgu, self.urun_secildi)
+        if widget is self.girdiler.get("urun_kodu"):
+            ProductSelectionDialog(self, on_select=self.urun_secildi, kod=sorgu)
+        else:
+            ProductSelectionDialog(self, on_select=self.urun_secildi, ad=sorgu)
 
     def urun_secildi(self, degerler):
         for alan, deger in (("urun_kodu", degerler[0]), ("urun_adi", degerler[1]), ("birim", degerler[2]), ("birim_satis_fiyati", degerler[4])):
@@ -612,8 +658,26 @@ class SiparisSatiriDialog(tk.Toplevel):
         self.tutar_guncelle()
 
     def fiyat_secimi_ac(self, _event):
-        PriceSelectionDialog(self, self.girdiler["urun_kodu"].get().strip())
+        kod = self.girdiler["urun_kodu"].get().strip()
+        if not kod:
+            messagebox.showinfo("Fiyat", "Önce ürün kodu girin.", parent=self)
+            return "break"
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=self.fiyati_secildi, fiyat_turu="satis"
+        )
+        self.wait_window(dialog)
+        try:
+            self.girdiler["birim_satis_fiyati"].focus_set()
+        except tk.TclError:
+            pass
         return "break"
+
+    def fiyati_secildi(self, fiyat):
+        alan = self.girdiler["birim_satis_fiyati"]
+        alan.delete(0, "end")
+        tutar = f"{Decimal(str(fiyat.tutar)):f}".rstrip("0").rstrip(".") or "0"
+        alan.insert(0, tutar)
+        self.tutar_guncelle()
 
     def tutar_guncelle(self):
         try:
@@ -1070,7 +1134,13 @@ class KarlilikAnaliziDialog(tk.Toplevel):
         self.hedef_marji.insert(0, self.parent_kart.hedef_kar_marji.get())
         self.hedef_marji.pack(side="left", padx=6)
         self.bilgi = ttk.Label(self, anchor="w", justify="left")
-        self.bilgi.pack(fill="x", padx=12, pady=(0, 8))
+        self.bilgi.pack(fill="x", padx=12, pady=(0, 4))
+        ozet = ttk.Frame(self)
+        ozet.pack(fill="x", padx=12, pady=(0, 8))
+        self.toplam_kar_etiket = ttk.Label(ozet, text="Toplam Kâr: 0,00 TL", font=("Segoe UI", 11, "bold"))
+        self.toplam_kar_etiket.pack(side="left", padx=(0, 24))
+        self.kar_yuzdesi_etiket = ttk.Label(ozet, text="Kâr Yüzdesi: 0,0%", font=("Segoe UI", 11, "bold"))
+        self.kar_yuzdesi_etiket.pack(side="left")
         cerceve = ttk.Frame(self)
         cerceve.pack(fill="both", expand=True, padx=12)
         kolonlar = ("kod", "ad", "miktar", "fiyat", "net", "birim_maliyet", "maliyet", "kar", "marj")
@@ -1096,6 +1166,20 @@ class KarlilikAnaliziDialog(tk.Toplevel):
         ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=(0, 8))
         self.yenile()
 
+    def _belge_ozeti(self):
+        fatura = getattr(self.parent_kart, "fatura", None)
+        if fatura is not None:
+            return f"Fatura: {fatura.fatura_no}"
+        fatura_no = getattr(self.parent_kart, "fatura_no_alani", None)
+        if fatura_no is not None:
+            try:
+                no = fatura_no.get().strip()
+            except tk.TclError:
+                no = ""
+            return f"Fatura: {no or 'Yeni fatura'}"
+        siparis = getattr(self.parent_kart, "siparis", None)
+        return f"Sipariş: {siparis.siparis_no if siparis else 'Yeni sipariş'}"
+
     def _hesapla(self, veri, yontem):
         miktar = decimal(veri.get("miktar", 0), "Miktar")
         fiyat = decimal(veri.get("birim_satis_fiyati", 0), "Birim fiyat")
@@ -1106,7 +1190,6 @@ class KarlilikAnaliziDialog(tk.Toplevel):
         return miktar, fiyat, net, maliyet, miktar * maliyet, net - miktar * maliyet
 
     def yenile(self):
-        siparis = self.parent_kart.siparis
         yontem = self.yontem_secimi.get()
         for item in self.tablo.get_children(): self.tablo.delete(item)
         for widget in self.karsilastirma.winfo_children(): widget.destroy()
@@ -1120,8 +1203,17 @@ class KarlilikAnaliziDialog(tk.Toplevel):
             marj = kar / net * Decimal("100") if maliyet_var and net else Decimal("0")
             self.tablo.insert("", "end", iid=str(sira), values=(veri["urun_kodu"], veri["urun_adi"], miktar, para_goster(fiyat), para_goster(net), para_goster(maliyet) if maliyet_var else "Maliyet bulunamadı", para_goster(toplam_maliyet) if maliyet_var else "-", para_goster(kar) if maliyet_var else "-", f"{marj:.1f}" if maliyet_var else "-"))
         marj_toplam = kar_toplam / net_toplam * Decimal("100") if net_toplam else Decimal("0")
-        self.bilgi.configure(text=f"Sipariş: {siparis.siparis_no if siparis else 'Yeni sipariş'}    Müşteri: {musteri if (musteri := self.parent_kart.musteri.get()) else '-'}    Maliyet yöntemi: {yontem}\nKDV hariç satış toplamı: {para_goster(net_toplam)}    Toplam maliyet: {para_goster(maliyet_toplam)}    Toplam kâr/zarar: {para_goster(kar_toplam)}    Gerçekleşen kâr marjı: {marj_toplam:.1f}%")
-        self.bilgi.configure(foreground="#2e7d32" if kar_toplam > 0 else "#c62828" if kar_toplam < 0 else "#444444")
+        renk = "#2e7d32" if kar_toplam > 0 else "#c62828" if kar_toplam < 0 else "#444444"
+        musteri = self.parent_kart.musteri.get() if hasattr(self.parent_kart, "musteri") else ""
+        self.bilgi.configure(
+            text=(
+                f"{self._belge_ozeti()}    Müşteri: {musteri or '-'}    Maliyet yöntemi: {yontem}\n"
+                f"KDV hariç satış toplamı: {para_goster(net_toplam)}    Toplam maliyet: {para_goster(maliyet_toplam)}"
+            ),
+            foreground=renk,
+        )
+        self.toplam_kar_etiket.configure(text=f"Toplam Kâr: {para_goster(kar_toplam)}", foreground=renk)
+        self.kar_yuzdesi_etiket.configure(text=f"Kâr Yüzdesi: {marj_toplam:.1f}%", foreground=renk)
         self.uyari.configure(text=f"Maliyet bulunamadı: {eksik} satır" if eksik else "")
         for yontem_adi in MALIYET_YONTEMLERI:
             bilinen_kar = Decimal("0"); bilinen_net = Decimal("0"); eksik_sayisi = 0
@@ -1129,8 +1221,15 @@ class KarlilikAnaliziDialog(tk.Toplevel):
                 _, _, net, maliyet, _, kar = self._hesapla(veri, yontem_adi)
                 if maliyet > 0: bilinen_net += net; bilinen_kar += kar
                 else: eksik_sayisi += 1
-            renk = "#2e7d32" if bilinen_kar > 0 else "#c62828" if bilinen_kar < 0 else "#444444"
-            ttk.Label(self.karsilastirma, text=f"{yontem_adi}\n{para_goster(bilinen_kar)}\nEksik: {eksik_sayisi}", foreground=renk, font=("Segoe UI", 10, "bold"), padding=8).pack(side="left", expand=True, fill="x")
+            yontem_marj = bilinen_kar / bilinen_net * Decimal("100") if bilinen_net else Decimal("0")
+            yontem_renk = "#2e7d32" if bilinen_kar > 0 else "#c62828" if bilinen_kar < 0 else "#444444"
+            ttk.Label(
+                self.karsilastirma,
+                text=f"{yontem_adi}\nToplam Kâr: {para_goster(bilinen_kar)}\nKâr Yüzdesi: {yontem_marj:.1f}%\nEksik: {eksik_sayisi}",
+                foreground=yontem_renk,
+                font=("Segoe UI", 10, "bold"),
+                padding=8,
+            ).pack(side="left", expand=True, fill="x")
 
 
 class SatisIrsaliyesiDialog(tk.Toplevel):
@@ -1221,15 +1320,42 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.toplam = ttk.Label(frame, text="Ara Toplam: 0,00 TL | KDV Toplamı: 0,00 TL | Genel Toplam: 0,00 TL"); self.toplam.grid(row=2, column=0, columnspan=2, padx=6, pady=(8, 0), sticky="w"); frame.columnconfigure(0, weight=1); frame.columnconfigure(1, weight=1)
 
     def urun_arama_ac(self, _event):
-        widget = self.focus_get(); query = widget.get().strip()
-        if len(query) >= 3: ProductSelectionDialog(self, query, self.urun_secildi)
+        widget = self.focus_get()
+        query = widget.get().strip()
+        if len(query) < 2:
+            return
+        if widget is self.satir_girdileri.get("urun_kodu"):
+            ProductSelectionDialog(self, on_select=self.urun_secildi, kod=query)
+        elif widget is self.satir_girdileri.get("urun_adi"):
+            ProductSelectionDialog(self, on_select=self.urun_secildi, ad=query)
+        else:
+            ProductSelectionDialog(self, query, self.urun_secildi)
 
     def urun_secildi(self, values):
         for field, value in (("urun_kodu", values[0]), ("urun_adi", values[1]), ("birim", values[2] or "Adet"), ("birim_fiyat", values[4])):
             if field == "birim": self.satir_girdileri[field].set(value)
             else: self.satir_girdileri[field].delete(0, "end"); self.satir_girdileri[field].insert(0, value)
 
-    def fiyat_secimi_ac(self, _event): PriceSelectionDialog(self, self.satir_girdileri["urun_kodu"].get()); return "break"
+    def fiyat_secimi_ac(self, _event):
+        kod = self.satir_girdileri["urun_kodu"].get().strip()
+        if not kod:
+            messagebox.showinfo("Fiyat", "Önce ürün kodu girin.", parent=self)
+            return "break"
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=self.fiyati_secildi, fiyat_turu="satis"
+        )
+        self.wait_window(dialog)
+        try:
+            self.satir_girdileri["birim_fiyat"].focus_set()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def fiyati_secildi(self, fiyat):
+        alan = self.satir_girdileri["birim_fiyat"]
+        alan.delete(0, "end")
+        tutar = f"{Decimal(str(fiyat.tutar)):f}".rstrip("0").rstrip(".") or "0"
+        alan.insert(0, tutar)
 
     def satir_ekle(self):
         veri = {field: widget.get().strip() for field, widget in self.satir_girdileri.items()}
@@ -1338,6 +1464,23 @@ class SatisSiparisiDialog(tk.Toplevel):
             self.musteriler.append(siparis.cari)
         self.musteri_map = {f"{m.cari_kodu} - {m.unvan}": m for m in self.musteriler}
         self.girdiler = {}
+
+        # Üstte sabit kayıt çubuğu + F1
+        butonlar = ttk.Frame(self, padding=(10, 8, 10, 8))
+        butonlar.pack(side="top", fill="x")
+        ttk.Label(
+            butonlar,
+            text="Kayıt: F1",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#1f6aa5",
+        ).pack(side="left", padx=(0, 12))
+        self.kaydet_btn = ttk.Button(butonlar, text="Kaydet (F1)", width=16, command=self.kaydet)
+        self.kaydet_btn.pack(side="right", padx=4)
+        ttk.Button(butonlar, text="Siparişi İptal Et", command=self.siparisi_iptal_et).pack(side="right", padx=4)
+        ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=4)
+        self.bind("<F1>", self._f1_kaydet)
+        self.bind_all("<F1>", self._f1_kaydet)
+
         kaydirma_alani = ttk.Frame(self, padding=10)
         kaydirma_alani.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(kaydirma_alani, highlightthickness=0)
@@ -1365,11 +1508,6 @@ class SatisSiparisiDialog(tk.Toplevel):
         alt.rowconfigure(0, weight=1)
         self._tahsilat_olustur(alt)
         self._notlar_olustur(alt)
-        butonlar = ttk.Frame(self.icerik)
-        butonlar.pack(fill="x", pady=(12, 4))
-        ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right")
-        ttk.Button(butonlar, text="Siparişi İptal Et", command=self.siparisi_iptal_et).pack(side="right", padx=8)
-        ttk.Button(butonlar, text="Siparişi Kaydet", command=self.kaydet).pack(side="right", padx=8)
         if siparis:
             self._doldur()
         elif cari:
@@ -1380,6 +1518,30 @@ class SatisSiparisiDialog(tk.Toplevel):
 
     def _fare_tekerlegi(self, event):
         self.canvas.yview_scroll(-int(event.delta / 120), "units")
+
+    def _f1_kaydet(self, _event=None):
+        try:
+            if not self.winfo_exists():
+                return
+            odak = self.focus_get()
+            if odak is None:
+                return
+            w = odak
+            while w is not None:
+                if w == self:
+                    self.kaydet()
+                    return "break"
+                w = w.master if hasattr(w, "master") else None
+        except tk.TclError:
+            return
+        return "break"
+
+    def destroy(self):
+        try:
+            self.unbind_all("<F1>")
+        except tk.TclError:
+            pass
+        super().destroy()
 
     def _girdi(self, parent, satir, baslik, alan, deger=""):
         ttk.Label(parent, text=baslik).grid(row=satir, column=0, padx=8, pady=5, sticky="w")
@@ -1475,9 +1637,28 @@ class SatisSiparisiDialog(tk.Toplevel):
 
     def satir_urun_arama_ac(self, _event):
         widget = self.focus_get()
-        sorgu = widget.get().strip() if widget in (self.satir_girdileri["urun_kodu"], self.satir_girdileri["urun_adi"]) else ""
-        if len(sorgu) >= 3:
-            ProductSelectionDialog(self, sorgu, self.satir_urun_secildi)
+        if widget not in (self.satir_girdileri["urun_kodu"], self.satir_girdileri["urun_adi"]):
+            return
+        sorgu = widget.get().strip()
+        if len(sorgu) < 2:
+            return
+        if getattr(self, "_urun_arama_after", None):
+            try:
+                self.after_cancel(self._urun_arama_after)
+            except tk.TclError:
+                pass
+        kod = sorgu if widget is self.satir_girdileri["urun_kodu"] else ""
+        ad = sorgu if widget is self.satir_girdileri["urun_adi"] else ""
+        self._urun_arama_after = self.after(350, lambda: self._urun_arama_ac(kod=kod, ad=ad))
+
+    def _urun_arama_ac(self, kod="", ad=""):
+        self._urun_arama_after = None
+        if getattr(self, "_urun_sec_pencere", None) and self._urun_sec_pencere.winfo_exists():
+            return
+        dialog = ProductSelectionDialog(self, on_select=self.satir_urun_secildi, kod=kod, ad=ad)
+        self._urun_sec_pencere = dialog
+        self.wait_window(dialog)
+        self._urun_sec_pencere = None
 
     def satir_urun_secildi(self, degerler):
         for alan, deger in (("urun_kodu", degerler[0]), ("urun_adi", degerler[1]), ("birim", degerler[2] or "Adet"), ("birim_satis_fiyati", degerler[4])):
@@ -1489,8 +1670,26 @@ class SatisSiparisiDialog(tk.Toplevel):
         self.satir_tutar_guncelle()
 
     def satir_fiyat_secimi_ac(self, _event):
-        PriceSelectionDialog(self, self.satir_girdileri["urun_kodu"].get().strip())
+        kod = self.satir_girdileri["urun_kodu"].get().strip()
+        if not kod:
+            messagebox.showinfo("Fiyat", "Önce ürün kodu girin.", parent=self)
+            return "break"
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=self.satir_fiyati_secildi, fiyat_turu="satis"
+        )
+        self.wait_window(dialog)
+        try:
+            self.satir_girdileri["birim_satis_fiyati"].focus_set()
+        except tk.TclError:
+            pass
         return "break"
+
+    def satir_fiyati_secildi(self, fiyat):
+        alan = self.satir_girdileri["birim_satis_fiyati"]
+        alan.delete(0, "end")
+        tutar = f"{Decimal(str(fiyat.tutar)):f}".rstrip("0").rstrip(".") or "0"
+        alan.insert(0, tutar)
+        self.satir_tutar_guncelle()
 
     def satir_tutar_guncelle(self):
         try:
@@ -1602,19 +1801,32 @@ class SatisSiparisiDialog(tk.Toplevel):
         self.girdiler[alan].configure(state="normal"); self.girdiler[alan].delete(0, "end"); self.girdiler[alan].insert(0, deger); self.girdiler[alan].configure(state="readonly")
 
     def _satir_hesapla(self, veri):
-        miktar = decimal(veri.get("miktar", 0), "Miktar"); fiyat = decimal(veri.get("birim_satis_fiyati", 0), "Fiyat"); iskonto = decimal(veri.get("iskonto_orani", 0), "İskonto"); kdv = decimal(veri.get("kdv_orani", 0), "KDV")
-        maliyet = decimal(veri.get({"FIFO": "fifo_birim_maliyeti", "SON ALIŞ FİYATI": "son_alis_birim_maliyeti", "ORTALAMA ALIŞ FİYATI": "ortalama_birim_maliyeti", "AĞIRLIKLI ORTALAMA ALIŞ FİYATI": "agirlikli_ortalama_birim_maliyeti"}[self.yontem.get()], 0), "Maliyet")
-        brut = miktar * fiyat; indirim = brut * iskonto / 100; net = brut - indirim; toplam_maliyet = miktar * maliyet; kar = net - toplam_maliyet
+        miktar = decimal(veri.get("miktar") or 0, "Miktar")
+        fiyat = decimal(veri.get("birim_satis_fiyati") or 0, "Fiyat")
+        iskonto = decimal(veri.get("iskonto_orani") or 0, "İskonto")
+        kdv = decimal(veri.get("kdv_orani") or 0, "KDV")
+        maliyet_alan = {
+            "FIFO": "fifo_birim_maliyeti",
+            "SON ALIŞ FİYATI": "son_alis_birim_maliyeti",
+            "ORTALAMA ALIŞ FİYATI": "ortalama_birim_maliyeti",
+            "AĞIRLIKLI ORTALAMA ALIŞ FİYATI": "agirlikli_ortalama_birim_maliyeti",
+        }[self.yontem.get()]
+        maliyet = decimal(veri.get(maliyet_alan) or 0, "Maliyet")
+        brut = miktar * fiyat
+        indirim = brut * iskonto / 100
+        net = brut - indirim
+        toplam_maliyet = miktar * maliyet
+        kar = net - toplam_maliyet
         return brut, indirim, net, net * kdv / 100, toplam_maliyet, kar, kar / net * 100 if net else Decimal("0")
 
     def _satir_listesini_yenile(self):
         for item in self.satir_tablosu.get_children(): self.satir_tablosu.delete(item)
         for sira, veri in enumerate(self.satirlar):
             brut, indirim, net, kdv, maliyet, kar, marj = self._satir_hesapla(veri)
-            acik = decimal(veri.get("miktar", 0), "Miktar")
-            irsaliye = decimal(veri.get("irsaliyelenen_miktar", 0), "İrsaliyelenen miktar")
-            fatura = decimal(veri.get("faturalanan_miktar", 0), "Faturalanan miktar")
-            self.satir_tablosu.insert("", "end", iid=str(sira), values=(veri["urun_kodu"], veri["urun_adi"], veri.get("aciklama", ""), veri["miktar"], veri["birim"], para_goster(veri["birim_satis_fiyati"]), f"{veri.get('iskonto_orani', 0)}%", f"{veri.get('kdv_orani', 0)}%", para_goster(net + kdv), irsaliye, fatura, acik - irsaliye))
+            acik = decimal(veri.get("miktar") or 0, "Miktar")
+            irsaliye = decimal(veri.get("irsaliyelenen_miktar") or 0, "İrsaliyelenen miktar")
+            fatura = decimal(veri.get("faturalanan_miktar") or 0, "Faturalanan miktar")
+            self.satir_tablosu.insert("", "end", iid=str(sira), values=(veri["urun_kodu"], veri["urun_adi"], veri.get("aciklama", ""), veri.get("miktar") or 0, veri["birim"], para_goster(veri.get("birim_satis_fiyati") or 0), f"{veri.get('iskonto_orani') or 0}%", f"{veri.get('kdv_orani') or 0}%", para_goster(net + kdv), irsaliye, fatura, acik - irsaliye))
         self._toplamlari_guncelle()
 
     def karlilik_analizi_ac(self):
@@ -1717,8 +1929,15 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.durum.configure(values=("AÇIK", "KAPALI", "İPTAL"))
         self.durum.set(fatura.durum if fatura else "AÇIK")
         self._ek_fatura_bilgileri()
-        self._fatura_satir_baglantilari()
-        self._fatura_satirlari_hazir = True
+        try:
+            self._fatura_satir_baglantilari()
+            self._fatura_satirlari_hazir = True
+        except Exception as hata:
+            messagebox.showerror(
+                "Fatura satırları",
+                f"Satır araçları kurulurken hata oluştu:\n{hata}",
+                parent=self,
+            )
         if fatura:
             self._faturayi_doldur()
         elif irsaliye:
@@ -1803,35 +2022,57 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         else:
             ek.pack(fill="x", pady=4)
 
+        # Otomatik satış fatura numarası (SRAY000001)
+        ttk.Label(ek, text="Fatura Numarası").grid(row=0, column=0, padx=6, pady=4, sticky="w")
+        self.fatura_no_alani = ttk.Entry(ek, width=28, state="readonly")
+        self.fatura_no_alani.grid(row=0, column=1, padx=6, pady=4, sticky="ew")
+        otomatik_no = self.fatura.fatura_no if self.fatura else SatisFaturasiService.fatura_no()
+        self.fatura_no_alani.configure(state="normal")
+        self.fatura_no_alani.delete(0, "end")
+        self.fatura_no_alani.insert(0, otomatik_no)
+        self.fatura_no_alani.configure(state="readonly")
+
+        ttk.Label(ek, text="İşlem Saati").grid(row=0, column=2, padx=6, pady=4, sticky="w")
+        self.islem_saati_alani = ttk.Entry(ek, width=12)
+        self.islem_saati_alani.grid(row=0, column=3, padx=6, pady=4, sticky="w")
+        saat_deger = saat_varsayilan(
+            self.fatura.islem_saati if self.fatura and self.fatura.islem_saati
+            else (self.fatura.olusturma_tarihi.strftime("%H:%M") if self.fatura else None)
+        )
+        self.islem_saati_alani.insert(0, saat_deger)
+        self.girdiler["islem_saati"] = self.islem_saati_alani
+
         # Sipariş / irsaliye numaraları
-        ttk.Label(ek, text="Sipariş Numarası").grid(row=0, column=0, padx=6, pady=4, sticky="w")
+        ttk.Label(ek, text="Sipariş Numarası").grid(row=1, column=0, padx=6, pady=4, sticky="w")
         self.siparis_no = ttk.Entry(ek, width=28)
-        self.siparis_no.grid(row=0, column=1, padx=6, pady=4, sticky="ew")
-        ttk.Label(ek, text="İrsaliye Numarası").grid(row=0, column=2, padx=6, pady=4, sticky="w")
+        self.siparis_no.grid(row=1, column=1, padx=6, pady=4, sticky="ew")
+        ttk.Label(ek, text="İrsaliye Numarası").grid(row=1, column=2, padx=6, pady=4, sticky="w")
         self.irsaliye_no = ttk.Entry(ek, width=28)
-        self.irsaliye_no.grid(row=0, column=3, padx=6, pady=4, sticky="ew")
-        ttk.Button(ek, text="Cari Kartına Geç", command=self.cariye_git).grid(row=0, column=4, padx=6, sticky="w")
+        self.irsaliye_no.grid(row=1, column=3, padx=6, pady=4, sticky="ew")
+        ttk.Button(ek, text="Cari Kartına Geç", command=self.cariye_git).grid(row=1, column=4, padx=6, sticky="w")
 
         # Doküman
-        ttk.Label(ek, text="Doküman Ekle").grid(row=1, column=0, padx=6, pady=4, sticky="w")
+        ttk.Label(ek, text="Doküman Ekle").grid(row=2, column=0, padx=6, pady=4, sticky="w")
         self.dokuman = ttk.Entry(ek, width=28)
-        self.dokuman.grid(row=1, column=1, padx=6, pady=4, sticky="ew")
-        ttk.Button(ek, text="Doküman Seç", command=self.dokuman_sec).grid(row=1, column=2, padx=6, sticky="w")
+        self.dokuman.grid(row=2, column=1, padx=6, pady=4, sticky="ew")
+        ttk.Button(ek, text="Doküman Seç", command=self.dokuman_sec).grid(row=2, column=2, padx=6, sticky="w")
 
         # Vade gün
-        ttk.Label(ek, text="Fatura Vadesi (Gün)").grid(row=2, column=0, padx=6, pady=4, sticky="w")
+        ttk.Label(ek, text="Fatura Vadesi (Gün)").grid(row=3, column=0, padx=6, pady=4, sticky="w")
         self.vade_gunu = ttk.Entry(ek, width=12)
-        self.vade_gunu.grid(row=2, column=1, padx=6, pady=4, sticky="w")
+        self.vade_gunu.grid(row=3, column=1, padx=6, pady=4, sticky="w")
         self.vade_gunu.insert(0, str(self.fatura.vade_gunu if self.fatura else 0))
         self.vade_gunu.bind("<KeyRelease>", self.vade_gun_degisti)
         for widget in self.icerik.winfo_children():
             self._etiketi_degistir(widget, "Vade Tarihi", "Fatura Vadesi Tarihi")
             self._etiketi_degistir(widget, "Termin Tarihi", "Fatura Vadesi Tarihi")
+        self._takvimli_tarih_yap("siparis_tarihi", self.vade_gun_degisti)
+        self._takvimli_tarih_yap("termin_tarihi", self.vade_tarih_degisti)
         self.girdiler["termin_tarihi"].bind("<FocusOut>", self.vade_tarih_degisti)
         self.girdiler["siparis_tarihi"].bind("<FocusOut>", self.vade_gun_degisti)
 
         ozet = ttk.Frame(ek)
-        ozet.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        ozet.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         self.yeni_bakiye_etiket = ttk.Label(
             ozet, text="Bu fatura ile yeni bakiye toplamı: -",
             foreground="#1f6aa5", font=("Segoe UI", 10, "bold"),
@@ -1856,6 +2097,31 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 self.siparis_no.delete(0, "end")
                 self.siparis_no.insert(0, self.kaynak_irsaliye.siparis.siparis_no)
 
+    def _takvimli_tarih_yap(self, alan, on_select=None):
+        eski = self.girdiler.get(alan)
+        if eski is None:
+            return
+        info = eski.grid_info()
+        if not info:
+            return
+        parent = eski.master
+        deger = eski.get()
+        eski.destroy()
+        cerceve = ttk.Frame(parent)
+        cerceve.grid(
+            row=int(info["row"]),
+            column=int(info["column"]),
+            sticky=info.get("sticky") or "ew",
+            padx=info.get("padx") or 8,
+            pady=info.get("pady") or 5,
+        )
+        entry = ttk.Entry(cerceve, width=28)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.insert(0, deger)
+        takvim_butonu(cerceve, entry, on_select=on_select)
+        self.girdiler[alan] = entry
+        return entry
+
     def _etiketi_degistir(self, parent, eski, yeni):
         try:
             if parent.cget("text") == eski:
@@ -1874,7 +2140,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     cocuk.configure(text="Satır Ekle")
             except tk.TclError:
                 pass
-        ttk.Button(butonlar, text="STOK LİSTESİ", command=self.stok_listesi_ac).pack(side="left", padx=6)
+
+        # Barkod/lot önce oluşturulsun (ürün seçimi bunlara bağlı)
         ttk.Label(butonlar, text="Barkod:").pack(side="left", padx=(12, 2))
         self.satir_girdileri["barkod"] = ttk.Entry(butonlar, width=16)
         self.satir_girdileri["barkod"].pack(side="left")
@@ -1886,10 +2153,26 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         ttk.Label(butonlar, text="Lot Çıkışı:").pack(side="left", padx=(8, 2))
         self.satir_girdileri["lot_cikisi"] = ttk.Entry(butonlar, width=22)
         self.satir_girdileri["lot_cikisi"].pack(side="left")
+
+        ttk.Button(butonlar, text="Satır Sil", command=self.satir_sil).pack(side="left", padx=6)
+        ttk.Label(butonlar, text="Silinecek satır:").pack(side="left", padx=(10, 2))
+        self.satir_sil_secim = ttk.Combobox(butonlar, state="readonly", width=36)
+        self.satir_sil_secim.pack(side="left", padx=(0, 6))
+        ttk.Button(butonlar, text="STOK LİSTESİ", command=self.stok_listesi_ac).pack(side="left", padx=6)
+        self._satir_isaretleri = set()
+        self.satir_tablosu.bind("<Delete>", lambda _e: self.satir_sil())
+        if hasattr(self, "_satir_secim_kutusu_tikla"):
+            self.satir_tablosu.bind("<Button-1>", self._satir_secim_kutusu_tikla, add="+")
+
         fiyat = self.satir_girdileri["birim_satis_fiyati"]
+        fiyat.bind("<F10>", self.fatura_fiyat_secimi_ac)
         fiyat.bind("<KeyPress-y>", self.fatura_fiyat_secimi_ac)
         fiyat.bind("<KeyPress-Y>", self.fatura_fiyat_secimi_ac)
-        ttk.Label(butonlar, text="(Fiyat: Y)", foreground="#666666").pack(side="left", padx=8)
+        ttk.Label(butonlar, text="(Fiyat: F10 / Y | Kayıt satırı: Satır Ekle)", foreground="#666666").pack(side="left", padx=8)
+
+        # Varsayılan iskonto
+        if "iskonto_orani" in self.satir_girdileri and not self.satir_girdileri["iskonto_orani"].get().strip():
+            self.satir_girdileri["iskonto_orani"].insert(0, "0")
 
         # Kâr analizi butonunu netleştir
         if hasattr(self, "satir_ozet"):
@@ -1900,19 +2183,25 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 except tk.TclError:
                     pass
 
-        kolonlar = ("barkod", "urun_kodu", "urun_adi", "aciklama", "miktar", "birim", "fiyat", "iskonto", "kdv", "lot", "lot_cikisi", "toplam", "irsaliye", "fatura", "acik")
-        self.satir_tablosu.configure(columns=kolonlar)
+        kolonlar = (
+            "sec", "barkod", "urun_kodu", "urun_adi", "aciklama", "miktar", "birim", "fiyat",
+            "iskonto", "kdv", "lot", "lot_cikisi", "toplam", "irsaliye", "fatura", "acik",
+        )
+        self.satir_tablosu.configure(columns=kolonlar, selectmode="browse")
         basliklar = {
-            "barkod": "Barkod", "urun_kodu": "Ürün Kodu", "urun_adi": "Ürün Adı", "aciklama": "Açıklama",
-            "miktar": "Miktar", "birim": "Birim", "fiyat": "Birim Fiyat", "iskonto": "İskonto",
-            "kdv": "KDV", "lot": "Lot No", "lot_cikisi": "Lot Çıkışı", "toplam": "Satır Toplamı",
-            "irsaliye": "Siparişten Gelen", "fatura": "İrsaliyeden Gelen", "acik": "Fatura Miktarı",
+            "sec": "Seç", "barkod": "Barkod", "urun_kodu": "Ürün Kodu", "urun_adi": "Ürün Adı",
+            "aciklama": "Açıklama", "miktar": "Miktar", "birim": "Birim", "fiyat": "Birim Fiyat",
+            "iskonto": "İskonto", "kdv": "KDV", "lot": "Lot No", "lot_cikisi": "Lot Çıkışı",
+            "toplam": "Satır Toplamı", "irsaliye": "Siparişten Gelen", "fatura": "İrsaliyeden Gelen",
+            "acik": "Fatura Miktarı",
         }
         for kolon in kolonlar:
             self.satir_tablosu.heading(kolon, text=basliklar[kolon])
             self.satir_tablosu.column(kolon, width=105, anchor="w")
+        self.satir_tablosu.column("sec", width=45, anchor="center", stretch=False)
         self.satir_tablosu.column("urun_adi", width=260)
         self.satir_tablosu.column("barkod", width=120)
+        self._satir_sil_listesini_yenile()
 
     def depo_ekle(self):
         ad = simpledialog.askstring("Yeni Depo", "Depo adı:", parent=self)
@@ -1978,13 +2267,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             messagebox.showinfo("Barkod", "Bu barkoda ait stok bulunamadı.", parent=self)
             return "break"
         stok = bulunan[0]
-        fiyat = stok.fiyatlar[0].tutar if stok.fiyatlar else 0
+        fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
         self.satir_urun_secildi((stok.stok_kodu, stok.stok_adi, stok.birim, "", str(fiyat)))
-        if not self.satir_girdileri["miktar"].get().strip():
-            self.satir_girdileri["miktar"].insert(0, "1")
-        self.satir_girdileri["barkod"].delete(0, "end")
-        self.satir_girdileri["barkod"].insert(0, stok.barkod or barkod)
-        self.satir_girdileri["miktar"].focus_set()
         return "break"
 
     def lot_cikis_otomatik(self, _event=None):
@@ -1994,20 +2278,61 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self.satir_girdileri["lot_cikisi"].insert(0, lot)
 
     def stok_listesi_ac(self):
-        sorgu = self.satir_girdileri["urun_adi"].get().strip() or self.satir_girdileri["urun_kodu"].get().strip()
-        ProductSelectionDialog(self, sorgu, self.satir_urun_secildi)
+        ProductSelectionDialog(
+            self,
+            on_select=self.satir_urun_secildi,
+            kod=self.satir_girdileri["urun_kodu"].get().strip(),
+            ad=self.satir_girdileri["urun_adi"].get().strip(),
+        )
 
     def satir_urun_secildi(self, degerler):
-        super().satir_urun_secildi(degerler)
-        self.satir_girdileri["barkod"].delete(0, "end")
-        bulunan = StokService.stoklari_ara(degerler[0])
-        stok = next((s for s in bulunan if s.stok_kodu == degerler[0]), None)
-        if stok and stok.barkod:
-            self.satir_girdileri["barkod"].insert(0, stok.barkod)
-        self.lotlari_yukle()
-        self.lot_cikis_otomatik()
+        kod = (degerler[0] or "").strip()
+        for alan, deger in (
+            ("urun_kodu", kod),
+            ("urun_adi", degerler[1]),
+            ("birim", degerler[2] or "Adet"),
+        ):
+            if alan == "birim":
+                self.satir_girdileri[alan].set(deger)
+            else:
+                self.satir_girdileri[alan].delete(0, "end")
+                self.satir_girdileri[alan].insert(0, deger)
+
+        fiyat = StokService.satis_fiyati_1(kod)
+        if fiyat == 0 and len(degerler) > 4 and str(degerler[4]).strip():
+            try:
+                fiyat = decimal(degerler[4], "Fiyat", Decimal("0"))
+            except ValueError:
+                fiyat = Decimal("0")
+        self.satir_girdileri["birim_satis_fiyati"].delete(0, "end")
+        self.satir_girdileri["birim_satis_fiyati"].insert(0, f"{fiyat:f}".rstrip("0").rstrip(".") or "0")
+
+        if "barkod" in self.satir_girdileri:
+            self.satir_girdileri["barkod"].delete(0, "end")
+            bulunan = StokService.stoklari_ara(kod)
+            stok = next((s for s in bulunan if s.stok_kodu == kod), None)
+            if stok and stok.barkod:
+                self.satir_girdileri["barkod"].insert(0, stok.barkod)
+        if not self.satir_girdileri["miktar"].get().strip():
+            self.satir_girdileri["miktar"].insert(0, "1")
+        if "iskonto_orani" in self.satir_girdileri and not self.satir_girdileri["iskonto_orani"].get().strip():
+            self.satir_girdileri["iskonto_orani"].insert(0, "0")
+        if "kdv_orani" in self.satir_girdileri and not self.satir_girdileri["kdv_orani"].get().strip():
+            self.satir_girdileri["kdv_orani"].insert(0, "20")
+        if "lot_no" in self.satir_girdileri:
+            self.lotlari_yukle()
+            self.lot_cikis_otomatik()
+        self.satir_tutar_guncelle()
+        # Forma doldur; satıra aktarım yalnızca "Satır Ekle" ile (yeni satır)
+        self.satir_tablosu.selection_remove(self.satir_tablosu.selection())
+        try:
+            self.satir_girdileri["miktar"].focus_set()
+        except tk.TclError:
+            pass
 
     def lotlari_yukle(self):
+        if "lot_no" not in self.satir_girdileri:
+            return
         kod = self.satir_girdileri["urun_kodu"].get().strip()
         lotlar = StokService.lotlar(kod, self.depo.get()) if kod and self.depo.get() else []
         self.satir_girdileri["lot_no"]["values"] = tuple(lot.lot_no for lot in lotlar)
@@ -2016,7 +2341,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self.lot_cikis_otomatik()
         else:
             self.satir_girdileri["lot_no"].set("")
-            self.satir_girdileri["lot_cikisi"].delete(0, "end")
+            if "lot_cikisi" in self.satir_girdileri:
+                self.satir_girdileri["lot_cikisi"].delete(0, "end")
         maliyetler = StokService.maliyetler(kod, self.depo.get()) if kod and self.depo.get() else {}
         for alan, anahtar in (("fifo_birim_maliyeti", "fifo"), ("son_alis_birim_maliyeti", "son_alis"),
                               ("ortalama_birim_maliyeti", "ortalama"),
@@ -2042,37 +2368,194 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             veri["agirlikli_ortalama_birim_maliyeti"] = maliyetler["agirlikli"]
 
     def fatura_fiyat_secimi_ac(self, _event=None):
-        PriceSelectionDialog(
-            self, self.satir_girdileri["urun_kodu"].get().strip(), self.fatura_fiyati_secildi
+        kod = self.satir_girdileri["urun_kodu"].get().strip()
+        if not kod:
+            messagebox.showinfo("Fiyat", "Önce ürün kodu girin.", parent=self)
+            return "break"
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=self.fatura_fiyati_secildi, fiyat_turu="satis"
         )
+        self.wait_window(dialog)
+        try:
+            self.satir_girdileri["birim_satis_fiyati"].focus_set()
+        except tk.TclError:
+            pass
         return "break"
 
     def fatura_fiyati_secildi(self, fiyat):
         alan = self.satir_girdileri["birim_satis_fiyati"]
-        alan.delete(0, "end"); alan.insert(0, str(fiyat.tutar))
+        alan.delete(0, "end")
+        tutar = f"{Decimal(str(fiyat.tutar)):f}".rstrip("0").rstrip(".") or "0"
+        alan.insert(0, tutar)
         self.satir_tutar_guncelle()
+        self.after_idle(lambda: self.satir_girdileri["birim_satis_fiyati"].focus_set())
 
     def satir_kaydet(self):
-        super().satir_kaydet()
+        """Satır Ekle: her zaman yeni satır ekler (seçim güncelleme yapmaz)."""
+        def _bos_ise_yaz(alan, varsayilan):
+            if alan in self.satir_girdileri and not self.satir_girdileri[alan].get().strip():
+                self.satir_girdileri[alan].delete(0, "end")
+                self.satir_girdileri[alan].insert(0, varsayilan)
+
+        _bos_ise_yaz("miktar", "1")
+        _bos_ise_yaz("iskonto_orani", "0")
+        _bos_ise_yaz("kdv_orani", "20")
+
+        veri = {alan: widget.get().strip() for alan, widget in self.satir_girdileri.items()}
+        if not veri.get("urun_kodu") or not veri.get("urun_adi"):
+            messagebox.showwarning("Eksik bilgi", "Önce stok seçin, sonra Satır Ekle'ye basın.", parent=self)
+            return
+        varsayilanlar = {
+            "miktar": "1",
+            "birim_satis_fiyati": "0",
+            "iskonto_orani": "0",
+            "kdv_orani": "20",
+        }
+        for alan, varsayilan in varsayilanlar.items():
+            if not str(veri.get(alan, "")).strip():
+                veri[alan] = varsayilan
+            try:
+                veri[alan] = str(decimal(veri[alan] or 0, alan, Decimal("0")))
+            except ValueError as hata:
+                messagebox.showerror("Geçersiz satır", str(hata), parent=self)
+                return
+        for alan in (
+            "fifo_birim_maliyeti",
+            "son_alis_birim_maliyeti",
+            "ortalama_birim_maliyeti",
+            "agirlikli_ortalama_birim_maliyeti",
+        ):
+            veri[alan] = veri.get(alan) or "0"
+        veri.setdefault("barkod", "")
+        veri.setdefault("lot_no", "")
+        veri.setdefault("lot_cikisi", "")
+        veri.setdefault("irsaliyelenen_miktar", 0)
+        veri.setdefault("faturalanan_miktar", 0)
+
+        self.satir_tablosu.selection_remove(self.satir_tablosu.selection())
+        self.satirlar.append(veri)
         self._satirlari_stokla_tamamla()
+        self.satir_formunu_temizle()
+        _bos_ise_yaz("iskonto_orani", "0")
+        _bos_ise_yaz("kdv_orani", "20")
+        self._fatura_satirlari_hazir = True
         self._satir_listesini_yenile()
+        self._toplamlari_guncelle()
+
+    def _satir_sil_listesini_yenile(self):
+        if not hasattr(self, "satir_sil_secim"):
+            return
+        degerler = []
+        for sira, veri in enumerate(self.satirlar):
+            degerler.append(f"{sira + 1}) {veri.get('urun_kodu', '')} - {veri.get('urun_adi', '')}")
+        self.satir_sil_secim["values"] = degerler
+        if degerler:
+            mevcut = self.satir_sil_secim.get()
+            if mevcut not in degerler:
+                self.satir_sil_secim.set(degerler[-1])
+        else:
+            self.satir_sil_secim.set("")
+
+    def _satir_secim_kutusu_tikla(self, event):
+        """Seç sütununa tıklayınca satırı işaretle / kaldır."""
+        tablo = self.satir_tablosu
+        if tablo.identify_region(event.x, event.y) != "cell":
+            return
+        if tablo.identify_column(event.x) != "#1":
+            return
+        satir = tablo.identify_row(event.y)
+        if not satir:
+            return
+        idx = int(satir)
+        if not hasattr(self, "_satir_isaretleri"):
+            self._satir_isaretleri = set()
+        if idx in self._satir_isaretleri:
+            self._satir_isaretleri.discard(idx)
+        else:
+            self._satir_isaretleri.add(idx)
+        self._satir_listesini_yenile()
+        try:
+            tablo.selection_set(satir)
+            tablo.focus(satir)
+        except tk.TclError:
+            pass
+        if hasattr(self, "satir_sil_secim") and 0 <= idx < len(self.satirlar):
+            self.satir_sil_secim.set(
+                f"{idx + 1}) {self.satirlar[idx].get('urun_kodu', '')} - {self.satirlar[idx].get('urun_adi', '')}"
+            )
+        return "break"
+
+    def satir_sil(self):
+        indeksler = set()
+        # 1) İşaretli satırlar
+        if getattr(self, "_satir_isaretleri", None):
+            indeksler |= {i for i in self._satir_isaretleri if 0 <= i < len(self.satirlar)}
+        # 2) Üstteki seçim kutusu
+        if hasattr(self, "satir_sil_secim"):
+            metin = self.satir_sil_secim.get().strip()
+            if metin and ")" in metin:
+                try:
+                    indeksler.add(int(metin.split(")", 1)[0]) - 1)
+                except ValueError:
+                    pass
+        # 3) Tabloda seçili satır
+        for iid in self.satir_tablosu.selection():
+            try:
+                indeksler.add(int(iid))
+            except ValueError:
+                pass
+        indeksler = {i for i in indeksler if 0 <= i < len(self.satirlar)}
+        if not indeksler:
+            messagebox.showinfo(
+                "Satır sil",
+                "Silmek için satırın başındaki Seç kutusunu işaretleyin veya üstteki 'Silinecek satır' listesinden seçin.",
+                parent=self,
+            )
+            return
+        adet = len(indeksler)
+        if not messagebox.askyesno("Satır sil", f"{adet} satır silinsin mi?", parent=self):
+            return
+        for idx in sorted(indeksler, reverse=True):
+            self.satirlar.pop(idx)
+        self._satir_isaretleri = set()
+        self.satir_formunu_temizle()
+        self._satir_listesini_yenile()
+        self._toplamlari_guncelle()
 
     def _satir_listesini_yenile(self):
         if not hasattr(self, "satir_tablosu"):
             return
         if not self._fatura_satirlari_hazir:
             return SatisSiparisiDialog._satir_listesini_yenile(self)
-        for item in self.satir_tablosu.get_children(): self.satir_tablosu.delete(item)
+        if not hasattr(self, "_satir_isaretleri"):
+            self._satir_isaretleri = set()
+        # Geçersiz işaretleri temizle
+        self._satir_isaretleri = {i for i in self._satir_isaretleri if 0 <= i < len(self.satirlar)}
+        for item in self.satir_tablosu.get_children():
+            self.satir_tablosu.delete(item)
         for sira, veri in enumerate(self.satirlar):
             _, _, net, kdv, _, _, _ = self._satir_hesapla(veri)
-            miktar = decimal(veri.get("miktar", 0), "Miktar")
+            miktar = decimal(veri.get("miktar") or 0, "Miktar")
+            isaret = "☑" if sira in self._satir_isaretleri else "☐"
             self.satir_tablosu.insert("", "end", iid=str(sira), values=(
-                veri.get("barkod", ""), veri["urun_kodu"], veri["urun_adi"], veri.get("aciklama", ""),
-                miktar, veri["birim"], para_goster(veri["birim_satis_fiyati"]),
-                f"{veri.get('iskonto_orani', 0)}%", f"{veri.get('kdv_orani', 0)}%",
-                veri.get("lot_no", ""), veri.get("lot_cikisi", ""), para_goster(net + kdv),
-                veri.get("irsaliyelenen_miktar", 0), veri.get("faturalanan_miktar", 0), miktar,
+                isaret,
+                veri.get("barkod", ""),
+                veri.get("urun_kodu", ""),
+                veri.get("urun_adi", ""),
+                veri.get("aciklama", ""),
+                miktar,
+                veri.get("birim", ""),
+                para_goster(veri.get("birim_satis_fiyati") or 0),
+                f"{veri.get('iskonto_orani') or 0}%",
+                f"{veri.get('kdv_orani') or 0}%",
+                veri.get("lot_no", ""),
+                veri.get("lot_cikisi", ""),
+                para_goster(net + kdv),
+                veri.get("irsaliyelenen_miktar") or 0,
+                veri.get("faturalanan_miktar") or 0,
+                miktar,
             ))
+        self._satir_sil_listesini_yenile()
         self._toplamlari_guncelle()
 
     def _toplamlari_guncelle(self, borc=None):
@@ -2145,6 +2628,10 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.musteri.set(f"{fatura.cari.cari_kodu} - {fatura.cari.unvan}")
         self._entry_yaz("siparis_tarihi", tarih_goster(fatura.fatura_tarihi))
         self._entry_yaz("termin_tarihi", tarih_goster(fatura.vade_tarihi))
+        self._entry_yaz(
+            "islem_saati",
+            saat_varsayilan(fatura.islem_saati or fatura.olusturma_tarihi.strftime("%H:%M")),
+        )
         self._entry_yaz("aciklama", fatura.aciklama or "")
         self.siparis_no.insert(0, fatura.siparis.siparis_no if fatura.siparis else "")
         self.irsaliye_no.insert(0, fatura.irsaliye.irsaliye_no if fatura.irsaliye else "")
@@ -2195,6 +2682,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 raise ValueError("Aktif bir müşteri seçin.")
             fatura_tarihi = datetime.strptime(self.girdiler["siparis_tarihi"].get(), "%d.%m.%Y").date()
             vade_tarihi = datetime.strptime(self.girdiler["termin_tarihi"].get(), "%d.%m.%Y").date()
+            islem_saati = saat_dogrula(self.girdiler["islem_saati"].get() if "islem_saati" in self.girdiler else "")
             satirlar = []
             for satir in self.satirlar:
                 veri = dict(satir)
@@ -2223,7 +2711,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     raise ValueError("İrsaliye numarası seçilen müşteriye ait değil.")
                 irsaliye_id = eslesen.id
             self.result = SatisFaturasiService.kaydet({
+                "fatura_no": self.fatura_no_alani.get().strip() if hasattr(self, "fatura_no_alani") else None,
                 "fatura_tarihi": fatura_tarihi,
+                "islem_saati": islem_saati,
                 "vade_tarihi": vade_tarihi,
                 "cari_id": musteri.id,
                 "siparis_id": siparis_id,
@@ -2426,12 +2916,20 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         if widget not in (self.satir_girdileri["urun_kodu"], self.satir_girdileri["urun_adi"]):
             return
         sorgu = widget.get().strip()
-        if len(sorgu) >= 3:
-            ProductSelectionDialog(self, sorgu, self.urun_secildi)
+        if len(sorgu) < 2:
+            return
+        if widget is self.satir_girdileri["urun_kodu"]:
+            ProductSelectionDialog(self, on_select=self.urun_secildi, kod=sorgu)
+        else:
+            ProductSelectionDialog(self, on_select=self.urun_secildi, ad=sorgu)
 
     def stok_listesi(self):
-        sorgu = self.satir_girdileri["urun_adi"].get().strip() or self.satir_girdileri["urun_kodu"].get().strip()
-        ProductSelectionDialog(self, sorgu, self.urun_secildi)
+        ProductSelectionDialog(
+            self,
+            on_select=self.urun_secildi,
+            kod=self.satir_girdileri["urun_kodu"].get().strip(),
+            ad=self.satir_girdileri["urun_adi"].get().strip(),
+        )
 
     def urun_secildi(self, degerler):
         for alan, deger in (("urun_kodu", degerler[0]), ("urun_adi", degerler[1]), ("birim", degerler[2] or "Adet"), ("birim_fiyat", degerler[4])):
@@ -2620,84 +3118,6 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         self.destroy()
 
 
-class StokKartiDialog(tk.Toplevel):
-    FIYAT_ADLARI = ("PERAKENDE", "NAKİT", "AÇIK HESAP", "KREDİ KARTI")
-
-    def __init__(self, parent, stok=None):
-        super().__init__(parent)
-        self.stok = stok
-        self.result = None
-        self.title("Stok Kartını Düzenle" if stok else "Yeni Stok Kartı")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.alanlar = {}
-        for satir, (etiket, alan) in enumerate((("Stok Kodu", "stok_kodu"), ("Stok Adı", "stok_adi"), ("Barkod", "barkod"))):
-            ttk.Label(self, text=etiket).grid(row=satir, column=0, padx=12, pady=6, sticky="w")
-            giris = ttk.Entry(self, width=38)
-            giris.grid(row=satir, column=1, padx=12, pady=6)
-            self.alanlar[alan] = giris
-        ttk.Button(self, text="EAN-13 Üret", command=self.ean13_uret).grid(
-            row=0, column=2, padx=(0, 12), pady=6, sticky="w"
-        )
-        ttk.Label(self, text="Birim").grid(row=3, column=0, padx=12, pady=6, sticky="w")
-        self.birim = ttk.Combobox(self, values=BIRIM_SECENEKLERI, state="readonly", width=35)
-        self.birim.grid(row=3, column=1, padx=12, pady=6)
-        self.birim.set("Adet")
-        fiyat_cercevesi = ttk.LabelFrame(self, text="Satış Fiyatları", padding=8)
-        fiyat_cercevesi.grid(row=4, column=0, columnspan=3, padx=12, pady=8, sticky="ew")
-        self.fiyat_alanlari = {}
-        for satir, fiyat_adi in enumerate(self.FIYAT_ADLARI):
-            ttk.Label(fiyat_cercevesi, text=fiyat_adi).grid(row=satir, column=0, padx=6, pady=4, sticky="w")
-            giris = ttk.Entry(fiyat_cercevesi, width=24)
-            giris.grid(row=satir, column=1, padx=6, pady=4)
-            self.fiyat_alanlari[fiyat_adi] = giris
-        if stok:
-            for alan in ("stok_kodu", "stok_adi", "barkod"):
-                self.alanlar[alan].insert(0, getattr(stok, alan) or "")
-            self.birim.set(stok.birim)
-            for fiyat in stok.fiyatlar:
-                if fiyat.fiyat_adi in self.fiyat_alanlari:
-                    self.fiyat_alanlari[fiyat.fiyat_adi].insert(0, str(fiyat.tutar))
-        butonlar = ttk.Frame(self)
-        butonlar.grid(row=5, column=0, columnspan=3, padx=12, pady=12, sticky="e")
-        ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
-        self.alanlar["stok_kodu"].focus_set()
-
-    def ean13_uret(self):
-        try:
-            kod = StokService.sonraki_ean13()
-        except ValueError as hata:
-            messagebox.showerror("EAN-13", str(hata), parent=self)
-            return
-        for alan in ("stok_kodu", "barkod"):
-            self.alanlar[alan].delete(0, "end")
-            self.alanlar[alan].insert(0, kod)
-
-    def kaydet(self):
-        veriler = {alan: giris.get().strip() for alan, giris in self.alanlar.items()}
-        if not veriler["stok_kodu"] or not veriler["stok_adi"]:
-            messagebox.showwarning("Eksik bilgi", "Stok kodu ve stok adı zorunludur.", parent=self)
-            return
-        veriler["birim"] = self.birim.get()
-        veriler["stok_id"] = self.stok.id if self.stok else None
-        fiyatlar = [(ad, giris.get().strip()) for ad, giris in self.fiyat_alanlari.items()]
-        try:
-            self.result = StokService.stok_kaydi(veriler, fiyatlar)
-        except ValueError as hata:
-            messagebox.showerror("Stok kaydedilemedi", str(hata), parent=self)
-            return
-        # İlk kayıttan sonra kartı açık tut — fiyat girip tekrar kaydet güvenli olsun
-        self.stok = self.result
-        self.title("Stok Kartını Düzenle")
-        messagebox.showinfo(
-            "Kaydedildi",
-            "Stok kartı kaydedildi. İsterseniz fiyatları girip tekrar Kaydet diyebilirsiniz.",
-            parent=self,
-        )
-
-
 class StokGirisiDialog(tk.Toplevel):
     def __init__(self, parent, stok=None):
         super().__init__(parent)
@@ -2773,6 +3193,19 @@ class MuhasebeApp(tk.Tk):
         self._stil_ayarla()
         self._arayuzu_olustur()
         self.ana_sayfa_goster()
+        self.after(500, self._pos_valor_kontrol)
+        self.after(60_000, self._pos_valor_dongu)
+
+    def _pos_valor_kontrol(self):
+        """Valör günü + 08:00 şartı dolmuş POS net bakiyelerini KMH'ye aktarır."""
+        try:
+            FinansService.pos_valor_vadesi_gelenleri_aktar()
+        except Exception:
+            pass
+
+    def _pos_valor_dongu(self):
+        self._pos_valor_kontrol()
+        self.after(60_000, self._pos_valor_dongu)
 
     def _stil_ayarla(self):
         stil = ttk.Style(self)
@@ -2851,13 +3284,49 @@ class MuhasebeApp(tk.Tk):
         elif anahtar == "satin_alma":
             self.satin_alma_menusu_goster()
         elif anahtar == "stoklar":
-            self.stoklar_goster()
+            self.stoklar_menusu_goster()
         elif anahtar == "finans":
             self.finans_goster()
         else:
             ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
 
-    def stoklar_goster(self):
+    def stoklar_menusu_goster(self):
+        alt_menu = ttk.Frame(self.icerik)
+        alt_menu.pack(fill="x", pady=(24, 0))
+        alt_menu.columnconfigure(0, weight=1)
+        alt_menu.columnconfigure(0, minsize=520)
+        alt_menu_ogeleri = (
+            ("STOK KARTLARI", self.stok_kartlari_goster),
+            ("DEPO TRANSFER FİŞİ", self.depo_transfer_fisi_goster),
+            ("STOK BİRLEŞTİR", self.stok_birlestir_goster),
+            ("STOK PAKET TANIMLAMA", self.stok_paket_tanimlama_goster),
+            ("TOPLU FİYAT DEĞİŞİKLİĞİ", self.toplu_fiyat_degisikligi_goster),
+            ("STOK BARKOD BASIMI", self.stok_barkod_basimi_goster),
+            ("RAPORLAR", self.stok_raporlari_goster),
+        )
+        for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
+            ttk.Button(
+                alt_menu,
+                text=baslik,
+                style="AltMenu.TButton",
+                command=komut,
+            ).grid(row=satir, column=0, sticky="ew", pady=4)
+
+    def stok_alt_sayfasi_goster(self, baslik, aciklama="Bu bölüm sonraki aşamada hazırlanacaktır."):
+        self._icerigi_temizle()
+        for dugme_anahtari, dugme in self.menu_dugmeleri.items():
+            dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == "stoklar" else "Menu.TButton")
+        ttk.Label(self.icerik, text=baslik, style="Baslik.TLabel").pack(anchor="w")
+        ttk.Label(self.icerik, text=aciklama).pack(anchor="w", pady=(18, 0))
+        ttk.Button(self.icerik, text="← Stoklar Menüsü", command=lambda: self.sayfa_goster("stoklar")).pack(
+            anchor="w", pady=(16, 0)
+        )
+
+    def stok_kartlari_goster(self):
+        self._icerigi_temizle()
+        for dugme_anahtari, dugme in self.menu_dugmeleri.items():
+            dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == "stoklar" else "Menu.TButton")
+        ttk.Label(self.icerik, text="STOK KARTLARI", style="Baslik.TLabel").pack(anchor="w")
         ust = ttk.Frame(self.icerik)
         ust.pack(fill="x", pady=14)
         ttk.Label(ust, text="Ara:").pack(side="left")
@@ -2865,16 +3334,17 @@ class MuhasebeApp(tk.Tk):
         self.stok_arama.pack(side="left", padx=8)
         self.stok_arama.bind("<Return>", lambda _e: self.stok_listesini_yenile())
         ttk.Button(ust, text="Ara", command=self.stok_listesini_yenile).pack(side="left")
+        ttk.Button(ust, text="← Stoklar Menüsü", command=lambda: self.sayfa_goster("stoklar")).pack(side="right")
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True)
-        kolonlar = ("kod", "ad", "barkod", "birim", "fiyatlar", "miktar")
-        basliklar = ("Stok Kodu", "Stok Adı", "Barkod", "Birim", "Tanımlı Fiyatlar", "Toplam Mevcut")
+        kolonlar = ("kod", "ad", "tur", "barkod", "birim", "fiyatlar", "miktar")
+        basliklar = ("Stok Kodu", "Stok Adı", "Kart Türü", "Barkod", "Birim", "Tanımlı Fiyatlar", "Toplam Mevcut")
         self.stok_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik in zip(kolonlar, basliklar):
             self.stok_tablosu.heading(kolon, text=baslik)
-            self.stok_tablosu.column(kolon, width=140, anchor="w")
-        self.stok_tablosu.column("ad", width=260)
-        self.stok_tablosu.column("fiyatlar", width=320)
+            self.stok_tablosu.column(kolon, width=120, anchor="w")
+        self.stok_tablosu.column("ad", width=240)
+        self.stok_tablosu.column("fiyatlar", width=280)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.stok_tablosu.yview)
         self.stok_tablosu.configure(yscrollcommand=kaydirma.set)
         self.stok_tablosu.pack(side="left", fill="both", expand=True)
@@ -2888,26 +3358,26 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(alt, text="Yeni Depo", command=self.yeni_depo).pack(side="left", padx=8)
         self.stok_listesini_yenile()
 
+    def depo_transfer_fisi_goster(self):
+        depo_transfer_listesini_goster(self)
+
+    def stok_birlestir_goster(self):
+        stok_birlestir_sayfasi_goster(self)
+
+    def stok_paket_tanimlama_goster(self):
+        stok_paket_sayfasi_goster(self)
+
+    def toplu_fiyat_degisikligi_goster(self):
+        toplu_fiyat_sayfasi_goster(self)
+
+    def stok_barkod_basimi_goster(self):
+        barkod_basim_sayfasini_ac(self)
+
+    def stok_raporlari_goster(self):
+        stok_raporlari_menusu_goster(self)
+
     def finans_goster(self):
-        ttk.Label(self.icerik, text="Fatura tahsilatları seçilen kasa/banka hesabına otomatik işlenir.").pack(anchor="w", pady=(14, 8))
-        cerceve = ttk.Frame(self.icerik)
-        cerceve.pack(fill="both", expand=True)
-        kolonlar = ("tarih", "hesap", "tur", "belge", "tutar", "aciklama")
-        basliklar = ("Tarih", "Hesap", "Hareket", "Belge No", "Tutar", "Açıklama")
-        tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings")
-        for kolon, baslik in zip(kolonlar, basliklar):
-            tablo.heading(kolon, text=baslik)
-            tablo.column(kolon, width=150, anchor="w")
-        tablo.column("aciklama", width=240)
-        kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview)
-        tablo.configure(yscrollcommand=kaydirma.set)
-        tablo.pack(side="left", fill="both", expand=True)
-        kaydirma.pack(side="right", fill="y")
-        for hareket in FinansService.hareketler():
-            tablo.insert("", "end", values=(
-                tarih_goster(hareket.tarih), hareket.hesap.hesap_adi, hareket.hareket_turu,
-                hareket.belge_no, para_goster(hareket.tutar), hareket.aciklama or "",
-            ))
+        finans_menusu_goster(self)
 
     def stok_listesini_yenile(self):
         if not hasattr(self, "stok_tablosu"):
@@ -2918,7 +3388,8 @@ class MuhasebeApp(tk.Tk):
             fiyatlar = " | ".join(f"{f.fiyat_adi}: {para_goster(f.tutar)}" for f in stok.fiyatlar)
             mevcut = sum((lot.kalan_miktar for lot in stok.lotlar), Decimal("0"))
             self.stok_tablosu.insert("", "end", iid=str(stok.id), values=(
-                stok.stok_kodu, stok.stok_adi, stok.barkod or "", stok.birim, fiyatlar, mevcut,
+                stok.stok_kodu, stok.stok_adi, getattr(stok, "kart_turu", "") or "",
+                stok.barkod or "", stok.birim, fiyatlar, mevcut,
             ))
 
     def _secili_stok(self):
@@ -3877,13 +4348,14 @@ class MuhasebeApp(tk.Tk):
         ttk.Label(self.icerik, text="SATIŞ FATURALARI", style="Baslik.TLabel").pack(anchor="w")
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(14, 0))
-        kolonlar = ("no", "tarih", "vade", "musteri", "siparis", "irsaliye", "depo", "toplam", "tahsilat", "kalan", "durum")
-        basliklar = ("Fatura No", "Fatura Tarihi", "Vade Tarihi", "Müşteri", "Sipariş No", "İrsaliye No", "Depo", "Genel Toplam", "Tahsilat", "Kalan", "Durum")
+        kolonlar = ("no", "tarih", "saat", "vade", "musteri", "siparis", "irsaliye", "depo", "toplam", "tahsilat", "kalan", "durum")
+        basliklar = ("Fatura No", "Fatura Tarihi", "Saat", "Vade Tarihi", "Müşteri", "Sipariş No", "İrsaliye No", "Depo", "Genel Toplam", "Tahsilat", "Kalan", "Durum")
         self.fatura_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik in zip(kolonlar, basliklar):
             self.fatura_tablosu.heading(kolon, text=baslik)
             self.fatura_tablosu.column(kolon, width=125)
         self.fatura_tablosu.column("musteri", width=220)
+        self.fatura_tablosu.column("saat", width=70)
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.fatura_tablosu.yview)
         yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=self.fatura_tablosu.xview)
         self.fatura_tablosu.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
@@ -3902,7 +4374,7 @@ class MuhasebeApp(tk.Tk):
         for kayit in SatisFaturasiService.listele():
             f = kayit["fatura"]; toplam = kayit["genel_toplam"]; tahsilat = f.tahsilat_tutari
             self.fatura_tablosu.insert("", "end", iid=str(f.id), values=(
-                f.fatura_no, tarih_goster(f.fatura_tarihi), tarih_goster(f.vade_tarihi), f.cari.unvan,
+                f.fatura_no, tarih_goster(f.fatura_tarihi), f.islem_saati or "", tarih_goster(f.vade_tarihi), f.cari.unvan,
                 f.siparis.siparis_no if f.siparis else "", f.irsaliye.irsaliye_no if f.irsaliye else "",
                 f.depo, para_goster(toplam), para_goster(tahsilat), para_goster(toplam - tahsilat), f.durum,
             ))
@@ -4743,10 +5215,10 @@ class MuhasebeApp(tk.Tk):
         ttk.Label(self.icerik, text="SATIN ALMA FATURALARI", style="Baslik.TLabel").pack(anchor="w")
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
-        kolonlar = ("no", "tarih", "vade", "tedarikci", "siparis", "irsaliye", "depo", "genel", "odeme", "kalan", "durum")
+        kolonlar = ("no", "tarih", "saat", "vade", "tedarikci", "siparis", "irsaliye", "depo", "genel", "odeme", "kalan", "durum")
         self.alis_fat_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik, w in (
-            ("no", "Fatura No", 130), ("tarih", "Tarih", 85), ("vade", "Vade", 85),
+            ("no", "Fatura No", 130), ("tarih", "Tarih", 85), ("saat", "Saat", 60), ("vade", "Vade", 85),
             ("tedarikci", "Tedarikçi", 170), ("siparis", "Sipariş", 110), ("irsaliye", "İrsaliye", 110),
             ("depo", "Depo", 90), ("genel", "Genel", 95), ("odeme", "Ödeme", 95),
             ("kalan", "Kalan", 95), ("durum", "Durum", 80),
@@ -4767,7 +5239,7 @@ class MuhasebeApp(tk.Tk):
                 toplam = kayit["genel_toplam"]
                 odeme = f.odeme_tutari or Decimal("0")
                 self.alis_fat_tablosu.insert("", "end", iid=str(f.id), values=(
-                    f.fatura_no, tarih_goster(f.fatura_tarihi), tarih_goster(f.vade_tarihi),
+                    f.fatura_no, tarih_goster(f.fatura_tarihi), f.islem_saati or "", tarih_goster(f.vade_tarihi),
                     f.cari.unvan if f.cari else "",
                     f.siparis.siparis_no if f.siparis else "",
                     f.irsaliye.irsaliye_no if f.irsaliye else "",

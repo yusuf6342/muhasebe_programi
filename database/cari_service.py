@@ -95,7 +95,7 @@ class CariService:
         for h in session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cari_id)):
             if h.belge_no.startswith(("ODM-", "VRM-", "KKC-", "THS-")):
                 continue
-            if h.belge_no.startswith("AFAT-"):
+            if h.belge_no.startswith(("AFAT-", "ARAY")):
                 tur = "Alış"
             elif h.belge_no.startswith(("AIAD-", "IAD-")):
                 tur = "Alış İadesi" if h.belge_no.startswith("AIAD-") else "Satış"

@@ -73,10 +73,13 @@ class SatisFaturasiService:
                 FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
                 fatura.satirlar.clear()
             else:
-                fatura = SatisFaturasi(fatura_no=SatisFaturasiService.fatura_no())
+                fatura = SatisFaturasi(
+                    fatura_no=(veriler.get("fatura_no") or "").strip() or SatisFaturasiService.fatura_no()
+                )
                 session.add(fatura)
             fatura.fatura_tarihi, fatura.vade_tarihi = tarih, vade
             fatura.vade_gunu = (vade - tarih).days
+            fatura.islem_saati = (veriler.get("islem_saati") or "").strip() or datetime.now().strftime("%H:%M")
             for alan in ("cari_id", "siparis_id", "irsaliye_id", "depo", "tahsilat_sekli", "tahsilat_hesabi", "aciklama", "dokuman_yolu"):
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
@@ -228,4 +231,15 @@ class SatisFaturasiService:
 
     @staticmethod
     def fatura_no():
-        return f"FAT-{datetime.now():%Y%m%d%H%M%S%f}"
+        """SRAY000001 formatında artan satış fatura numarası."""
+        onek = "SRAY"
+        with get_session() as session:
+            numaralar = session.scalars(
+                select(SatisFaturasi.fatura_no).where(SatisFaturasi.fatura_no.like(f"{onek}%"))
+            ).all()
+            max_sira = 0
+            for no in numaralar:
+                kuyruk = str(no)[len(onek):]
+                if kuyruk.isdigit():
+                    max_sira = max(max_sira, int(kuyruk))
+            return f"{onek}{max_sira + 1:06d}"

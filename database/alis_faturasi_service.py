@@ -103,10 +103,13 @@ class AlisFaturasiService:
                 FinansService.fatura_odemesini_geri_al(session, fatura.fatura_no)
                 fatura.satirlar.clear()
             else:
-                fatura = AlisFaturasi(fatura_no=AlisFaturasiService.fatura_no())
+                fatura = AlisFaturasi(
+                    fatura_no=(veriler.get("fatura_no") or "").strip() or AlisFaturasiService.fatura_no()
+                )
                 session.add(fatura)
             fatura.fatura_tarihi, fatura.vade_tarihi = tarih, vade
             fatura.vade_gunu = (vade - tarih).days
+            fatura.islem_saati = (veriler.get("islem_saati") or "").strip() or datetime.now().strftime("%H:%M")
             for alan in ("cari_id", "siparis_id", "irsaliye_id", "depo", "odeme_sekli", "odeme_hesabi", "aciklama", "dokuman_yolu"):
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
@@ -142,6 +145,8 @@ class AlisFaturasiService:
                     kaynak.fatura_belge_baglantisi = fatura.fatura_no
 
                 birim_maliyet = AlisFaturasiService._net_birim_maliyet(birim_fiyat, iskonto_orani)
+                # Stok kartı ALIŞ FİYATI: faturadaki net iskontolu fiyat (FIFO override'dan bağımsız)
+                net_alis_fiyati = birim_maliyet
                 if veri.get("fifo_birim_maliyeti") not in (None, "", 0, "0"):
                     birim_maliyet = decimal(veri["fifo_birim_maliyeti"], "FIFO maliyet", Decimal("0"))
 
@@ -155,6 +160,11 @@ class AlisFaturasiService:
                     birim_maliyet,
                     tedarikci=tedarikci_adi,
                     lot_no=veri.get("lot_no") or "",
+                )
+                StokService.alis_fiyatini_guncelle(
+                    session,
+                    veri["urun_kodu"].strip(),
+                    net_alis_fiyati,
                 )
                 fatura.satirlar.append(
                     AlisFaturasiSatiri(
@@ -302,7 +312,7 @@ class AlisFaturasiService:
             for h in hs:
                 if h.belge_no in fatura_nolari or h.belge_no == haric_fatura_no:
                     continue
-                if not str(h.belge_no).startswith("AFAT-"):
+                if not str(h.belge_no).startswith(("AFAT-", "ARAY")):
                     continue
                 bakiye += h.kalan_acik_tutar
                 agirlik += Decimal(h.satis_tarihi.toordinal()) * h.kalan_acik_tutar
@@ -318,4 +328,15 @@ class AlisFaturasiService:
 
     @staticmethod
     def fatura_no():
-        return f"AFAT-{datetime.now():%Y%m%d%H%M%S%f}"
+        """ARAY000001 formatında artan alış fatura numarası."""
+        onek = "ARAY"
+        with get_session() as session:
+            numaralar = session.scalars(
+                select(AlisFaturasi.fatura_no).where(AlisFaturasi.fatura_no.like(f"{onek}%"))
+            ).all()
+            max_sira = 0
+            for no in numaralar:
+                kuyruk = str(no)[len(onek):]
+                if kuyruk.isdigit():
+                    max_sira = max(max_sira, int(kuyruk))
+            return f"{onek}{max_sira + 1:06d}"

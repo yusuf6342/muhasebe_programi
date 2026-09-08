@@ -13,6 +13,7 @@ class AlisFaturasi(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     fatura_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     fatura_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    islem_saati: Mapped[str | None] = mapped_column(String(8), nullable=True)
     vade_gunu: Mapped[int] = mapped_column(nullable=False, default=0)
     vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
