@@ -20,6 +20,14 @@ POS_KART_TIPLERI = (
     ("BANKA_KARTI", "Banka Kartı"),
 )
 
+KK_CEKIM_TURLERI = (
+    ("TEK_CEKIM", "Tek Çekim"),
+    ("TAKSITLI", "Taksitli Çekim"),
+)
+
+KK_MAX_TAKSIT = 24
+POS_MAX_TAKSIT = 12
+
 
 class BankaKarti(Base):
     """Banka ana kartı — hesap no, IBAN, banka/şube; altında 5 finans hesabı."""
@@ -46,6 +54,28 @@ class BankaKarti(Base):
         back_populates="banka_karti",
         cascade="all, delete-orphan",
     )
+    kredi_kartlari: Mapped[list["KrediKartiTanimi"]] = relationship(
+        "KrediKartiTanimi",
+        back_populates="banka_karti",
+        cascade="all, delete-orphan",
+    )
+    pos_taksit_komisyonlari: Mapped[list["PosTaksitKomisyon"]] = relationship(
+        "PosTaksitKomisyon",
+        back_populates="banka_karti",
+        cascade="all, delete-orphan",
+        order_by="PosTaksitKomisyon.taksit_sayisi",
+    )
+
+
+class PosTaksitKomisyon(Base):
+    """POS kredi kartı tahsilatında taksit sayısına göre komisyon oranı (1-12)."""
+
+    __tablename__ = "pos_taksit_komisyonlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    banka_karti_id: Mapped[int] = mapped_column(ForeignKey("banka_kartlari.id"), nullable=False, index=True)
+    taksit_sayisi: Mapped[int] = mapped_column(Integer, nullable=False)  # 1..12
+    komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
+    banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="pos_taksit_komisyonlari")
 
 
 class FinansHesabi(Base):
@@ -94,6 +124,7 @@ class PosValorKaydi(Base):
     valor_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     valor_saati: Mapped[str] = mapped_column(String(8), nullable=False, default="08:00")
     kart_tipi: Mapped[str] = mapped_column(String(20), nullable=False)  # KREDI_KARTI | BANKA_KARTI
+    taksit_sayisi: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     brut_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     komisyon_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
@@ -103,3 +134,68 @@ class PosValorKaydi(Base):
     aktarim_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="pos_valor_kayitlari")
+
+
+class KrediKartiTanimi(Base):
+    """Firmanın ödeme aracı olan fiziksel/sanal kredi kartı tanımı (banka ana kartına bağlı)."""
+
+    __tablename__ = "kredi_karti_tanimlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    banka_karti_id: Mapped[int] = mapped_column(ForeignKey("banka_kartlari.id"), nullable=False, index=True)
+    kart_bankasi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    kart_adi: Mapped[str] = mapped_column(String(100), nullable=False)
+    kart_sahibi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    kart_markasi: Mapped[str | None] = mapped_column(String(30), nullable=True)  # Visa|Mastercard|Troy|Amex
+    kart_numarasi: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    son_dort_hane: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    son_kullanim: Mapped[str | None] = mapped_column(String(7), nullable=True)  # AA/YY
+    guvenlik_kodu: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    kart_limiti: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    hesap_kesim_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ayın 1-28
+    son_odeme_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ayın 1-28
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="kredi_kartlari")
+    odemeler: Mapped[list["KrediKartiOdeme"]] = relationship(
+        "KrediKartiOdeme",
+        back_populates="kredi_karti",
+    )
+
+
+class KrediKartiOdeme(Base):
+    """Kredi kartı ile yapılan cari ödeme evrakı (tek çekim veya taksitli)."""
+
+    __tablename__ = "kredi_karti_odemeleri"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    tarih: Mapped[date] = mapped_column(Date, nullable=False)
+    vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False)  # tek çekim = tarih; taksit = 1. taksit
+    banka_karti_id: Mapped[int] = mapped_column(ForeignKey("banka_kartlari.id"), nullable=False, index=True)
+    kredi_karti_id: Mapped[int] = mapped_column(ForeignKey("kredi_karti_tanimlari.id"), nullable=False, index=True)
+    cari_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    cekim_turu: Mapped[str] = mapped_column(String(20), nullable=False)  # TEK_CEKIM | TAKSITLI
+    taksit_sayisi: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    referans_no: Mapped[str | None] = mapped_column(String(50), nullable=True)  # POS/onay no
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|İPTAL
+    kredi_karti: Mapped["KrediKartiTanimi"] = relationship("KrediKartiTanimi", back_populates="odemeler")
+    taksitler: Mapped[list["KrediKartiOdemeTaksit"]] = relationship(
+        "KrediKartiOdemeTaksit",
+        back_populates="odeme",
+        cascade="all, delete-orphan",
+        order_by="KrediKartiOdemeTaksit.taksit_no",
+    )
+
+
+class KrediKartiOdemeTaksit(Base):
+    """KK ödeme taksit satırı — vade = çekim günü + (n-1) ay (aynı gün)."""
+
+    __tablename__ = "kredi_karti_odeme_taksitleri"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    odeme_id: Mapped[int] = mapped_column(ForeignKey("kredi_karti_odemeleri.id"), nullable=False, index=True)
+    taksit_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")  # BEKLIYOR|ODENDI
+    odeme: Mapped["KrediKartiOdeme"] = relationship("KrediKartiOdeme", back_populates="taksitler")

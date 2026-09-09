@@ -1,4 +1,10 @@
-from database.database import Base, cari_kart_schemasini_guncelle, engine, musteri_gruplarini_hazirla
+from database.database import (
+    Base,
+    cari_kart_schemasini_guncelle,
+    engine,
+    musteri_gruplarini_hazirla,
+    tedarikci_odeme_polarity_duzelt,
+)
 
 # Modelleri sisteme tanıtıyoruz
 from database.models.firma import Firma
@@ -28,7 +34,16 @@ from database.models.stok import (
     StokResmi,
     StokSecenek,
 )
-from database.models.finans import FinansHareketi, FinansHesabi, BankaKarti, PosValorKaydi
+from database.models.finans import (
+    FinansHareketi,
+    FinansHesabi,
+    BankaKarti,
+    PosValorKaydi,
+    PosTaksitKomisyon,
+    KrediKartiTanimi,
+    KrediKartiOdeme,
+    KrediKartiOdemeTaksit,
+)
 from database.models.kk_cekimi import KkCekimi
 from database.stok_service import StokService
 from database.finans_service import FinansService
@@ -41,6 +56,7 @@ def main():
     Base.metadata.create_all(engine)
     cari_kart_schemasini_guncelle()
     musteri_gruplarini_hazirla()
+    tedarikci_odeme_polarity_duzelt()
     StokService.varsayilanlari_hazirla()
     FinansService.varsayilanlari_hazirla()
 

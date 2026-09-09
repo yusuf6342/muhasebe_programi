@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -15,10 +15,37 @@ class Cari(Base):
     cari_turu: Mapped[str] = mapped_column(String(20), nullable=False)
     vergi_dairesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vergi_numarasi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tc_kimlik: Mapped[str | None] = mapped_column(String(11), nullable=True)
     telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    telefon2: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    telefon3: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email: Mapped[str | None] = mapped_column(String(150), nullable=True)
     musteri_grubu: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    satis_fiyat_listesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    alis_fiyat_listesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    acik_hesap_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    cek_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    senet_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    satis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    muhasebe_borclu_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    muhasebe_alacakli_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    muhasebe_satis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    muhasebe_alis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    muhasebe_kdv_satis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    muhasebe_kdv_alis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     adres: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    il: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ilce: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    adres_tipi: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    adres2: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    il2: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ilce2: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    adres_tipi2: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    adres3: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    il3: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ilce3: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    adres_tipi3: Mapped[str | None] = mapped_column(String(40), nullable=True)
     ozel_notlar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
