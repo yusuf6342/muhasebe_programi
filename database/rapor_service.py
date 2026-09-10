@@ -936,3 +936,449 @@ class RaporService:
                     "tutar": (h.miktar or 0) * (h.birim_maliyet or 0),
                 })
             return {"satirlar": satirlar}
+
+    @staticmethod
+    def bilanco_ozeti(maliyet_yontemi: str = "FIFO") -> dict[str, Any]:
+        """
+        Bilanço benzeri özet tablo verisi (canlı bakiyeler).
+
+        Aktif: kasa, mevduat, POS, pozitif KMH, cari alacaklar, stok.
+        Pasif: negatif KMH (kullanım), krediler, kredi kartı, tedarikçi/müşteri borçları.
+        Özkaynak (hesaplanan) = Toplam Aktif − Toplam Borçlar (iki taraf dengelenir).
+        """
+        from database.finans_service import FinansService
+
+        yontem = maliyet_yontemi if maliyet_yontemi in _MALIYET_ANAHTAR else "FIFO"
+        sifir = Decimal("0")
+
+        def _satir(etiket: str, tutar, *, seviye: str = "kalem", kaynak: str = "") -> dict[str, Any]:
+            return {
+                "etiket": etiket,
+                "tutar": Decimal(str(tutar or 0)),
+                "seviye": seviye,  # baslik | kalem | ara_toplam | toplam
+                "kaynak": kaynak,
+            }
+
+        # --- Kasa ---
+        kasa_kalemleri = []
+        kasa_toplam = sifir
+        for hesap in FinansService.kasa_hesaplari(aktif_only=True):
+            bak = FinansService.bakiye(hesap)
+            kasa_kalemleri.append(_satir(hesap.hesap_adi, bak, kaynak="kasa"))
+            kasa_toplam += bak
+
+        # --- Banka alt hesapları ---
+        mevduat_kalemleri = []
+        pos_kalemleri = []
+        kmh_varlik = []
+        kmh_borc = []
+        kredi_kalemleri = []
+        kk_kalemleri = []
+        mevduat_toplam = sifir
+        pos_toplam = sifir
+        kmh_varlik_toplam = sifir
+        kmh_borc_toplam = sifir
+        kredi_toplam = sifir
+        kk_toplam = sifir
+
+        for kart in FinansService.banka_kartlari(aktif_only=True):
+            banka = (kart.banka_adi or "Banka").strip()
+            bak = FinansService.banka_bakiyeler(kart)
+
+            mev = bak.get("MEVDUAT") or sifir
+            if mev != 0:
+                mevduat_kalemleri.append(_satir(f"{banka} — Mevduat", mev, kaynak="mevduat"))
+                mevduat_toplam += mev
+
+            pos = bak.get("POS") or sifir
+            if pos != 0:
+                pos_kalemleri.append(_satir(f"{banka} — POS", pos, kaynak="pos"))
+                pos_toplam += pos
+
+            kmh = bak.get("KMH") or sifir
+            if kmh > 0:
+                kmh_varlik.append(_satir(f"{banka} — KMH", kmh, kaynak="kmh"))
+                kmh_varlik_toplam += kmh
+            elif kmh < 0:
+                # Kullanılan KMH → pasif (pozitif borç tutarı)
+                tutar = abs(kmh)
+                kmh_borc.append(_satir(f"{banka} — KMH kullanımı", tutar, kaynak="kmh"))
+                kmh_borc_toplam += tutar
+
+            kred = bak.get("KREDILER") or sifir
+            if kred != 0:
+                tutar = abs(kred)
+                kredi_kalemleri.append(_satir(f"{banka} — Kredi", tutar, kaynak="kredi"))
+                kredi_toplam += tutar
+
+            kk = bak.get("KREDI_KARTI") or sifir
+            if kk != 0:
+                tutar = abs(kk)
+                kk_kalemleri.append(_satir(f"{banka} — Kredi kartı", tutar, kaynak="kk"))
+                kk_toplam += tutar
+
+        # --- Cari ---
+        cari_alacak_kalemleri = []
+        cari_borc_kalemleri = []
+        cari_alacak_toplam = sifir
+        cari_borc_toplam = sifir
+        for ozet in CariService.listele():
+            cari = ozet["cari"]
+            if not getattr(cari, "aktif", True):
+                continue
+            bak = Decimal(str(ozet.get("bakiye") or 0))
+            if bak == 0:
+                continue
+            etiket = f"{cari.cari_kodu} — {cari.unvan}"
+            # bakiye > 0 → Borçlu (bize borçlu) = alacak / varlık
+            # bakiye < 0 → Alacaklı (biz borçluyuz) = borç / pasif
+            if bak > 0:
+                cari_alacak_kalemleri.append(_satir(etiket, bak, kaynak="cari_alacak"))
+                cari_alacak_toplam += bak
+            else:
+                cari_borc_kalemleri.append(_satir(etiket, abs(bak), kaynak="cari_borc"))
+                cari_borc_toplam += abs(bak)
+
+        cari_alacak_kalemleri.sort(key=lambda s: s["tutar"], reverse=True)
+        cari_borc_kalemleri.sort(key=lambda s: s["tutar"], reverse=True)
+
+        # --- Stok ---
+        envanter = RaporService.stok_envanter(maliyet_yontemi=yontem, sadece_pozitif=True)
+        stok_toplam = Decimal(str(envanter.get("toplam_tutar") or 0))
+        stok_kalemleri = [
+            _satir(f"Stoklar ({yontem})", stok_toplam, kaynak="stok"),
+        ]
+
+        # --- Aktif ağacı ---
+        aktif: list[dict[str, Any]] = []
+        aktif.append(_satir("DÖNEN VARLIKLAR", sifir, seviye="baslik"))
+
+        def _bolum(hedef, baslik, toplam, kalemler, kaynak):
+            if toplam == 0 and not kalemler:
+                return
+            hedef.append(_satir(baslik, toplam, seviye="ara_toplam", kaynak=kaynak))
+            hedef.extend(kalemler)
+
+        _bolum(aktif, "Kasa yekünü", kasa_toplam, kasa_kalemleri, "kasa")
+        _bolum(aktif, "Banka mevduat yekünü", mevduat_toplam, mevduat_kalemleri, "mevduat")
+        _bolum(aktif, "POS bakiyeleri", pos_toplam, pos_kalemleri, "pos")
+        _bolum(aktif, "KMH (pozitif bakiye)", kmh_varlik_toplam, kmh_varlik, "kmh")
+
+        _bolum(aktif, "Cari alacaklar toplamı", cari_alacak_toplam, [], "cari_alacak")
+        for s in cari_alacak_kalemleri[:15]:
+            aktif.append(s)
+        if len(cari_alacak_kalemleri) > 15:
+            kalan = sum((s["tutar"] for s in cari_alacak_kalemleri[15:]), sifir)
+            aktif.append(
+                _satir(f"… ve {len(cari_alacak_kalemleri) - 15} cari daha", kalan, kaynak="cari_alacak")
+            )
+
+        _bolum(aktif, "Stoklar toplamı", stok_toplam, stok_kalemleri, "stok")
+
+        toplam_aktif = (
+            kasa_toplam
+            + mevduat_toplam
+            + pos_toplam
+            + kmh_varlik_toplam
+            + cari_alacak_toplam
+            + stok_toplam
+        )
+        aktif.append(_satir("TOPLAM VARLIKLAR (AKTİF)", toplam_aktif, seviye="toplam"))
+
+        # --- Pasif ağacı ---
+        pasif: list[dict[str, Any]] = []
+        pasif.append(_satir("KISA / UZUN VADELİ BORÇLAR", sifir, seviye="baslik"))
+
+        _bolum(pasif, "Toplam KMH kullanımı", kmh_borc_toplam, kmh_borc, "kmh")
+        _bolum(pasif, "Toplam kredi borcu", kredi_toplam, kredi_kalemleri, "kredi")
+        _bolum(pasif, "Toplam kredi kartı borcu", kk_toplam, kk_kalemleri, "kk")
+
+        _bolum(pasif, "Cari borçlar toplamı", cari_borc_toplam, [], "cari_borc")
+        for s in cari_borc_kalemleri[:15]:
+            pasif.append(s)
+        if len(cari_borc_kalemleri) > 15:
+            kalan = sum((s["tutar"] for s in cari_borc_kalemleri[15:]), sifir)
+            pasif.append(
+                _satir(f"… ve {len(cari_borc_kalemleri) - 15} cari daha", kalan, kaynak="cari_borc")
+            )
+
+        toplam_borclar = kmh_borc_toplam + kredi_toplam + kk_toplam + cari_borc_toplam
+        ozkaynak = toplam_aktif - toplam_borclar
+
+        pasif.append(_satir("TOPLAM BORÇLAR", toplam_borclar, seviye="ara_toplam"))
+        pasif.append(
+            _satir(
+                "Özkaynak / net varlık (hesaplanan)",
+                ozkaynak,
+                seviye="ara_toplam",
+                kaynak="ozkaynak",
+            )
+        )
+        toplam_pasif = toplam_borclar + ozkaynak  # = toplam_aktif
+        pasif.append(_satir("TOPLAM KAYNAKLAR (PASİF)", toplam_pasif, seviye="toplam"))
+
+        return {
+            "tarih": date.today(),
+            "maliyet_yontemi": yontem,
+            "aktif": aktif,
+            "pasif": pasif,
+            "ozet": {
+                "kasa": kasa_toplam,
+                "mevduat": mevduat_toplam,
+                "pos": pos_toplam,
+                "kmh_varlik": kmh_varlik_toplam,
+                "cari_alacak": cari_alacak_toplam,
+                "stok": stok_toplam,
+                "toplam_aktif": toplam_aktif,
+                "kmh_borc": kmh_borc_toplam,
+                "kredi": kredi_toplam,
+                "kk": kk_toplam,
+                "cari_borc": cari_borc_toplam,
+                "toplam_borclar": toplam_borclar,
+                "ozkaynak": ozkaynak,
+                "toplam_pasif": toplam_pasif,
+                "denge": toplam_aktif - toplam_pasif,
+            },
+        }
+
+    @staticmethod
+    def gelir_tablosu(
+        baslangic: date,
+        bitis: date,
+        maliyet_yontemi: str = "FIFO",
+    ) -> dict[str, Any]:
+        """
+        Klasik gelir tablosu (P&L) — tarih aralığı.
+
+        Net satış = brüt satışlar − satış iskontoları − satıştan iadeler (KDV hariç).
+        SMM = dönem başı emtia + net alışlar − dönem sonu emtia
+          net alışlar = dönem içi alışlar − alış iskontoları − satınalma iadeleri (KDV hariç).
+        Dönem başı emtia: stok_envanter(başlangıç − 1 gün); dönem sonu: bitiş günü.
+        Stok miktarı hareket bakiyesine göredir; birim maliyet seçilen yöntemin *güncel*
+        kart/lot maliyetidir (tarihsel maliyet katmanı yok).
+        """
+        from database.models.finans import GiderFisi
+        from database.models.hizmet_faturasi import HizmetFaturasi
+        from database.hizmet_faturasi_service import HizmetFaturasiService
+
+        if bitis < baslangic:
+            raise ValueError("Bitiş, başlangıçtan önce olamaz.")
+
+        yontem = maliyet_yontemi if maliyet_yontemi in _MALIYET_ANAHTAR else "FIFO"
+        sifir = Decimal("0")
+
+        def _satir(etiket: str, tutar, *, seviye: str = "kalem", kaynak: str = "") -> dict[str, Any]:
+            return {
+                "etiket": etiket,
+                "tutar": Decimal(str(tutar or 0)),
+                "seviye": seviye,
+                "kaynak": kaynak,
+            }
+
+        def _net_kdvsiz(toplam: dict) -> Decimal:
+            return Decimal(str(toplam.get("ara_toplam") or 0)) - Decimal(str(toplam.get("iskonto") or 0))
+
+        onceki_gun = date.fromordinal(baslangic.toordinal() - 1)
+        bas_env = RaporService.stok_envanter(
+            tarih=onceki_gun, maliyet_yontemi=yontem, sadece_pozitif=True
+        )
+        son_env = RaporService.stok_envanter(
+            tarih=bitis, maliyet_yontemi=yontem, sadece_pozitif=True
+        )
+        donem_basi_emtia = Decimal(str(bas_env.get("toplam_tutar") or 0))
+        donem_sonu_emtia = Decimal(str(son_env.get("toplam_tutar") or 0))
+
+        brut_satis = satis_iskonto = sifir
+        satis_iade_brut = satis_iade_iskonto = sifir
+        alis_brut = alis_iskonto = sifir
+        alis_iade_brut = alis_iade_iskonto = sifir
+        hizmet_gider = hizmet_gelir = sifir
+        gider_fis_hizmet = gider_fis_faiz = gider_fis_masraf = gider_fis_diger = sifir
+
+        with get_session() as session:
+            for fatura in session.scalars(
+                select(SatisFaturasi)
+                .where(SatisFaturasi.durum != "İPTAL")
+                .options(selectinload(SatisFaturasi.satirlar))
+            ).all():
+                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
+                    continue
+                t = SatisFaturasiService.toplam(fatura.satirlar)
+                brut_satis += Decimal(str(t["ara_toplam"]))
+                satis_iskonto += Decimal(str(t["iskonto"]))
+
+            for iade in session.scalars(
+                select(SatisIadeFaturasi)
+                .where(SatisIadeFaturasi.durum != "İPTAL")
+                .options(selectinload(SatisIadeFaturasi.satirlar))
+            ).all():
+                if iade.iade_tarihi < baslangic or iade.iade_tarihi > bitis:
+                    continue
+                t = SatisIadeFaturasiService.toplam(iade.satirlar)
+                satis_iade_brut += Decimal(str(t["ara_toplam"]))
+                satis_iade_iskonto += Decimal(str(t["iskonto"]))
+
+            for fatura in session.scalars(
+                select(AlisFaturasi)
+                .where(AlisFaturasi.durum != "İPTAL")
+                .options(selectinload(AlisFaturasi.satirlar))
+            ).all():
+                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
+                    continue
+                t = AlisFaturasiService.toplam(fatura.satirlar)
+                alis_brut += Decimal(str(t["ara_toplam"]))
+                alis_iskonto += Decimal(str(t["iskonto"]))
+
+            for iade in session.scalars(
+                select(AlisIadeFaturasi)
+                .where(AlisIadeFaturasi.durum != "İPTAL")
+                .options(selectinload(AlisIadeFaturasi.satirlar))
+            ).all():
+                if iade.iade_tarihi < baslangic or iade.iade_tarihi > bitis:
+                    continue
+                t = AlisIadeFaturasiService.toplam(iade.satirlar)
+                alis_iade_brut += Decimal(str(t["ara_toplam"]))
+                alis_iade_iskonto += Decimal(str(t["iskonto"]))
+
+            for fatura in session.scalars(
+                select(HizmetFaturasi)
+                .where(HizmetFaturasi.durum != "İPTAL")
+                .options(selectinload(HizmetFaturasi.satirlar))
+            ).all():
+                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
+                    continue
+                net = _net_kdvsiz(HizmetFaturasiService.toplam(fatura.satirlar))
+                tur = (fatura.fatura_turu or "").upper()
+                if tur == "GIDER":
+                    hizmet_gider += net
+                elif tur == "GELIR":
+                    hizmet_gelir += net
+
+            for fis in session.scalars(
+                select(GiderFisi).where(GiderFisi.durum != "IPTAL")
+            ).all():
+                if fis.tarih < baslangic or fis.tarih > bitis:
+                    continue
+                tutar = Decimal(str(fis.tutar or 0))
+                tur = (fis.gider_turu or "").upper()
+                if tur == "HIZMET":
+                    gider_fis_hizmet += tutar
+                elif tur == "KREDI_FAIZ":
+                    gider_fis_faiz += tutar
+                elif tur == "KREDI_MASRAF":
+                    gider_fis_masraf += tutar
+                else:
+                    gider_fis_diger += tutar
+
+        satis_iade_net = satis_iade_brut - satis_iade_iskonto
+        net_satislar = brut_satis - satis_iskonto - satis_iade_net
+
+        alis_iade_net = alis_iade_brut - alis_iade_iskonto
+        net_alislar = alis_brut - alis_iskonto - alis_iade_net
+
+        smm = donem_basi_emtia + net_alislar - donem_sonu_emtia
+        brut_kar = net_satislar - smm
+
+        toplam_gider_fis = (
+            gider_fis_hizmet + gider_fis_faiz + gider_fis_masraf + gider_fis_diger
+        )
+        toplam_giderler = toplam_gider_fis + hizmet_gider
+        net_kar = brut_kar + hizmet_gelir - toplam_giderler
+
+        satirlar: list[dict[str, Any]] = []
+        satirlar.append(_satir("SATIŞLAR", sifir, seviye="baslik"))
+        satirlar.append(_satir("Brüt satışlar", brut_satis, kaynak="brut_satis"))
+        if satis_iskonto:
+            satirlar.append(_satir("Satış iskontoları (−)", -satis_iskonto, kaynak="satis_iskonto"))
+        satirlar.append(
+            _satir("Satıştan iadeler (−)", -satis_iade_net, kaynak="satis_iade")
+        )
+        satirlar.append(
+            _satir("Net satışlar", net_satislar, seviye="ara_toplam", kaynak="net_satis")
+        )
+
+        satirlar.append(_satir("SATILAN MALIN MALİYETİ (SMM)", sifir, seviye="baslik"))
+        satirlar.append(
+            _satir("Dönem başı emtia", donem_basi_emtia, kaynak="donem_basi")
+        )
+        satirlar.append(_satir("Dönem içi alışlar", alis_brut - alis_iskonto, kaynak="alis"))
+        if alis_iade_net:
+            satirlar.append(
+                _satir("Satınalma iadeleri (−)", -alis_iade_net, kaynak="alis_iade")
+            )
+        satirlar.append(
+            _satir("Net alışlar", net_alislar, seviye="ara_toplam", kaynak="net_alis")
+        )
+        satirlar.append(
+            _satir("Dönem sonu emtia (−)", -donem_sonu_emtia, kaynak="donem_sonu")
+        )
+        satirlar.append(_satir("Satılan malın maliyeti", smm, seviye="ara_toplam", kaynak="smm"))
+
+        satirlar.append(_satir("Brüt kâr", brut_kar, seviye="toplam", kaynak="brut_kar"))
+
+        if hizmet_gelir:
+            satirlar.append(_satir("DİĞER GELİRLER", sifir, seviye="baslik"))
+            satirlar.append(
+                _satir("Hizmet satış gelirleri", hizmet_gelir, kaynak="hizmet_gelir")
+            )
+
+        satirlar.append(_satir("GİDERLER", sifir, seviye="baslik"))
+        if hizmet_gider:
+            satirlar.append(
+                _satir("Hizmet alış (gider) faturaları", hizmet_gider, kaynak="hizmet_gider")
+            )
+        if gider_fis_hizmet:
+            satirlar.append(
+                _satir("Gider fişleri (hizmet)", gider_fis_hizmet, kaynak="gider_fis")
+            )
+        if gider_fis_faiz:
+            satirlar.append(
+                _satir("Kredi / KMH faiz giderleri", gider_fis_faiz, kaynak="faiz")
+            )
+        if gider_fis_masraf:
+            satirlar.append(
+                _satir("Kredi masraf giderleri", gider_fis_masraf, kaynak="masraf")
+            )
+        if gider_fis_diger:
+            satirlar.append(
+                _satir("Diğer gider fişleri", gider_fis_diger, kaynak="gider_diger")
+            )
+        if toplam_giderler == 0:
+            satirlar.append(_satir("Dönem gideri (kayıt yok)", sifir, kaynak="gider"))
+        satirlar.append(
+            _satir("Toplam giderler", toplam_giderler, seviye="ara_toplam", kaynak="toplam_gider")
+        )
+
+        net_etiket = "Net kâr" if net_kar >= 0 else "Net zarar"
+        satirlar.append(_satir(net_etiket, net_kar, seviye="toplam", kaynak="net_kar"))
+
+        return {
+            "baslangic": baslangic,
+            "bitis": bitis,
+            "maliyet_yontemi": yontem,
+            "donem_basi_tarih": onceki_gun,
+            "donem_sonu_tarih": bitis,
+            "satirlar": satirlar,
+            "ozet": {
+                "brut_satislar": brut_satis,
+                "satis_iskonto": satis_iskonto,
+                "satis_iadeleri": satis_iade_net,
+                "net_satislar": net_satislar,
+                "donem_basi_emtia": donem_basi_emtia,
+                "donem_ici_alislar": alis_brut - alis_iskonto,
+                "alis_iadeleri": alis_iade_net,
+                "net_alislar": net_alislar,
+                "donem_sonu_emtia": donem_sonu_emtia,
+                "smm": smm,
+                "brut_kar": brut_kar,
+                "hizmet_gelir": hizmet_gelir,
+                "toplam_giderler": toplam_giderler,
+                "net_kar": net_kar,
+            },
+            "notlar": (
+                "Tutarlar KDV hariçtir. Dönem başı emtia = başlangıç gününden bir gün önceki "
+                f"envanter ({onceki_gun.strftime('%d.%m.%Y')}); dönem sonu = bitiş günü. "
+                "Stok miktarı hareket bakiyesine göredir; birim maliyet seçilen yöntemin güncel "
+                "değeridir. Alışlar alış faturalarından (irsaliye henüz faturalanmamışsa SMM sapabilir)."
+            ),
+        }

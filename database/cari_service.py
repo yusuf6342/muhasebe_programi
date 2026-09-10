@@ -5,10 +5,14 @@ from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from database.database import get_session
 from database.finans_service import FinansService
 from database.models.cari import Cari, CariIslem, SatisHareketi
+# SatisFaturasi ilişkileri — önce hedef sınıflar kayda alınmalı
+from database.models.satis_siparisi import SatisSiparisi  # noqa: F401
+from database.models.satis_irsaliyesi import SatisIrsaliyesi  # noqa: F401
 from database.models.satis_faturasi import SatisFaturasi
 
 
@@ -98,6 +102,14 @@ class CariService:
     def getir(cari_id: int) -> Cari | None:
         with get_session() as session:
             return session.get(Cari, cari_id)
+
+    @staticmethod
+    def kod_ile_getir(cari_kodu: str) -> Cari | None:
+        kod = (cari_kodu or "").strip()
+        if not kod:
+            return None
+        with get_session() as session:
+            return session.scalar(select(Cari).where(Cari.cari_kodu == kod))
 
     @staticmethod
     def detay(cari_id: int) -> dict[str, Any] | None:
@@ -292,6 +304,80 @@ class CariService:
             return islem
 
     @staticmethod
+    def acilis_fisi_ekle(
+        cari_id: int,
+        tarih: date,
+        *,
+        borc=0,
+        alacak=0,
+        belge_no: str,
+        aciklama: str | None = None,
+    ) -> CariIslem:
+        """Cari açılış / devir fişi (borç veya alacak; ikisi birden olmaz).
+
+        Borç satırında SatisHareketi de yazılır ki FIFO açık borç kuyruğuna girsin.
+        """
+        borc_t = borc if isinstance(borc, Decimal) else CariService._tutar(borc)
+        alacak_t = alacak if isinstance(alacak, Decimal) else CariService._tutar(alacak)
+        if not isinstance(borc_t, Decimal):
+            borc_t = Decimal(str(borc_t))
+        if not isinstance(alacak_t, Decimal):
+            alacak_t = Decimal(str(alacak_t))
+        borc_t = borc_t.quantize(Decimal("0.01"))
+        alacak_t = alacak_t.quantize(Decimal("0.01"))
+        if borc_t < 0 or alacak_t < 0:
+            raise ValueError("Açılış tutarları negatif olamaz.")
+        if (borc_t > 0) == (alacak_t > 0):
+            raise ValueError("Açılış fişinde yalnızca borç veya yalnızca alacak olmalıdır.")
+        belge = (belge_no or "").strip()
+        if not belge:
+            raise ValueError("Belge numarası zorunludur.")
+        if len(belge) > 50:
+            raise ValueError("Belge numarası 50 karakteri aşamaz.")
+        if tarih > date.today():
+            raise ValueError("Açılış tarihi gelecek bir tarih olamaz.")
+        with get_session() as session:
+            cari = session.get(Cari, cari_id)
+            if cari is None:
+                raise ValueError("Cari bulunamadı.")
+            mevcut = session.scalar(select(CariIslem).where(CariIslem.belge_no == belge))
+            if mevcut is not None:
+                raise ValueError(f"Belge no zaten var: {belge}")
+            if borc_t > 0:
+                session.add(
+                    SatisHareketi(
+                        cari_id=cari_id,
+                        satis_tarihi=tarih,
+                        belge_no=belge,
+                        satis_tutari=borc_t,
+                        kalan_acik_tutar=borc_t,
+                    )
+                )
+            islem = CariIslem(
+                cari_id=cari_id,
+                tarih=tarih,
+                islem_turu="Açılış",
+                belge_no=belge,
+                aciklama=aciklama or "Açılış / dönem devir",
+                borc=borc_t,
+                alacak=alacak_t,
+            )
+            session.add(islem)
+            session.flush()
+            return islem
+
+    @staticmethod
+    def islem_belge_var_mi(belge_no: str) -> bool:
+        belge = (belge_no or "").strip()
+        if not belge:
+            return False
+        with get_session() as session:
+            return (
+                session.scalar(select(CariIslem.id).where(CariIslem.belge_no == belge))
+                is not None
+            )
+
+    @staticmethod
     def virman_yap(kaynak_id: int, hedef_id: int, tarih: date, tutar, aciklama: str | None = None) -> tuple[CariIslem, CariIslem]:
         tutar = CariService._tutar(tutar)
         if tutar <= 0:
@@ -412,6 +498,23 @@ class CariService:
                 satis_tutari=kalan,
                 kalan_acik_tutar=kalan,
             ))
+
+    @staticmethod
+    def islemler_belge_no_ile(belge_no: str) -> list:
+        """Belge numarasına bağlı cari işlem(ler); cari ilişkisi yüklü."""
+        belge_no = (belge_no or "").strip()
+        if not belge_no:
+            return []
+        with get_session() as session:
+            islemler = list(
+                session.scalars(
+                    select(CariIslem)
+                    .options(selectinload(CariIslem.cari))
+                    .where(CariIslem.belge_no == belge_no)
+                    .order_by(CariIslem.id)
+                ).all()
+            )
+            return islemler
 
     @staticmethod
     def virman_iptal(belge_no: str) -> None:

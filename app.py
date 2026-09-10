@@ -30,6 +30,8 @@ from stok_barkod_ui import stok_barkod_basimi_goster as barkod_basim_sayfasini_a
 from stok_rapor_ui import stok_raporlari_menusu_goster
 from stok_toplu_fiyat_ui import toplu_fiyat_sayfasi_goster
 from finans_ui import finans_menusu_goster
+from gelir_gider_ui import gelir_gider_menusu_goster
+from ozet_tablolar_ui import ozet_tablolar_menusu_goster
 from ui_takvim import saat_dogrula, saat_varsayilan, takvim_butonu
 from urun_sec_ui import UrunSecDialog
 
@@ -1047,143 +1049,9 @@ class CariDialog(tk.Toplevel):
 
     def _hareket_belgeyi_ac(self, tur: str, belge_no: str) -> bool:
         """Belge türü / no ile ilgili diyaloğu açar. True = işlendi (açıldı veya bilinçli mesaj)."""
-        from database.database import get_session
-        from sqlalchemy import select
+        from belge_onizleme_ui import hareket_belgeyi_ac
 
-        def _id_bul(model, alan_adi, deger):
-            with get_session() as session:
-                kayit = session.scalar(select(model).where(getattr(model, alan_adi) == deger))
-                return kayit.id if kayit else None
-
-        # --- Prefiks ile finans / cari fişleri ---
-        if belge_no.startswith("KKC-") or tur == "KK Çekimi":
-            dialog = KkCekimiDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("AHV-"):
-            from finans_ui import HavaleFisDialog
-            dialog = HavaleFisDialog(self, tur="ahv", belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("GHV-"):
-            from finans_ui import HavaleFisDialog
-            dialog = HavaleFisDialog(self, tur="ghv", belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("POS-"):
-            from finans_ui import BankaIslemPosTahsilatDialog
-            dialog = BankaIslemPosTahsilatDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("KKO-"):
-            from finans_ui import BankaIslemKkOdemeDialog
-            dialog = BankaIslemKkOdemeDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("KBY-"):
-            from finans_ui import KasadanBankayaYatirDialog
-            dialog = KasadanBankayaYatirDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("BNC-"):
-            from finans_ui import BankadanCekilenDialog
-            dialog = BankadanCekilenDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("BVR-"):
-            from finans_ui import BankalarArasiVirmanDialog
-            dialog = BankalarArasiVirmanDialog(self, belge_no=belge_no)
-            if dialog.winfo_exists():
-                self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith(("THS-", "ODM-", "VRM-")) or tur in ("Tahsilat", "Ödeme", "Cari Virman"):
-            messagebox.showinfo(
-                "Belge",
-                f"{belge_no} ({tur}) için düzenleme formu henüz yok.\n"
-                "Kayıt cari hareketlerde görünür; fiş kartı açılmaz.",
-                parent=self,
-            )
-            return True
-
-        # --- Satış / alış iade ---
-        if belge_no.startswith("IAD-") or tur == "Satış İadesi":
-            from database.models.satis_iade_faturasi import SatisIadeFaturasi
-            iade_id = _id_bul(SatisIadeFaturasi, "iade_no", belge_no)
-            if not iade_id:
-                return False
-            iade = SatisIadeFaturasiService.getir(iade_id)
-            if not iade:
-                raise ValueError("Satış iade faturası bulunamadı.")
-            dialog = SatisIadeFaturasiDialog(self, iade=iade)
-            self.wait_window(dialog)
-            return True
-
-        if belge_no.startswith("AIAD-") or tur == "Alış İadesi":
-            from alis_ui import AlisIadeFaturasiDialog
-            from database.alis_iade_faturasi_service import AlisIadeFaturasiService
-            from database.models.alis_iade_faturasi import AlisIadeFaturasi
-            iade_id = _id_bul(AlisIadeFaturasi, "iade_no", belge_no)
-            if not iade_id:
-                return False
-            iade = AlisIadeFaturasiService.getir(iade_id)
-            if not iade:
-                raise ValueError("Alış iade faturası bulunamadı.")
-            dialog = AlisIadeFaturasiDialog(self, iade=iade)
-            self.wait_window(dialog)
-            return True
-
-        # --- Alış faturası ---
-        if tur == "Alış" or belge_no.startswith(("AFAT-", "ARAY")):
-            from alis_ui import AlisFaturasiDialog
-            from database.alis_faturasi_service import AlisFaturasiService
-            from database.models.alis_faturasi import AlisFaturasi
-            fatura_id = _id_bul(AlisFaturasi, "fatura_no", belge_no)
-            if not fatura_id:
-                return False
-            fatura = AlisFaturasiService.getir(fatura_id)
-            if not fatura:
-                raise ValueError("Alış faturası bulunamadı.")
-            dialog = AlisFaturasiDialog(
-                self,
-                fatura=fatura,
-                cari_ac=lambda c: CariDialog(self, c, cari_turu="Tedarikçi"),
-            )
-            self.wait_window(dialog)
-            return True
-
-        # --- Satış faturası ---
-        if tur == "Satış" or belge_no.startswith("SRAY"):
-            from database.models.satis_faturasi import SatisFaturasi
-            fatura_id = _id_bul(SatisFaturasi, "fatura_no", belge_no)
-            if not fatura_id:
-                return False
-            fatura = SatisFaturasiService.getir(fatura_id)
-            if not fatura:
-                raise ValueError("Satış faturası bulunamadı.")
-            dialog = SatisFaturasiDialog(
-                self,
-                fatura=fatura,
-                cari_ac=lambda cari: CariDialog(self, cari),
-            )
-            self.wait_window(dialog)
-            return True
-
-        return False
+        return hareket_belgeyi_ac(self, tur, belge_no)
 
     def yenile(self):
         if not self.cari:
@@ -4225,6 +4093,10 @@ class MuhasebeApp(tk.Tk):
             self.stoklar_menusu_goster()
         elif anahtar == "finans":
             self.finans_goster()
+        elif anahtar == "gelir_gider":
+            gelir_gider_menusu_goster(self)
+        elif anahtar == "ozet_tablolar":
+            ozet_tablolar_menusu_goster(self)
         else:
             ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
 
@@ -4273,6 +4145,7 @@ class MuhasebeApp(tk.Tk):
         self.stok_arama.bind("<Return>", lambda _e: self.stok_listesini_yenile())
         ttk.Button(ust, text="Ara", command=self.stok_listesini_yenile).pack(side="left")
         ttk.Button(ust, text="← Stoklar Menüsü", command=lambda: self.sayfa_goster("stoklar")).pack(side="right")
+        ttk.Button(ust, text="EvoBulut’tan Aktar", command=self.evobulut_stok_aktar).pack(side="right", padx=(0, 8))
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True)
         kolonlar = ("kod", "ad", "tur", "barkod", "birim", "fiyatlar", "miktar")
@@ -4339,6 +4212,14 @@ class MuhasebeApp(tk.Tk):
 
     def yeni_stok(self):
         dialog = StokKartiDialog(self)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.stok_listesini_yenile()
+
+    def evobulut_stok_aktar(self):
+        from evobulut_stok_ui import EvobulutStokAktarDialog
+
+        dialog = EvobulutStokAktarDialog(self)
         self.wait_window(dialog)
         if dialog.result:
             self.stok_listesini_yenile()
@@ -5678,6 +5559,7 @@ class MuhasebeApp(tk.Tk):
         self.cari_arama.pack(side="left", padx=8)
         self.cari_arama.bind("<Return>", lambda _event: self.cari_listesini_yenile())
         ttk.Button(ust, text="Ara", command=self.cari_listesini_yenile).pack(side="left")
+        ttk.Button(ust, text="EvoBulut’tan Aktar", command=self.evobulut_cari_aktar).pack(side="right", padx=(0, 8))
         ttk.Button(ust, text=f"Yeni {etiket}", command=self.yeni_cari).pack(side="right")
 
         cerceve = ttk.Frame(self.icerik)
@@ -5731,6 +5613,15 @@ class MuhasebeApp(tk.Tk):
     def yeni_cari(self):
         tur = getattr(self, "_cari_liste_turu", "Müşteri")
         dialog = CariDialog(self, cari_turu=tur)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.cari_listesini_yenile()
+
+    def evobulut_cari_aktar(self):
+        from evobulut_cari_ui import EvobulutCariAktarDialog
+
+        tur = getattr(self, "_cari_liste_turu", "Müşteri")
+        dialog = EvobulutCariAktarDialog(self, varsayilan_tur=tur)
         self.wait_window(dialog)
         if dialog.result:
             self.cari_listesini_yenile()
@@ -6252,6 +6143,18 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(alt, text="Aç / Düzenle", command=ac).pack(side="left", padx=8)
         ttk.Button(alt, text="İade Faturası", command=iade).pack(side="left")
         ttk.Button(alt, text="İptal Et", command=iptal).pack(side="left", padx=8)
+
+        def evobulut_aktar():
+            from evobulut_alis_fatura_ui import EvobulutAlisFaturaAktarDialog
+
+            dialog = EvobulutAlisFaturaAktarDialog(self)
+            self.wait_window(dialog)
+            if dialog.result:
+                yenile()
+
+        ttk.Button(alt, text="EvoBulut’tan Aktar", command=evobulut_aktar).pack(
+            side="left", padx=8
+        )
         yenile()
 
     def alis_iade_faturalari_goster(self):

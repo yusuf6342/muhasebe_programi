@@ -182,6 +182,7 @@ def cari_kart_schemasini_guncelle() -> None:
             "kk_komisyon_orani": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "banka_karti_komisyon_orani": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "pos_valor_gun": "INTEGER DEFAULT 1 NOT NULL",
+            "kmh_limiti": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
         }
         with engine.begin() as connection:
             for alan, tip in banka_eklenecekler.items():
@@ -216,6 +217,24 @@ def cari_kart_schemasini_guncelle() -> None:
                 if alan not in kk_sutunlar:
                     connection.execute(text(f'ALTER TABLE "{kk_tablo}" ADD COLUMN "{alan}" {tip}'))
 
+    hizmet_tablo = "hizmet_kartlari"
+    if inspect(engine).has_table(hizmet_tablo):
+        hizmet_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(hizmet_tablo)}
+        if "gider_sinifi" not in hizmet_sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'ALTER TABLE "{hizmet_tablo}" ADD COLUMN "gider_sinifi" VARCHAR(20)')
+                )
+
+    gider_fisi_tablo = "gider_fisleri"
+    if inspect(engine).has_table(gider_fisi_tablo):
+        gider_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(gider_fisi_tablo)}
+        if "hizmet_id" not in gider_sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'ALTER TABLE "{gider_fisi_tablo}" ADD COLUMN "hizmet_id" INTEGER')
+                )
+
 
 def musteri_gruplarini_hazirla() -> None:
     from database.models.cari import MusteriGrubu
@@ -246,7 +265,8 @@ def tedarikci_odeme_polarity_duzelt() -> None:
     from decimal import Decimal
 
     prefix_skip = (
-        "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-", "IPT-", "FZO-"
+        "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-",
+        "IPT-", "FZO-", "TMK-", "OMK-", "GDF-",
     )
 
     def _d(x) -> Decimal:

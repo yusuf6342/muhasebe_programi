@@ -43,7 +43,13 @@ from database.models.finans import (
     KrediKartiTanimi,
     KrediKartiOdeme,
     KrediKartiOdemeTaksit,
+    BankaKredisi,
+    BankaKrediTaksit,
+    GiderFisi,
+    KasaMakbuzu,
 )
+from database.models.hizmet import HizmetKarti, HizmetHareketi
+from database.models.hizmet_faturasi import HizmetFaturasi, HizmetFaturasiSatiri
 from database.models.kk_cekimi import KkCekimi
 from database.stok_service import StokService
 from database.finans_service import FinansService

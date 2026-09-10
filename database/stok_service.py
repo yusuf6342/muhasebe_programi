@@ -315,6 +315,32 @@ class StokService:
             return depo
 
     @staticmethod
+    def _secenek_ekle(session, tur: str, ad: str) -> None:
+        """StokSecenek ekler; Türkçe İ / unique çakışmalarında sessizce geçilir."""
+        deger = (ad or "").strip()
+        if not deger:
+            return
+        mevcut = session.scalar(
+            select(StokSecenek).where(StokSecenek.tur == tur, StokSecenek.ad == deger)
+        )
+        if mevcut:
+            return
+        mevcut = session.scalar(
+            select(StokSecenek).where(
+                StokSecenek.tur == tur,
+                func.lower(StokSecenek.ad) == deger.lower(),
+            )
+        )
+        if mevcut:
+            return
+        try:
+            with session.begin_nested():
+                session.add(StokSecenek(tur=tur, ad=deger))
+                session.flush()
+        except IntegrityError:
+            pass
+
+    @staticmethod
     def _stok_yukle(session, stok_id=None, stok_kodu=None):
         q = select(StokKarti).options(
             selectinload(StokKarti.fiyatlar),
@@ -594,26 +620,12 @@ class StokService:
             for tur in STOK_SECENEK_TURLERI:
                 deger = (veriler.get(tur) or "").strip()
                 if deger:
-                    mevcut = session.scalar(
-                        select(StokSecenek).where(
-                            StokSecenek.tur == tur,
-                            func.lower(StokSecenek.ad) == deger.lower(),
-                        )
-                    )
-                    if not mevcut:
-                        session.add(StokSecenek(tur=tur, ad=deger))
+                    StokService._secenek_ekle(session, tur, deger)
             for birim_alan in ("birim1", "birim2", "birim3"):
                 deger = (veriler.get(birim_alan) or "").strip()
                 if not deger:
                     continue
-                mevcut = session.scalar(
-                    select(StokSecenek).where(
-                        StokSecenek.tur == "birim",
-                        func.lower(StokSecenek.ad) == deger.lower(),
-                    )
-                )
-                if not mevcut:
-                    session.add(StokSecenek(tur="birim", ad=deger))
+                StokService._secenek_ekle(session, "birim", deger)
 
             # Eski fiyat adlarını yeni isimlere taşı
             normal_fiyatlar = []
