@@ -70,19 +70,28 @@ def belge_no_icin(
     kod_onek: str = "",
 ) -> str:
     seri = _temiz(ana.get("a_sbelge_seri_no") or liste_satir.get("G.a_sbelge_seri_no"))
-    if seri:
-        return seri[:50]
     kod = _temiz(ana.get("a_kod") or liste_satir.get("G.a_kod"))
+    aid = _temiz(ana.get("a_id") or liste_satir.get("G.a_id") or liste_satir.get("a_id"))
+    if seri:
+        if kod and kod not in {"0", ""}:
+            birlesik = seri if kod in seri else f"{seri}-{kod}"
+            return birlesik[:50]
+        # Kısa/ortak seri (ör. "YÇ") tek başına çakışır → id ekle
+        if aid:
+            return f"{seri}-{aid}"[:50]
+        return seri[:50]
     if kod and kod not in {"0", ""} and kod_onek:
         return f"{kod_onek}{kod}"[:50]
-    aid = _temiz(ana.get("a_id") or liste_satir.get("G.a_id") or liste_satir.get("a_id"))
     return f"{onek}{aid}"[:50]
 
 
 def _cari_kodu(liste_satir: dict, ana: dict) -> str:
     return _temiz(
         ana.get("a_mkod")
+        or ana.get("cari_kodu")
         or liste_satir.get("TBL_REHBER.a_kod")
+        or liste_satir.get("CARI.a_kod")
+        or liste_satir.get("MKB_KOD")
         or liste_satir.get("a_mkod")
         or ana.get("a_cari_kod")
     )
@@ -96,7 +105,10 @@ def cari_bul_veya_hata(liste_satir: dict, ana: dict) -> Cari:
             return cari
     unvan = _temiz(
         ana.get("CARI_ADI")
+        or ana.get("cari_adi")
+        or ana.get("a_ref_ad")
         or liste_satir.get("CARI_ADI")
+        or liste_satir.get("MKB")
         or ana.get("a_fcari")
         or ana.get("a_cari_adi")
     )
@@ -123,13 +135,13 @@ def _stok_var_mi(kod: str) -> bool:
 
 
 def stok_garanti(line: dict[str, Any], sonuc: ImportSonuc) -> str:
-    kod = _temiz(line.get("a_kod") or line.get("a_kod1"))
+    kod = _temiz(line.get("a_kod") or line.get("a_kod1") or line.get("stok_kodu"))
     if not kod:
         raise ValueError("Satırda stok kodu yok")
     if _stok_var_mi(kod):
         return kod
-    ad = _temiz(line.get("a_stok_adi")) or kod
-    birim = _temiz(line.get("a_brm_adi")) or "Adet"
+    ad = _temiz(line.get("a_stok_adi") or line.get("stok_adi")) or kod
+    birim = _temiz(line.get("a_brm_adi") or line.get("brm_adi")) or "Adet"
     fiyat = _decimal(line.get("a_brm_fiy"), Decimal("0")) or Decimal("0")
     veriler = {
         "stok_kodu": kod[:50],
@@ -176,8 +188,8 @@ def satir_verisi_fatura(line: dict[str, Any], sonuc: ImportSonuc) -> dict[str, A
         birim_fiyat = Decimal("0")
 
     kdv = _decimal(line.get("a_kdv"), Decimal("20")) or Decimal("20")
-    birim = _temiz(line.get("a_brm_adi")) or "Adet"
-    ad = _temiz(line.get("a_stok_adi")) or kod
+    birim = _temiz(line.get("a_brm_adi") or line.get("brm_adi")) or "Adet"
+    ad = _temiz(line.get("a_stok_adi") or line.get("stok_adi")) or kod
 
     return {
         "urun_kodu": kod,

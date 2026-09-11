@@ -28,6 +28,14 @@ from database.database import get_session
 from database.finans_service import FinansService
 from database.models.finans import FinansHareketi, KasaMakbuzu
 
+# SQLAlchemy relationship resolve (alis/satis yanları)
+from database.models.alis_siparisi import AlisSiparisi  # noqa: F401
+from database.models.alis_irsaliyesi import AlisIrsaliyesi  # noqa: F401
+from database.models.alis_faturasi import AlisFaturasi  # noqa: F401
+from database.models.satis_siparisi import SatisSiparisi  # noqa: F401
+from database.models.satis_irsaliyesi import SatisIrsaliyesi  # noqa: F401
+from database.models.satis_faturasi import SatisFaturasi  # noqa: F401
+
 from entegrasyon.evb_import_common import (
     DETAY_BEKLE_SN,
     ImportSonuc,
@@ -116,8 +124,46 @@ def _cari_bul_esnek(liste_satir: dict, ana: dict):
         return None
 
 
+def _tutar_yon_finans(ana: dict, liste: dict) -> tuple[Decimal, bool]:
+    """(tutar, tahsilat_mi) — a_giren/a_cikan öncelikli."""
+    giren = _decimal(
+        ana.get("a_giren") or liste.get("G.a_giren") or liste.get("a_giren"),
+        Decimal("0"),
+    ) or Decimal("0")
+    cikan = _decimal(
+        ana.get("a_cikan") or liste.get("G.a_cikan") or liste.get("a_cikan"),
+        Decimal("0"),
+    ) or Decimal("0")
+    if giren > 0 and cikan <= 0:
+        return giren, True
+    if cikan > 0 and giren <= 0:
+        return cikan, False
+    tutar = _decimal(ana.get("a_tutar") or liste.get("a_tutar") or liste.get("G.a_tutar"), Decimal("0")) or Decimal("0")
+    if tutar != 0:
+        yon = _yon_tahsilat_mi(ana, liste, tutar)
+        return abs(tutar), True if yon is None else yon
+    raise ValueError("tarih/tutar eksik")
+
+
+def _finans_cari_satir(liste_satir: dict, ana: dict) -> tuple[dict, dict]:
+    """Liste/detaydan cari eşleme için sentetik ana/liste."""
+    ana2 = dict(ana or {})
+    liste2 = dict(liste_satir or {})
+    if not ana2.get("a_mkod"):
+        ana2["a_mkod"] = liste2.get("MKB_KOD") or ana2.get("a_mkod")
+    if not ana2.get("CARI_ADI"):
+        ana2["CARI_ADI"] = (
+            ana2.get("a_ref_ad")
+            or liste2.get("MKB")
+            or liste2.get("CARI_ADI")
+        )
+    if not liste2.get("MKB_KOD") and ana2.get("a_mkod"):
+        liste2["MKB_KOD"] = ana2["a_mkod"]
+    return liste2, ana2
+
+
 def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
-    aid = _temiz(liste_satir.get("a_id") or liste_satir.get("G.a_id"))
+    aid = _temiz(liste_satir.get("G.a_id") or liste_satir.get("a_id"))
     if not aid:
         raise ValueError("Kasa a_id yok")
     belge = f"EVB-KS-{aid}"[:50]
@@ -125,22 +171,35 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
         sonuc.atlanan += 1
         return False
 
-    detay = client.kasa_islem_detay(aid)
-    ana = detay.get("Ana") or {}
-    if not ana:
-        ana = liste_satir
+    tarih = _tarih(liste_satir.get("G.a_tarih") or liste_satir.get("a_tarih"))
+    ana: dict[str, Any] = {}
+    api_cagrildi = False
+    try:
+        tutar, yon = _tutar_yon_finans(ana, liste_satir)
+    except ValueError:
+        detay = client.kasa_islem_detay(aid)
+        ana = detay.get("Ana") or {}
+        api_cagrildi = True
+        tarih = tarih or _tarih(ana.get("a_tarih"))
+        tutar, yon = _tutar_yon_finans(ana, liste_satir)
 
-    tarih = _tarih(ana.get("a_tarih") or liste_satir.get("a_tarih") or liste_satir.get("G.a_tarih"))
-    tutar = _decimal(ana.get("a_tutar") or liste_satir.get("a_tutar"), Decimal("0")) or Decimal("0")
-    if not tarih or tutar == 0:
+    if not tarih:
         raise ValueError(f"Kasa {aid}: tarih/tutar eksik")
-    tutar_abs = abs(tutar)
-    yon = _yon_tahsilat_mi(ana, liste_satir, tutar)
-    if yon is None:
-        yon = True
 
-    cari = _cari_bul_esnek(liste_satir, ana)
-    aciklama = _temiz(ana.get("a_ack") or liste_satir.get("a_ack"))[:500] or f"EVB kasa {aid}"
+    # tur adı ile yön netleştir
+    tur_adi = _temiz(
+        ana.get("a_tur_ad") or liste_satir.get("FIN_TUR.a_adi") or ana.get("a_tur_id")
+        or liste_satir.get("G.a_tur_id")
+    )
+    if tur_adi:
+        yon2 = _yon_tahsilat_mi({"a_tur_ad": tur_adi}, liste_satir, tutar if yon else -tutar)
+        if yon2 is not None:
+            yon = yon2
+
+    liste2, ana2 = _finans_cari_satir(liste_satir, ana)
+    cari = _cari_bul_esnek(liste2, ana2)
+    aciklama = _temiz(ana.get("a_ack") or liste_satir.get("G.a_ack") or liste_satir.get("a_ack"))
+    aciklama = (aciklama or f"EVB kasa {aid} {tur_adi}")[:500]
     kasa_id = _varsayilan_kasa_id()
 
     if cari is not None:
@@ -148,7 +207,7 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
             FinansService.kasa_tahsilat_makbuzu_kaydet(
                 {
                     "tarih": tarih,
-                    "tutar": tutar_abs,
+                    "tutar": tutar,
                     "finans_hesap_id": kasa_id,
                     "cari_id": cari.id,
                     "makbuz_no": belge,
@@ -159,7 +218,7 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
             FinansService.kasa_odeme_makbuzu_kaydet(
                 {
                     "tarih": tarih,
-                    "tutar": tutar_abs,
+                    "tutar": tutar,
                     "finans_hesap_id": kasa_id,
                     "cari_id": cari.id,
                     "makbuz_no": belge,
@@ -167,7 +226,6 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                 }
             )
     else:
-        # Cari yok: düz kasa hareketi
         with get_session() as session:
             from database.models.finans import FinansHareketi as FH
 
@@ -177,16 +235,16 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                     tarih=tarih,
                     hareket_turu="TAHSİLAT MAKBUZU" if yon else "ÖDEME MAKBUZU",
                     belge_no=belge,
-                    tutar=tutar_abs,
+                    tutar=tutar,
                     aciklama=aciklama,
                 )
             )
     sonuc.olusturulan += 1
-    return True
+    return api_cagrildi
 
 
 def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
-    aid = _temiz(liste_satir.get("a_id") or liste_satir.get("G.a_id"))
+    aid = _temiz(liste_satir.get("G.a_id") or liste_satir.get("a_id"))
     if not aid:
         raise ValueError("Banka a_id yok")
     belge = f"EVB-BN-{aid}"[:50]
@@ -194,37 +252,47 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
         sonuc.atlanan += 1
         return False
 
-    detay = client.banka_islem_detay(aid)
-    ana = detay.get("Ana") or {}
-    if not ana:
-        ana = liste_satir
+    tarih = _tarih(liste_satir.get("G.a_tarih") or liste_satir.get("a_tarih"))
+    ana: dict[str, Any] = {}
+    api_cagrildi = False
+    try:
+        tutar, yon = _tutar_yon_finans(ana, liste_satir)
+    except ValueError:
+        detay = client.banka_islem_detay(aid)
+        ana = detay.get("Ana") or {}
+        api_cagrildi = True
+        tarih = tarih or _tarih(ana.get("a_tarih"))
+        tutar, yon = _tutar_yon_finans(ana, liste_satir)
 
-    tarih = _tarih(ana.get("a_tarih") or liste_satir.get("a_tarih") or liste_satir.get("G.a_tarih"))
-    tutar = _decimal(ana.get("a_tutar") or liste_satir.get("a_tutar"), Decimal("0")) or Decimal("0")
-    if not tarih or tutar == 0:
+    if not tarih:
         raise ValueError(f"Banka {aid}: tarih/tutar eksik")
-    tutar_abs = abs(tutar)
-    yon = _yon_tahsilat_mi(ana, liste_satir, tutar)
-    if yon is None:
-        yon = True
 
-    cari = _cari_bul_esnek(liste_satir, ana)
-    aciklama = _temiz(ana.get("a_ack") or liste_satir.get("a_ack"))[:500] or f"EVB banka {aid}"
+    tur_adi = _temiz(
+        ana.get("a_tur_ad") or liste_satir.get("FIN_TUR.a_adi") or ana.get("a_tur_id")
+        or liste_satir.get("G.a_tur_id")
+    )
+    if tur_adi:
+        yon2 = _yon_tahsilat_mi({"a_tur_ad": tur_adi}, liste_satir, tutar if yon else -tutar)
+        if yon2 is not None:
+            yon = yon2
+
+    liste2, ana2 = _finans_cari_satir(liste_satir, ana)
+    cari = _cari_bul_esnek(liste2, ana2)
+    aciklama = _temiz(ana.get("a_ack") or liste_satir.get("G.a_ack") or liste_satir.get("a_ack"))
+    aciklama = (aciklama or f"EVB banka {aid} {tur_adi}")[:500]
     hesap_id = _varsayilan_banka_hesap_id()
     hesap = FinansService.hesap_getir(hesap_id)
     hesap_adi = hesap.hesap_adi if hesap else "BANKA HESABI"
 
-    # Banka finans hareketi (idempotent EVB-BN-*)
     FinansService.banka_manuel_hareket(
         hesap_id,
         tarih,
-        tutar_abs,
+        tutar,
         "giris" if yon else "cikis",
         aciklama=aciklama,
         belge_no=belge,
     )
 
-    # Cari eşleşirse yalnızca CariIslem (+ açık bakiye); finans zaten yazıldı
     if cari is not None:
         cari_belge = f"EVB-BNC-{aid}"[:50]
         if not CariService.islem_belge_var_mi(cari_belge):
@@ -235,7 +303,7 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                 if cari_db is None:
                     raise ValueError("Cari bulunamadı")
                 if yon:
-                    CariService._aciklara_uygula(session, cari_db.id, tutar_abs)
+                    CariService._aciklara_uygula(session, cari_db.id, tutar)
                     session.add(
                         CariIslem(
                             cari_id=cari_db.id,
@@ -244,13 +312,13 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                             belge_no=cari_belge,
                             aciklama=aciklama,
                             borc=Decimal("0"),
-                            alacak=tutar_abs,
+                            alacak=tutar,
                             hesap_adi=hesap_adi,
                         )
                     )
                 else:
                     if (cari_db.cari_turu or "") == "Tedarikçi":
-                        kalan = CariService._aciklara_uygula(session, cari_db.id, tutar_abs)
+                        kalan = CariService._aciklara_uygula(session, cari_db.id, tutar)
                         if kalan > 0:
                             session.add(
                                 SatisHareketi(
@@ -269,7 +337,7 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                                 belge_no=cari_belge,
                                 aciklama=aciklama,
                                 borc=Decimal("0"),
-                                alacak=tutar_abs,
+                                alacak=tutar,
                                 hesap_adi=hesap_adi,
                             )
                         )
@@ -279,8 +347,8 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                                 cari_id=cari_db.id,
                                 satis_tarihi=tarih,
                                 belge_no=cari_belge,
-                                satis_tutari=tutar_abs,
-                                kalan_acik_tutar=tutar_abs,
+                                satis_tutari=tutar,
+                                kalan_acik_tutar=tutar,
                             )
                         )
                         session.add(
@@ -290,14 +358,14 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                                 islem_turu="Ödeme",
                                 belge_no=cari_belge,
                                 aciklama=aciklama,
-                                borc=tutar_abs,
+                                borc=tutar,
                                 alacak=Decimal("0"),
                                 hesap_adi=hesap_adi,
                             )
                         )
 
     sonuc.olusturulan += 1
-    return True
+    return api_cagrildi
 
 
 def aktar_kasa_api_den(

@@ -25,6 +25,8 @@ from database.satis_faturasi_service import SatisFaturasiService
 from database.satis_iade_faturasi_service import SatisIadeFaturasiService
 from database.stok_service import StokService
 
+from database.models.alis_siparisi import AlisSiparisi  # noqa: F401
+from database.models.alis_irsaliyesi import AlisIrsaliyesi  # noqa: F401
 from database.models.satis_siparisi import SatisSiparisi  # noqa: F401
 from database.models.satis_irsaliyesi import SatisIrsaliyesi  # noqa: F401
 
