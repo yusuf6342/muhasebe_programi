@@ -5,3 +5,8 @@ __pycache__/
 *.pyd
 data/*.db
 entegrasyon/evobulut.env
+entegrasyon/_full_import*.txt
+entegrasyon/_full_import.pid
+entegrasyon/_probe_*.py
+_fatura_sql_sample.json
+_recovered_from_transcript/

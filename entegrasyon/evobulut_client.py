@@ -281,6 +281,7 @@ class EvobulutClient:
         tarih_bas: str = "",
         tarih_son: str = "",
         max_sayfa: int = 2000,
+        progress=None,
     ) -> list[dict]:
         """Fatura listesi (tur parametreli), sayfa başına ~30."""
         if not self.uid:
@@ -301,6 +302,9 @@ class EvobulutClient:
             if not satirlar:
                 break
             tum.extend(satirlar)
+            if progress and (sayfa % 10 == 0 or (toplam and len(tum) >= toplam)):
+                hedef = toplam if toplam else "?"
+                progress(f"  liste sayfa {sayfa} — {len(tum)}/{hedef}")
             if toplam is not None and toplam > 0 and len(tum) >= toplam:
                 break
             if len(satirlar) < 30:

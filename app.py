@@ -4001,6 +4001,7 @@ class MuhasebeApp(tk.Tk):
         self.ana_sayfa_goster()
         self.after(500, self._pos_valor_kontrol)
         self.after(60_000, self._pos_valor_dongu)
+        self.after(800, self._aktarim_durum_guncelle)
 
     def _pos_valor_kontrol(self):
         """Valör günü + 08:00 şartı dolmuş POS net bakiyelerini KMH'ye aktarır."""
@@ -4028,7 +4029,26 @@ class MuhasebeApp(tk.Tk):
         )
 
     def _arayuzu_olustur(self):
-        self.menu = ttk.Frame(self, padding=(12, 18))
+        # Alt durum çubuğu (EvoBulut aktarım göstergesi)
+        self.durum_cubugu = ttk.Frame(self, padding=(10, 6))
+        self.durum_cubugu.pack(side="bottom", fill="x")
+        self._aktarim_yanip_soner = False
+        self.aktarim_gosterge = tk.Canvas(
+            self.durum_cubugu, width=16, height=16, highlightthickness=0, bg=self.cget("bg")
+        )
+        self.aktarim_gosterge.pack(side="left", padx=(2, 8))
+        self._aktarim_nokta = self.aktarim_gosterge.create_oval(2, 2, 14, 14, fill="#9aa0a6", outline="")
+        self.aktarim_durum_label = ttk.Label(
+            self.durum_cubugu,
+            text="EvoBulut aktarımı yok",
+            font=("Segoe UI", 9),
+        )
+        self.aktarim_durum_label.pack(side="left", fill="x", expand=True)
+
+        govde = ttk.Frame(self)
+        govde.pack(side="top", fill="both", expand=True)
+
+        self.menu = ttk.Frame(govde, padding=(12, 18))
         self.menu.pack(side="left", fill="y")
         ttk.Label(self.menu, text="MUHASEBE", font=("Segoe UI", 14, "bold")).pack(pady=(4, 22))
 
@@ -4052,8 +4072,30 @@ class MuhasebeApp(tk.Tk):
             dugme.pack(fill="x", pady=3)
             self.menu_dugmeleri[anahtar] = dugme
 
-        self.icerik = ttk.Frame(self, padding=(24, 20))
+        self.icerik = ttk.Frame(govde, padding=(24, 20))
         self.icerik.pack(side="right", fill="both", expand=True)
+
+    def _aktarim_durum_guncelle(self):
+        """Alt çubukta EvoBulut aktarım logunu canlı gösterir."""
+        try:
+            from evobulut_aktarim_durum import durum_oku
+
+            d = durum_oku()
+            if d.aktif:
+                self._aktarim_yanip_soner = not self._aktarim_yanip_soner
+                # Yeşil = çalışıyor (süreç veya taze log)
+                renk = "#2e7d32" if self._aktarim_yanip_soner else "#81c784"
+            elif d.bitti:
+                renk = "#1565c0"  # mavi
+            elif d.log_var:
+                renk = "#9e9e9e"  # gri — durdu (kırmızı değil)
+            else:
+                renk = "#bdbdbd"
+            self.aktarim_gosterge.itemconfigure(self._aktarim_nokta, fill=renk)
+            self.aktarim_durum_label.configure(text=d.metin)
+        except Exception:
+            pass
+        self.after(2000, self._aktarim_durum_guncelle)
 
     def _icerigi_temizle(self):
         for widget in self.icerik.winfo_children():

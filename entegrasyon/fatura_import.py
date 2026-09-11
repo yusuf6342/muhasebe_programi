@@ -205,7 +205,11 @@ def aktar_api_den(
     client.login()
     progress_log(progress, f"Fatura listesi çekiliyor (tur={tur})…")
     liste = client.tum_faturalari_cek(
-        tur=tur, ara=ara, tarih_bas=tarih_bas, tarih_son=tarih_son
+        tur=tur,
+        ara=ara,
+        tarih_bas=tarih_bas,
+        tarih_son=tarih_son,
+        progress=lambda m: progress_log(progress, m),
     )
     liste.sort(key=_tarih_sirala_anahtar)
     if max_adet is not None:
