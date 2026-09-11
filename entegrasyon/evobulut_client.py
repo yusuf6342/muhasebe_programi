@@ -13,6 +13,11 @@ Stok hareket: POST /StokHareket/base/  cmd=list  (stok_id + tarih aralığı zor
   ayrı 'stok giriş fişi' master listesi yok)
 Alış fatura listesi: POST /fatura/base/  cmd=jq_list  tur=30  (a_gc=1)
 Alış fatura detay: POST /fatura/base/  cmd=sql  sql_id=…  → veri[0].Ana / Detay
+Satış/iade/fiş: aynı uç, tur=31|32|33|34|35
+Sipariş: POST /Siparis/base/  cmd=jq_list a_tur=50|51; cmd=sql a_id=…
+İrsaliye: POST /irsaliye/base/  cmd=jq_list a_tur=70|71; cmd=sql a_id=…
+Kasa: POST /KasaHareketleri/base/  cmd=kasa_listesi|jq_list|sql
+Banka: POST /BankHareketleri/base/  cmd=banka_listesi|jq_list|sql
 Gelen e-Fatura: POST /FaturaUbl/base/  cmd=jq_list|sql
 Cari export: POST /CariExport/base/  cmd=export
 """
@@ -268,15 +273,16 @@ class EvobulutClient:
         )
         return _ana_listesi(yanit), _fatura_adet(yanit)
 
-    def tum_alis_faturalari_cek(
+    def tum_faturalari_cek(
         self,
         *,
+        tur: str = "30",
         ara: str = "",
         tarih_bas: str = "",
         tarih_son: str = "",
-        max_sayfa: int = 500,
+        max_sayfa: int = 2000,
     ) -> list[dict]:
-        """Alış faturaları (tur=30), sayfa başına ~30."""
+        """Fatura listesi (tur parametreli), sayfa başına ~30."""
         if not self.uid:
             self.login()
         tum: list[dict] = []
@@ -285,7 +291,7 @@ class EvobulutClient:
         while sayfa < max_sayfa:
             satirlar, adet = self.fatura_liste_sayfa(
                 sayfa,
-                tur="30",
+                tur=str(tur),
                 ara=ara,
                 tarih_bas=tarih_bas,
                 tarih_son=tarih_son,
@@ -301,6 +307,23 @@ class EvobulutClient:
                 break
             sayfa += 1
         return tum
+
+    def tum_alis_faturalari_cek(
+        self,
+        *,
+        ara: str = "",
+        tarih_bas: str = "",
+        tarih_son: str = "",
+        max_sayfa: int = 500,
+    ) -> list[dict]:
+        """Alış faturaları (tur=30), sayfa başına ~30."""
+        return self.tum_faturalari_cek(
+            tur="30",
+            ara=ara,
+            tarih_bas=tarih_bas,
+            tarih_son=tarih_son,
+            max_sayfa=max_sayfa,
+        )
 
     def fatura_detay(self, fatura_id: str | int) -> dict:
         """Fatura başlık + satırlar. Döner: {Ana: dict, Detay: list}."""
@@ -330,6 +353,309 @@ class EvobulutClient:
             "Detay": [x for x in detay if isinstance(x, dict)] if isinstance(detay, list) else [],
         }
 
+    def siparis_liste_sayfa(
+        self,
+        sayfa: int = 0,
+        *,
+        a_tur: str = "50",
+        ara: str = "",
+        tarih_bas: str = "",
+        tarih_son: str = "",
+    ) -> tuple[list[dict], int]:
+        """Sipariş listesi. a_tur=50 alınan, a_tur=51 verilen."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "Siparis/base/",
+            {
+                "cmd": "jq_list",
+                "UID": self.uid,
+                "sayfa": str(sayfa),
+                "a_tur": str(a_tur),
+                "a_onay": "",
+                "a_cari_id": "",
+                "a_tarih_bas": tarih_bas or "",
+                "a_tarih_son": tarih_son or "",
+                "a_stok_id": "",
+                "ara": ara or "",
+                "acik_siparisler": "0",
+                "kismi_siparisler": "0",
+            },
+        )
+        return _ana_listesi(yanit), _fatura_adet(yanit) or _sayfa_adet(yanit)
+
+    def tum_siparisleri_cek(
+        self,
+        *,
+        a_tur: str = "50",
+        ara: str = "",
+        tarih_bas: str = "",
+        tarih_son: str = "",
+        max_sayfa: int = 500,
+    ) -> list[dict]:
+        if not self.uid:
+            self.login()
+        tum: list[dict] = []
+        sayfa = 0
+        toplam = None
+        while sayfa < max_sayfa:
+            satirlar, adet = self.siparis_liste_sayfa(
+                sayfa,
+                a_tur=a_tur,
+                ara=ara,
+                tarih_bas=tarih_bas,
+                tarih_son=tarih_son,
+            )
+            if toplam is None:
+                toplam = adet
+            if not satirlar:
+                break
+            tum.extend(satirlar)
+            if toplam is not None and toplam > 0 and len(tum) >= toplam:
+                break
+            if len(satirlar) < 30:
+                break
+            sayfa += 1
+        return tum
+
+    def siparis_detay(self, siparis_id: str | int) -> dict:
+        """Sipariş başlık + satırlar. Döner: {Ana: dict, Detay: list}."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "Siparis/base/",
+            {"cmd": "sql", "UID": self.uid, "a_id": str(siparis_id)},
+        )
+        return _ana_detay_blok(yanit, f"Sipariş detayı alınamadı (id={siparis_id}).")
+
+    def irsaliye_liste_sayfa(
+        self,
+        sayfa: int = 0,
+        *,
+        a_tur: str = "70",
+        ara: str = "",
+        tarih_bas: str = "",
+        tarih_son: str = "",
+    ) -> tuple[list[dict], int]:
+        """İrsaliye listesi. a_tur=70 alış, a_tur=71 satış."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "irsaliye/base/",
+            {
+                "cmd": "jq_list",
+                "UID": self.uid,
+                "sayfa": str(sayfa),
+                "a_tur": str(a_tur),
+                "a_onay": "-1",
+                "a_depo_id": "0",
+                "a_cari_id": "0",
+                "a_tarih_bas": tarih_bas or "",
+                "a_tarih_son": tarih_son or "",
+                "ara": ara or "",
+            },
+        )
+        return _ana_listesi(yanit), _fatura_adet(yanit) or _sayfa_adet(yanit)
+
+    def tum_irsaliyeleri_cek(
+        self,
+        *,
+        a_tur: str = "70",
+        ara: str = "",
+        tarih_bas: str = "",
+        tarih_son: str = "",
+        max_sayfa: int = 500,
+    ) -> list[dict]:
+        if not self.uid:
+            self.login()
+        tum: list[dict] = []
+        sayfa = 0
+        toplam = None
+        while sayfa < max_sayfa:
+            satirlar, adet = self.irsaliye_liste_sayfa(
+                sayfa,
+                a_tur=a_tur,
+                ara=ara,
+                tarih_bas=tarih_bas,
+                tarih_son=tarih_son,
+            )
+            if toplam is None:
+                toplam = adet
+            if not satirlar:
+                break
+            tum.extend(satirlar)
+            if toplam is not None and toplam > 0 and len(tum) >= toplam:
+                break
+            if len(satirlar) < 30:
+                break
+            sayfa += 1
+        return tum
+
+    def irsaliye_detay(self, irsaliye_id: str | int) -> dict:
+        """İrsaliye başlık + satırlar. Döner: {Ana: dict, Detay: list}."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "irsaliye/base/",
+            {"cmd": "sql", "UID": self.uid, "a_id": str(irsaliye_id)},
+        )
+        return _ana_detay_blok(yanit, f"İrsaliye detayı alınamadı (id={irsaliye_id}).")
+
+    def kasa_kart_listesi(self, ara: str = "") -> list[dict]:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "KasaHareketleri/base/",
+            {"cmd": "kasa_listesi", "UID": self.uid, "ara": ara or ""},
+        )
+        return _ana_listesi(yanit)
+
+    def kasa_islem_liste_sayfa(
+        self,
+        sayfa: int = 0,
+        *,
+        ara: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        kasa_id: str = "",
+        cari_id: str = "",
+    ) -> tuple[list[dict], int]:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "KasaHareketleri/base/",
+            {
+                "cmd": "jq_list",
+                "UID": self.uid,
+                "sayfa": str(sayfa),
+                "cari_id": cari_id or "",
+                "bas_tar": bas_tar or "",
+                "son_tar": son_tar or "",
+                "kasa_id": kasa_id or "",
+                "ara": ara or "",
+            },
+        )
+        return _ana_listesi(yanit), _fatura_adet(yanit) or _sayfa_adet(yanit)
+
+    def tum_kasa_islemlerini_cek(
+        self,
+        *,
+        ara: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        kasa_id: str = "",
+        max_sayfa: int = 2000,
+    ) -> list[dict]:
+        if not self.uid:
+            self.login()
+        tum: list[dict] = []
+        sayfa = 0
+        toplam = None
+        while sayfa < max_sayfa:
+            satirlar, adet = self.kasa_islem_liste_sayfa(
+                sayfa,
+                ara=ara,
+                bas_tar=bas_tar,
+                son_tar=son_tar,
+                kasa_id=kasa_id,
+            )
+            if toplam is None:
+                toplam = adet
+            if not satirlar:
+                break
+            tum.extend(satirlar)
+            if toplam is not None and toplam > 0 and len(tum) >= toplam:
+                break
+            if len(satirlar) < 30:
+                break
+            sayfa += 1
+        return tum
+
+    def kasa_islem_detay(self, islem_id: str | int) -> dict:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "KasaHareketleri/base/",
+            {"cmd": "sql", "UID": self.uid, "a_id": str(islem_id)},
+        )
+        return _ana_detay_blok(yanit, f"Kasa işlem detayı alınamadı (id={islem_id}).")
+
+    def banka_kart_listesi(self, ara: str = "") -> list[dict]:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "BankHareketleri/base/",
+            {"cmd": "banka_listesi", "UID": self.uid, "ara": ara or ""},
+        )
+        return _ana_listesi(yanit)
+
+    def banka_islem_liste_sayfa(
+        self,
+        sayfa: int = 0,
+        *,
+        ara: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        cari_id: str = "",
+    ) -> tuple[list[dict], int]:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "BankHareketleri/base/",
+            {
+                "cmd": "jq_list",
+                "UID": self.uid,
+                "sayfa": str(sayfa),
+                "cari_id": cari_id or "",
+                "bas_tar": bas_tar or " ",
+                "vbas_tar": " ",
+                "son_tar": son_tar or "",
+                "vson_tar": "",
+                "kasa_id": "",
+                "ara": ara or "",
+                "pos_bloke": "",
+            },
+        )
+        return _ana_listesi(yanit), _fatura_adet(yanit) or _sayfa_adet(yanit)
+
+    def tum_banka_islemlerini_cek(
+        self,
+        *,
+        ara: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        max_sayfa: int = 2000,
+    ) -> list[dict]:
+        if not self.uid:
+            self.login()
+        tum: list[dict] = []
+        sayfa = 0
+        toplam = None
+        while sayfa < max_sayfa:
+            satirlar, adet = self.banka_islem_liste_sayfa(
+                sayfa, ara=ara, bas_tar=bas_tar, son_tar=son_tar
+            )
+            if toplam is None:
+                toplam = adet
+            if not satirlar:
+                break
+            tum.extend(satirlar)
+            if toplam is not None and toplam > 0 and len(tum) >= toplam:
+                break
+            if len(satirlar) < 30:
+                break
+            sayfa += 1
+        return tum
+
+    def banka_islem_detay(self, islem_id: str | int) -> dict:
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "BankHareketleri/base/",
+            {"cmd": "sql", "UID": self.uid, "a_id": str(islem_id)},
+        )
+        return _ana_detay_blok(yanit, f"Banka işlem detayı alınamadı (id={islem_id}).")
+
     def _tum_listeyi_cek(self, sayfa_fn, ara: str = "", max_sayfa: int = 500) -> list[dict]:
         if not self.uid:
             self.login()
@@ -349,6 +675,35 @@ class EvobulutClient:
                 break
             sayfa += 1
         return tum
+
+
+def _ana_detay_blok(yanit: dict, hata_mesaji: str) -> dict:
+    """sql yanıtından {Ana, Detay} çıkarır (fatura/sipariş/irsaliye/kasa ortak)."""
+    veri = yanit.get("veri") or yanit.get("Veri")
+    blok = None
+    if isinstance(veri, list) and veri:
+        blok = veri[0] if isinstance(veri[0], dict) else None
+    elif isinstance(veri, dict):
+        # Bazı uçlarda Ana/Detay doğrudan veri altında
+        if "Ana" in veri or "Detay" in veri:
+            blok = veri
+        else:
+            # tek kayıt dict olabilir
+            blok = {"Ana": [veri], "Detay": []}
+    if not isinstance(blok, dict):
+        raise EvobulutApiError(hata_mesaji)
+    ana = blok.get("Ana") or []
+    detay = blok.get("Detay") or []
+    if isinstance(ana, dict):
+        ana0 = ana
+    elif isinstance(ana, list) and ana:
+        ana0 = ana[0] if isinstance(ana[0], dict) else {}
+    else:
+        ana0 = {}
+    return {
+        "Ana": ana0 if isinstance(ana0, dict) else {},
+        "Detay": [x for x in detay if isinstance(x, dict)] if isinstance(detay, list) else [],
+    }
 
 
 def _uid_bul(yanit: dict) -> str | None:

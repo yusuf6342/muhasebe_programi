@@ -109,7 +109,11 @@ class AlisSiparisiService:
                 siparis.satirlar.clear()
                 siparis.odemeler.clear()
             else:
-                siparis = AlisSiparisi(siparis_no=AlisSiparisiService.siparis_no(), durum="AÇIK")
+                ozel_no = (veriler.get("siparis_no") or "").strip()
+                siparis = AlisSiparisi(
+                    siparis_no=ozel_no or AlisSiparisiService.siparis_no(),
+                    durum="AÇIK",
+                )
                 session.add(siparis)
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi

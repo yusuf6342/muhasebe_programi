@@ -246,7 +246,10 @@ class SatisIadeFaturasiService:
                 session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
                 iade.satirlar.clear()
             else:
-                iade = SatisIadeFaturasi(iade_no=SatisIadeFaturasiService.iade_no())
+                ozel_no = (veriler.get("iade_no") or "").strip()
+                iade = SatisIadeFaturasi(
+                    iade_no=ozel_no or SatisIadeFaturasiService.iade_no()
+                )
                 session.add(iade)
 
             iade.iade_tarihi = tarih

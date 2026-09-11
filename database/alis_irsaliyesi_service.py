@@ -136,7 +136,11 @@ class AlisIrsaliyesiService:
                             siparis_satiri.irsaliyelenen_miktar -= eski_satir.miktar
                 irsaliye.satirlar.clear()
             else:
-                irsaliye = AlisIrsaliyesi(irsaliye_no=AlisIrsaliyesiService.irsaliye_no(), durum="AÇIK")
+                ozel_no = (veriler.get("irsaliye_no") or "").strip()
+                irsaliye = AlisIrsaliyesi(
+                    irsaliye_no=ozel_no or AlisIrsaliyesiService.irsaliye_no(),
+                    durum="AÇIK",
+                )
                 session.add(irsaliye)
             irsaliye.irsaliye_tarihi = irsaliye_tarihi
             irsaliye.cari_id = int(veriler["cari_id"])

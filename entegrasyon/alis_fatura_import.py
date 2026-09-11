@@ -217,10 +217,17 @@ def _tek_fatura_aktar(
     client,
     liste_satir: dict[str, Any],
     sonuc: AlisFaturaImportSonuc,
-) -> None:
+) -> bool:
+    """Aktarır. True = detay API çağrıldı (rate-limit gerekir)."""
     aid = _temiz(liste_satir.get("G.a_id") or liste_satir.get("a_id"))
     if not aid:
         raise ValueError("Fatura a_id yok")
+
+    # Liste satırından fatura_no belli ise detay çekmeden atla (yeniden çalıştırma)
+    once_no = fatura_no_icin(liste_satir, {})
+    if once_no and fatura_var_mi(once_no):
+        sonuc.atlanan += 1
+        return False
 
     detay = client.fatura_detay(aid)
     ana = detay.get("Ana") or {}
@@ -231,7 +238,7 @@ def _tek_fatura_aktar(
     fatura_no = fatura_no_icin(liste_satir, ana)
     if fatura_var_mi(fatura_no):
         sonuc.atlanan += 1
-        return
+        return True
 
     cari = _cari_bul_veya_hata(liste_satir, ana)
     tarih = _tarih(ana.get("a_tarih") or liste_satir.get("G.a_tarih"))
@@ -272,6 +279,7 @@ def _tek_fatura_aktar(
         satir_verileri,
     )
     sonuc.olusturulan += 1
+    return True
 
 
 def aktar_api_den(
@@ -303,8 +311,9 @@ def aktar_api_den(
 
     for i, satir in enumerate(liste, start=1):
         aid = _temiz(satir.get("G.a_id") or satir.get("a_id"))
+        api_cagrildi = False
         try:
-            _tek_fatura_aktar(client, satir, sonuc)
+            api_cagrildi = _tek_fatura_aktar(client, satir, sonuc)
             if i % 25 == 0 or i == len(liste):
                 log(
                     f"  {i}/{len(liste)} — oluşturulan={sonuc.olusturulan} "
@@ -313,7 +322,8 @@ def aktar_api_den(
         except Exception as exc:  # noqa: BLE001
             sonuc.hatalar.append(f"a_id={aid}: {exc}")
             sonuc.atlanan += 1
-        if i < len(liste):
+            api_cagrildi = True
+        if i < len(liste) and api_cagrildi:
             time.sleep(DETAY_BEKLE_SN)
 
     return sonuc

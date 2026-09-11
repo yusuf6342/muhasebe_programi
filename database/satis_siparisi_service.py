@@ -115,7 +115,11 @@ class SatisSiparisiService:
                 siparis.satirlar.clear()
                 siparis.tahsilatlar.clear()
             else:
-                siparis = SatisSiparisi(siparis_no=SatisSiparisiService.siparis_no(), durum="AÇIK")
+                ozel_no = (veriler.get("siparis_no") or "").strip()
+                siparis = SatisSiparisi(
+                    siparis_no=ozel_no or SatisSiparisiService.siparis_no(),
+                    durum="AÇIK",
+                )
                 session.add(siparis)
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
