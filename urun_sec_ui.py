@@ -1,24 +1,51 @@
 """Fatura/sipariş satırları için ürün seçim diyaloğu."""
+
 from __future__ import annotations
 
 import tkinter as tk
+from decimal import Decimal
 from tkinter import ttk
 
 from database.stok_service import StokService
 from stok_ui import StokKartiDialog
 
 
+def _satis_fiyati_nesneden(stok, varsayilan=Decimal("0")) -> Decimal:
+    """Yüklü stok.fiyatlar ilişkisinden SATIŞ FİYATI 1 (ekstra DB yok)."""
+    fiyatlar = getattr(stok, "fiyatlar", None) or []
+    for fiyat in fiyatlar:
+        if (fiyat.fiyat_adi or "").strip().upper() == "SATIŞ FİYATI 1":
+            return Decimal(str(fiyat.tutar))
+    for fiyat in fiyatlar:
+        ad = (fiyat.fiyat_adi or "").strip().upper()
+        if ad.startswith("SATIŞ FİYATI"):
+            return Decimal(str(fiyat.tutar))
+    return Decimal(str(varsayilan))
+
+
 class UrunSecDialog(tk.Toplevel):
     """Ürün kodu / adı filtreli seçim; bulunamazsa yeni stok kartı açar."""
 
-    def __init__(self, parent, query="", on_select=None, kod="", ad=""):
+    def __init__(
+        self,
+        parent,
+        query="",
+        on_select=None,
+        kod="",
+        ad="",
+        sadece_stokta=False,
+        depo_ad=None,
+    ):
         super().__init__(parent)
-        self.title("Ürün Seçimi")
+        self.title("Ürün Seçimi" + (" — Stokta Olanlar" if sadece_stokta else ""))
         self.geometry("860x440")
         self.transient(parent)
         self.grab_set()
         self.on_select = on_select
         self._urunler = []
+        self._arama_after = None
+        self.sadece_stokta = bool(sadece_stokta)
+        self.depo_ad = (depo_ad or "").strip() or None
 
         # Tek sorgu geldiyse hem koda hem ada koy (eski çağrılar)
         kod = (kod or "").strip()
@@ -44,18 +71,25 @@ class UrunSecDialog(tk.Toplevel):
         ust.columnconfigure(3, weight=1)
         ttk.Button(ust, text="Ara", command=self.listeyi_yenile).grid(row=0, column=4, padx=(10, 0))
 
-        self.kod_filtre.bind("<KeyRelease>", lambda _e: self.listeyi_yenile())
-        self.ad_filtre.bind("<KeyRelease>", lambda _e: self.listeyi_yenile())
+        self.kod_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
+        self.ad_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
         self.kod_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
         self.ad_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
 
-        self.bos_lbl = ttk.Label(
-            self,
-            text="Ürün bulunamadı. İsterseniz yeni ürün ekleyebilirsiniz.",
-            foreground="#a33",
+        bos_metin = (
+            "Stokta ürün bulunamadı. Tüm kartlar için STOK LİSTESİ'ni kullanın."
+            if self.sadece_stokta
+            else "Ürün bulunamadı. İsterseniz yeni ürün ekleyebilirsiniz."
         )
+        self.bos_lbl = ttk.Label(self, text=bos_metin, foreground="#a33")
         self._bilgi_cerceve = ttk.Frame(self)
         self._bilgi_cerceve.pack(fill="x", padx=12)
+        if self.sadece_stokta:
+            ttk.Label(
+                self._bilgi_cerceve,
+                text="Yalnızca stoğu olan ürünler listelenir.",
+                foreground="#555555",
+            ).pack(anchor="w", pady=(0, 2))
 
         kolonlar = ("kod", "ad", "birim", "stok", "fiyat", "kaynak")
         cerceve = ttk.Frame(self)
@@ -81,7 +115,8 @@ class UrunSecDialog(tk.Toplevel):
         alt = ttk.Frame(self, padding=12)
         alt.pack(fill="x")
         self.yeni_btn = ttk.Button(alt, text="Yeni Ürün Ekle", command=self.yeni_urun)
-        self.yeni_btn.pack(side="left")
+        if not self.sadece_stokta:
+            self.yeni_btn.pack(side="left")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Seç", command=self.sec).pack(side="right", padx=8)
 
@@ -93,28 +128,53 @@ class UrunSecDialog(tk.Toplevel):
             self.kod_filtre.focus_set()
             self.kod_filtre.icursor("end")
 
+    def _arama_gecikmeli(self, _event=None):
+        if self._arama_after is not None:
+            try:
+                self.after_cancel(self._arama_after)
+            except tk.TclError:
+                pass
+        self._arama_after = self.after(350, self.listeyi_yenile)
+
     def listeyi_yenile(self):
+        self._arama_after = None
         kod = self.kod_filtre.get().strip()
         ad = self.ad_filtre.get().strip()
         for item in self.tablo.get_children():
             self.tablo.delete(item)
-        self._urunler = StokService.stoklari_filtrele(kod=kod, ad=ad)
+        self._urunler = StokService.stoklari_filtrele(
+            kod=kod,
+            ad=ad,
+            sadece_stokta=self.sadece_stokta,
+            depo_ad=self.depo_ad if self.sadece_stokta else None,
+        )
         for sira, stok in enumerate(self._urunler):
-            fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
-            mevcut = sum((lot.kalan_miktar for lot in stok.lotlar), 0)
+            fiyat = _satis_fiyati_nesneden(stok)
+            mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
             self.tablo.insert(
                 "",
                 "end",
                 iid=str(sira),
-                values=(stok.stok_kodu, stok.stok_adi, stok.birim, str(mevcut), str(fiyat), "Stok Kartı"),
+                values=(
+                    stok.stok_kodu,
+                    stok.stok_adi,
+                    stok.birim,
+                    f"{mevcut:f}".rstrip("0").rstrip(".") or "0",
+                    str(fiyat),
+                    "Stok Kartı",
+                ),
             )
-        for cocuk in self._bilgi_cerceve.winfo_children():
-            cocuk.pack_forget()
+        try:
+            self.bos_lbl.pack_forget()
+        except tk.TclError:
+            pass
         if self._urunler:
-            self.yeni_btn.configure(text="Yeni Ürün Ekle")
+            if hasattr(self, "yeni_btn") and not self.sadece_stokta:
+                self.yeni_btn.configure(text="Yeni Ürün Ekle")
         else:
             self.bos_lbl.pack(in_=self._bilgi_cerceve, anchor="w", pady=(0, 4))
-            self.yeni_btn.configure(text="Yeni Ürün Ekle (bulunamadı)")
+            if hasattr(self, "yeni_btn") and not self.sadece_stokta:
+                self.yeni_btn.configure(text="Yeni Ürün Ekle (bulunamadı)")
 
     def sec(self):
         secim = self.tablo.selection()
@@ -141,13 +201,15 @@ class UrunSecDialog(tk.Toplevel):
         stok = dialog.result
         # Yeni kartı satıra aktar
         stok = StokService.stok_getir(stok.id) or stok
-        fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
-        mevcut = sum((lot.kalan_miktar for lot in getattr(stok, "lotlar", []) or []), 0)
+        fiyat = _satis_fiyati_nesneden(stok)
+        if fiyat == 0:
+            fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
+        mevcut = sum((lot.kalan_miktar for lot in getattr(stok, "lotlar", []) or []), Decimal("0"))
         degerler = (
             stok.stok_kodu,
             stok.stok_adi,
             stok.birim or "Adet",
-            str(mevcut),
+            f"{mevcut:f}".rstrip("0").rstrip(".") or "0",
             str(fiyat),
             "Stok Kartı",
         )

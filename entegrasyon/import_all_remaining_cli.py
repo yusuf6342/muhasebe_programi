@@ -9,6 +9,7 @@ Sıra:
   6) Sipariş 50, 51
   7) İrsaliye 70, 71
   8) Kasa, Banka
+  9) Gelir/Gider (GelirGider API)
 
   python -m entegrasyon.import_all_remaining_cli --api
   python -m entegrasyon.import_all_remaining_cli --api --max 1
@@ -41,6 +42,7 @@ def calistir(
     progress=None,
 ) -> dict[str, ImportSonuc]:
     from entegrasyon.fatura_import import aktar_api_den as fatura_aktar
+    from entegrasyon.gelir_gider_import import aktar_api_den as gelir_gider_aktar
     from entegrasyon.irsaliye_import import aktar_api_den as irsaliye_aktar
     from entegrasyon.kasa_banka_import import aktar_banka_api_den, aktar_kasa_api_den
     from entegrasyon.siparis_import import aktar_api_den as siparis_aktar
@@ -61,6 +63,7 @@ def calistir(
             [
                 ("kasa", lambda: aktar_kasa_api_den(max_adet=max_adet, progress=progress)),
                 ("banka", lambda: aktar_banka_api_den(max_adet=max_adet, progress=progress)),
+                ("gelir_gider", lambda: gelir_gider_aktar(max_adet=max_adet, progress=progress)),
             ]
         )
 

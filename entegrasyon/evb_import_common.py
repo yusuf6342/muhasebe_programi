@@ -295,7 +295,19 @@ def stok_yetersizligi_kapat(
 
 
 def progress_log(progress: Callable[[str], None] | None, msg: str) -> None:
-    if progress:
-        progress(msg)
-    else:
-        print(msg, flush=True)
+    """Konsol encoding hatalarında aktarımı düşürmemek için güvenli yazım."""
+    try:
+        if progress:
+            progress(msg)
+        else:
+            print(msg, flush=True)
+    except UnicodeEncodeError:
+        guvenli = msg.encode("ascii", errors="replace").decode("ascii")
+        try:
+            if progress:
+                progress(guvenli)
+            else:
+                print(guvenli, flush=True)
+        except Exception:
+            pass
+

@@ -167,5 +167,5 @@ class SatisIrsaliyesiService:
 
     @staticmethod
     def mevcut_bakiye(cari_id: int) -> Decimal:
-        ozet = next((item for item in CariService.listele() if item["cari"].id == cari_id), None)
+        ozet = next((item for item in CariService.listele(hizli=True) if item["cari"].id == cari_id), None)
         return ozet["bakiye"] if ozet else Decimal("0")

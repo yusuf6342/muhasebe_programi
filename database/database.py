@@ -1,27 +1,90 @@
+import os
+import shutil
 from pathlib import Path
 from contextlib import contextmanager
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
 # Proje ana klasörü
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Veritabanı klasörü
-DB_DIR = BASE_DIR / "data"
-DB_DIR.mkdir(exist_ok=True)
+# Proje içi data (eski konum / resimler / ayarlar)
+PROJE_DATA_DIR = BASE_DIR / "data"
+PROJE_DATA_DIR.mkdir(exist_ok=True)
+
+
+def _db_dir_sec() -> Path:
+    """SQLite'ı OneDrive dışında tut (LOCALAPPDATA); aksi halde proje data/.
+
+    MUHASEBE_DB_DIR ile özel klasör verilebilir.
+    """
+    env = (os.environ.get("MUHASEBE_DB_DIR") or "").strip()
+    if env:
+        yol = Path(env)
+        yol.mkdir(parents=True, exist_ok=True)
+        return yol
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        yol = Path(local) / "MuhasebeProgrami" / "data"
+        yol.mkdir(parents=True, exist_ok=True)
+        return yol
+    return PROJE_DATA_DIR
+
+
+def _eski_db_tasi(hedef_dir: Path) -> None:
+    """İlk açılışta proje data/muhasebe.db → yeni konuma kopyala."""
+    hedef = hedef_dir / "muhasebe.db"
+    if hedef.exists():
+        return
+    kaynak = PROJE_DATA_DIR / "muhasebe.db"
+    if not kaynak.is_file():
+        return
+    shutil.copy2(kaynak, hedef)
+    for ek in ("-wal", "-shm"):
+        k = PROJE_DATA_DIR / f"muhasebe.db{ek}"
+        if k.is_file():
+            shutil.copy2(k, hedef_dir / f"muhasebe.db{ek}")
+
+
+def _konum_dosyasi_yaz(db_yolu: Path) -> None:
+    metin = (
+        "Muhasebe veritabanı konumu (OneDrive senkronu SQLite kilidine yol açmasın diye):\n"
+        f"{db_yolu}\n"
+        "\nÖzel klasör için ortam değişkeni: MUHASEBE_DB_DIR\n"
+    )
+    try:
+        (PROJE_DATA_DIR / "VERITABANI_KONUMU.txt").write_text(metin, encoding="utf-8")
+    except OSError:
+        pass
+
+
+DB_DIR = _db_dir_sec()
+_eski_db_tasi(DB_DIR)
+DB_PATH = (DB_DIR / "muhasebe.db").resolve()
+_konum_dosyasi_yaz(DB_PATH)
 
 # SQLite veritabanı
-DATABASE_URL = f"sqlite:///{DB_DIR / 'muhasebe.db'}"
+DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 
 
-# Veritabanı bağlantısı
+# Veritabanı bağlantısı (arka plan thread + OneDrive kilidi için timeout)
 engine = create_engine(
     DATABASE_URL,
-    echo=False
+    echo=False,
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_baglanti_ayarlari(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 
 # Tüm veritabanı modellerimizin temel sınıfı
@@ -157,6 +220,19 @@ def cari_kart_schemasini_guncelle() -> None:
                 with engine.begin() as connection:
                     connection.execute(
                         text(f'ALTER TABLE "{fatura_tablo}" ADD COLUMN "islem_saati" VARCHAR(8)')
+                    )
+
+    satis_satir_tablo = "satis_faturasi_satirlari"
+    if inspect(engine).has_table(satis_satir_tablo):
+        satir_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(satis_satir_tablo)}
+        for alan in ("iskonto_orani_2", "iskonto_orani_3"):
+            if alan not in satir_sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "{satis_satir_tablo}" '
+                            f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
+                        )
                     )
 
     finans_tablo = "finans_hesaplari"

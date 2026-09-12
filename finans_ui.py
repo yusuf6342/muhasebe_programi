@@ -1046,7 +1046,7 @@ class HavaleFisDialog(tk.Toplevel):
 
         row = 1
         cari_etiket = "Gönderen cari *" if alinan else "Alıcı cari *"
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self._cari_map = {
             f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
         }
@@ -1733,7 +1733,7 @@ class BankaIslemKkOdemeDialog(tk.Toplevel):
         self.tarih.bind("<KeyRelease>", lambda _e: self._vade_ve_plan_guncelle())
 
         row = 1
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self._cari_map = {
             f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
         }
@@ -2154,7 +2154,7 @@ class BankaIslemPosTahsilatDialog(tk.Toplevel):
         takvim_butonu(tarih_c, self.tarih)
 
         row = 1
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self._cari_map = {
             f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
         }
@@ -2798,7 +2798,7 @@ class MevduatEvrakDialog(tk.Toplevel):
             row = 3
         elif tur == "ahv":
             row = 2
-            cariler = CariService.listele()
+            cariler = CariService.listele(hizli=True)
             self.cari_map = {
                 f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
             }
@@ -2811,7 +2811,7 @@ class MevduatEvrakDialog(tk.Toplevel):
                 self.cari.set(next(iter(self.cari_map)))
         else:  # ghv
             row = 2
-            cariler = CariService.listele()
+            cariler = CariService.listele(hizli=True)
             self.cari_map = {
                 f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
             }
@@ -3461,7 +3461,7 @@ class PosTahsilatDialog(tk.Toplevel):
         self.tutar = ttk.Entry(self, width=18)
         self.tutar.grid(row=3, column=1, padx=12, pady=6, sticky="w")
 
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self.cari_map = {
             f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
         }
@@ -3967,7 +3967,7 @@ class KrediKartiOdemeDialog(tk.Toplevel):
         self.tutar.bind("<KeyRelease>", lambda _e: self._vade_ve_plan_guncelle())
 
         row = 5
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self.cari_map = {
             f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in cariler
         }

@@ -22,7 +22,7 @@ MALIYET_YONTEMLERI = (
     "AĞIRLIKLI ORTALAMA ALIŞ FİYATI",
 )
 SIPARIS_DURUMLARI = ("AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL")
-ODEME_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTI")
+ODEME_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
 
 
 def decimal(deger: object, alan: str, minimum: Decimal | None = None) -> Decimal:
@@ -196,5 +196,5 @@ class SatisSiparisiService:
 
     @staticmethod
     def tahmini_bakiye(cari_id: int, siparis_toplami: Decimal, tahsilat: Decimal) -> Decimal:
-        ozet = next((item for item in CariService.listele() if item["cari"].id == cari_id), None)
+        ozet = next((item for item in CariService.listele(hizli=True) if item["cari"].id == cari_id), None)
         return (ozet["bakiye"] if ozet else Decimal("0")) + siparis_toplami - tahsilat

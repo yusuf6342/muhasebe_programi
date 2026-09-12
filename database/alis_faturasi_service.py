@@ -26,6 +26,41 @@ class AlisFaturasiService:
         return AlisSiparisiService.aktif_tedarikcileri()
 
     @staticmethod
+    def urun_alis_hareketleri(urun_kodu: str) -> list[dict[str, Any]]:
+        """Ürün alış fatura satırları (yeniden eskiye)."""
+        urun_kodu = (urun_kodu or "").strip()
+        if not urun_kodu:
+            return []
+        with get_session() as session:
+            satirlar = session.scalars(
+                select(AlisFaturasiSatiri)
+                .join(AlisFaturasi)
+                .where(
+                    AlisFaturasi.durum != "İPTAL",
+                    AlisFaturasiSatiri.urun_kodu == urun_kodu,
+                )
+                .options(
+                    selectinload(AlisFaturasiSatiri.fatura).selectinload(AlisFaturasi.cari),
+                )
+                .order_by(AlisFaturasi.fatura_tarihi.desc(), AlisFaturasiSatiri.id.desc())
+            ).all()
+            kayitlar = []
+            for satir in satirlar:
+                fiyat = Decimal(str(satir.birim_fiyat or 0))
+                iskonto = Decimal(str(satir.iskonto_orani or 0))
+                net = fiyat - (fiyat * iskonto / Decimal("100"))
+                cari = satir.fatura.cari if satir.fatura else None
+                kayitlar.append({
+                    "tarih": satir.fatura.fatura_tarihi if satir.fatura else None,
+                    "belge_no": satir.fatura.fatura_no if satir.fatura else "",
+                    "tedarikci": f"{cari.cari_kodu} - {cari.unvan}" if cari else "",
+                    "miktar": Decimal(str(satir.miktar or 0)),
+                    "birim": satir.birim or "",
+                    "net_fiyat": net,
+                })
+            return kayitlar
+
+    @staticmethod
     def listele() -> list[dict[str, Any]]:
         with get_session() as session:
             faturalar = session.scalars(

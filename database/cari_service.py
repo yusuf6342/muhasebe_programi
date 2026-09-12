@@ -54,38 +54,141 @@ class CariService:
             raise ValueError("Arama için en az 3 karakter girin.")
         return arama
 
+    _DEFTER_ATLA_ONEK = (
+        "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-",
+        "IPT-", "FZO-",
+    )
+
     @staticmethod
-    def listele(arama: str = "", cari_turu: str | None = None) -> list[dict[str, Any]]:
+    def _cari_turu_filtresi(statement, cari_turu: str | None):
+        if not cari_turu:
+            return statement
+        tur = (cari_turu or "").strip()
+        if tur.casefold().startswith("muster") or tur.casefold().startswith("müşter"):
+            return statement.where(
+                or_(
+                    Cari.cari_turu == "Müşteri",
+                    Cari.cari_turu == "Musteri",
+                    Cari.cari_turu.ilike("müster%"),
+                    Cari.cari_turu.ilike("muster%"),
+                )
+            )
+        if tur.casefold().startswith("tedarik"):
+            return statement.where(
+                or_(
+                    Cari.cari_turu == "Tedarikçi",
+                    Cari.cari_turu.ilike("tedarik%"),
+                )
+            )
+        return statement.where(Cari.cari_turu == tur)
+
+    @staticmethod
+    def _toplu_liste_ozet(session, cariler: list[Cari]) -> list[dict[str, Any]]:
+        """Liste ekranı: tek seferde bakiye + yaklaşık valör (FIFO yok)."""
+        if not cariler:
+            return []
+        ids = [c.id for c in cariler]
+        islemler = list(
+            session.scalars(select(CariIslem).where(CariIslem.cari_id.in_(ids))).all()
+        )
+        hareketler = list(
+            session.scalars(
+                select(SatisHareketi).where(SatisHareketi.cari_id.in_(ids))
+            ).all()
+        )
+        islem_by: dict[int, list[CariIslem]] = {i: [] for i in ids}
+        for islem in islemler:
+            islem_by.setdefault(islem.cari_id, []).append(islem)
+        hareket_by: dict[int, list[SatisHareketi]] = {i: [] for i in ids}
+        for h in hareketler:
+            hareket_by.setdefault(h.cari_id, []).append(h)
+
+        bugun = date.today()
+        sonuclar: list[dict[str, Any]] = []
+        for cari in cariler:
+            cid = cari.id
+            cari_islemler = islem_by.get(cid, [])
+            islem_belgeleri = {i.belge_no for i in cari_islemler}
+            kayitlar: list[tuple] = []
+            for h in hareket_by.get(cid, []):
+                bn = h.belge_no or ""
+                if bn in islem_belgeleri or bn.startswith(CariService._DEFTER_ATLA_ONEK):
+                    continue
+                kayitlar.append(
+                    (h.satis_tarihi, bn, Decimal(str(h.satis_tutari or 0)), Decimal("0"))
+                )
+            for islem in cari_islemler:
+                kayitlar.append(
+                    (
+                        islem.tarih,
+                        islem.belge_no,
+                        Decimal(str(islem.borc or 0)),
+                        Decimal(str(islem.alacak or 0)),
+                    )
+                )
+            kayitlar.sort(key=lambda x: (x[0] or date.min, x[1] or "", str(x[2]), str(x[3])))
+            toplam_borc = sum((k[2] for k in kayitlar), Decimal("0"))
+            toplam_alacak = sum((k[3] for k in kayitlar), Decimal("0"))
+            bakiye = toplam_borc - toplam_alacak
+
+            agirlik = 0.0
+            tutar_toplam = Decimal("0")
+            acik_sayisi = 0
+            for h in hareket_by.get(cid, []):
+                kalan = Decimal(str(h.kalan_acik_tutar or 0))
+                if kalan == 0:
+                    continue
+                acik_sayisi += 1
+                abs_kalan = abs(kalan)
+                tutar_toplam += abs_kalan
+                vade = h.satis_tarihi or bugun
+                agirlik += float(abs_kalan) * (bugun - vade).days
+            valor = agirlik / float(tutar_toplam) if tutar_toplam else 0.0
+
+            if bakiye > 0:
+                durum = "Borçlu"
+            elif bakiye < 0:
+                durum = "Alacaklı"
+            else:
+                durum = "Bakiye yok"
+
+            sonuclar.append(
+                {
+                    "cari": cari,
+                    "bakiye": bakiye,
+                    "bakiye_durumu": durum,
+                    "toplam_borc": toplam_borc,
+                    "toplam_alacak": toplam_alacak,
+                    "odenen_ortalama_valor_gun": 0.0,
+                    "odenen_ortalama_valor_basit_gun": 0.0,
+                    "bakiye_ortalama_valor_gun": valor,
+                    "borc_tutar": Decimal("0"),
+                    "alacak_tutar": Decimal("0"),
+                    "borc_valor_gun": valor,
+                    "alacak_valor_gun": 0.0,
+                    "ortalama_gun": valor,
+                    "agirlikli_ortalama_gun": valor,
+                    "acik_hareket_sayisi": acik_sayisi,
+                }
+            )
+        for ozet in sonuclar:
+            session.expunge(ozet["cari"])
+        return sonuclar
+
+    @staticmethod
+    def listele(
+        arama: str = "",
+        cari_turu: str | None = None,
+        hizli: bool = False,
+    ) -> list[dict[str, Any]]:
         from sqlalchemy.orm import selectinload
 
         arama = CariService._arama_kontrol(arama)
         with get_session() as session:
-            statement = (
-                select(Cari)
-                .options(selectinload(Cari.satis_hareketleri))
-                .order_by(Cari.cari_kodu)
-            )
-            if cari_turu:
-                # "Müşteri" / "Musteri" gibi yazım farklarını kapsar
-                tur = (cari_turu or "").strip()
-                if tur.casefold().startswith("muster") or tur.casefold().startswith("müşter"):
-                    statement = statement.where(
-                        or_(
-                            Cari.cari_turu == "Müşteri",
-                            Cari.cari_turu == "Musteri",
-                            Cari.cari_turu.ilike("müster%"),
-                            Cari.cari_turu.ilike("muster%"),
-                        )
-                    )
-                elif tur.casefold().startswith("tedarik"):
-                    statement = statement.where(
-                        or_(
-                            Cari.cari_turu == "Tedarikçi",
-                            Cari.cari_turu.ilike("tedarik%"),
-                        )
-                    )
-                else:
-                    statement = statement.where(Cari.cari_turu == tur)
+            statement = select(Cari).order_by(Cari.cari_kodu)
+            if not hizli:
+                statement = statement.options(selectinload(Cari.satis_hareketleri))
+            statement = CariService._cari_turu_filtresi(statement, cari_turu)
             if arama:
                 ifade = f"%{arama}%"
                 statement = statement.where(
@@ -95,7 +198,9 @@ class CariService:
                         Cari.telefon.ilike(ifade),
                     )
                 )
-            cariler = session.scalars(statement).all()
+            cariler = list(session.scalars(statement).all())
+            if hizli:
+                return CariService._toplu_liste_ozet(session, cariler)
             return [CariService._ozet(cari, session=session) for cari in cariler]
 
     @staticmethod
@@ -378,7 +483,148 @@ class CariService:
             )
 
     @staticmethod
-    def virman_yap(kaynak_id: int, hedef_id: int, tarih: date, tutar, aciklama: str | None = None) -> tuple[CariIslem, CariIslem]:
+    def gelir_gider_fisi_ekle(
+        cari_id: int,
+        tarih: date,
+        *,
+        tur: str,
+        tutar,
+        belge_no: str,
+        aciklama: str | None = None,
+        kalan_acik=None,
+        kapatilan=None,
+    ) -> CariIslem:
+        """EvoBulut Gelir/Gider kaydını cari deftere yazar.
+
+        Gelir (41): cari borçlu → borc + SatisHareketi (açık = kalan_acik).
+        Gider (40): cari alacaklı → alacak; kapama borc satırı ile kapatılır.
+        """
+        tutar_t = tutar if isinstance(tutar, Decimal) else CariService._tutar(tutar)
+        if not isinstance(tutar_t, Decimal):
+            tutar_t = Decimal(str(tutar_t))
+        tutar_t = tutar_t.quantize(Decimal("0.01"))
+        if tutar_t <= 0:
+            raise ValueError("Gelir/Gider tutarı pozitif olmalıdır.")
+        tur_u = (tur or "").strip().upper()
+        if tur_u not in {"GELIR", "GIDER"}:
+            raise ValueError("Tür GELIR veya GIDER olmalıdır.")
+        belge = (belge_no or "").strip()
+        if not belge:
+            raise ValueError("Belge numarası zorunludur.")
+        if len(belge) > 50:
+            raise ValueError("Belge numarası 50 karakteri aşamaz.")
+        if tarih > date.today():
+            raise ValueError("İşlem tarihi gelecek bir tarih olamaz.")
+
+        kalan_t = None
+        if kalan_acik is not None:
+            kalan_t = (
+                kalan_acik
+                if isinstance(kalan_acik, Decimal)
+                else CariService._tutar(kalan_acik)
+            )
+            if not isinstance(kalan_t, Decimal):
+                kalan_t = Decimal(str(kalan_t))
+            kalan_t = max(Decimal("0"), kalan_t.quantize(Decimal("0.01")))
+
+        kapat_t = Decimal("0")
+        if kapatilan is not None:
+            kapat_t = (
+                kapatilan
+                if isinstance(kapatilan, Decimal)
+                else CariService._tutar(kapatilan)
+            )
+            if not isinstance(kapat_t, Decimal):
+                kapat_t = Decimal(str(kapat_t))
+            kapat_t = max(Decimal("0"), kapat_t.quantize(Decimal("0.01")))
+
+        with get_session() as session:
+            cari = session.get(Cari, cari_id)
+            if cari is None:
+                raise ValueError("Cari bulunamadı.")
+            mevcut = session.scalar(select(CariIslem).where(CariIslem.belge_no == belge))
+            if mevcut is not None:
+                raise ValueError(f"Belge no zaten var: {belge}")
+
+            if tur_u == "GELIR":
+                acik = kalan_t if kalan_t is not None else tutar_t
+                if acik > tutar_t:
+                    acik = tutar_t
+                session.add(
+                    SatisHareketi(
+                        cari_id=cari_id,
+                        satis_tarihi=tarih,
+                        belge_no=belge,
+                        satis_tutari=tutar_t,
+                        kalan_acik_tutar=acik,
+                    )
+                )
+                islem = CariIslem(
+                    cari_id=cari_id,
+                    tarih=tarih,
+                    islem_turu="Gelir",
+                    belge_no=belge,
+                    aciklama=aciklama or "Gelir",
+                    borc=tutar_t,
+                    alacak=Decimal("0"),
+                )
+                session.add(islem)
+                if kapat_t > 0:
+                    kap_no = f"EVB-GGK-{belge.split('-')[-1]}"[:50]
+                    if kap_no == belge:
+                        kap_no = f"{belge}-K"[:50]
+                    if session.scalar(select(CariIslem.id).where(CariIslem.belge_no == kap_no)) is None:
+                        CariService._aciklara_uygula(session, cari_id, kapat_t)
+                        session.add(
+                            CariIslem(
+                                cari_id=cari_id,
+                                tarih=tarih,
+                                islem_turu="Gelir Kapama",
+                                belge_no=kap_no,
+                                aciklama=(aciklama or "Gelir") + " (kapama)",
+                                borc=Decimal("0"),
+                                alacak=kapat_t,
+                            )
+                        )
+            else:
+                islem = CariIslem(
+                    cari_id=cari_id,
+                    tarih=tarih,
+                    islem_turu="Gider",
+                    belge_no=belge,
+                    aciklama=aciklama or "Gider",
+                    borc=Decimal("0"),
+                    alacak=tutar_t,
+                )
+                session.add(islem)
+                if kapat_t > 0:
+                    kap_no = f"EVB-GGK-{belge.split('-')[-1]}"[:50]
+                    if kap_no == belge:
+                        kap_no = f"{belge}-K"[:50]
+                    if session.scalar(select(CariIslem.id).where(CariIslem.belge_no == kap_no)) is None:
+                        session.add(
+                            CariIslem(
+                                cari_id=cari_id,
+                                tarih=tarih,
+                                islem_turu="Gider Kapama",
+                                belge_no=kap_no,
+                                aciklama=(aciklama or "Gider") + " (kapama)",
+                                borc=kapat_t,
+                                alacak=Decimal("0"),
+                            )
+                        )
+            session.flush()
+            return islem
+
+    @staticmethod
+    def virman_yap(
+        kaynak_id: int,
+        hedef_id: int,
+        tarih: date,
+        tutar,
+        aciklama: str | None = None,
+        belge_no: str | None = None,
+    ) -> tuple[CariIslem, CariIslem]:
         tutar = CariService._tutar(tutar)
         if tutar <= 0:
             raise ValueError("Virman tutarı pozitif olmalıdır.")
@@ -391,22 +637,31 @@ class CariService:
             hedef = session.get(Cari, hedef_id)
             if kaynak is None or hedef is None:
                 raise ValueError("Kaynak veya hedef cari bulunamadı.")
-            belge_no = CariService._belge_no(session, "VRM")
+            if belge_no:
+                belgeno = belge_no.strip()
+                if not belgeno:
+                    raise ValueError("Belge numarası boş olamaz.")
+                if len(belgeno) > 50:
+                    raise ValueError("Belge numarası 50 karakteri aşamaz.")
+                if session.scalar(select(CariIslem.id).where(CariIslem.belge_no == belgeno)):
+                    raise ValueError(f"Belge no zaten var: {belgeno}")
+            else:
+                belgeno = CariService._belge_no(session, "VRM")
             # Çift kayıt: kaynak ALACAK, karşı cari (hedef) aynı tutarda BORÇ
             # Açık bakiye şartı yok; varsa FIFO uygulanır, yoksa yalnızca cari işlem yazılır.
             CariService._aciklara_uygula(session, kaynak_id, tutar)
             session.add(SatisHareketi(
-                cari_id=hedef_id, satis_tarihi=tarih, belge_no=belge_no,
+                cari_id=hedef_id, satis_tarihi=tarih, belge_no=belgeno,
                 satis_tutari=tutar, kalan_acik_tutar=tutar,
             ))
             kaynak_islem = CariIslem(
-                cari_id=kaynak_id, tarih=tarih, islem_turu="Cari Virman", belge_no=belge_no,
+                cari_id=kaynak_id, tarih=tarih, islem_turu="Cari Virman", belge_no=belgeno,
                 aciklama=aciklama or f"Alacak → borç: {hedef.cari_kodu} {hedef.unvan}",
                 borc=Decimal("0"), alacak=tutar,
                 karsi_cari_id=hedef_id,
             )
             hedef_islem = CariIslem(
-                cari_id=hedef_id, tarih=tarih, islem_turu="Cari Virman", belge_no=belge_no,
+                cari_id=hedef_id, tarih=tarih, islem_turu="Cari Virman", belge_no=belgeno,
                 aciklama=aciklama or f"Borç ← alacak: {kaynak.cari_kodu} {kaynak.unvan}",
                 borc=tutar, alacak=Decimal("0"),
                 karsi_cari_id=kaynak_id,

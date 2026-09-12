@@ -157,7 +157,28 @@ class HizmetFaturasiService:
             )
 
     @staticmethod
-    def kaydet(veriler: dict, satir_verileri: list[dict], fatura_id=None) -> HizmetFaturasi:
+    def fatura_no_var_mi(fatura_no: str) -> bool:
+        no = (fatura_no or "").strip()
+        if not no:
+            return False
+        with get_session() as session:
+            return (
+                session.scalar(
+                    select(HizmetFaturasi.id).where(HizmetFaturasi.fatura_no == no)
+                )
+                is not None
+            )
+
+    @staticmethod
+    def kaydet(
+        veriler: dict,
+        satir_verileri: list[dict],
+        fatura_id=None,
+        *,
+        cari_etkisi: bool = True,
+        finans_yaz: bool = True,
+    ) -> HizmetFaturasi:
+        """cari_etkisi/finans_yaz=False: EvoBulut aktarımında cari defter ayrı yazıldığında."""
         tarih = veriler["fatura_tarihi"]
         vade = veriler["vade_tarihi"]
         tur = (veriler.get("fatura_turu") or "GIDER").strip().upper()
@@ -181,11 +202,13 @@ class HizmetFaturasiService:
                     raise ValueError("Fatura bulunamadı.")
                 if fatura.durum == "İPTAL":
                     raise ValueError("İptal edilmiş fatura düzenlenemez.")
-                HizmetFaturasiService._finans_geri_al(session, fatura)
+                if finans_yaz:
+                    HizmetFaturasiService._finans_geri_al(session, fatura)
                 HizmetFaturasiService._hareketleri_sil(session, fatura.fatura_no)
-                session.execute(
-                    delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
-                )
+                if cari_etkisi:
+                    session.execute(
+                        delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+                    )
                 fatura.satirlar.clear()
             else:
                 fatura = HizmetFaturasi(
@@ -275,18 +298,20 @@ class HizmetFaturasiService:
             fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
             session.flush()
 
-            hareket = session.scalar(
-                select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
-            )
-            if not hareket:
-                hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
-                session.add(hareket)
-            hareket.cari_id = fatura.cari_id
-            hareket.satis_tarihi = tarih
-            hareket.satis_tutari = toplam
-            hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+            if cari_etkisi:
+                hareket = session.scalar(
+                    select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+                )
+                if not hareket:
+                    hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
+                    session.add(hareket)
+                hareket.cari_id = fatura.cari_id
+                hareket.satis_tarihi = tarih
+                hareket.satis_tutari = toplam
+                hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
 
-            HizmetFaturasiService._finans_yaz(session, fatura)
+            if finans_yaz:
+                HizmetFaturasiService._finans_yaz(session, fatura)
             try:
                 session.flush()
             except IntegrityError as hata:

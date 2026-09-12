@@ -1,35 +1,35 @@
-"""EvoBulut alış fatura aktarım diyaloğu."""
+"""EvoBulut Gelir/Gider aktarım diyaloğu."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ui_bg import arka_planda, ui_guncelle
+from ui_bg import arka_planda
 
 
-class EvobulutAlisFaturaAktarDialog(tk.Toplevel):
+class EvobulutGelirGiderAktarDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.result = None
-        self.title("EvoBulut — Alış Fatura Aktar")
-        self.geometry("540x320")
-        self.minsize(500, 280)
+        self.title("EvoBulut — Gelir / Gider Aktar")
+        self.geometry("540x300")
+        self.minsize(500, 260)
         self.transient(parent)
         self.grab_set()
         self._busy = False
 
         ttk.Label(
             self,
-            text="EvoBulut alış faturalarını bu programa aktarın.",
+            text="EvoBulut gelir/gider işlemlerini cari deftere ve faturalara aktarın.",
             style="Baslik.TLabel",
         ).pack(anchor="w", padx=14, pady=(14, 4))
         ttk.Label(
             self,
             text=(
-                "API: fatura listesi tur=30. Her fatura için detay çekilir (~1 sn/adet).\n"
-                "Stok girişi ve cari borç yazılır. Eksik stok kartları otomatik eklenir.\n"
-                "Aynı belge no tekrar yazılmaz."
+                "API: GelirGider/base (tur 40=Gider, 41=Gelir).\n"
+                "Belge: EVB-GG-{id} — Hizmet Alış/Satış fatura listelerinde görünür.\n"
+                "Cari defter + kapama (EVB-GGK) korunur; çift bakiye yazılmaz."
             ),
             wraplength=500,
         ).pack(anchor="w", padx=14, pady=(0, 12))
@@ -38,7 +38,7 @@ class EvobulutAlisFaturaAktarDialog(tk.Toplevel):
         dugmeler.pack(fill="x", padx=14, pady=8)
         ttk.Button(
             dugmeler,
-            text="API’den alış faturalarını aktar",
+            text="API’den gelir/gider aktar",
             command=self._apiden,
         ).pack(fill="x", pady=4)
         ttk.Button(dugmeler, text="Kapat", command=self.destroy).pack(fill="x", pady=(12, 0))
@@ -64,22 +64,21 @@ class EvobulutAlisFaturaAktarDialog(tk.Toplevel):
         if not self._kimlik_var_mi():
             return
         if not messagebox.askyesno(
-            "Alış fatura aktarımı",
-            "EvoBulut’taki alış faturaları aktarılacak.\n"
-            "İşlem yüzlerce istek sürebilir. Devam?",
+            "Gelir/Gider aktarımı",
+            "EvoBulut gelir/gider kayıtları cari deftere ve Gelir/Gider faturalarına yazılacak.\n"
+            "İşlem birkaç dakika sürebilir. Devam?",
             parent=self,
         ):
             return
         self._busy = True
         self.durum.configure(text="Aktarılıyor…")
 
-        def _progress(m: str) -> None:
-            ui_guncelle(self, lambda: self.durum.configure(text=m))
-
         def _is():
-            from entegrasyon.alis_fatura_import import aktar_api_den
+            from entegrasyon.gelir_gider_import import aktar_api_den
 
-            return aktar_api_den(progress=_progress)
+            return aktar_api_den(
+                progress=lambda m: self.after(0, lambda msg=m: self.durum.configure(text=msg[:120]))
+            )
 
         def _ok(sonuc):
             self._busy = False
@@ -87,7 +86,6 @@ class EvobulutAlisFaturaAktarDialog(tk.Toplevel):
                 f"Çekilen: {sonuc.cekilen}\n"
                 f"Oluşturulan: {sonuc.olusturulan}\n"
                 f"Atlanan: {sonuc.atlanan}\n"
-                f"Yeni stok kartı: {sonuc.stok_eklenen}\n"
                 f"Hata: {len(sonuc.hatalar)}"
             )
             if sonuc.hatalar:

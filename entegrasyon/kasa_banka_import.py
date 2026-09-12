@@ -202,6 +202,24 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
     aciklama = (aciklama or f"EVB kasa {aid} {tur_adi}")[:500]
     kasa_id = _varsayilan_kasa_id()
 
+    # Kasa virman: cari tahsilat/ödeme gibi yazılmaz (yanlış bakiye riski)
+    if "virman" in tur_adi.casefold():
+        with get_session() as session:
+            from database.models.finans import FinansHareketi as FH
+
+            session.add(
+                FH(
+                    hesap_id=kasa_id,
+                    tarih=tarih,
+                    hareket_turu="KASA VİRMAN",
+                    belge_no=belge,
+                    tutar=tutar,
+                    aciklama=aciklama,
+                )
+            )
+        sonuc.olusturulan += 1
+        return api_cagrildi
+
     if cari is not None:
         if yon:
             FinansService.kasa_tahsilat_makbuzu_kaydet(

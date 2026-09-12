@@ -80,7 +80,7 @@ class RaporService:
         if not detay:
             raise ValueError("Cari bulunamadı.")
         cari = detay["cari"]
-        ozet = next((o for o in CariService.listele() if o["cari"].id == cari_id), None)
+        ozet = next((o for o in CariService.listele(hizli=True) if o["cari"].id == cari_id), None)
         vade_ozet = SatisFaturasiService.bakiye_ozeti(cari_id)
 
         # Kronolojik sırada çalışan bakiye
@@ -341,7 +341,7 @@ class RaporService:
                 calisan += (belge["borc"] or Decimal("0")) - (belge["alacak"] or Decimal("0"))
                 belge["bakiye"] = calisan
 
-            ozet = next((o for o in CariService.listele() if o["cari"].id == cari_id), None)
+            ozet = next((o for o in CariService.listele(hizli=True) if o["cari"].id == cari_id), None)
             return {
                 "cari": cari,
                 "bakiye": ozet["bakiye"] if ozet else calisan,
@@ -1022,7 +1022,7 @@ class RaporService:
         cari_borc_kalemleri = []
         cari_alacak_toplam = sifir
         cari_borc_toplam = sifir
-        for ozet in CariService.listele():
+        for ozet in CariService.listele(hizli=True):
             cari = ozet["cari"]
             if not getattr(cari, "aktif", True):
                 continue

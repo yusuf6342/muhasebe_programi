@@ -162,8 +162,17 @@ def map_evobulut_api_satir(satir: dict[str, Any], varsayilan_tur: str = "Müşte
     resmi = al("R.a_resmi_ad", "a_resmi_ad")
     ad = al("R.a_ad", "a_ad", "musteri")
     soy = al("R.a_soy", "a_soy")
-    unvan = resmi or ad
-    if soy and soy not in unvan:
+    # Ticari ad + resmi ad (farklıysa ikisi birden; aramada ikisi de bulunur)
+    if ad and resmi and ad.casefold() != resmi.casefold():
+        if ad.casefold() in resmi.casefold():
+            unvan = resmi
+        elif resmi.casefold() in ad.casefold():
+            unvan = ad
+        else:
+            unvan = f"{ad} ({resmi})"
+    else:
+        unvan = ad or resmi
+    if soy and soy.casefold() not in unvan.casefold():
         unvan = f"{unvan} {soy}".strip() if unvan else soy
     if not unvan:
         unvan = al("musteri", "text")

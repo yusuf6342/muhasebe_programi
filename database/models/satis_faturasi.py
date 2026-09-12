@@ -34,6 +34,9 @@ class SatisFaturasi(Base):
     satirlar: Mapped[list["SatisFaturasiSatiri"]] = relationship(
         "SatisFaturasiSatiri", back_populates="fatura", cascade="all, delete-orphan"
     )
+    tahsilatlar: Mapped[list["SatisFaturasiTahsilati"]] = relationship(
+        "SatisFaturasiTahsilati", back_populates="fatura", cascade="all, delete-orphan"
+    )
 
 
 class SatisFaturasiSatiri(Base):
@@ -53,6 +56,8 @@ class SatisFaturasiSatiri(Base):
     birim: Mapped[str] = mapped_column(String(20), nullable=False)
     birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     iskonto_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
+    iskonto_orani_2: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
+    iskonto_orani_3: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
     kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     son_alis_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
@@ -60,3 +65,17 @@ class SatisFaturasiSatiri(Base):
     agirlikli_ortalama_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
 
     fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="satirlar")
+
+
+class SatisFaturasiTahsilati(Base):
+    __tablename__ = "satis_faturasi_tahsilatlari"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fatura_id: Mapped[int] = mapped_column(ForeignKey("satis_faturalari.id"), nullable=False, index=True)
+    tahsilat_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    odeme_sekli: Mapped[str] = mapped_column(String(50), nullable=False)
+    hesap: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="tahsilatlar")

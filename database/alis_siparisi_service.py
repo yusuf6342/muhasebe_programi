@@ -196,5 +196,5 @@ class AlisSiparisiService:
 
     @staticmethod
     def tahmini_bakiye(cari_id: int, siparis_toplami: Decimal, odeme: Decimal) -> Decimal:
-        ozet = next((item for item in CariService.listele() if item["cari"].id == cari_id), None)
+        ozet = next((item for item in CariService.listele(hizli=True) if item["cari"].id == cari_id), None)
         return (ozet["bakiye"] if ozet else Decimal("0")) + siparis_toplami - odeme

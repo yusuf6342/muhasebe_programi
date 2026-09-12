@@ -49,7 +49,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.kasa_map = {_kasa_etiket(h): h for h in kasalar}
         self._tum_kasa_etiketleri = list(self.kasa_map)
 
-        cariler = CariService.listele()
+        cariler = CariService.listele(hizli=True)
         self.cari_map = {}
         self._tum_cari_etiketleri = []
         for o in cariler:

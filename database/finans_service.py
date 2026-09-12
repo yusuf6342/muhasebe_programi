@@ -127,6 +127,37 @@ class FinansService:
             return list(session.scalars(q).all())
 
     @staticmethod
+    def tahsilat_hesaplari(odeme_sekli: str | None = None):
+        """Ödeme şekline göre tahsilat hesabı listesi.
+        - Nakit/Kasa → yalnızca KASA
+        - Gelen/Alınan Havale → MEVDUAT + KMH
+        - Kredi kartı tahsilat → yalnızca POS (firma KK hesapları tahsilatta yok)
+        """
+        tum = FinansService.hesaplar()
+        sekil = (
+            (odeme_sekli or "")
+            .replace("İ", "I")
+            .replace("ı", "i")
+            .upper()
+        )
+        if "HAVALE" in sekil:
+            return [
+                h
+                for h in tum
+                if (getattr(h, "alt_hesap_turu", None) or "").upper() in ("MEVDUAT", "KMH")
+            ]
+        if "KART" in sekil or "POS" in sekil:
+            # Firma kredi kartları (ödeme) hariç; sadece POS tahsilat hesapları
+            return [
+                h
+                for h in tum
+                if (getattr(h, "alt_hesap_turu", None) or "").upper() == "POS"
+            ]
+        if "KASA" in sekil or "NAKIT" in sekil:
+            return [h for h in tum if (h.hesap_turu or "").upper() == "KASA"]
+        return tum
+
+    @staticmethod
     def hesap_getir(hesap_id):
         with get_session() as session:
             return session.scalar(

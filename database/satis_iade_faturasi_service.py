@@ -73,8 +73,17 @@ class SatisIadeFaturasiService:
             ).all()
             gecmis = []
             for satir in satirlar:
-                indirim = satir.birim_fiyat * satir.iskonto_orani / Decimal("100")
-                net_fiyat = satir.birim_fiyat - indirim
+                miktar = Decimal(str(satir.miktar or 0))
+                fiyat = Decimal(str(satir.birim_fiyat or 0))
+                from database.satis_faturasi_service import SatisFaturasiService
+                _, _, net_toplam = SatisFaturasiService._satir_net(
+                    miktar,
+                    fiyat,
+                    satir.iskonto_orani,
+                    getattr(satir, "iskonto_orani_2", 0) or 0,
+                    getattr(satir, "iskonto_orani_3", 0) or 0,
+                )
+                net_fiyat = (net_toplam / miktar) if miktar else Decimal("0")
                 gecmis.append({
                     "fatura_no": satir.fatura.fatura_no,
                     "tarih": satir.fatura.fatura_tarihi,

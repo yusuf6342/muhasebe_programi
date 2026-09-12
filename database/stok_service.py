@@ -389,10 +389,12 @@ class StokService:
             return list(session.scalars(q).all())
 
     @staticmethod
-    def stoklari_filtrele(kod="", ad="", limit=250):
-        """Ürün kodu ve/veya adı ile AND filtre (fatura satırı seçimi)."""
+    def stoklari_filtrele(kod="", ad="", limit=250, sadece_stokta=False, depo_ad=None):
+        """Ürün kodu ve/veya adı ile AND filtre (fatura satırı seçimi).
+        sadece_stokta=True ise kalan miktarı > 0 olanlar (opsiyonel depo)."""
         kod = (kod or "").strip()
         ad = (ad or "").strip()
+        depo_ad = (depo_ad or "").strip()
         with get_session() as session:
             q = (
                 select(StokKarti)
@@ -408,6 +410,13 @@ class StokService:
                 q = q.where(StokKarti.stok_kodu.ilike(f"%{kod}%"))
             if ad:
                 q = q.where(StokKarti.stok_adi.ilike(f"%{ad}%"))
+            if sadece_stokta:
+                stoklu = select(StokLotu.stok_id).where(StokLotu.kalan_miktar > 0)
+                if depo_ad:
+                    depo = session.scalar(select(Depo).where(Depo.ad == depo_ad))
+                    if depo is not None:
+                        stoklu = stoklu.where(StokLotu.depo_id == depo.id)
+                q = q.where(StokKarti.id.in_(stoklu.distinct()))
             return list(session.scalars(q.limit(limit)).all())
 
     @staticmethod
@@ -780,6 +789,39 @@ class StokService:
             for fiyat in StokService.fiyatlar(stok_kodu)
             if (fiyat.fiyat_adi or "").strip().upper() in hedef
         ]
+
+    @staticmethod
+    def satis_fiyatlari(stok_kodu):
+        """Stok kartındaki SATIŞ fiyatlarını döner (eski ad eşlemeleri dahil)."""
+        hedef = {(ad or "").strip().upper() for ad in SATIS_FIYAT_ADLARI}
+        for eski, yeni in ESKI_FIYAT_ESLEME.items():
+            if (yeni or "").strip().upper() in hedef:
+                hedef.add((eski or "").strip().upper())
+
+        def _satis_mi(ad: str) -> bool:
+            a = (ad or "").strip().upper()
+            if not a:
+                return False
+            if a in hedef:
+                return True
+            if a.startswith("SATIŞ FİYATI") or a.startswith("SATIS FIYATI"):
+                return True
+            return False
+
+        bulunan = [
+            fiyat
+            for fiyat in StokService.fiyatlar(stok_kodu)
+            if _satis_mi(fiyat.fiyat_adi)
+        ]
+
+        def _sira(fiyat):
+            ad = (fiyat.fiyat_adi or "").strip().upper()
+            for i, standart in enumerate(SATIS_FIYAT_ADLARI):
+                if ad == standart.upper():
+                    return (0, i, ad)
+            return (1, 99, ad)
+
+        return sorted(bulunan, key=_sira)
 
     @staticmethod
     def satis_fiyati_1(stok_kodu, varsayilan=Decimal("0")):

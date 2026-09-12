@@ -5,6 +5,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from ui_bg import arka_planda
+
 
 class EvobulutStokAktarDialog(tk.Toplevel):
     def __init__(self, parent):
@@ -15,6 +17,7 @@ class EvobulutStokAktarDialog(tk.Toplevel):
         self.minsize(480, 280)
         self.transient(parent)
         self.grab_set()
+        self._busy = False
 
         ttk.Label(
             self,
@@ -49,6 +52,7 @@ class EvobulutStokAktarDialog(tk.Toplevel):
         self.durum.pack(anchor="w", padx=14, pady=(8, 12))
 
     def _ozet_goster(self, sonuc) -> None:
+        self._busy = False
         msg = (
             f"Çekilen: {sonuc.cekilen}  |  Eklenen: {sonuc.eklenen}  |  "
             f"Güncellenen: {sonuc.guncellenen}  |  Atlanan: {sonuc.atlanan}"
@@ -58,6 +62,11 @@ class EvobulutStokAktarDialog(tk.Toplevel):
         self.durum.configure(text=msg)
         messagebox.showinfo("Aktarım sonucu", msg, parent=self)
         self.result = sonuc
+
+    def _hata(self, exc: BaseException) -> None:
+        self._busy = False
+        self.durum.configure(text="")
+        messagebox.showerror("EvoBulut API", str(exc), parent=self)
 
     def _kimlik_var_mi(self) -> bool:
         from entegrasyon.evobulut_client import credentials_available
@@ -76,47 +85,51 @@ class EvobulutStokAktarDialog(tk.Toplevel):
         return False
 
     def _apiden(self) -> None:
-        try:
-            from entegrasyon.evobulut_client import EvobulutConfigError
+        if self._busy:
+            return
+        if not self._kimlik_var_mi():
+            return
+        if not messagebox.askyesno(
+            "API aktarımı",
+            "EvoBulut API’den tüm stok listesi çekilip kaydedilecek.\n"
+            "Mevcut kartlar stok koduna göre güncellenir.\nDevam?",
+            parent=self,
+        ):
+            return
+        self._busy = True
+        self.durum.configure(text="API’den çekiliyor… (birkaç dakika sürebilir)")
+
+        def _is():
             from entegrasyon.stok_import import aktar_api_den
 
-            if not self._kimlik_var_mi():
-                return
-            if not messagebox.askyesno(
-                "API aktarımı",
-                "EvoBulut API’den tüm stok listesi çekilip kaydedilecek.\n"
-                "Mevcut kartlar stok koduna göre güncellenir.\nDevam?",
-                parent=self,
-            ):
-                return
-            self.durum.configure(text="API’den çekiliyor… (birkaç dakika sürebilir)")
-            self.update_idletasks()
-            sonuc = aktar_api_den()
-            self._ozet_goster(sonuc)
-        except EvobulutConfigError as exc:
-            messagebox.showwarning("EvoBulut API", str(exc), parent=self)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("EvoBulut API", str(exc), parent=self)
+            return aktar_api_den()
+
+        arka_planda(self, _is, on_ok=self._ozet_goster, on_err=self._hata)
 
     def _giris_apiden(self) -> None:
-        try:
-            from entegrasyon.evobulut_client import EvobulutConfigError
+        if self._busy:
+            return
+        if not self._kimlik_var_mi():
+            return
+        if not messagebox.askyesno(
+            "Stok giriş / açılış aktarımı",
+            "EvoBulut’taki güncel stok miktarları (a_kalan) GİRİŞ hareketi olarak yazılacak.\n"
+            "Sıfır kalanlar atlanır; aynı fiş tekrar yazılmaz (EVB-SG-…).\n"
+            "Önce stok kartlarının aktarılmış olması gerekir.\n"
+            "Not: API’de ayrı stok giriş fişi listesi yok.\n\nDevam?",
+            parent=self,
+        ):
+            return
+        self._busy = True
+        self.durum.configure(text="Stok miktarları çekiliyor… (birkaç dakika sürebilir)")
+
+        def _is():
             from entegrasyon.stok_giris_import import aktar_api_den
 
-            if not self._kimlik_var_mi():
-                return
-            if not messagebox.askyesno(
-                "Stok giriş / açılış aktarımı",
-                "EvoBulut’taki güncel stok miktarları (a_kalan) GİRİŞ hareketi olarak yazılacak.\n"
-                "Sıfır kalanlar atlanır; aynı fiş tekrar yazılmaz (EVB-SG-…).\n"
-                "Önce stok kartlarının aktarılmış olması gerekir.\n"
-                "Not: API’de ayrı stok giriş fişi listesi yok.\n\nDevam?",
-                parent=self,
-            ):
-                return
-            self.durum.configure(text="Stok miktarları çekiliyor… (birkaç dakika sürebilir)")
-            self.update_idletasks()
-            sonuc = aktar_api_den()
+            return aktar_api_den()
+
+        def _ok(sonuc):
+            self._busy = False
             msg = (
                 f"Çekilen: {sonuc.cekilen}  |  Oluşturulan: {sonuc.olusturulan}  |  "
                 f"Atlanan: {sonuc.atlanan}  |  Sıfır: {sonuc.sifir_kalan}"
@@ -126,7 +139,5 @@ class EvobulutStokAktarDialog(tk.Toplevel):
             self.durum.configure(text=msg)
             messagebox.showinfo("Stok giriş aktarım sonucu", msg, parent=self)
             self.result = sonuc
-        except EvobulutConfigError as exc:
-            messagebox.showwarning("EvoBulut API", str(exc), parent=self)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("EvoBulut API", str(exc), parent=self)
+
+        arka_planda(self, _is, on_ok=_ok, on_err=self._hata)

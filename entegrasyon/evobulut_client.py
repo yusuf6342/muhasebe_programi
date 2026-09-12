@@ -18,6 +18,8 @@ Sipariş: POST /Siparis/base/  cmd=jq_list a_tur=50|51; cmd=sql a_id=…
 İrsaliye: POST /irsaliye/base/  cmd=jq_list a_tur=70|71; cmd=sql a_id=…
 Kasa: POST /KasaHareketleri/base/  cmd=kasa_listesi|jq_list|sql
 Banka: POST /BankHareketleri/base/  cmd=banka_listesi|jq_list|sql
+Gelir/Gider: POST /GelirGider/base/  cmd=jq_list|sql
+  (a_tur_id 40=Gider, 41=Gelir; OpenAPI'de Cari Virman REST yok)
 Gelen e-Fatura: POST /FaturaUbl/base/  cmd=jq_list|sql
 Cari export: POST /CariExport/base/  cmd=export
 """
@@ -659,6 +661,98 @@ class EvobulutClient:
             {"cmd": "sql", "UID": self.uid, "a_id": str(islem_id)},
         )
         return _ana_detay_blok(yanit, f"Banka işlem detayı alınamadı (id={islem_id}).")
+
+    def gelir_gider_liste_sayfa(
+        self,
+        sayfa: int = 0,
+        *,
+        ara: str = "",
+        cari_id: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+    ) -> tuple[list[dict], int]:
+        """Gelir/Gider listesi. tur: 40=Gider, 41=Gelir (FIN_TUR.a_adi)."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "GelirGider/base/",
+            {
+                "cmd": "jq_list",
+                "UID": self.uid,
+                "sayfa": str(sayfa),
+                "cari_id": cari_id or "",
+                "bas_tar": bas_tar or "",
+                "son_tar": son_tar or "",
+                "ara": ara or "",
+            },
+        )
+        satirlar = _ana_listesi(yanit)
+        # sayfa alanı bazen toplam kayıt sayısı (ör. "562")
+        adet = _fatura_adet(yanit) or _sayfa_adet(yanit)
+        veri = yanit.get("veri") or yanit.get("Veri") or {}
+        if adet <= 0 and isinstance(veri, dict):
+            ham = str(veri.get("sayfa") or "").strip()
+            if ham.isdigit():
+                adet = int(ham)
+        return satirlar, adet
+
+    def tum_gelir_giderleri_cek(
+        self,
+        *,
+        ara: str = "",
+        cari_id: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        max_sayfa: int = 2000,
+    ) -> list[dict]:
+        if not self.uid:
+            self.login()
+        tum: list[dict] = []
+        sayfa = 0
+        toplam = None
+        while sayfa < max_sayfa:
+            satirlar, adet = self.gelir_gider_liste_sayfa(
+                sayfa,
+                ara=ara,
+                cari_id=cari_id,
+                bas_tar=bas_tar,
+                son_tar=son_tar,
+            )
+            if toplam is None:
+                toplam = adet
+            if not satirlar:
+                break
+            tum.extend(satirlar)
+            if toplam is not None and toplam > 0 and len(tum) >= toplam:
+                break
+            if len(satirlar) < 30:
+                break
+            sayfa += 1
+        return tum
+
+    def gelir_gider_detay(self, kayit_id: str | int) -> dict:
+        """Gelir/Gider detayı. Döner: {Ana: dict, OdemeBilgiler: list}."""
+        if not self.uid:
+            self.login()
+        yanit = self._post(
+            "GelirGider/base/",
+            {"cmd": "sql", "UID": self.uid, "a_id": str(kayit_id)},
+        )
+        if str(yanit.get("status") or "").upper() not in {"OK", "1", ""}:
+            raise EvobulutApiError(f"Gelir/Gider detayı alınamadı (id={kayit_id}).")
+        veri = yanit.get("veri") or yanit.get("Veri") or {}
+        if not isinstance(veri, dict):
+            raise EvobulutApiError(f"Gelir/Gider detayı beklenmeyen format (id={kayit_id}).")
+        ana = veri.get("Ana") or {}
+        if isinstance(ana, list):
+            ana = ana[0] if ana and isinstance(ana[0], dict) else {}
+        odemeler = veri.get("OdemeBilgiler") or []
+        if not isinstance(odemeler, list):
+            odemeler = []
+        return {
+            "Ana": ana if isinstance(ana, dict) else {},
+            "OdemeBilgiler": [x for x in odemeler if isinstance(x, dict)],
+        }
 
     def _tum_listeyi_cek(self, sayfa_fn, ara: str = "", max_sayfa: int = 500) -> list[dict]:
         if not self.uid:

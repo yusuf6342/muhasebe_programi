@@ -33,6 +33,12 @@ def _menu_isaretle(app, anahtar="gelir_gider"):
         )
 
 
+def _evobulut_gelir_gider(app):
+    from evobulut_gelir_gider_ui import EvobulutGelirGiderAktarDialog
+
+    EvobulutGelirGiderAktarDialog(app)
+
+
 def gelir_gider_menusu_goster(app):
     app._icerigi_temizle()
     _menu_isaretle(app)
@@ -47,6 +53,7 @@ def gelir_gider_menusu_goster(app):
     for i, (baslik, komut) in enumerate((
         ("GİDERLER", lambda: giderler_menusu_goster(app)),
         ("GELİRLER", lambda: gelirler_menusu_goster(app)),
+        ("EVOBULUT GELİR/GİDER AKTAR", lambda: _evobulut_gelir_gider(app)),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
             row=i, column=0, sticky="ew", pady=4

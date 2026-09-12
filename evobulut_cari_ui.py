@@ -5,6 +5,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from ui_bg import arka_planda
+
 
 class EvobulutCariAktarDialog(tk.Toplevel):
     def __init__(self, parent, varsayilan_tur: str = "Müşteri"):
@@ -16,6 +18,7 @@ class EvobulutCariAktarDialog(tk.Toplevel):
         self.minsize(480, 300)
         self.transient(parent)
         self.grab_set()
+        self._busy = False
 
         ttk.Label(
             self,
@@ -55,6 +58,7 @@ class EvobulutCariAktarDialog(tk.Toplevel):
         self.durum.pack(anchor="w", padx=14, pady=(8, 12))
 
     def _ozet_goster(self, sonuc) -> None:
+        self._busy = False
         msg = (
             f"Eklenen: {sonuc.eklenen}  |  Güncellenen: {sonuc.guncellenen}  |  "
             f"Atlanan: {sonuc.atlanan}"
@@ -65,7 +69,14 @@ class EvobulutCariAktarDialog(tk.Toplevel):
         messagebox.showinfo("Aktarım sonucu", msg, parent=self)
         self.result = sonuc
 
+    def _hata(self, baslik: str, exc: BaseException) -> None:
+        self._busy = False
+        self.durum.configure(text="")
+        messagebox.showerror(baslik, str(exc), parent=self)
+
     def _dosyadan(self) -> None:
+        if self._busy:
+            return
         yol = filedialog.askopenfilename(
             parent=self,
             title="EvoBulut cari Excel/CSV",
@@ -78,15 +89,21 @@ class EvobulutCariAktarDialog(tk.Toplevel):
         )
         if not yol:
             return
-        try:
+        self._busy = True
+        self.durum.configure(text="Aktarılıyor…")
+        tur = self.varsayilan_tur
+
+        def _is():
             from entegrasyon.cari_import import aktar_dosyadan
 
-            self.durum.configure(text="Aktarılıyor…")
-            self.update_idletasks()
-            sonuc = aktar_dosyadan(yol, varsayilan_tur=self.varsayilan_tur)
-            self._ozet_goster(sonuc)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Aktarım", str(exc), parent=self)
+            return aktar_dosyadan(yol, varsayilan_tur=tur)
+
+        arka_planda(
+            self,
+            _is,
+            on_ok=self._ozet_goster,
+            on_err=lambda e: self._hata("Aktarım", e),
+        )
 
     def _kimlik_var_mi(self) -> bool:
         from entegrasyon.evobulut_client import credentials_available
@@ -106,9 +123,10 @@ class EvobulutCariAktarDialog(tk.Toplevel):
         return False
 
     def _apiden(self) -> None:
+        if self._busy:
+            return
         try:
             from entegrasyon.evobulut_client import EvobulutConfigError
-            from entegrasyon.cari_import import aktar_api_den
 
             if not self._kimlik_var_mi():
                 return
@@ -118,19 +136,33 @@ class EvobulutCariAktarDialog(tk.Toplevel):
                 parent=self,
             ):
                 return
+            self._busy = True
             self.durum.configure(text="API’den çekiliyor…")
-            self.update_idletasks()
-            sonuc = aktar_api_den(varsayilan_tur=self.varsayilan_tur)
-            self._ozet_goster(sonuc)
-        except EvobulutConfigError as exc:
-            messagebox.showwarning("EvoBulut API", str(exc), parent=self)
+            tur = self.varsayilan_tur
+
+            def _is():
+                from entegrasyon.cari_import import aktar_api_den
+
+                return aktar_api_den(varsayilan_tur=tur)
+
+            arka_planda(
+                self,
+                _is,
+                on_ok=self._ozet_goster,
+                on_err=lambda e: self._hata(
+                    "EvoBulut API" if isinstance(e, EvobulutConfigError) else "EvoBulut API",
+                    e,
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
+            self._busy = False
             messagebox.showerror("EvoBulut API", str(exc), parent=self)
 
     def _acilis_apiden(self) -> None:
+        if self._busy:
+            return
         try:
             from entegrasyon.evobulut_client import EvobulutConfigError
-            from entegrasyon.cari_acilis_import import aktar_api_den
 
             if not self._kimlik_var_mi():
                 return
@@ -142,19 +174,35 @@ class EvobulutCariAktarDialog(tk.Toplevel):
                 parent=self,
             ):
                 return
+            self._busy = True
             self.durum.configure(text="Açılış bakiyeleri çekiliyor…")
-            self.update_idletasks()
-            sonuc = aktar_api_den()
-            msg = (
-                f"Çekilen: {sonuc.cekilen}  |  Oluşturulan: {sonuc.olusturulan}  |  "
-                f"Atlanan: {sonuc.atlanan}  |  Sıfır: {sonuc.sifir_bakiye}"
+
+            def _is():
+                from entegrasyon.cari_acilis_import import aktar_api_den
+
+                return aktar_api_den()
+
+            def _ok(sonuc):
+                self._busy = False
+                msg = (
+                    f"Çekilen: {sonuc.cekilen}  |  Oluşturulan: {sonuc.olusturulan}  |  "
+                    f"Atlanan: {sonuc.atlanan}  |  Sıfır: {sonuc.sifir_bakiye}"
+                )
+                if sonuc.hatalar:
+                    msg += f"\nİlk hatalar:\n" + "\n".join(sonuc.hatalar[:5])
+                self.durum.configure(text=msg)
+                messagebox.showinfo("Açılış aktarım sonucu", msg, parent=self)
+                self.result = sonuc
+
+            arka_planda(
+                self,
+                _is,
+                on_ok=_ok,
+                on_err=lambda e: self._hata(
+                    "EvoBulut API" if isinstance(e, EvobulutConfigError) else "EvoBulut API",
+                    e,
+                ),
             )
-            if sonuc.hatalar:
-                msg += f"\nİlk hatalar:\n" + "\n".join(sonuc.hatalar[:5])
-            self.durum.configure(text=msg)
-            messagebox.showinfo("Açılış aktarım sonucu", msg, parent=self)
-            self.result = sonuc
-        except EvobulutConfigError as exc:
-            messagebox.showwarning("EvoBulut API", str(exc), parent=self)
         except Exception as exc:  # noqa: BLE001
+            self._busy = False
             messagebox.showerror("EvoBulut API", str(exc), parent=self)
