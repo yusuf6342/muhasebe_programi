@@ -27,4 +27,5 @@ if errorlevel 1 (
 echo.
 echo Masaustunde "Muhasebe Programi" kisayolu hazir.
 echo Cift tiklayinca program acilir.
+explorer.exe "%USERPROFILE%\Desktop"
 pause
