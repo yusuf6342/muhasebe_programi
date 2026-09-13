@@ -3,6 +3,9 @@ chcp 65001 >nul
 setlocal EnableExtensions
 title Muhasebe Programi - Kurulum
 
+rem Bu dosya cift tiklayinca metin aciliyorsa PowerShell'de sunu calistirin:
+rem irm https://raw.githubusercontent.com/yusuf6342/muhasebe_programi/main/kurulum_masaustu.ps1 | iex
+
 echo.
 echo  Muhasebe Programi kuruluyor...
 echo  (GitHub'dan indirilecek, masaustune kisayol eklenecek)
