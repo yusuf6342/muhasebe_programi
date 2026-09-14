@@ -52,7 +52,9 @@ def _eski_db_tasi(hedef_dir: Path) -> None:
 def _konum_dosyasi_yaz(db_yolu: Path) -> None:
     metin = (
         "Muhasebe veritabanı konumu (OneDrive senkronu SQLite kilidine yol açmasın diye):\n"
-        f"{db_yolu}\n"
+        f"Firma operasyon DB: {db_yolu}\n"
+        f"Sistem DB: {DB_DIR / 'system.db'}\n"
+        f"Firma DB klasörü: {DB_DIR / 'companies'}\n"
         "\nÖzel klasör için ortam değişkeni: MUHASEBE_DB_DIR\n"
     )
     try:
@@ -64,21 +66,15 @@ def _konum_dosyasi_yaz(db_yolu: Path) -> None:
 DB_DIR = _db_dir_sec()
 _eski_db_tasi(DB_DIR)
 DB_PATH = (DB_DIR / "muhasebe.db").resolve()
+SYSTEM_DB_PATH = (DB_DIR / "system.db").resolve()
+COMPANIES_DIR = (DB_DIR / "companies").resolve()
+COMPANIES_DIR.mkdir(parents=True, exist_ok=True)
 _konum_dosyasi_yaz(DB_PATH)
 
-# SQLite veritabanı
+# SQLite veritabanı (firma operasyon DB — varsayılan: mevcut muhasebe.db)
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 
 
-# Veritabanı bağlantısı (arka plan thread + OneDrive kilidi için timeout)
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
-)
-
-
-@event.listens_for(engine, "connect")
 def _sqlite_baglanti_ayarlari(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -87,22 +83,98 @@ def _sqlite_baglanti_ayarlari(dbapi_connection, _connection_record) -> None:
     cursor.close()
 
 
-# Tüm veritabanı modellerimizin temel sınıfı
+# Veritabanı bağlantısı (arka plan thread + OneDrive kilidi için timeout)
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
+event.listen(engine, "connect", _sqlite_baglanti_ayarlari)
+
+
+# Tüm firma (operasyon) modellerimizin temel sınıfı
 class Base(DeclarativeBase):
     pass
 
 
-# Veritabanı oturumu
+# Veritabanı oturumu — aktif firma değişince yeniden bağlanır
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
     autocommit=False,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
+
+# Ortak sistem engine (system.db) — bootstrap sonrası doldurulur
+system_engine = None
+SystemSessionLocal = None
+
+# Firma DB yöneticisi
+from database.company_database import CompanyDatabase  # noqa: E402
+
+company_db = CompanyDatabase(COMPANIES_DIR)
+
+
+def _aktif_engine_bagla(yeni_engine) -> None:
+    """Schema migration ve get_session geriye uyumlu kalsın diye global engine günceller."""
+    global engine, SessionLocal
+    if engine is not None and engine is not yeni_engine:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+    engine = yeni_engine
+    SessionLocal = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+
+def firma_db_ac(company_id: int, db_path: str | Path) -> None:
+    """Aktif firma operasyon DB'sini açar (öncekini kapatır).
+
+    Aynı dosya zaten açıksa engine nesnesini korur (import edenlerin
+    `from database.database import engine` referansı bozulmasın).
+    """
+    yol = Path(db_path).resolve()
+    mevcut_yol: Path | None = None
+    try:
+        raw = getattr(engine.url, "database", None)
+        if raw:
+            mevcut_yol = Path(raw).resolve()
+    except Exception:
+        mevcut_yol = None
+
+    if mevcut_yol == yol and engine is not None:
+        company_db._engine = engine
+        company_db._session_factory = SessionLocal
+        company_db._company_id = company_id
+        company_db._db_path = yol
+        return
+
+    yeni = company_db.open(company_id, yol)
+    _aktif_engine_bagla(yeni)
+
+
+def firma_db_kapat() -> None:
+    company_db.close()
 
 
 @contextmanager
 def get_session() -> Generator:
+    """Aktif firma operasyon oturumu. CompanyDatabase açıksa onu kullanır."""
+    from database.session_manager import oturum
+
+    if oturum.oturum_acik and not company_db.acik:
+        raise RuntimeError(
+            "Aktif firma veritabanı seçilmedi. Firmaya yeniden giriş yapın."
+        )
+    if company_db.acik:
+        with company_db.get_session() as session:
+            yield session
+        return
     session = SessionLocal()
     try:
         yield session
@@ -112,6 +184,66 @@ def get_session() -> Generator:
         raise
     finally:
         session.close()
+
+
+@contextmanager
+def get_system_session() -> Generator:
+    if SystemSessionLocal is None:
+        raise RuntimeError("Sistem veritabanı henüz başlatılmadı.")
+    session = SystemSessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def sistem_altyapisini_baslat() -> dict:
+    """
+    AŞAMA 2: system.db + roller/admin + Ray Mobilya → mevcut muhasebe.db.
+    Operasyon verisine dokunmaz; yalnızca bağlar.
+    """
+    global system_engine, SystemSessionLocal
+
+    from database.system.bootstrap import sistem_baslat, system_engine_olustur
+    from database.session_manager import oturum
+
+    sonuc = sistem_baslat(
+        system_db_path=SYSTEM_DB_PATH,
+        muhasebe_db_path=DB_PATH,
+        sifre_dosyasi=DB_DIR / "ILK_YONETICI_SIFRE.txt",
+    )
+
+    system_engine = system_engine_olustur(SYSTEM_DB_PATH)
+    SystemSessionLocal = sessionmaker(
+        bind=system_engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    company_id = sonuc["company_id"]
+    company_path = Path(sonuc["company_db"])
+    if company_id is not None:
+        firma_db_ac(int(company_id), company_path)
+        from database.system.models import Company
+
+        with get_system_session() as session:
+            firma = session.get(Company, int(company_id))
+            if firma is not None:
+                oturum.set_company(
+                    company_id=firma.id,
+                    firma_kodu=firma.firma_kodu,
+                    firma_unvan=firma.unvan,
+                    firma_uid=firma.firma_uid,
+                    db_path=firma.db_path,
+                )
+
+    _konum_dosyasi_yaz(Path(sonuc["company_db"]))
+    return sonuc
 
 
 def cari_kart_schemasini_guncelle() -> None:
@@ -222,6 +354,18 @@ def cari_kart_schemasini_guncelle() -> None:
                         text(f'ALTER TABLE "{fatura_tablo}" ADD COLUMN "islem_saati" VARCHAR(8)')
                     )
 
+    # Mevcut satış faturaları zaten hareket üretmiş sayılır (DEFAULT 1).
+    if inspect(engine).has_table("satis_faturalari"):
+        satis_sutunlar = {s["name"] for s in inspect(engine).get_columns("satis_faturalari")}
+        if "onaylandi" not in satis_sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        'ALTER TABLE "satis_faturalari" '
+                        'ADD COLUMN "onaylandi" BOOLEAN DEFAULT 1 NOT NULL'
+                    )
+                )
+
     satis_satir_tablo = "satis_faturasi_satirlari"
     if inspect(engine).has_table(satis_satir_tablo):
         satir_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(satis_satir_tablo)}
@@ -310,6 +454,119 @@ def cari_kart_schemasini_guncelle() -> None:
                 connection.execute(
                     text(f'ALTER TABLE "{gider_fisi_tablo}" ADD COLUMN "hizmet_id" INTEGER')
                 )
+
+    doviz_schema_guncelle()
+    donem_schemasini_guncelle()
+
+
+def donem_schemasini_guncelle() -> None:
+    """donemler tablosuna kapali/varsayilan kolonları (veri kaybetmeden)."""
+    if not inspect(engine).has_table("donemler"):
+        return
+    sutunlar = {s["name"] for s in inspect(engine).get_columns("donemler")}
+    eklenecekler = {
+        "kapali": "BOOLEAN DEFAULT 0 NOT NULL",
+        "varsayilan": "BOOLEAN DEFAULT 0 NOT NULL",
+    }
+    with engine.begin() as connection:
+        for alan, tip in eklenecekler.items():
+            if alan not in sutunlar:
+                connection.execute(text(f'ALTER TABLE "donemler" ADD COLUMN "{alan}" {tip}'))
+
+
+def doviz_schema_guncelle() -> None:
+    """Dövizli muhasebe tabloları ve kolonları (mevcut veriyi koruyarak)."""
+    insp = inspect(engine)
+
+    if not insp.has_table("doviz_kurlari"):
+        from database.models.doviz import DovizKuru  # noqa: F401
+
+        DovizKuru.__table__.create(engine, checkfirst=True)
+
+    def _ekle(tablo: str, kolonlar: dict[str, str]) -> None:
+        if not insp.has_table(tablo):
+            return
+        mevcut = {s["name"] for s in insp.get_columns(tablo)}
+        eksik = {a: t for a, t in kolonlar.items() if a not in mevcut}
+        if not eksik:
+            return
+        with engine.begin() as connection:
+            for alan, tip in eksik.items():
+                connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    fatura_doviz = {
+        "para_birimi": "VARCHAR(3) DEFAULT 'TRY' NOT NULL",
+        "kur": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
+        "kur_tarihi": "DATE",
+        "kur_turu": "VARCHAR(30) DEFAULT 'forex_selling' NOT NULL",
+        "kur_kaynagi": "VARCHAR(20) DEFAULT 'TCMB' NOT NULL",
+        "kur_sabitlendi": "BOOLEAN DEFAULT 0 NOT NULL",
+        "borc_esasi": "VARCHAR(20) DEFAULT 'TL_SABIT' NOT NULL",
+        "doviz_ara_toplam": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "tl_matrah": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "tl_kdv": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "tl_genel_toplam": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "adres_no": "INTEGER",
+        "adres_tipi": "VARCHAR(40)",
+        "adres_metni": "VARCHAR(500)",
+    }
+    _ekle("satis_faturalari", fatura_doviz)
+    _ekle(
+        "alis_faturalari",
+        {
+            k: v
+            for k, v in fatura_doviz.items()
+            if k not in ("borc_esasi", "adres_no", "adres_tipi", "adres_metni")
+        },
+    )
+
+    satir_doviz = {
+        "birim_fiyat_doviz": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
+        "tl_birim_fiyat": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
+        "tl_tutar": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+    }
+    _ekle("satis_faturasi_satirlari", satir_doviz)
+    _ekle("alis_faturasi_satirlari", satir_doviz)
+
+    _ekle(
+        "satis_faturasi_tahsilatlari",
+        {
+            "kur_farki": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+            "odeme_kuru": "NUMERIC(18, 6) DEFAULT 0 NOT NULL",
+        },
+    )
+    _ekle(
+        "cari_satis_hareketleri",
+        {
+            "para_birimi": "VARCHAR(3) DEFAULT 'TRY' NOT NULL",
+            "doviz_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+            "kur": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
+            "borc_esasi": "VARCHAR(20) DEFAULT 'TL_SABIT' NOT NULL",
+        },
+    )
+    _ekle(
+        "cari_islemleri",
+        {
+            "para_birimi": "VARCHAR(3) DEFAULT 'TRY' NOT NULL",
+            "doviz_borc": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+            "doviz_alacak": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+            "kur": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
+            "borc_esasi": "VARCHAR(20) DEFAULT 'TL_SABIT' NOT NULL",
+        },
+    )
+
+    _ekle("hizmet_faturalari", fatura_doviz)
+    _ekle("hizmet_faturasi_satirlari", satir_doviz)
+    _ekle("satis_iade_faturalari", fatura_doviz)
+    _ekle("alis_iade_faturalari", {k: v for k, v in fatura_doviz.items() if k != "borc_esasi"})
+    _ekle(
+        "satis_iade_faturasi_satirlari",
+        {"birim_fiyat_doviz": "NUMERIC(18, 4) DEFAULT 0 NOT NULL"},
+    )
+    _ekle(
+        "alis_iade_faturasi_satirlari",
+        {"birim_fiyat_doviz": "NUMERIC(18, 4) DEFAULT 0 NOT NULL"},
+    )
 
 
 def musteri_gruplarini_hazirla() -> None:

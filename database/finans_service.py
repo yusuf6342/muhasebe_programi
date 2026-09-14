@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.models.finans import (
     BANKA_ALT_HESAP_TURLERI,
     KK_CEKIM_TURLERI,
@@ -184,6 +185,7 @@ class FinansService:
 
     @staticmethod
     def hesap_kaydet(veriler: dict) -> FinansHesabi:
+        yazma_zorunlu("finans_duzenleme")
         hesap_adi = (veriler.get("hesap_adi") or "").strip()
         hesap_turu = (veriler.get("hesap_turu") or "").strip().upper()
         if not hesap_adi:
@@ -229,6 +231,7 @@ class FinansService:
 
     @staticmethod
     def hesap_pasif_yap(hesap_id):
+        yazma_zorunlu("finans_duzenleme")
         with get_session() as session:
             hesap = session.scalar(select(FinansHesabi).where(FinansHesabi.id == int(hesap_id)))
             if not hesap:
@@ -504,6 +507,7 @@ class FinansService:
 
     @staticmethod
     def banka_karti_kaydet(veriler: dict) -> BankaKarti:
+        yazma_zorunlu("finans_duzenleme")
         banka_adi = (veriler.get("banka_adi") or "").strip()
         if not banka_adi:
             raise ValueError("Banka adı zorunludur.")
@@ -665,7 +669,8 @@ class FinansService:
 
     @staticmethod
     def banka_manuel_hareket(hesap_id, tarih, tutar, yon, aciklama=None, belge_no=None):
-        """yon: 'giris' | 'cikis' — alt hesap işlem menüsü."""
+        """        yazma_zorunlu("finans_duzenleme")
+yon: 'giris' | 'cikis' — alt hesap işlem menüsü."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         yon = (yon or "").strip().lower()
         if yon not in ("giris", "cikis"):
@@ -1047,7 +1052,8 @@ class FinansService:
         dekont_no=None,
         belge_no=None,
     ) -> str:
-        """Kasadan çıkış + banka hesabına (mevduat/KMH/KK/vadeli) giriş."""
+        """        yazma_zorunlu("finans_duzenleme")
+Kasadan çıkış + banka hesabına (mevduat/KMH/KK/vadeli) giriş."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if tarih > date.today():
             raise ValueError("İşlem tarihi gelecek olamaz.")
@@ -1165,7 +1171,8 @@ class FinansService:
         dekont_no=None,
         belge_no=None,
     ) -> str:
-        """Banka hesabına giriş; gönderen cari zorunlu (tahsilat)."""
+        """        yazma_zorunlu("finans_duzenleme")
+Banka hesabına giriş; gönderen cari zorunlu (tahsilat)."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if not cari_id:
             raise ValueError("Alınan havale için gönderen cari seçimi zorunludur.")
@@ -1218,7 +1225,8 @@ class FinansService:
         dekont_no=None,
         belge_no=None,
     ) -> str:
-        """Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
+        """        yazma_zorunlu("finans_duzenleme")
+Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if not cari_id:
             raise ValueError("Gönderilen havale için alıcı cari seçimi zorunludur.")
@@ -1333,7 +1341,8 @@ class FinansService:
         dekont_no=None,
         belge_no=None,
     ) -> str:
-        """Çıkış banka hesabından giriş banka hesabına virman (EFT / Havale)."""
+        """        yazma_zorunlu("finans_duzenleme")
+Çıkış banka hesabından giriş banka hesabına virman (EFT / Havale)."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if int(kaynak_hesap_id) == int(hedef_hesap_id):
             raise ValueError("Çıkış ve giriş hesabı aynı olamaz.")
@@ -1489,7 +1498,8 @@ class FinansService:
         dekont_no=None,
         belge_no=None,
     ) -> str:
-        """Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
+        """        yazma_zorunlu("finans_duzenleme")
+Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if tarih > date.today():
             raise ValueError("İşlem tarihi gelecek olamaz.")
@@ -1714,6 +1724,7 @@ class FinansService:
         belge_no=None,
     ) -> dict:
         """
+        yazma_zorunlu("finans_duzenleme")
         POS'a brüt giriş, taksit komisyonuna göre banka masrafı; net valörde KMH'ye aktarılır.
         Kredi kartı taksit: 1-12; komisyon banka kartındaki taksit oran tablosundan.
         """
@@ -2105,6 +2116,7 @@ class FinansService:
 
     @staticmethod
     def kredi_karti_kaydet(veriler: dict) -> KrediKartiTanimi:
+        yazma_zorunlu("finans_duzenleme")
         kart_adi = (veriler.get("kart_adi") or "").strip()
         if not kart_adi:
             raise ValueError("Kart adı zorunludur.")
@@ -2233,6 +2245,7 @@ class FinansService:
         belge_no=None,
     ) -> dict:
         """
+        yazma_zorunlu("finans_duzenleme")
         Firma kredi kartı ile cariye ödeme.
         Tek çekim: vade = çekim günü.
         Taksitli: 1. taksit = çekim günü, sonrakiler her ay aynı gün (max 24).
@@ -2637,6 +2650,7 @@ class FinansService:
         taksit_plani=None,
     ) -> dict:
         """
+        yazma_zorunlu("finans_duzenleme")
         Ana para: krediler hesabına borç + mevduat/KMH'ye giriş.
         Faiz ve masraf sadece taksit planında tutulur; ödeme gününde gider fişi kesilir.
         """
@@ -3064,7 +3078,8 @@ class FinansService:
 
     @staticmethod
     def gider_fisi_kaydet(veriler: dict) -> GiderFisi:
-        """Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
+        """        yazma_zorunlu("finans_duzenleme")
+Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         from database.models.hizmet import HizmetHareketi, HizmetKarti
 
         tarih = veriler["tarih"]
@@ -3138,6 +3153,7 @@ class FinansService:
 
     @staticmethod
     def gider_fisi_iptal(fisi_id):
+        yazma_zorunlu("finans_duzenleme", "iptal")
         from database.models.hizmet import HizmetHareketi
 
         with get_session() as session:
@@ -3258,6 +3274,7 @@ class FinansService:
 
     @staticmethod
     def _kasa_makbuz_kaydet(veriler: dict, makbuz_turu: str) -> KasaMakbuzu:
+        yazma_zorunlu("finans_duzenleme")
         from database.models.cari import Cari
 
         tarih = veriler.get("tarih")
@@ -3348,6 +3365,7 @@ class FinansService:
 
     @staticmethod
     def kasa_makbuz_iptal(makbuz_id):
+        yazma_zorunlu("finans_duzenleme", "iptal")
         with get_session() as session:
             makbuz = session.get(KasaMakbuzu, int(makbuz_id))
             if not makbuz:

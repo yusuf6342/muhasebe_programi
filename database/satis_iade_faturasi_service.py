@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.finans_service import FinansService
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.finans import FinansHareketi
@@ -237,6 +238,7 @@ class SatisIadeFaturasiService:
 
     @staticmethod
     def kaydet(veriler, satir_verileri, iade_id=None):
+        yazma_zorunlu("satis_duzenleme", "yeni_kayit")
         tarih = veriler["iade_tarihi"]
         if tarih > date.today():
             raise ValueError("İade tarihi gelecek bir tarih olamaz.")
@@ -269,10 +271,32 @@ class SatisIadeFaturasiService:
             iade.iade_odeme_tutari = decimal(veriler.get("iade_odeme_tutari", 0), "İade ödeme", Decimal("0"))
             iade.iade_odeme_sekli = veriler.get("iade_odeme_sekli")
             iade.iade_odeme_hesabi = veriler.get("iade_odeme_hesabi")
+            pb = (veriler.get("para_birimi") or "TRY").upper()
+            kur = decimal(veriler.get("kur", 1), "Kur", Decimal("0.000001"))
+            iade.para_birimi = pb
+            iade.kur = kur
+            iade.kur_tarihi = veriler.get("kur_tarihi")
+            iade.kur_turu = veriler.get("kur_turu") or "forex_selling"
+            iade.kur_kaynagi = veriler.get("kur_kaynagi") or "TCMB"
+            iade.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", pb != "TRY"))
+            iade.borc_esasi = veriler.get("borc_esasi") or "TL_SABIT"
+            doviz_ara = Decimal("0")
 
             for veri in satir_verileri:
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
-                birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                birim_fiyat_doviz = decimal(
+                    veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)),
+                    "Birim fiyat",
+                    Decimal("0"),
+                )
+                if pb != "TRY" and birim_fiyat_doviz > 0:
+                    from database.doviz_service import DovizService
+
+                    birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))
+                    doviz_ara += miktar * birim_fiyat_doviz
+                else:
+                    birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                    birim_fiyat_doviz = Decimal("0")
                 onceki = veri.get("onceki_alis_fiyati")
                 fifo_maliyet, kaynak_satiri = SatisIadeFaturasiService._fifo_maliyet_coz(
                     session, veri, iade.depo
@@ -296,8 +320,10 @@ class SatisIadeFaturasiService:
                     onceki_fatura_no=veri.get("onceki_fatura_no") or None,
                     fifo_birim_maliyeti=stok_sonuc["fifo_birim_maliyeti"],
                     lot_no=stok_sonuc["lot_girisi"],
+                    birim_fiyat_doviz=birim_fiyat_doviz,
                 ))
 
+            iade.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
             toplam = SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
             if iade.iade_odeme_tutari > toplam:
                 raise ValueError("İade ödeme tutarı iade toplamından büyük olamaz.")
@@ -309,6 +335,10 @@ class SatisIadeFaturasiService:
                 cari_id=iade.cari_id, tarih=tarih, islem_turu="Satış İadesi",
                 belge_no=iade.iade_no, aciklama=iade.aciklama or "Satış iade faturası",
                 borc=Decimal("0"), alacak=toplam, hesap_adi=iade.iade_odeme_hesabi,
+                para_birimi=pb,
+                doviz_alacak=iade.doviz_ara_toplam if pb != "TRY" else Decimal("0"),
+                kur=kur if pb != "TRY" else Decimal("1"),
+                borc_esasi=iade.borc_esasi or "TL_SABIT",
             ))
             CariService._aciklara_uygula(session, iade.cari_id, toplam)
             if iade.iade_odeme_tutari > 0:
@@ -321,10 +351,16 @@ class SatisIadeFaturasiService:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("İade faturası kaydedilemedi.") from hata
-            return iade
+            iid = int(iade.id)
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("satis_iade_fisi", iid, yeniden=True)
+        return SatisIadeFaturasiService.getir(iid)
 
     @staticmethod
     def iptal_et(iade_id: int) -> None:
+        yazma_zorunlu("satis_duzenleme", "iptal")
         with get_session() as session:
             iade = session.scalar(
                 select(SatisIadeFaturasi)
@@ -342,6 +378,10 @@ class SatisIadeFaturasiService:
             session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
             session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
             iade.durum = "İPTAL"
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("iptal_kaynak", "satis_iade", int(iade_id), "Satış iade iptal")
 
     @staticmethod
     def toplam(satirlar) -> dict[str, Decimal]:

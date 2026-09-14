@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.models.cari import Cari
 from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri
 from database.models.alis_siparisi import AlisSiparisi, AlisSiparisiSatiri
@@ -26,6 +27,7 @@ class AlisIrsaliyesiService:
 
     @staticmethod
     def iptal_et(irsaliye_id: int) -> None:
+        yazma_zorunlu("alis_duzenleme", "iptal")
         with get_session() as session:
             irsaliye = session.scalar(
                 select(AlisIrsaliyesi)
@@ -119,6 +121,7 @@ class AlisIrsaliyesiService:
         satir_verileri: list[dict[str, Any]],
         irsaliye_id: int | None = None,
     ) -> AlisIrsaliyesi:
+        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
         irsaliye_tarihi = veriler["irsaliye_tarihi"]
         if irsaliye_tarihi > date.today():
             raise ValueError("İrsaliye tarihi gelecek bir tarih olamaz.")

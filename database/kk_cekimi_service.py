@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.kk_cekimi import KkCekimi
 
@@ -189,6 +190,7 @@ class KkCekimiService:
         aciklama: str | None = None,
         belge_no: str | None = None,
     ) -> dict[str, Any]:
+        yazma_zorunlu("finans_duzenleme", "yeni_kayit")
         tutar = CariService._tutar(tutar)
         banka = (banka or "").strip()
         try:
@@ -306,6 +308,7 @@ class KkCekimiService:
 
     @staticmethod
     def iptal_et(belge_no: str) -> None:
+        yazma_zorunlu("finans_duzenleme", "iptal")
         belge_no = (belge_no or "").strip()
         if not belge_no.startswith("KKC-"):
             raise ValueError("Geçersiz KK çekim belge numarası.")

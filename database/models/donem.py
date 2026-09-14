@@ -44,6 +44,18 @@ class Donem(Base):
         nullable=False
     )
 
+    kapali: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    varsayilan: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
     olusturma_tarihi: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.now,

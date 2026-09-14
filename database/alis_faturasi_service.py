@@ -7,12 +7,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.finans_service import FinansService
 from database.models.cari import Cari, SatisHareketi
 from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
 from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri
 from database.models.alis_siparisi import AlisSiparisi, AlisSiparisiSatiri
 from database.satis_siparisi_service import decimal
+from database.doviz_service import DovizService
 from database.stok_service import StokService
 
 FATURA_DURUMLARI = ("AÇIK", "KAPALI", "İPTAL")
@@ -119,6 +121,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None):
+        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
         tarih, vade = veriler["fatura_tarihi"], veriler["vade_tarihi"]
         if tarih > date.today():
             raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
@@ -149,13 +152,30 @@ class AlisFaturasiService:
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
             fatura.odeme_tutari = decimal(veriler.get("odeme_tutari", 0), "Ödeme", Decimal("0"))
+            pb = (veriler.get("para_birimi") or "TRY").upper()
+            kur = decimal(veriler.get("kur", 1), "Kur", Decimal("0.000001"))
+            fatura.para_birimi = pb
+            fatura.kur = kur
+            fatura.kur_tarihi = veriler.get("kur_tarihi")
+            fatura.kur_turu = veriler.get("kur_turu") or "forex_selling"
+            fatura.kur_kaynagi = veriler.get("kur_kaynagi") or "TCMB"
+            fatura.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", pb != "TRY"))
 
             cari = session.get(Cari, fatura.cari_id)
             tedarikci_adi = cari.unvan if cari else ""
 
             for veri in satir_verileri:
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
-                birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                birim_fiyat_doviz = decimal(
+                    veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)),
+                    "Birim fiyat",
+                    Decimal("0"),
+                )
+                if pb != "TRY" and birim_fiyat_doviz > 0:
+                    birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))
+                else:
+                    birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                    birim_fiyat_doviz = Decimal("0")
                 iskonto_orani = decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0"))
                 irs_id, sip_id = veri.get("irsaliye_satiri_id"), veri.get("siparis_satiri_id")
                 if irs_id:
@@ -217,10 +237,26 @@ class AlisFaturasiService:
                         iskonto_orani=iskonto_orani,
                         kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0")),
                         fifo_birim_maliyeti=stok_girisi["birim_maliyet"],
+                        birim_fiyat_doviz=birim_fiyat_doviz,
+                        tl_birim_fiyat=birim_maliyet,
+                        tl_tutar=(miktar * birim_maliyet).quantize(Decimal("0.01")),
                     )
                 )
 
-            toplam = AlisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
+            toplam_dict = AlisFaturasiService.toplam(fatura.satirlar)
+            toplam = toplam_dict["genel_toplam"]
+            fatura.tl_matrah = toplam_dict["ara_toplam"] - toplam_dict["iskonto"]
+            fatura.tl_kdv = toplam_dict["kdv"]
+            fatura.tl_genel_toplam = toplam
+            if pb != "TRY":
+                doviz_ara = Decimal("0")
+                for satir in fatura.satirlar:
+                    if satir.birim_fiyat_doviz > 0:
+                        net = satir.birim_fiyat_doviz - (
+                            satir.birim_fiyat_doviz * satir.iskonto_orani / Decimal("100")
+                        )
+                        doviz_ara += satir.miktar * net
+                fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01"))
             if fatura.odeme_tutari > toplam:
                 raise ValueError("Ödeme tutarı fatura toplamından büyük olamaz.")
             fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
@@ -234,6 +270,12 @@ class AlisFaturasiService:
             hareket.satis_tarihi = tarih
             hareket.satis_tutari = toplam
             hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+            hareket.para_birimi = pb
+            hareket.kur = kur if pb != "TRY" else Decimal("1")
+            hareket.borc_esasi = "TL_SABIT"
+            hareket.doviz_tutari = (
+                Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0)) if pb != "TRY" else Decimal("0")
+            )
 
             FinansService.fatura_odemesi(
                 session,
@@ -248,10 +290,16 @@ class AlisFaturasiService:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi.") from hata
-            return fatura
+            fid = int(fatura.id)
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("alis_faturasi_fisi", fid, yeniden=True)
+        return AlisFaturasiService.getir(fid)
 
     @staticmethod
     def iptal_et(fatura_id):
+        yazma_zorunlu("alis_duzenleme", "iptal")
         with get_session() as session:
             fatura = session.scalar(
                 select(AlisFaturasi)
@@ -267,6 +315,13 @@ class AlisFaturasiService:
                 session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
                 fatura.durum = "İPTAL"
                 AlisFaturasiService._durumlari_guncelle(session, fatura)
+                fid = int(fatura.id)
+            else:
+                return
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("alis_faturasi_iptal", fid)
 
     @staticmethod
     def _baglantilari_geri_al(session, satirlar):

@@ -10,3 +10,9 @@ entegrasyon/_full_import.pid
 entegrasyon/_probe_*.py
 _fatura_sql_sample.json
 _recovered_from_transcript/
+
+data/
+*.db
+ILK_YONETICI_SIFRE.txt
+entegrasyon/_check_*.py
+

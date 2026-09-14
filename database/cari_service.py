@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.finans_service import FinansService
 from database.models.cari import Cari, CariIslem, SatisHareketi
 # SatisFaturasi ilişkileri — önce hedef sınıflar kayda alınmalı
@@ -267,6 +268,9 @@ class CariService:
                 "borc": h.satis_tutari,
                 "alacak": Decimal("0"),
                 "kalan": None,
+                "para_birimi": getattr(h, "para_birimi", None) or "TRY",
+                "doviz_tutari": getattr(h, "doviz_tutari", None) or Decimal("0"),
+                "kur": getattr(h, "kur", None) or Decimal("1"),
             })
         for islem in islemler:
             aciklama = islem.aciklama or ""
@@ -281,6 +285,9 @@ class CariService:
                         ek = f"Karşı: {karsi.cari_kodu}"
                     if ek not in aciklama:
                         aciklama = f"{aciklama} | {ek}".strip(" |")
+            doviz_tutar = Decimal(str(getattr(islem, "doviz_borc", 0) or 0)) or Decimal(
+                str(getattr(islem, "doviz_alacak", 0) or 0)
+            )
             kayitlar.append({
                 "tarih": islem.tarih,
                 "tur": islem.islem_turu,
@@ -289,6 +296,9 @@ class CariService:
                 "borc": islem.borc,
                 "alacak": islem.alacak,
                 "kalan": None,
+                "para_birimi": getattr(islem, "para_birimi", None) or "TRY",
+                "doviz_tutari": doviz_tutar,
+                "kur": getattr(islem, "kur", None) or Decimal("1"),
             })
         # Kronolojik çalışan bakiye → Kalan Bakiye kolonu
         kayitlar.sort(key=lambda item: (item["tarih"], item["belge_no"], item["tur"]))
@@ -367,7 +377,13 @@ class CariService:
             session.add(islem)
             FinansService.hareket_ekle(session, belge_no, tarih, tutar, "CARİ TAHSİLAT", hesap_adi, odeme_sekli)
             session.flush()
-            return islem
+            iid = int(islem.id)
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("cari_tahsilat_fisi", iid)
+        with get_session() as session:
+            return session.get(CariIslem, iid)
 
     @staticmethod
     def odeme_yap(cari_id: int, tarih: date, tutar, odeme_sekli: str, hesap_adi: str, aciklama: str | None = None) -> CariIslem:
@@ -406,7 +422,13 @@ class CariService:
             session.add(islem)
             FinansService.hareket_ekle(session, belge_no, tarih, tutar, "CARİ ÖDEME", hesap_adi, odeme_sekli)
             session.flush()
-            return islem
+            iid = int(islem.id)
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("cari_odeme_fisi", iid)
+        with get_session() as session:
+            return session.get(CariIslem, iid)
 
     @staticmethod
     def acilis_fisi_ekle(
@@ -952,6 +974,7 @@ class CariService:
 
     @staticmethod
     def ekle(veriler: dict[str, object]) -> Cari:
+        yazma_zorunlu("cari_duzenleme", "yeni_kayit")
         veriler = dict(veriler)
         cari_turu = str(veriler.get("cari_turu") or "Müşteri")
         veriler["cari_turu"] = cari_turu
@@ -972,6 +995,7 @@ class CariService:
 
     @staticmethod
     def guncelle(cari_id: int, veriler: dict[str, object]) -> Cari:
+        yazma_zorunlu("cari_duzenleme")
         with get_session() as session:
             cari = session.get(Cari, cari_id)
             if cari is None:
@@ -986,6 +1010,7 @@ class CariService:
 
     @staticmethod
     def pasife_al(cari_id: int) -> None:
+        yazma_zorunlu("cari_duzenleme")
         with get_session() as session:
             cari = session.get(Cari, cari_id)
             if cari is None:

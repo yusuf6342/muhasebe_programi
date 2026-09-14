@@ -72,6 +72,10 @@ class SatisHareketi(Base):
     belge_no: Mapped[str] = mapped_column(String(50), nullable=False)
     satis_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     kalan_acik_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    para_birimi: Mapped[str] = mapped_column(String(3), nullable=False, default="TRY")
+    doviz_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    kur: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
+    borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
 
     cari: Mapped["Cari"] = relationship("Cari", back_populates="satis_hareketleri")
 
@@ -91,5 +95,10 @@ class CariIslem(Base):
     alacak: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     hesap_adi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     karsi_cari_id: Mapped[int | None] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=True)
+    para_birimi: Mapped[str] = mapped_column(String(3), nullable=False, default="TRY")
+    doviz_borc: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    doviz_alacak: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    kur: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
+    borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
 
     cari: Mapped["Cari"] = relationship("Cari", foreign_keys=[cari_id])

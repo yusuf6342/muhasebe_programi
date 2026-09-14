@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -26,6 +26,16 @@ class AlisFaturasi(Base):
     odeme_hesabi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     dokuman_yolu: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    para_birimi: Mapped[str] = mapped_column(String(3), nullable=False, default="TRY")
+    kur: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
+    kur_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    kur_turu: Mapped[str] = mapped_column(String(30), nullable=False, default="forex_selling")
+    kur_kaynagi: Mapped[str] = mapped_column(String(20), nullable=False, default="TCMB")
+    kur_sabitlendi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    doviz_ara_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_matrah: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_genel_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     cari = relationship("Cari")
@@ -55,5 +65,8 @@ class AlisFaturasiSatiri(Base):
     iskonto_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
     kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    tl_birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    tl_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
 
     fatura: Mapped["AlisFaturasi"] = relationship("AlisFaturasi", back_populates="satirlar")

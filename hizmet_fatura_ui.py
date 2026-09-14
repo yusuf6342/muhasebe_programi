@@ -16,6 +16,13 @@ from database.hizmet_faturasi_service import (
 from database.hizmet_service import HizmetService
 from database.models.hizmet import HIZMET_BIRIMLERI, KDV_ORANLARI
 from database.satis_siparisi_service import decimal
+from doviz_fatura_panel import (
+    doviz_ozet_guncelle,
+    doviz_paneli_kur,
+    doviz_satir_kaydet_oncesi,
+    doviz_verilerini_doldur,
+    doviz_verilerini_topla,
+)
 from ui_takvim import saat_dogrula, saat_varsayilan, tarih_alani
 
 
@@ -235,6 +242,10 @@ class HizmetFaturaDialog(tk.Toplevel):
         govde.pack(fill="both", expand=True)
 
         self._baslik_olustur(govde, baslik)
+        doviz_cerceve = ttk.LabelFrame(govde, text="DÖVİZ / KUR", padding=6)
+        doviz_cerceve.pack(fill="x", pady=(0, 6))
+        self._doviz_fiyat_alani = "birim_fiyat"
+        doviz_paneli_kur(self, doviz_cerceve)
         self._satirlar_olustur(govde)
         alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=(8, 0))
@@ -521,7 +532,7 @@ class HizmetFaturaDialog(tk.Toplevel):
 
     def satir_ekle(self):
         try:
-            self.satirlar.append(self._formdan_satir())
+            self.satirlar.append(doviz_satir_kaydet_oncesi(self, self._formdan_satir()))
         except ValueError as hata:
             messagebox.showerror("Satır", str(hata), parent=self)
             return
@@ -598,6 +609,8 @@ class HizmetFaturaDialog(tk.Toplevel):
                 f"{etiket}: {_para(odeme)}"
             )
         )
+        if hasattr(self, "_doviz_para_birimi"):
+            doviz_ozet_guncelle(self)
 
     def odeme_ekle(self):
         dlg = HizmetOdemeDialog(self, gelir_mi=self.gelir_mi)
@@ -654,14 +667,20 @@ class HizmetFaturaDialog(tk.Toplevel):
         if f.aciklama:
             self.aciklama.insert("1.0", f.aciklama)
         self.satirlar.clear()
+        pb = (getattr(f, "para_birimi", None) or "TRY").upper()
         for s in f.satirlar:
+            bf = s.birim_fiyat
+            bf_doviz = getattr(s, "birim_fiyat_doviz", None) or 0
+            if pb != "TRY" and bf_doviz:
+                bf = bf_doviz
             self.satirlar.append(
                 {
                     "hizmet_kodu": s.hizmet_kodu,
                     "hizmet_adi": s.hizmet_adi,
                     "miktar": s.miktar,
                     "birim": s.birim,
-                    "birim_fiyat": s.birim_fiyat,
+                    "birim_fiyat": bf,
+                    "birim_fiyat_doviz": bf_doviz or None,
                     "iskonto_orani": s.iskonto_orani,
                     "kdv_orani": s.kdv_orani,
                     "aciklama": s.aciklama or "",
@@ -678,6 +697,8 @@ class HizmetFaturaDialog(tk.Toplevel):
                     "aciklama": "",
                 }
             )
+        if hasattr(self, "_doviz_para_birimi"):
+            doviz_verilerini_doldur(self, f)
         self._satir_listesini_yenile()
         self._odeme_yenile()
 
@@ -699,19 +720,22 @@ class HizmetFaturaDialog(tk.Toplevel):
                 (decimal(o["tutar"], "Tutar") for o in self.odemeler), Decimal("0")
             )
             ilk = self.odemeler[0] if self.odemeler else {}
+            veriler = {
+                "fatura_no": self.girdiler["fatura_no"].get().strip(),
+                "fatura_turu": self.hizmet_turu,
+                "fatura_tarihi": fatura_tarihi,
+                "islem_saati": islem_saati,
+                "vade_tarihi": vade_tarihi,
+                "cari_id": cari.id,
+                "odeme_tutari": odeme_tutari,
+                "odeme_sekli": ilk.get("odeme_sekli"),
+                "odeme_hesabi": ilk.get("hesap"),
+                "aciklama": self.aciklama.get("1.0", "end").strip() or None,
+            }
+            if hasattr(self, "_doviz_para_birimi"):
+                veriler.update(doviz_verilerini_topla(self))
             self.result = HizmetFaturasiService.kaydet(
-                {
-                    "fatura_no": self.girdiler["fatura_no"].get().strip(),
-                    "fatura_turu": self.hizmet_turu,
-                    "fatura_tarihi": fatura_tarihi,
-                    "islem_saati": islem_saati,
-                    "vade_tarihi": vade_tarihi,
-                    "cari_id": cari.id,
-                    "odeme_tutari": odeme_tutari,
-                    "odeme_sekli": ilk.get("odeme_sekli"),
-                    "odeme_hesabi": ilk.get("hesap"),
-                    "aciklama": self.aciklama.get("1.0", "end").strip() or None,
-                },
+                veriler,
                 self.satirlar,
                 self.fatura.id if self.fatura else None,
             )

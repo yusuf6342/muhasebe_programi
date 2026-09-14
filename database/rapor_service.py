@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import kar_zorunlu
 from database.models.cari import Cari, CariIslem
 from database.models.satis_faturasi import SatisFaturasi
 from database.models.satis_iade_faturasi import SatisIadeFaturasi
@@ -102,6 +103,9 @@ class RaporService:
                 "bakiye": calisan,
                 "gun": gun,
                 "kalan": h.get("kalan"),
+                "para_birimi": h.get("para_birimi") or "TRY",
+                "doviz_tutari": h.get("doviz_tutari") or Decimal("0"),
+                "kur": h.get("kur") or Decimal("1"),
             })
         return {
             "cari": cari,
@@ -421,6 +425,7 @@ class RaporService:
         stok: str | None = None,
     ) -> dict[str, Any]:
         """Müşteri bazlı kar/zarar (FIFO maliyet). Tarih ve stok (kod/ad) filtresi destekler."""
+        kar_zorunlu()
         stok_filtre = (stok or "").strip().casefold()
         with get_session() as session:
             cari = session.get(Cari, cari_id)

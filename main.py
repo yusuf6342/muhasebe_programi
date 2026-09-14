@@ -1,12 +1,14 @@
+from database import database as db
+
 from database.database import (
 
     Base,
 
     cari_kart_schemasini_guncelle,
 
-    engine,
-
     musteri_gruplarini_hazirla,
+
+    sistem_altyapisini_baslat,
 
     tedarikci_odeme_polarity_duzelt,
 
@@ -104,6 +106,16 @@ from database.models.hizmet_faturasi import HizmetFaturasi, HizmetFaturasiSatiri
 
 from database.models.kk_cekimi import KkCekimi
 
+from database.models.doviz import DovizKuru
+
+from database.models.genel_muhasebe import (
+    HesapPlani,
+    MuhasebeFisi,
+    MuhasebeFisiSatiri,
+    MuhasebeHesapEsleme,
+    MuhasebeIslemGecmisi,
+)
+
 from database.stok_service import StokService
 
 from database.finans_service import FinansService
@@ -120,11 +132,37 @@ def main():
 
 
 
+    print("Sistem altyapısı başlatılıyor (system.db)...")
+
+    sistem_bilgi = sistem_altyapisini_baslat()
+
+    print(f"Sistem DB: {sistem_bilgi.get('system_db')}")
+
+    print(f"Aktif firma DB: {sistem_bilgi.get('company_db')}")
+
+    gecis = sistem_bilgi.get("gecis") or {}
+    if gecis.get("yedek_alindi"):
+        print("Geçiş yedeği:", gecis.get("yedek_yolu"))
+    for m in gecis.get("mesajlar") or []:
+        print("Geçiş:", m)
+
+    if sistem_bilgi.get("admin_olusturuldu"):
+
+        print(
+
+            "İlk yönetici oluşturuldu. Parola dosyası:",
+
+            sistem_bilgi.get("ilk_parola_dosyasi"),
+
+        )
+
+
+
     print("Veritabanı tabloları oluşturuluyor...")
 
 
 
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(db.engine)
 
     cari_kart_schemasini_guncelle()
 
@@ -134,11 +172,18 @@ def main():
 
     FinansService.varsayilanlari_hazirla()
 
+    try:
+        from database.muhasebe_service import MuhasebeService
+
+        MuhasebeService.schema_hazirla()
+    except Exception as e:
+        print("Genel muhasebe şema uyarısı:", e)
+
 
 
     print("Tablolar başarıyla oluşturuldu!")
 
-    print(f"Veritabanı: {engine.url}")
+    print(f"Veritabanı: {db.engine.url}")
 
     app = MuhasebeApp()
 
@@ -149,6 +194,16 @@ def main():
         try:
 
             tedarikci_odeme_polarity_duzelt()
+
+        except Exception:
+
+            pass
+
+        try:
+
+            from database.doviz_service import DovizService
+
+            DovizService.otomatik_gunluk_cek(sessiz=True)
 
         except Exception:
 
@@ -167,4 +222,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-

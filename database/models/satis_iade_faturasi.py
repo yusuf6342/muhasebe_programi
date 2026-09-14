@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -21,6 +21,14 @@ class SatisIadeFaturasi(Base):
     iade_odeme_sekli: Mapped[str | None] = mapped_column(String(50), nullable=True)
     iade_odeme_hesabi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
+    para_birimi: Mapped[str] = mapped_column(String(3), nullable=False, default="TRY")
+    kur: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
+    kur_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    kur_turu: Mapped[str] = mapped_column(String(30), nullable=False, default="forex_selling")
+    kur_kaynagi: Mapped[str] = mapped_column(String(20), nullable=False, default="TCMB")
+    kur_sabitlendi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
+    doviz_ara_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     cari = relationship("Cari")
@@ -49,5 +57,6 @@ class SatisIadeFaturasiSatiri(Base):
     onceki_fatura_no: Mapped[str | None] = mapped_column(String(30), nullable=True)
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     lot_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
 
     iade: Mapped["SatisIadeFaturasi"] = relationship("SatisIadeFaturasi", back_populates="satirlar")

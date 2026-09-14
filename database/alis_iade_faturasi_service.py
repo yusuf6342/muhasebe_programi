@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.finans_service import FinansService
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.finans import FinansHareketi
@@ -114,6 +115,7 @@ class AlisIadeFaturasiService:
 
     @staticmethod
     def kaydet(veriler, satir_verileri, iade_id=None):
+        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
         tarih = veriler["iade_tarihi"]
         if tarih > date.today():
             raise ValueError("İade tarihi gelecek bir tarih olamaz.")
@@ -146,10 +148,31 @@ class AlisIadeFaturasiService:
             iade.iade_odeme_tutari = decimal(veriler.get("iade_odeme_tutari", 0), "İade ödeme", Decimal("0"))
             iade.iade_odeme_sekli = veriler.get("iade_odeme_sekli")
             iade.iade_odeme_hesabi = veriler.get("iade_odeme_hesabi")
+            pb = (veriler.get("para_birimi") or "TRY").upper()
+            kur = decimal(veriler.get("kur", 1), "Kur", Decimal("0.000001"))
+            iade.para_birimi = pb
+            iade.kur = kur
+            iade.kur_tarihi = veriler.get("kur_tarihi")
+            iade.kur_turu = veriler.get("kur_turu") or "forex_selling"
+            iade.kur_kaynagi = veriler.get("kur_kaynagi") or "TCMB"
+            iade.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", pb != "TRY"))
+            doviz_ara = Decimal("0")
 
             for veri in satir_verileri:
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
-                birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                birim_fiyat_doviz = decimal(
+                    veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)),
+                    "Birim fiyat",
+                    Decimal("0"),
+                )
+                if pb != "TRY" and birim_fiyat_doviz > 0:
+                    from database.doviz_service import DovizService
+
+                    birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))
+                    doviz_ara += miktar * birim_fiyat_doviz
+                else:
+                    birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                    birim_fiyat_doviz = Decimal("0")
                 onceki = veri.get("onceki_alis_fiyati")
                 kaynak_id = veri.get("kaynak_fatura_satiri_id")
                 kaynak_satiri = session.get(AlisFaturasiSatiri, int(kaynak_id)) if kaynak_id else None
@@ -190,8 +213,11 @@ class AlisIadeFaturasiService:
                         fifo_birim_maliyeti=fifo,
                         lot_no=veri.get("lot_no") or None,
                         lot_cikisi=stok_cikisi["lot_cikisi"],
+                        birim_fiyat_doviz=birim_fiyat_doviz,
                     )
                 )
+
+            iade.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
 
             toplam = AlisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
             if iade.iade_odeme_tutari > toplam:
@@ -226,10 +252,16 @@ class AlisIadeFaturasiService:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("İade faturası kaydedilemedi.") from hata
-            return iade
+            iid = int(iade.id)
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("alis_iade_fisi", iid, yeniden=True)
+        return AlisIadeFaturasiService.getir(iid)
 
     @staticmethod
     def iptal_et(iade_id: int) -> None:
+        yazma_zorunlu("alis_duzenleme", "iptal")
         with get_session() as session:
             iade = session.scalar(
                 select(AlisIadeFaturasi)
@@ -247,6 +279,10 @@ class AlisIadeFaturasiService:
             session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
             session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
             iade.durum = "İPTAL"
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("iptal_kaynak", "alis_iade", int(iade_id), "Alış iade iptal")
 
     @staticmethod
     def toplam(satirlar) -> dict[str, Decimal]:

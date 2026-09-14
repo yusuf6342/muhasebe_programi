@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database.cari_service import CariService
 from database.database import get_session
+from database.access import yazma_zorunlu
 from database.models.cari import Cari
 from database.models.satis_siparisi import (
     SatisSiparisi,
@@ -98,6 +99,7 @@ class SatisSiparisiService:
 
     @staticmethod
     def kaydet(veriler: dict[str, Any], satir_verileri: list[dict[str, Any]], tahsilat_verileri: list[dict[str, Any]], siparis_id: int | None = None) -> SatisSiparisi:
+        yazma_zorunlu("satis_duzenleme", "yeni_kayit")
         siparis_tarihi = veriler["siparis_tarihi"]
         termin_tarihi = veriler["termin_tarihi"]
         if siparis_tarihi > date.today():
@@ -160,6 +162,7 @@ class SatisSiparisiService:
 
     @staticmethod
     def iptal_et(siparis_id: int) -> None:
+        yazma_zorunlu("satis_duzenleme", "iptal")
         with get_session() as session:
             siparis = session.get(SatisSiparisi, siparis_id)
             if siparis is None:

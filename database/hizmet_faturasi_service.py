@@ -11,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.access import yazma_zorunlu
+from database.doviz_service import DovizService
 from database.finans_service import FinansService
 from database.models.cari import Cari, SatisHareketi
 from database.models.hizmet import HizmetHareketi, HizmetKarti
@@ -179,6 +181,7 @@ class HizmetFaturasiService:
         finans_yaz: bool = True,
     ) -> HizmetFaturasi:
         """cari_etkisi/finans_yaz=False: EvoBulut aktarımında cari defter ayrı yazıldığında."""
+        yazma_zorunlu("finans_duzenleme", "yeni_kayit")
         tarih = veriler["fatura_tarihi"]
         vade = veriler["vade_tarihi"]
         tur = (veriler.get("fatura_turu") or "GIDER").strip().upper()
@@ -232,9 +235,19 @@ class HizmetFaturasiService:
             fatura.odeme_hesabi = veriler.get("odeme_hesabi") or None
             fatura.aciklama = (veriler.get("aciklama") or "").strip() or None
             fatura.dokuman_yolu = (veriler.get("dokuman_yolu") or "").strip() or None
+            pb = (veriler.get("para_birimi") or "TRY").upper()
+            kur = decimal(veriler.get("kur", 1), "Kur", Decimal("0.000001"))
+            fatura.para_birimi = pb
+            fatura.kur = kur
+            fatura.kur_tarihi = veriler.get("kur_tarihi")
+            fatura.kur_turu = veriler.get("kur_turu") or "forex_selling"
+            fatura.kur_kaynagi = veriler.get("kur_kaynagi") or "TCMB"
+            fatura.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", pb != "TRY"))
+            fatura.borc_esasi = veriler.get("borc_esasi") or "TL_SABIT"
 
             hareket_turu = HAREKET_GELIR if tur == "GELIR" else HAREKET_GIDER
             isaret = 1 if tur == "GELIR" else -1
+            doviz_ara = Decimal("0")
 
             for veri in satir_verileri:
                 kod = (veri.get("hizmet_kodu") or "").strip().upper()
@@ -251,7 +264,22 @@ class HizmetFaturasiService:
                         f"({hizmet.hizmet_turu})."
                     )
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
-                birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                birim_fiyat_doviz = decimal(
+                    veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)),
+                    "Birim fiyat",
+                    Decimal("0"),
+                )
+                if pb != "TRY" and birim_fiyat_doviz > 0:
+                    birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))
+                    doviz_ara += miktar * (
+                        birim_fiyat_doviz
+                        - birim_fiyat_doviz
+                        * decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0"))
+                        / Decimal("100")
+                    )
+                else:
+                    birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                    birim_fiyat_doviz = Decimal("0")
                 iskonto_orani = decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0"))
                 kdv_orani = decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0"))
                 net = miktar * birim_fiyat - (
@@ -269,6 +297,9 @@ class HizmetFaturasiService:
                         birim_fiyat=birim_fiyat,
                         iskonto_orani=iskonto_orani,
                         kdv_orani=kdv_orani,
+                        birim_fiyat_doviz=birim_fiyat_doviz,
+                        tl_birim_fiyat=birim_fiyat,
+                        tl_tutar=net.quantize(Decimal("0.01")),
                     )
                 )
                 session.add(
@@ -291,7 +322,12 @@ class HizmetFaturasiService:
                 else:
                     hizmet.satis_fiyati = birim_fiyat
 
-            toplam = HizmetFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
+            toplam_dict = HizmetFaturasiService.toplam(fatura.satirlar)
+            toplam = toplam_dict["genel_toplam"]
+            fatura.tl_matrah = toplam_dict["ara_toplam"] - toplam_dict["iskonto"]
+            fatura.tl_kdv = toplam_dict["kdv"]
+            fatura.tl_genel_toplam = toplam
+            fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
             if fatura.odeme_tutari > toplam:
                 etiket = "Tahsilat" if tur == "GELIR" else "Ödeme"
                 raise ValueError(f"{etiket} tutarı fatura toplamından büyük olamaz.")
@@ -309,6 +345,10 @@ class HizmetFaturasiService:
                 hareket.satis_tarihi = tarih
                 hareket.satis_tutari = toplam
                 hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+                hareket.para_birimi = pb
+                hareket.kur = kur if pb != "TRY" else Decimal("1")
+                hareket.borc_esasi = fatura.borc_esasi or "TL_SABIT"
+                hareket.doviz_tutari = fatura.doviz_ara_toplam if pb != "TRY" else Decimal("0")
 
             if finans_yaz:
                 HizmetFaturasiService._finans_yaz(session, fatura)
@@ -318,10 +358,14 @@ class HizmetFaturasiService:
                 raise ValueError("Fatura kaydedilemedi.") from hata
             fid = fatura.id
 
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("hizmet_faturasi_fisi", fid, yeniden=True)
         return HizmetFaturasiService.getir(fid)
 
     @staticmethod
     def iptal_et(fatura_id):
+        yazma_zorunlu("finans_duzenleme", "iptal")
         with get_session() as session:
             fatura = session.scalar(
                 select(HizmetFaturasi)
@@ -338,3 +382,7 @@ class HizmetFaturasiService:
                 delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
             )
             fatura.durum = "İPTAL"
+
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("iptal_kaynak", "hizmet_faturasi", int(fatura_id), "Hizmet fatura iptal")

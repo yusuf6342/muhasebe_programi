@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import BASE_DIR, get_session
+from database.access import yazma_zorunlu, maliyet_zorunlu
 from database.models.stok import (
     Depo,
     DepoTransferFisi,
@@ -564,6 +565,7 @@ class StokService:
 
     @staticmethod
     def stok_kaydi(veriler, fiyatlar, birimler=None, barkodlar=None, resimler=None):
+        yazma_zorunlu("stok_duzenleme", "yeni_kayit")
         with get_session() as session:
             stok_id = veriler.get("stok_id")
             yeni_kod = (veriler.get("stok_kodu") or "").strip()
@@ -926,6 +928,7 @@ class StokService:
 
     @staticmethod
     def maliyetler(stok_kodu, depo_adi):
+        maliyet_zorunlu()
         lotlar = StokService.lotlar(stok_kodu, depo_adi)
         if lotlar:
             toplam_miktar = sum((lot.kalan_miktar for lot in lotlar), Decimal("0"))
@@ -981,6 +984,7 @@ class StokService:
 
     @staticmethod
     def stok_girisi(stok_kodu, depo_adi, tedarikci, tarih, miktar, maliyet, lot_no=""):
+        yazma_zorunlu("stok_duzenleme", "yeni_kayit")
         miktar = decimal(miktar, "Miktar", Decimal("0.0001"))
         maliyet = decimal(maliyet, "Birim maliyet", Decimal("0"))
         with get_session() as session:
@@ -1273,6 +1277,7 @@ class StokService:
 
     @staticmethod
     def depo_transfer_kaydet(veriler, satirlar):
+        yazma_zorunlu("stok_duzenleme")
         if not satirlar:
             raise ValueError("En az bir transfer satırı ekleyin.")
         cikis = (veriler.get("cikis_depo") or "").strip()
@@ -1365,6 +1370,7 @@ class StokService:
 
     @staticmethod
     def stok_birlestir(aktarilacak_id, aktarilan_id):
+        yazma_zorunlu("stok_duzenleme")
         """
         Aktarılacak stok kartını aktarılan (hedef) karta birleştirir.
         Hareketler, lotlar ve belge satırları hedefe geçer; birim hedef stoktan devam eder.
@@ -1564,6 +1570,7 @@ class StokService:
 
     @staticmethod
     def paket_tanim_kaydet(paket_stok_id, bilesenler):
+        yazma_zorunlu("stok_duzenleme")
         """
         bilesenler: [{"urun_kodu": "...", "miktar": 5}, ...] — 1 paket için miktarlar.
         Paket kartının türü 'Paket' yapılır.
@@ -1611,6 +1618,7 @@ class StokService:
 
     @staticmethod
     def paket_tanim_sil(paket_stok_id):
+        yazma_zorunlu("stok_duzenleme", "silme")
         with get_session() as session:
             for eski in list(
                 session.scalars(
@@ -1670,6 +1678,7 @@ class StokService:
 
     @staticmethod
     def paket_olustur(paket_stok_id, depo_adi, paket_adedi, tarih=None, aciklama=""):
+        yazma_zorunlu("stok_duzenleme")
         """
         N adet paket üretir:
         - Her bileşenden (miktar × N) düşülür (maliyetleriyle)

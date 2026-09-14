@@ -12,6 +12,13 @@ from database.alis_irsaliyesi_service import AlisIrsaliyesiService
 from database.alis_siparisi_service import AlisSiparisiService
 from database.satis_siparisi_service import decimal
 from database.stok_service import StokService
+from doviz_fatura_panel import (
+    doviz_ozet_guncelle,
+    doviz_paneli_kur,
+    doviz_satir_kaydet_oncesi,
+    doviz_verilerini_doldur,
+    doviz_verilerini_topla,
+)
 from product_provider import search_prices, search_products
 from ui_takvim import saat_dogrula, saat_varsayilan, tarih_alani
 from urun_sec_ui import UrunSecDialog
@@ -592,6 +599,10 @@ class AlisFaturasiDialog(tk.Toplevel):
         self._fatura_bilgileri_olustur()
         self._depo_bar_olustur()
         self._baglanti_olustur()
+        doviz_cerceve = ttk.LabelFrame(self.icerik, text="DÖVİZ / KUR", padding=6)
+        doviz_cerceve.pack(fill="x", pady=4)
+        self._doviz_fiyat_alani = "birim_fiyat"
+        doviz_paneli_kur(self, doviz_cerceve)
         satir_sayfasi = ttk.LabelFrame(self.icerik, text="FATURA SATIRI GİRİŞİ VE SATIRLAR", padding=8)
         satir_sayfasi.pack(fill="both", expand=True, pady=4)
         self._satir_olustur(satir_sayfasi)
@@ -1225,13 +1236,16 @@ class AlisFaturasiDialog(tk.Toplevel):
             for alan in (
                 "siparis_satiri_id", "irsaliye_satiri_id",
                 "siparis_miktar", "irsaliye_miktar", "faturalanan_miktar",
+                "birim_fiyat_doviz",
             ):
                 if alan in mevcut and alan not in veri:
                     veri[alan] = mevcut[alan]
-            self.satirlar[idx] = {**mevcut, **veri}
+            self.satirlar[idx] = doviz_satir_kaydet_oncesi(self, {**mevcut, **veri})
         else:
-            self.satirlar.append(veri)
+            self.satirlar.append(doviz_satir_kaydet_oncesi(self, veri))
         self._satir_listesini_yenile()
+        if hasattr(self, "_doviz_para_birimi"):
+            doviz_ozet_guncelle(self)
         if formu_temizle:
             self.satir_formunu_temizle()
         elif self.satirlar and self._duzenlenen_satir is None and not secim:
@@ -1308,6 +1322,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 f"Genel Toplam: {para_goster(toplam['genel_toplam'])}"
             )
         )
+        if hasattr(self, "_doviz_para_birimi"):
+            doviz_ozet_guncelle(self)
         self.odeme_ozet.configure(text=f"Ödenen: {para_goster(odeme)} | Kalan: {para_goster(kalan)}")
         if borc is None:
             borc = self.mevcut_borc
@@ -1467,7 +1483,12 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.dokuman.delete(0, "end")
         self.dokuman.insert(0, fatura.dokuman_yolu or "")
         self.satirlar.clear()
+        fatura_pb = (getattr(fatura, "para_birimi", None) or "TRY").upper()
         for satir in fatura.satirlar:
+            bf = satir.birim_fiyat
+            bf_doviz = getattr(satir, "birim_fiyat_doviz", None) or 0
+            if fatura_pb != "TRY" and bf_doviz:
+                bf = bf_doviz
             self.satirlar.append({
                 "siparis_satiri_id": satir.siparis_satiri_id,
                 "irsaliye_satiri_id": satir.irsaliye_satiri_id,
@@ -1477,7 +1498,9 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "aciklama": satir.aciklama or "",
                 "miktar": satir.miktar,
                 "birim": satir.birim,
-                "birim_fiyat": satir.birim_fiyat,
+                "birim_fiyat": bf,
+                "birim_alis_fiyati": bf,
+                "birim_fiyat_doviz": bf_doviz or None,
                 "iskonto_orani": satir.iskonto_orani,
                 "kdv_orani": satir.kdv_orani,
                 "lot_no": satir.lot_no or "",
@@ -1498,6 +1521,8 @@ class AlisFaturasiDialog(tk.Toplevel):
         self._bakiye_guncelle()
         self._satir_listesini_yenile()
         self._odeme_listesini_yenile()
+        if hasattr(self, "_doviz_para_birimi"):
+            doviz_verilerini_doldur(self, fatura)
 
     def kaydet(self):
         try:
@@ -1515,6 +1540,10 @@ class AlisFaturasiDialog(tk.Toplevel):
                 if not veri.get("lot_no"):
                     veri["lot_no"] = StokService.otomatik_lot_no(tedarikci.unvan, fatura_tarihi)
                 veri["birim_fiyat"] = veri.get("birim_fiyat", veri.get("birim_alis_fiyati", 0))
+                if veri.get("birim_fiyat_doviz") in (None, "", 0, "0"):
+                    pb = getattr(self, "_doviz_para_birimi", None)
+                    if pb and (pb.get() or "TRY").upper() != "TRY":
+                        veri["birim_fiyat_doviz"] = veri["birim_fiyat"]
                 satirlar.append(veri)
             odeme_tutari = sum((decimal(o["tutar"], "Ödeme") for o in self.odemeler), Decimal("0"))
             ilk_odeme = self.odemeler[0] if self.odemeler else {}
@@ -1552,22 +1581,25 @@ class AlisFaturasiDialog(tk.Toplevel):
             aciklama = self.girdiler["aciklama"].get().strip()
             if notlar:
                 aciklama = f"{aciklama}\n{notlar}".strip() if aciklama else notlar
+            veriler = {
+                "fatura_no": self.girdiler["fatura_no"].get().strip(),
+                "fatura_tarihi": fatura_tarihi,
+                "islem_saati": islem_saati,
+                "vade_tarihi": vade_tarihi,
+                "cari_id": tedarikci.id,
+                "siparis_id": siparis_id,
+                "irsaliye_id": irsaliye_id,
+                "depo": self.depo.get(),
+                "odeme_tutari": odeme_tutari,
+                "odeme_sekli": ilk_odeme.get("odeme_sekli"),
+                "odeme_hesabi": ilk_odeme.get("hesap"),
+                "aciklama": aciklama or None,
+                "dokuman_yolu": self.dokuman.get().strip() or None,
+            }
+            if hasattr(self, "_doviz_para_birimi"):
+                veriler.update(doviz_verilerini_topla(self))
             self.result = AlisFaturasiService.kaydet(
-                {
-                    "fatura_no": self.girdiler["fatura_no"].get().strip(),
-                    "fatura_tarihi": fatura_tarihi,
-                    "islem_saati": islem_saati,
-                    "vade_tarihi": vade_tarihi,
-                    "cari_id": tedarikci.id,
-                    "siparis_id": siparis_id,
-                    "irsaliye_id": irsaliye_id,
-                    "depo": self.depo.get(),
-                    "odeme_tutari": odeme_tutari,
-                    "odeme_sekli": ilk_odeme.get("odeme_sekli"),
-                    "odeme_hesabi": ilk_odeme.get("hesap"),
-                    "aciklama": aciklama or None,
-                    "dokuman_yolu": self.dokuman.get().strip() or None,
-                },
+                veriler,
                 satirlar,
                 self.fatura.id if self.fatura else None,
             )
@@ -1661,6 +1693,16 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
         self.iade_odeme_hesabi = ttk.Entry(ust, width=42)
         self.iade_odeme_hesabi.grid(row=6, column=1, sticky="w", padx=6)
 
+        self.girdiler = {"iade_tarihi": self.tarih}
+        doviz_cerceve = ttk.LabelFrame(self, text="DÖVİZ / KUR", padding=6)
+        doviz_cerceve.pack(fill="x", padx=10, pady=4)
+        self._doviz_fiyat_alani = "birim_fiyat"
+        doviz_paneli_kur(self, doviz_cerceve)
+        if iade:
+            doviz_verilerini_doldur(self, iade)
+        elif kaynak_fatura:
+            doviz_verilerini_doldur(self, kaynak_fatura)
+
         orta = ttk.LabelFrame(self, text="İade Satırları", padding=8)
         orta.pack(fill="both", expand=True, padx=10)
         self.satir_tablosu = ttk.Treeview(
@@ -1751,17 +1793,20 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
             messagebox.showwarning("Eksik", "Tedarikçi ve satırlar gerekli.", parent=self)
             return
         try:
+            veriler = {
+                "iade_tarihi": datetime.strptime(self.tarih.get(), "%d.%m.%Y").date(),
+                "cari_id": tedarikci.id,
+                "kaynak_fatura_id": self.kaynak.id if self.kaynak else None,
+                "depo": self.depo.get() or "ANA DEPO",
+                "aciklama": self.aciklama.get().strip() or None,
+                "iade_odeme_tutari": self.iade_odeme_tutari.get(),
+                "iade_odeme_sekli": self.iade_odeme_sekli.get() or None,
+                "iade_odeme_hesabi": self.iade_odeme_hesabi.get().strip() or None,
+            }
+            if hasattr(self, "_doviz_para_birimi"):
+                veriler.update(doviz_verilerini_topla(self))
             AlisIadeFaturasiService.kaydet(
-                {
-                    "iade_tarihi": datetime.strptime(self.tarih.get(), "%d.%m.%Y").date(),
-                    "cari_id": tedarikci.id,
-                    "kaynak_fatura_id": self.kaynak.id if self.kaynak else None,
-                    "depo": self.depo.get() or "ANA DEPO",
-                    "aciklama": self.aciklama.get().strip() or None,
-                    "iade_odeme_tutari": self.iade_odeme_tutari.get(),
-                    "iade_odeme_sekli": self.iade_odeme_sekli.get() or None,
-                    "iade_odeme_hesabi": self.iade_odeme_hesabi.get().strip() or None,
-                },
+                veriler,
                 self.satirlar,
                 self.iade.id if self.iade else None,
             )
