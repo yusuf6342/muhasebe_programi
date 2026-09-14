@@ -289,16 +289,40 @@ class StokMuhasebeDialog(tk.Toplevel):
         self.grab_set()
         self.alanlar = {}
         degerler = degerler or {}
-        for satir, (etiket, alan) in enumerate(self.ALANLAR):
+        from hesap_kodu_sec_ui import muhasebe_hesap_entry_bagla
+
+        ttk.Label(
+            self,
+            text="3 hane yazın veya sağ tık / F2 / … ile TDHP hesap planından seçin.",
+            foreground="#555",
+            wraplength=420,
+        ).grid(row=0, column=0, columnspan=3, padx=12, pady=(10, 4), sticky="w")
+        for satir, (etiket, alan) in enumerate(self.ALANLAR, start=1):
             ttk.Label(self, text=etiket).grid(row=satir, column=0, padx=12, pady=6, sticky="w")
             giris = ttk.Entry(self, width=28)
-            giris.grid(row=satir, column=1, padx=12, pady=6)
+            giris.grid(row=satir, column=1, padx=(12, 4), pady=6, sticky="w")
             giris.insert(0, degerler.get(alan) or "")
             self.alanlar[alan] = giris
+            muhasebe_hesap_entry_bagla(self, giris)
+            ttk.Button(
+                self,
+                text="…",
+                width=3,
+                command=lambda g=giris: self._hesap_sec(g),
+            ).grid(row=satir, column=2, padx=(0, 12), pady=6)
         butonlar = ttk.Frame(self)
-        butonlar.grid(row=len(self.ALANLAR), column=0, columnspan=2, padx=12, pady=12, sticky="e")
+        butonlar.grid(row=len(self.ALANLAR) + 1, column=0, columnspan=3, padx=12, pady=12, sticky="e")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Tamam", command=self.tamam).pack(side="right")
+
+    def _hesap_sec(self, giris):
+        from hesap_kodu_sec_ui import HesapKoduSecDialog
+
+        dlg = HesapKoduSecDialog(self, onek=(giris.get() or "").strip())
+        self.wait_window(dlg)
+        if dlg.result:
+            giris.delete(0, "end")
+            giris.insert(0, dlg.result)
 
     def tamam(self):
         self.result = {alan: giris.get().strip() for alan, giris in self.alanlar.items()}

@@ -98,6 +98,8 @@ from database.models.finans import (
 
     KasaMakbuzu,
 
+    KasaMakbuzSatiri,
+
 )
 
 from database.models.hizmet import HizmetKarti, HizmetHareketi

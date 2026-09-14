@@ -101,40 +101,22 @@ class HesapEslemeService:
 
     @staticmethod
     def oneri_hesaplari_olustur() -> int:
-        """Önerilen alt hesapları açar ve eşleştirmeleri doldurur."""
+        """TDHP ana hesaplarını yükler ve standart eşleştirmeleri bağlar."""
         from database.access import yazma_zorunlu
 
         yazma_zorunlu("muhasebe_fis_olusturma", "yeni_kayit", "duzenleme")
-        MuhasebeService.ana_hesaplari_doldur()
+        eklenen = MuhasebeService.ana_hesaplari_doldur()
         MuhasebeService.esleme_sablonlarini_doldur()
-        eklenen = 0
         with get_session() as session:
             firma_id = MuhasebeService.yerel_firma_id(session)
-            for kod, ad, tur, anahtar in ONERI_HESAPLAR:
+            for kod, _ad, _tur, anahtar in ONERI_HESAPLAR:
                 h = session.scalar(
                     select(HesapPlani).where(
                         HesapPlani.firma_id == firma_id, HesapPlani.hesap_kodu == kod
                     )
                 )
                 if h is None:
-                    ust = session.scalar(
-                        select(HesapPlani).where(
-                            HesapPlani.firma_id == firma_id,
-                            HesapPlani.hesap_kodu == kod[0],
-                        )
-                    )
-                    h = HesapPlani(
-                        firma_id=firma_id,
-                        hesap_kodu=kod,
-                        hesap_adi=ad,
-                        ust_hesap_id=ust.id if ust else None,
-                        hesap_seviyesi=2,
-                        hesap_turu=tur,
-                        aktif=True,
-                    )
-                    session.add(h)
-                    session.flush()
-                    eklenen += 1
+                    continue
                 e = session.scalar(
                     select(MuhasebeHesapEsleme).where(
                         MuhasebeHesapEsleme.firma_id == firma_id,

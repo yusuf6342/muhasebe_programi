@@ -24,6 +24,11 @@ from database.models.genel_muhasebe import (
     MuhasebeHesapEsleme,
     MuhasebeIslemGecmisi,
 )
+from database.tdhp_hesap_plani import (
+    TDHP_ANA_HESAPLAR,
+    fis_alt_hesap_zorunlu,
+    tdhp_ust_kodu,
+)
 from database.session_manager import oturum
 
 SIFIR = Decimal("0.00")
@@ -111,29 +116,60 @@ class MuhasebeService:
 
     @staticmethod
     def ana_hesaplari_doldur() -> int:
+        """Türkiye Tek Düzen Hesap Planı ana hesaplarını (sınıf/grup/3 haneli) yükler.
+
+        Mevcut kodlara dokunmaz (ad/tür hariç üst bağ ve seviye düzeltilir);
+        yalnızca eksikleri ekler. Dönüş: yeni eklenen adedi.
+        """
         eklenen = 0
         with get_session() as session:
             firma_id = MuhasebeService.yerel_firma_id(session)
-            for kod, ad, tur in ANA_HESAP_SINIFLARI:
-                var = session.scalar(
-                    select(HesapPlani).where(
-                        HesapPlani.firma_id == firma_id,
-                        HesapPlani.hesap_kodu == kod,
-                    )
+            mevcut = {
+                h.hesap_kodu: h
+                for h in session.scalars(
+                    select(HesapPlani).where(HesapPlani.firma_id == firma_id)
+                ).all()
+            }
+            sirali = sorted(
+                TDHP_ANA_HESAPLAR,
+                key=lambda x: (len(x[0]), x[0]),
+            )
+            for kod, ad, tur in sirali:
+                ust_kod = tdhp_ust_kodu(kod)
+                ust_id = None
+                seviye = 1
+                if ust_kod:
+                    ust = mevcut.get(ust_kod)
+                    if ust is not None:
+                        ust_id = ust.id
+                        seviye = int(ust.hesap_seviyesi) + 1
+                    else:
+                        seviye = min(len(kod), 3)
+                if kod in mevcut:
+                    h = mevcut[kod]
+                    # Hiyerarşiyi tek düzene hizala
+                    if h.ust_hesap_id != ust_id:
+                        h.ust_hesap_id = ust_id
+                    if h.hesap_seviyesi != seviye:
+                        h.hesap_seviyesi = seviye
+                    if not h.hesap_adi:
+                        h.hesap_adi = ad
+                    if h.hesap_turu != tur:
+                        h.hesap_turu = tur
+                    continue
+                h = HesapPlani(
+                    firma_id=firma_id,
+                    hesap_kodu=kod,
+                    hesap_adi=ad,
+                    ust_hesap_id=ust_id,
+                    hesap_seviyesi=seviye,
+                    hesap_turu=tur,
+                    aktif=True,
                 )
-                if var is None:
-                    session.add(
-                        HesapPlani(
-                            firma_id=firma_id,
-                            hesap_kodu=kod,
-                            hesap_adi=ad,
-                            ust_hesap_id=None,
-                            hesap_seviyesi=1,
-                            hesap_turu=tur,
-                            aktif=True,
-                        )
-                    )
-                    eklenen += 1
+                session.add(h)
+                session.flush()
+                mevcut[kod] = h
+                eklenen += 1
         return eklenen
 
     @staticmethod
@@ -160,6 +196,37 @@ class MuhasebeService:
 
 
 class HesapPlanService:
+    @staticmethod
+    def kod_oneki_ile_listele(onek: str, *, limit: int = 400) -> list[dict]:
+        """Hesap kodu önekiyle (en az 3 hane) TDHP hesaplarını listeler."""
+        yetki_zorunlu("muhasebe_goruntuleme", "goruntuleme")
+        onek = (onek or "").strip()
+        onek_temiz = "".join(c for c in onek if c.isalnum() or c == ".")
+        if len(onek_temiz.replace(".", "")) < 3:
+            raise ValueError("Listeden seçmek için en az 3 hane yazın (ör. 120).")
+        with get_session() as session:
+            firma_id = MuhasebeService.yerel_firma_id(session)
+            q = (
+                select(HesapPlani)
+                .where(
+                    HesapPlani.firma_id == firma_id,
+                    HesapPlani.aktif.is_(True),
+                    HesapPlani.hesap_kodu.like(f"{onek_temiz}%"),
+                )
+                .order_by(HesapPlani.hesap_kodu)
+                .limit(int(limit))
+            )
+            return [
+                {
+                    "id": h.id,
+                    "hesap_kodu": h.hesap_kodu,
+                    "hesap_adi": h.hesap_adi,
+                    "hesap_seviyesi": h.hesap_seviyesi,
+                    "hesap_turu": h.hesap_turu,
+                }
+                for h in session.scalars(q).all()
+            ]
+
     @staticmethod
     def listele(*, arama: str = "", sadece_aktif: bool = True) -> list[dict]:
         yetki_zorunlu("muhasebe_goruntuleme", "goruntuleme")
@@ -533,6 +600,7 @@ class MuhasebeFisService:
                     raise ValueError("Hesap bulunamadı.")
                 if not hesap.aktif:
                     raise ValueError(f"Pasif hesap kullanılamaz: {hesap.hesap_kodu}")
+                fis_alt_hesap_zorunlu(hesap.hesap_kodu)
                 session.add(
                     MuhasebeFisiSatiri(
                         fis_id=fis.id,

@@ -133,19 +133,33 @@ def kasa_makbuz_onizle(parent, belge_no: str) -> bool:
     baslik = "Tahsilat Makbuzu" if tahsilat else "Ödeme Makbuzu"
     cari = getattr(makbuz, "cari", None)
     cari_yazi = f"{cari.cari_kodu} — {cari.unvan}" if cari else "—"
-    kasa = makbuz.finans_hesap.hesap_adi if makbuz.finans_hesap else "—"
+    satirlar = list(getattr(makbuz, "satirlar", None) or [])
     alanlar = [
         ("Belge no", makbuz.belge_no),
         ("Tür", "Tahsilat" if tahsilat else "Ödeme"),
         ("Tarih", _tarih(makbuz.tarih)),
         ("Cari", cari_yazi),
-        ("Kasa", kasa),
-        ("Tutar", _para(makbuz.tutar)),
+        ("Toplam", _para(makbuz.tutar)),
         ("Makbuz no", makbuz.makbuz_no or "—"),
         ("Durum", makbuz.durum or "—"),
         ("Açıklama", makbuz.aciklama or "—"),
     ]
-    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar)
+    if satirlar:
+        for i, s in enumerate(satirlar, start=1):
+            h = getattr(s, "finans_hesap", None)
+            hesap_adi = h.hesap_adi if h else "—"
+            tarih_yazi = _tarih(s.tarih or makbuz.tarih)
+            alanlar.append(
+                (
+                    f"Satır {i}",
+                    f"{tarih_yazi} | {s.odeme_sekli or '—'} | {hesap_adi} | {_para(s.tutar)}"
+                    + (f" | {s.aciklama}" if s.aciklama else ""),
+                )
+            )
+    else:
+        kasa = makbuz.finans_hesap.hesap_adi if makbuz.finans_hesap else "—"
+        alanlar.insert(4, ("Hesap", kasa))
+    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar, geometry="560x520")
     if dialog.winfo_exists():
         parent.wait_window(dialog)
     return True

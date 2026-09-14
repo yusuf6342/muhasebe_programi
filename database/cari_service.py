@@ -210,6 +210,17 @@ class CariService:
             return session.get(Cari, cari_id)
 
     @staticmethod
+    def uyari_notu_oku(cari_id: int | None) -> str:
+        """Cariye tanımlı uyarı notunu döner (yoksa boş)."""
+        if not cari_id:
+            return ""
+        with get_session() as session:
+            cari = session.get(Cari, int(cari_id))
+            if cari is None:
+                return ""
+            return (getattr(cari, "uyari_notu", None) or "").strip()
+
+    @staticmethod
     def kod_ile_getir(cari_kodu: str) -> Cari | None:
         kod = (cari_kodu or "").strip()
         if not kod:

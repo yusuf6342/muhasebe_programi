@@ -47,6 +47,7 @@ class Cari(Base):
     ilce3: Mapped[str | None] = mapped_column(String(50), nullable=True)
     adres_tipi3: Mapped[str | None] = mapped_column(String(40), nullable=True)
     ozel_notlar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    uyari_notu: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     satis_hareketleri: Mapped[list["SatisHareketi"]] = relationship(

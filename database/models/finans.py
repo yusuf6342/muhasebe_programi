@@ -289,7 +289,7 @@ class GiderFisi(Base):
 
 
 class KasaMakbuzu(Base):
-    """Kasa tahsilat / ödeme makbuzu — cari zorunlu, kasa hesabından giriş veya çıkış."""
+    """Tahsilat / ödeme makbuzu — cari zorunlu; tek veya çok satırlı tahsilat/ödeme."""
 
     __tablename__ = "kasa_makbuzlari"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -304,4 +304,30 @@ class KasaMakbuzu(Base):
     makbuz_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|IPTAL
+    finans_hesap = relationship("FinansHesabi")
+    satirlar: Mapped[list["KasaMakbuzSatiri"]] = relationship(
+        "KasaMakbuzSatiri",
+        back_populates="makbuz",
+        cascade="all, delete-orphan",
+        order_by="KasaMakbuzSatiri.sira_no",
+    )
+
+
+class KasaMakbuzSatiri(Base):
+    """Makbuz satırı — ödeme şekli + hesap + tutar (nakit, havale, POS vb.)."""
+
+    __tablename__ = "kasa_makbuz_satirlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    makbuz_id: Mapped[int] = mapped_column(
+        ForeignKey("kasa_makbuzlari.id"), nullable=False, index=True
+    )
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    tarih: Mapped[date | None] = mapped_column(Date, nullable=True)
+    odeme_sekli: Mapped[str] = mapped_column(String(50), nullable=False)
+    finans_hesap_id: Mapped[int] = mapped_column(
+        ForeignKey("finans_hesaplari.id"), nullable=False, index=True
+    )
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    makbuz: Mapped["KasaMakbuzu"] = relationship("KasaMakbuzu", back_populates="satirlar")
     finans_hesap = relationship("FinansHesabi")

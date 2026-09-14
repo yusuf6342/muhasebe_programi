@@ -256,6 +256,7 @@ def cari_kart_schemasini_guncelle() -> None:
         "tc_kimlik": "VARCHAR(11)",
         "musteri_grubu": "VARCHAR(100)",
         "ozel_notlar": "VARCHAR(1000)",
+        "uyari_notu": "VARCHAR(1000)",
         "il": "VARCHAR(50)",
         "ilce": "VARCHAR(50)",
         "telefon2": "VARCHAR(30)",

@@ -18,6 +18,7 @@ from database.muhasebe_service import (
     para_goster,
 )
 from database.muhasebe_entegrasyon import HesapEslemeService
+from database.tdhp_hesap_plani import fis_alt_hesap_zorunlu, fis_icin_alt_hesap_mi
 from database.session_manager import oturum
 
 
@@ -146,14 +147,15 @@ def eslemeler_goster(app):
 
     def oneri():
         if not messagebox.askyesno(
-            "Önerilen hesaplar",
-            "100/102/120/153/191/320/391/600/621/770 hesapları açılsın ve eşleştirilsin mi?",
+            "Tek Düzen / Eşleştirme",
+            "Tek Düzen ana hesaplar yüklensin ve standart eşleştirmeler "
+            "(100, 102, 120, 153, 191, 320, 391, 600, 621, 770) bağlansın mı?",
             parent=app,
         ):
             return
         try:
             n = HesapEslemeService.oneri_hesaplari_olustur()
-            messagebox.showinfo("Tamam", f"Önerilen hesaplar hazır. Yeni eklenen: {n}", parent=app)
+            messagebox.showinfo("Tamam", f"İşlem tamam. Yeni eklenen ana hesap: {n}", parent=app)
             yenile()
         except Exception as hata:
             messagebox.showerror("Eşleştirme", str(hata), parent=app)
@@ -296,6 +298,20 @@ def hesap_plani_goster(app):
     def ekle():
         HesapDialog(app, on_save=yenile)
 
+    def alt_hesap_ekle():
+        hid = secili_id()
+        if not hid:
+            messagebox.showinfo("Seçim", "Üst hesap için bir satır seçin.", parent=app)
+            return
+        ust = kayitlar.get(str(hid))
+        if not ust:
+            messagebox.showinfo("Seçim", "Hesap bulunamadı.", parent=app)
+            return
+        if not ust.get("aktif", True):
+            messagebox.showwarning("Hesap", "Pasif hesabın altına hesap eklenemez.", parent=app)
+            return
+        HesapDialog(app, on_save=yenile, ust_hesap=ust)
+
     def duzenle():
         hid = secili_id()
         if not hid:
@@ -316,21 +332,110 @@ def hesap_plani_goster(app):
         except Exception as hata:
             messagebox.showerror("Hesap", str(hata), parent=app)
 
+    def sag_tik(event):
+        row = tablo.identify_row(event.y)
+        if not row:
+            return
+        tablo.selection_set(row)
+        tablo.focus(row)
+        menu = tk.Menu(tablo, tearoff=0)
+        menu.add_command(label="Alt Hesap Ekle", command=alt_hesap_ekle)
+        menu.add_command(label="Düzenle", command=duzenle)
+        menu.add_separator()
+        menu.add_command(label="Pasife Al", command=pasif)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def tdhp_yukle():
+        if not messagebox.askyesno(
+            "Tek Düzen Hesap Planı",
+            "Türkiye Tek Düzen Hesap Planı ana hesapları (sınıf, grup ve 3 haneli)\n"
+            "yüklensin mi?\n\nMevcut hesaplar silinmez; yalnızca eksikler eklenir.",
+            parent=app,
+        ):
+            return
+        try:
+            n = MuhasebeService.ana_hesaplari_doldur()
+            MuhasebeService.esleme_sablonlarini_doldur()
+            messagebox.showinfo(
+                "Hesap Planı",
+                f"Tek Düzen ana hesaplar yüklendi.\nYeni eklenen: {n}",
+                parent=app,
+            )
+            yenile()
+        except Exception as hata:
+            messagebox.showerror("Hesap Planı", str(hata), parent=app)
+
+    tablo.bind("<Button-3>", sag_tik)
+    # Windows'ta bazı temalarda Button-2 / Control-Button-1 de sağ tık sayılır
+    tablo.bind("<Button-2>", sag_tik)
+    tablo.bind("<Control-Button-1>", sag_tik)
+
     ttk.Button(arac, text="Yenile", command=yenile).pack(side="right", padx=2)
     ttk.Button(arac, text="Pasife Al", command=pasif).pack(side="right", padx=2)
     ttk.Button(arac, text="Düzenle", command=duzenle).pack(side="right", padx=2)
+    ttk.Button(arac, text="Alt Hesap Ekle", command=alt_hesap_ekle).pack(side="right", padx=2)
     ttk.Button(arac, text="Yeni Hesap", command=ekle).pack(side="right", padx=2)
+    ttk.Button(arac, text="Tek Düzen Planı Yükle", command=tdhp_yukle).pack(side="right", padx=2)
     arama.bind("<Return>", lambda _e: yenile())
     yenile()
 
 
+def _oneri_alt_hesap_kodu(ust_kod: str, yeni_seviye: int | None = None) -> str:
+    """Üst hesap koduna göre noktalı sıralı alt kod önerir.
+
+    Noktasız üst (örn. 120) → 2 haneli: 120.01, 120.02, ...
+    Noktalı üst (örn. 120.01) → 4 haneli: 120.01.0001, 120.01.0002, ...
+    """
+    del yeni_seviye  # biçim üst kodun nokta yapısına göre belirlenir
+    ust_kod = (ust_kod or "").strip()
+    if not ust_kod:
+        return ""
+
+    hane = 2 if ust_kod.count(".") == 0 else 4
+    prefix = f"{ust_kod}."
+    try:
+        mevcutlar = [
+            str(h["hesap_kodu"]).strip()
+            for h in HesapPlanService.listele(arama=ust_kod, sadece_aktif=False)
+        ]
+    except Exception:
+        mevcutlar = []
+
+    max_n = 0
+    for kod in mevcutlar:
+        if not kod.startswith(prefix):
+            continue
+        son = kod[len(prefix) :]
+        if "." in son:
+            continue
+        if len(son) == hane and son.isdigit():
+            max_n = max(max_n, int(son))
+
+    sonraki = max_n + 1
+    limit = 10**hane
+    if sonraki >= limit:
+        return f"{prefix}{sonraki}"
+    return f"{prefix}{sonraki:0{hane}d}"
+
+
 class HesapDialog(tk.Toplevel):
-    def __init__(self, parent, *, hesap_id: int | None = None, on_save=None):
+    def __init__(
+        self,
+        parent,
+        *,
+        hesap_id: int | None = None,
+        on_save=None,
+        ust_hesap: dict | None = None,
+    ):
         super().__init__(parent)
-        self.title("Hesap Kartı")
+        self.title("Alt Hesap" if ust_hesap and not hesap_id else "Hesap Kartı")
         self.resizable(False, False)
         self.hesap_id = hesap_id
         self.on_save = on_save
+        self.ust_hesap = ust_hesap
         self.transient(parent)
         self.grab_set()
 
@@ -338,23 +443,38 @@ class HesapDialog(tk.Toplevel):
         frm.pack(fill="both", expand=True)
 
         mevcut = HesapPlanService.getir(hesap_id) if hesap_id else None
-        ttk.Label(frm, text="Hesap Kodu:").grid(row=0, column=0, sticky="w", pady=4)
+        satir = 0
+
+        if ust_hesap and not hesap_id:
+            ttk.Label(
+                frm,
+                text=f"Üst hesap: {ust_hesap['hesap_kodu']} — {ust_hesap['hesap_adi']}",
+                font=("Segoe UI", 10, "bold"),
+            ).grid(row=satir, column=0, columnspan=2, sticky="w", pady=(0, 8))
+            satir += 1
+
+        ttk.Label(frm, text="Hesap Kodu:").grid(row=satir, column=0, sticky="w", pady=4)
         self.kod = ttk.Entry(frm, width=24)
-        self.kod.grid(row=0, column=1, pady=4)
-        ttk.Label(frm, text="Hesap Adı:").grid(row=1, column=0, sticky="w", pady=4)
+        self.kod.grid(row=satir, column=1, pady=4)
+        satir += 1
+        ttk.Label(frm, text="Hesap Adı:").grid(row=satir, column=0, sticky="w", pady=4)
         self.ad = ttk.Entry(frm, width=40)
-        self.ad.grid(row=1, column=1, pady=4)
-        ttk.Label(frm, text="Hesap Türü:").grid(row=2, column=0, sticky="w", pady=4)
+        self.ad.grid(row=satir, column=1, pady=4)
+        satir += 1
+        ttk.Label(frm, text="Hesap Türü:").grid(row=satir, column=0, sticky="w", pady=4)
         self.tur = ttk.Combobox(frm, values=list(HESAP_TURLERI), state="readonly", width=22)
-        self.tur.grid(row=2, column=1, sticky="w", pady=4)
+        self.tur.grid(row=satir, column=1, sticky="w", pady=4)
         self.tur.set("Aktif")
-        ttk.Label(frm, text="Üst Hesap ID:").grid(row=3, column=0, sticky="w", pady=4)
+        satir += 1
+        ttk.Label(frm, text="Üst Hesap:").grid(row=satir, column=0, sticky="w", pady=4)
         self.ust = ttk.Entry(frm, width=24)
-        self.ust.grid(row=3, column=1, pady=4)
-        ttk.Label(frm, text="Seviye:").grid(row=4, column=0, sticky="w", pady=4)
+        self.ust.grid(row=satir, column=1, pady=4)
+        satir += 1
+        ttk.Label(frm, text="Seviye:").grid(row=satir, column=0, sticky="w", pady=4)
         self.seviye = ttk.Entry(frm, width=24)
-        self.seviye.grid(row=4, column=1, pady=4)
+        self.seviye.grid(row=satir, column=1, pady=4)
         self.seviye.insert(0, "1")
+        satir += 1
 
         if mevcut:
             self.kod.insert(0, mevcut["hesap_kodu"])
@@ -365,20 +485,39 @@ class HesapDialog(tk.Toplevel):
                 self.ust.insert(0, str(mevcut["ust_hesap_id"]))
             self.seviye.delete(0, "end")
             self.seviye.insert(0, str(mevcut["hesap_seviyesi"]))
+        elif ust_hesap:
+            self.ust.insert(0, str(ust_hesap["id"]))
+            self.ust.configure(state="disabled")
+            self.tur.set(ust_hesap.get("hesap_turu") or "Aktif")
+            yeni_seviye = int(ust_hesap.get("hesap_seviyesi") or 1) + 1
+            self.seviye.delete(0, "end")
+            self.seviye.insert(0, str(yeni_seviye))
+            self.seviye.configure(state="disabled")
+            oneri = _oneri_alt_hesap_kodu(ust_hesap.get("hesap_kodu") or "", yeni_seviye)
+            if oneri:
+                self.kod.insert(0, oneri)
+            self.ad.focus_set()
 
         ttk.Button(frm, text="Kaydet", command=self._kaydet).grid(
-            row=5, column=1, sticky="e", pady=(12, 0)
+            row=satir, column=1, sticky="e", pady=(12, 0)
         )
 
     def _kaydet(self):
         try:
             ust = self.ust.get().strip()
+            if self.ust_hesap and not self.hesap_id:
+                ust = str(self.ust_hesap["id"])
+            seviye_txt = self.seviye.get().strip()
+            if self.ust_hesap and not self.hesap_id:
+                seviye = int(self.ust_hesap.get("hesap_seviyesi") or 1) + 1
+            else:
+                seviye = int(seviye_txt or 1)
             veriler = {
                 "hesap_kodu": self.kod.get().strip(),
                 "hesap_adi": self.ad.get().strip(),
                 "hesap_turu": self.tur.get(),
                 "ust_hesap_id": int(ust) if ust else None,
-                "hesap_seviyesi": int(self.seviye.get() or 1),
+                "hesap_seviyesi": seviye,
                 "aktif": True,
             }
             if self.hesap_id:
@@ -537,7 +676,11 @@ class FisDialog(tk.Toplevel):
         sb.pack(side="right", fill="y")
         self.tablo.configure(yscrollcommand=sb.set)
 
-        satir_frm = ttk.LabelFrame(self, text="Satır ekle", padding=8)
+        satir_frm = ttk.LabelFrame(
+            self,
+            text="Satır ekle (yalnızca alt hesap: 120.01.0001)",
+            padding=8,
+        )
         satir_frm.pack(fill="x", padx=10, pady=6)
         ttk.Label(satir_frm, text="Hesap kodu:").pack(side="left")
         self.s_kod = ttk.Entry(satir_frm, width=12)
@@ -631,13 +774,30 @@ class FisDialog(tk.Toplevel):
             messagebox.showwarning("Satır", "Hesap kodu girin.", parent=self)
             return
         try:
+            fis_alt_hesap_zorunlu(kod)
+        except ValueError as hata:
+            messagebox.showerror("Hesap", str(hata), parent=self)
+            return
+        try:
             hesaplar = HesapPlanService.listele(arama=kod, sadece_aktif=True)
         except Exception as hata:
             messagebox.showerror("Hesap", str(hata), parent=self)
             return
         hesap = next((h for h in hesaplar if h["hesap_kodu"] == kod), None)
         if hesap is None:
-            messagebox.showwarning("Hesap", "Aktif hesap bulunamadı.", parent=self)
+            messagebox.showwarning(
+                "Hesap",
+                "Aktif alt hesap bulunamadı.\nÖrnek: 120.01.0001",
+                parent=self,
+            )
+            return
+        if not fis_icin_alt_hesap_mi(hesap["hesap_kodu"]):
+            messagebox.showerror(
+                "Hesap",
+                f"Bu hesaba fiş yazılamaz: {hesap['hesap_kodu']}\n\n"
+                "Yalnızca 120.01.0001 biçimindeki alt hesaplar kullanılabilir.",
+                parent=self,
+            )
             return
         try:
             borc = decimal(self.s_borc.get() or 0)
