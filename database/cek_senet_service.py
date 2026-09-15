@@ -1016,7 +1016,11 @@ class CekSenetService:
                 kullanici=kullanici,
             )
             session.flush()
-            return CekSenetService._satir_dict(evrak)
+            sonuc = CekSenetService._satir_dict(evrak)
+        from database.deleted_record_service import ENTITY_CEK_SENET, safe_log_cancel
+
+        safe_log_cancel(ENTITY_CEK_SENET, evrak_id, note=aciklama or "Çek/senet evrak iptal")
+        return sonuc
 
     # ——— Aşama 3: operasyonel akışlar ———
 

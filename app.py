@@ -3500,7 +3500,12 @@ class MusteriSecimDialog(tk.Toplevel):
         for cari in self._musteriler:
             unvan = (cari.unvan or "").strip()
             kod = (cari.cari_kodu or "").strip()
-            if ara_cf and ara_cf not in unvan.casefold() and ara_cf not in kod.casefold():
+            etiket = f"{kod} - {unvan}"
+            if ara_cf and (
+                ara_cf not in unvan.casefold()
+                and ara_cf not in kod.casefold()
+                and ara_cf not in etiket.casefold()
+            ):
                 continue
             bulunan.append(cari)
         bulunan.sort(
@@ -7814,27 +7819,78 @@ class TreeviewKolonFiltrePopup(tk.Toplevel):
 
 
 class MuhasebeApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, startup_bootstrap=None):
         super().__init__()
-        self.title("Muhasebe Programı")
+        from branding import (
+            APP_NAME,
+            APP_VERSION,
+            apply_window_icon,
+            run_startup_with_splash,
+        )
+
+        self._cin_basarili = False
+        self.withdraw()
+        self.title(APP_NAME)
         self.geometry("1250x680")
         self.minsize(950, 560)
+        apply_window_icon(self)
+
+        if startup_bootstrap is not None:
+            try:
+                run_startup_with_splash(self, startup_bootstrap)
+            except Exception:
+                try:
+                    self.destroy()
+                except tk.TclError:
+                    pass
+                raise
+
         self._stil_ayarla()
         self._arayuzu_olustur()
+
+        # Giriş diyaloğu: withdrawn kök pencere Windows'ta Toplevel'i gizleyebiliyor.
+        # Şeffaf ama mapped root ile diyalog görünür kalsın.
+        try:
+            self.deiconify()
+            self.attributes("-alpha", 0.0)
+            self.update_idletasks()
+        except tk.TclError:
+            pass
 
         from auth_ui import oturum_akisi_calistir
 
         if not oturum_akisi_calistir(self):
+            try:
+                from tkinter import messagebox
+                from branding import APP_NAME
+
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Giriş yapılmadı. Program kapatılıyor.",
+                    parent=self,
+                )
+            except Exception:
+                pass
             self.destroy()
             return
 
+        try:
+            self.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
         self._aktif_donemi_yukle()
         self._sistem_menu_gorunurluk_guncelle()
         self._oturum_cubugunu_guncelle()
         self.ana_sayfa_goster()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self._cin_basarili = True
         self.after(500, self._pos_valor_kontrol)
         self.after(60_000, self._pos_valor_dongu)
         self.after(800, self._aktarim_durum_guncelle)
+        # Hakkında için sürüm referansı
+        self.app_version = APP_VERSION
 
     def _sistem_menu_gorunurluk_guncelle(self):
         """Sistem Yönetimi ve modül menüleri yetkiye göre görünsün."""
@@ -7845,6 +7901,14 @@ class MuhasebeApp(tk.Tk):
             "sistem": lambda: (
                 oturum.role_kod == "YONETICI"
                 or yetki_var("kullanici_yonetme", "firma_yonetme", "sistem_ayarlari")
+            ),
+            "servis": lambda: (
+                oturum.role_kod == "YONETICI"
+                or yetki_var(
+                    "servis_goruntuleme",
+                    "servis_kontrol",
+                    "sistem_ayarlari",
+                )
             ),
             "satislar": lambda: yetki_var("satis_goruntuleme", "goruntuleme"),
             "satin_alma": lambda: yetki_var("alis_goruntuleme"),
@@ -7960,7 +8024,11 @@ class MuhasebeApp(tk.Tk):
 
         self.menu = ttk.Frame(govde, padding=(12, 18))
         self.menu.pack(side="left", fill="y")
-        ttk.Label(self.menu, text="MUHASEBE", font=("Segoe UI", 14, "bold")).pack(pady=(4, 22))
+        from branding import APP_NAME
+
+        ttk.Label(self.menu, text=APP_NAME, font=("Segoe UI", 14, "bold")).pack(
+            pady=(4, 22)
+        )
 
         menu_ogeleri = (
             ("HIZLI GİRİŞ", "giris"),
@@ -7972,6 +8040,7 @@ class MuhasebeApp(tk.Tk):
             ("GENEL MUHASEBE", "genel_muhasebe"),
             ("ÖZET TABLOLAR", "ozet_tablolar"),
             ("SİSTEM YÖNETİMİ", "sistem"),
+            ("SERVİS VE SİSTEM", "servis"),
         )
         self.menu_dugmeleri = {}
         for baslik, anahtar in menu_ogeleri:
@@ -8002,7 +8071,9 @@ class MuhasebeApp(tk.Tk):
             self.oturum_kullanici_label.configure(
                 text=f"Kullanıcı: {kullanici}" + (f" — {rol}" if rol else "")
             )
-            self.title(f"Muhasebe Programı — {firma}")
+            from branding import APP_NAME
+
+            self.title(f"{APP_NAME} — {firma}")
         except tk.TclError:
             pass
 
@@ -8364,6 +8435,7 @@ class MuhasebeApp(tk.Tk):
             "genel_muhasebe": ("muhasebe_goruntuleme", "goruntuleme"),
             "ozet_tablolar": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
             "sistem": ("kullanici_yonetme", "firma_yonetme", "sistem_ayarlari"),
+            "servis": ("servis_goruntuleme", "servis_kontrol", "sistem_ayarlari"),
         }
         kodlar = gerekli.get(anahtar)
         if kodlar and not yetki_var(*kodlar):
@@ -8387,6 +8459,7 @@ class MuhasebeApp(tk.Tk):
             "genel_muhasebe": "GENEL MUHASEBE",
             "ozet_tablolar": "ÖZET TABLOLAR",
             "sistem": "SİSTEM YÖNETİMİ",
+            "servis": "SERVİS VE SİSTEM",
         }
         ttk.Label(self.icerik, text=basliklar[anahtar], style="Baslik.TLabel").pack(anchor="w")
         if anahtar == "giris":
@@ -8426,6 +8499,10 @@ class MuhasebeApp(tk.Tk):
             from sistem_ui import sistem_menusu_goster
 
             sistem_menusu_goster(self)
+        elif anahtar == "servis":
+            from servis_sistem_ui import servis_sistem_goster
+
+            servis_sistem_goster(self)
         else:
             ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
         self._busy_nabiz()
@@ -8493,7 +8570,8 @@ class MuhasebeApp(tk.Tk):
         alt.pack(fill="x", pady=10)
         ttk.Button(alt, text="Yeni Stok Kartı", command=self.yeni_stok).pack(side="left")
         ttk.Button(alt, text="Stok Kartını Düzenle", command=self.stok_duzenle).pack(side="left", padx=8)
-        ttk.Button(alt, text="Stok Girişi", command=self.stok_girisi).pack(side="left")
+        ttk.Button(alt, text="Sil", command=self.stok_soft_sil).pack(side="left")
+        ttk.Button(alt, text="Stok Girişi", command=self.stok_girisi).pack(side="left", padx=8)
         ttk.Button(alt, text="Yeni Depo", command=self.yeni_depo).pack(side="left", padx=8)
         self.stok_listesini_yenile()
 
@@ -8580,6 +8658,15 @@ class MuhasebeApp(tk.Tk):
             self.wait_window(dialog)
             if dialog.result:
                 self.stok_listesini_yenile()
+
+    def stok_soft_sil(self):
+        stok = self._secili_stok()
+        if not stok:
+            return
+        from silinen_kayitlar_ui import stok_soft_sil
+
+        if stok_soft_sil(self, stok):
+            self.stok_listesini_yenile()
 
     def stok_girisi(self):
         stok = self._secili_stok()
@@ -9718,6 +9805,7 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(alt, text="Faturayı Aç / Düzenle", command=self.fatura_ac).pack(side="left", padx=8)
         ttk.Button(alt, text="İade Faturası Oluştur", command=self.faturadan_iade_olustur).pack(side="left")
         ttk.Button(alt, text="İptal Et", command=self.fatura_iptal).pack(side="left", padx=8)
+        ttk.Button(alt, text="Taslak Sil", command=self.fatura_taslak_sil).pack(side="left")
         ttk.Button(alt, text="Filtreleri Temizle", command=self._fatura_filtreleri_temizle).pack(side="left", padx=8)
         ttk.Label(alt, text="Σ Kuruş:").pack(side="left", padx=(12, 2))
         self._fatura_liste_kurus_yon = "normal"
@@ -10213,6 +10301,18 @@ class MuhasebeApp(tk.Tk):
             except ValueError as hata: messagebox.showerror("İşlem yapılamadı", str(hata), parent=self); return
             self.fatura_listesini_yenile()
 
+    def fatura_taslak_sil(self):
+        fatura_id = self._secili_fatura_id()
+        if fatura_id is None:
+            return
+        fatura = SatisFaturasiService.getir(fatura_id)
+        if not fatura:
+            return
+        from silinen_kayitlar_ui import fatura_taslak_sil
+
+        if fatura_taslak_sil(self, fatura):
+            self.fatura_listesini_yenile()
+
     def faturadan_iade_olustur(self):
         fatura_id = self._secili_fatura_id()
         if fatura_id is None:
@@ -10559,6 +10659,7 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(alt, text=f"{etiket} Kartını Aç", command=self.cari_detay).pack(side="left")
         ttk.Button(alt, text="Düzenle", command=self.cari_duzenle).pack(side="left", padx=8)
         ttk.Button(alt, text="Pasife Al", command=self.cari_pasife_al).pack(side="left")
+        ttk.Button(alt, text="Sil", command=self.cari_soft_sil).pack(side="left", padx=8)
         self.cari_listesini_yenile()
 
     def cari_listesini_yenile(self):
@@ -10647,6 +10748,15 @@ class MuhasebeApp(tk.Tk):
                 CariService.pasife_al(cari.id)
             except ValueError as hata:
                 messagebox.showerror("İşlem yapılamadı", str(hata), parent=self)
+            self.cari_listesini_yenile()
+
+    def cari_soft_sil(self):
+        cari = self._secili_cari()
+        if not cari:
+            return
+        from silinen_kayitlar_ui import cari_soft_sil
+
+        if cari_soft_sil(self, cari):
             self.cari_listesini_yenile()
 
     def cari_detay(self):

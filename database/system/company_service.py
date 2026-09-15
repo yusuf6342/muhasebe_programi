@@ -129,6 +129,12 @@ class CompanyMgmtService:
                 cari_kart_schemasini_guncelle()
             except Exception:
                 pass
+            try:
+                from database.deleted_record_service import AuditDeleteService
+
+                AuditDeleteService.schema_hazirla()
+            except Exception:
+                pass
             with get_session() as session:
                 yerel = session.scalar(select(Firma).limit(1))
                 if yerel is None:

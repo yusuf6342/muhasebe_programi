@@ -118,6 +118,12 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         firma_uid=firma.firma_uid,
         db_path=str(yol.resolve()),
     )
+    try:
+        from database.deleted_record_service import AuditDeleteService
+
+        AuditDeleteService.schema_hazirla()
+    except Exception:
+        pass
     with get_system_session() as session:
         _ayar_yaz(session, "son_firma_id", str(firma.id))
         AuthService.audit(
@@ -132,44 +138,77 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
 class GirisDialog(tk.Toplevel):
     def __init__(self, parent: tk.Tk):
         super().__init__(parent)
-        self.title("Kullanıcı Girişi")
+        from branding import APP_ICON_PNG, APP_NAME, APP_TAGLINE, LOGO_FILE, SPLASH_FILE, get_brand_image
+
+        self.title(f"{APP_NAME} — Kullanıcı Girişi")
         self.resizable(False, False)
         self.result = False
         self.transient(parent)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._cikis)
 
-        cerceve = ttk.Frame(self, padding=24)
+        cerceve = ttk.Frame(self, padding=(28, 24))
         cerceve.pack(fill="both", expand=True)
+        cerceve.columnconfigure(0, weight=1)
 
-        ttk.Label(cerceve, text="MUHASEBE PROGRAMI", font=("Segoe UI", 16, "bold")).grid(
-            row=0, column=0, columnspan=2, pady=(0, 16)
+        # --- Marka / başlık ---
+        ust = ttk.Frame(cerceve)
+        ust.grid(row=0, column=0, sticky="ew")
+        ust.columnconfigure(0, weight=1)
+
+        self._logo_ref = get_brand_image(SPLASH_FILE, max_width=320, max_height=110)
+        if self._logo_ref is None:
+            self._logo_ref = get_brand_image(LOGO_FILE, max_width=320, max_height=110)
+        if self._logo_ref is None:
+            self._logo_ref = get_brand_image(APP_ICON_PNG, max_width=96, max_height=96)
+        if self._logo_ref is not None:
+            tk.Label(ust, image=self._logo_ref).grid(row=0, column=0, pady=(0, 10))
+
+        ttk.Label(ust, text=APP_NAME, font=("Segoe UI", 16, "bold")).grid(
+            row=1, column=0, pady=(0, 2)
         )
-        ttk.Label(cerceve, text="Kullanıcı adı:").grid(row=1, column=0, sticky="w", pady=6)
-        self.kullanici = ttk.Entry(cerceve, width=28)
-        self.kullanici.grid(row=1, column=1, pady=6, padx=(8, 0))
+        ttk.Label(ust, text=APP_TAGLINE, font=("Segoe UI", 9)).grid(
+            row=2, column=0, pady=(0, 18)
+        )
+
+        # --- Form: etiketler sağa, girişler aynı genişlikte ---
+        form = ttk.Frame(cerceve)
+        form.grid(row=1, column=0)
+        form.columnconfigure(0, minsize=108)
+        form.columnconfigure(1, minsize=220)
+
+        ttk.Label(form, text="Kullanıcı adı:").grid(
+            row=0, column=0, sticky="e", padx=(0, 12), pady=6
+        )
+        self.kullanici = ttk.Entry(form, width=28)
+        self.kullanici.grid(row=0, column=1, sticky="ew", pady=6)
         self.kullanici.insert(0, "admin")
         entry_yapistirma_etkin(self.kullanici)
 
-        ttk.Label(cerceve, text="Şifre:").grid(row=2, column=0, sticky="w", pady=6)
-        sifre_satir = ttk.Frame(cerceve)
-        sifre_satir.grid(row=2, column=1, sticky="ew", pady=6, padx=(8, 0))
-        self.sifre = ttk.Entry(sifre_satir, width=22, show="*")
-        self.sifre.pack(side="left")
+        ttk.Label(form, text="Şifre:").grid(
+            row=1, column=0, sticky="e", padx=(0, 12), pady=6
+        )
+        self.sifre = ttk.Entry(form, width=28, show="*")
+        self.sifre.grid(row=1, column=1, sticky="ew", pady=6)
         entry_yapistirma_etkin(self.sifre)
         self._sifre_gorunur = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            sifre_satir,
+            form,
             text="Göster",
             variable=self._sifre_gorunur,
             command=self._sifre_goster_gizle,
-        ).pack(side="left", padx=(6, 0))
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=6)
 
-        self.hata = ttk.Label(cerceve, text="", foreground="#c62828")
-        self.hata.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 8))
+        # --- Hata + butonlar (form ile aynı hizada) ---
+        alt = ttk.Frame(cerceve)
+        alt.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        alt.columnconfigure(0, weight=1)
 
-        butonlar = ttk.Frame(cerceve)
-        butonlar.grid(row=4, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        self.hata = ttk.Label(alt, text="", foreground="#c62828", anchor="center")
+        self.hata.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        butonlar = ttk.Frame(alt)
+        butonlar.grid(row=1, column=0)
         ttk.Button(butonlar, text="Programdan Çık", command=self._cikis).pack(
             side="left", padx=(0, 8)
         )
@@ -182,17 +221,31 @@ class GirisDialog(tk.Toplevel):
         self._ortala(parent)
 
     def _ortala(self, parent: tk.Misc) -> None:
+        from branding import center_toplevel_on_screen
+
+        # Ana pencere withdraw iken parent kök koordinatları güvenilir değil → ekran ortası
+        try:
+            mapped = bool(parent.winfo_viewable())
+        except tk.TclError:
+            mapped = False
+        if not mapped:
+            center_toplevel_on_screen(self)
+            return
         self.update_idletasks()
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 1:
-            w, h = 420, 240
+            w, h = 420, 280
         try:
             px = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
             py = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+            if px < -50 or py < -50:
+                center_toplevel_on_screen(self)
+                return
+            self.geometry(f"+{max(px, 0)}+{max(py, 0)}")
+            self.lift()
+            self.focus_force()
         except tk.TclError:
-            px = (self.winfo_screenwidth() - w) // 2
-            py = (self.winfo_screenheight() - h) // 2
-        self.geometry(f"+{max(px, 0)}+{max(py, 0)}")
+            center_toplevel_on_screen(self)
 
     def _sifre_goster_gizle(self) -> None:
         self.sifre.configure(show="" if self._sifre_gorunur.get() else "*")

@@ -657,6 +657,7 @@ class MuhasebeFisService:
             from database.access import aktif_firma_zorunlu
 
             aktif_firma_zorunlu()
+        ters_id: int | None = None
         with get_session() as session:
             fis = session.scalar(
                 select(MuhasebeFisi)
@@ -675,60 +676,69 @@ class MuhasebeFisService:
                 MuhasebeService._gecmis(
                     session, kayit_turu="fis", kayit_id=fis.id, islem="iptal", detay=neden
                 )
-                return None
-
-            # Kesinleşmiş → ters fiş
-            MuhasebeFisService._bakiye_uygula(session, fis.id, yon=-1)
-            eski_kaynak = f"{fis.kaynak_turu or ''}:{fis.kaynak_id or ''}"
-            fis.durum = "İptal"
-            fis.iptal_nedeni = (neden or "İptal") + (f" [{eski_kaynak}]" if eski_kaynak != ":" else "")
-            # Aynı kaynaktan yeni fiş açılabilsin
-            fis.kaynak_turu = None
-            fis.kaynak_id = None
-            mali_yil = fis.mali_yil
-            ters = MuhasebeFisi(
-                firma_id=fis.firma_id,
-                donem_id=oturum.period_id,
-                mali_yil=mali_yil,
-                fis_no=MuhasebeFisService._sonraki_fis_no(session, fis.firma_id, mali_yil),
-                fis_tarihi=date.today(),
-                fis_turu=fis.fis_turu,
-                aciklama=f"Ters kayıt: {fis.fis_no}" + (f" — {neden}" if neden else ""),
-                belge_no=fis.belge_no,
-                durum="Kesinleşmiş",
-                toplam_borc=fis.toplam_alacak,
-                toplam_alacak=fis.toplam_borc,
-                olusturan_kullanici_id=oturum.user_id,
-            )
-            session.add(ters)
-            session.flush()
-            fis.ters_fis_id = ters.id
-            for s in fis.satirlar:
-                session.add(
-                    MuhasebeFisiSatiri(
-                        fis_id=ters.id,
-                        firma_id=fis.firma_id,
-                        sira_no=s.sira_no,
-                        hesap_id=s.hesap_id,
-                        hesap_kodu=s.hesap_kodu,
-                        hesap_adi=s.hesap_adi,
-                        aciklama=s.aciklama,
-                        borc=s.alacak,
-                        alacak=s.borc,
-                        belge_tarihi=s.belge_tarihi,
-                        belge_no=s.belge_no,
-                    )
+            else:
+                # Kesinleşmiş → ters fiş
+                MuhasebeFisService._bakiye_uygula(session, fis.id, yon=-1)
+                eski_kaynak = f"{fis.kaynak_turu or ''}:{fis.kaynak_id or ''}"
+                fis.durum = "İptal"
+                fis.iptal_nedeni = (neden or "İptal") + (f" [{eski_kaynak}]" if eski_kaynak != ":" else "")
+                # Aynı kaynaktan yeni fiş açılabilsin
+                fis.kaynak_turu = None
+                fis.kaynak_id = None
+                mali_yil = fis.mali_yil
+                ters = MuhasebeFisi(
+                    firma_id=fis.firma_id,
+                    donem_id=oturum.period_id,
+                    mali_yil=mali_yil,
+                    fis_no=MuhasebeFisService._sonraki_fis_no(session, fis.firma_id, mali_yil),
+                    fis_tarihi=date.today(),
+                    fis_turu=fis.fis_turu,
+                    aciklama=f"Ters kayıt: {fis.fis_no}" + (f" — {neden}" if neden else ""),
+                    belge_no=fis.belge_no,
+                    durum="Kesinleşmiş",
+                    toplam_borc=fis.toplam_alacak,
+                    toplam_alacak=fis.toplam_borc,
+                    olusturan_kullanici_id=oturum.user_id,
                 )
-            session.flush()
-            MuhasebeFisService._bakiye_uygula(session, ters.id, yon=1)
-            MuhasebeService._gecmis(
-                session,
-                kayit_turu="fis",
-                kayit_id=fis.id,
-                islem="iptal_ters",
-                detay=f"ters={ters.fis_no}",
+                session.add(ters)
+                session.flush()
+                fis.ters_fis_id = ters.id
+                for s in fis.satirlar:
+                    session.add(
+                        MuhasebeFisiSatiri(
+                            fis_id=ters.id,
+                            firma_id=fis.firma_id,
+                            sira_no=s.sira_no,
+                            hesap_id=s.hesap_id,
+                            hesap_kodu=s.hesap_kodu,
+                            hesap_adi=s.hesap_adi,
+                            aciklama=s.aciklama,
+                            borc=s.alacak,
+                            alacak=s.borc,
+                            belge_tarihi=s.belge_tarihi,
+                            belge_no=s.belge_no,
+                        )
+                    )
+                session.flush()
+                MuhasebeFisService._bakiye_uygula(session, ters.id, yon=1)
+                MuhasebeService._gecmis(
+                    session,
+                    kayit_turu="fis",
+                    kayit_id=fis.id,
+                    islem="iptal_ters",
+                    detay=f"ters={ters.fis_no}",
+                )
+                ters_id = int(ters.id)
+
+        from database.deleted_record_service import ENTITY_MUHASEBE_FIS, safe_log_cancel
+
+        if not otomatik:
+            safe_log_cancel(
+                ENTITY_MUHASEBE_FIS,
+                fis_id,
+                note=neden or "Muhasebe fişi iptal",
             )
-            return ters.id
+        return ters_id
 
 
 class MuhasebeRaporService:

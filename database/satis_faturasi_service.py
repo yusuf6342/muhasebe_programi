@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload, joinedload
 
@@ -70,6 +70,8 @@ class SatisFaturasiService:
             faturalar = session.scalars(select(SatisFaturasi).options(
                 selectinload(SatisFaturasi.cari), selectinload(SatisFaturasi.satirlar),
                 selectinload(SatisFaturasi.siparis), selectinload(SatisFaturasi.irsaliye)
+            ).where(
+                or_(SatisFaturasi.is_deleted.is_(False), SatisFaturasi.is_deleted.is_(None))
             ).order_by(SatisFaturasi.id.desc())).all()
             return [{"fatura": f, **SatisFaturasiService.toplam(f.satirlar)} for f in faturalar]
 
@@ -90,6 +92,9 @@ class SatisFaturasiService:
                     joinedload(SatisFaturasi.irsaliye).load_only(
                         SatisIrsaliyesi.id, SatisIrsaliyesi.irsaliye_no
                     ),
+                )
+                .where(
+                    or_(SatisFaturasi.is_deleted.is_(False), SatisFaturasi.is_deleted.is_(None))
                 )
                 .order_by(SatisFaturasi.id.desc())
             )
@@ -573,6 +578,8 @@ class SatisFaturasiService:
             )
             if not fatura:
                 raise ValueError("Fatura bulunamadı.")
+            if getattr(fatura, "is_deleted", False):
+                raise ValueError("Fatura zaten silinmiş.")
             if fatura.durum != "İPTAL":
                 onayliydi = bool(getattr(fatura, "onaylandi", False))
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
@@ -593,6 +600,23 @@ class SatisFaturasiService:
             from database.muhasebe_entegrasyon import muhasebe_hook
 
             muhasebe_hook("satis_faturasi_iptal", fid)
+        from database.deleted_record_service import ENTITY_SATIS_FATURA, safe_log_cancel
+
+        safe_log_cancel(ENTITY_SATIS_FATURA, fatura_id, note="Satış faturası iptal")
+
+    @staticmethod
+    def taslak_sil(fatura_id, *, reason: str, note: str | None = None, critical_confirm: str | None = None):
+        """Yalnızca TASLAK faturaları soft-delete + silme günlüğü."""
+        from database.deleted_record_service import AuditDeleteService, ENTITY_SATIS_FATURA
+
+        return AuditDeleteService.delete_record(
+            ENTITY_SATIS_FATURA,
+            fatura_id,
+            reason=reason,
+            note=note,
+            deletion_type="soft",
+            critical_confirm=critical_confirm,
+        )
 
     @staticmethod
     def _baglantilari_geri_al(session, satirlar):

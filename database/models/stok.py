@@ -55,6 +55,10 @@ class StokKarti(Base):
     raf_yeri: Mapped[str | None] = mapped_column(String(100), nullable=True)
     raf_omru: Mapped[date | None] = mapped_column(Date, nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deletion_log_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fiyatlar: Mapped[list["StokFiyati"]] = relationship(
         "StokFiyati", back_populates="stok", cascade="all, delete-orphan"
     )

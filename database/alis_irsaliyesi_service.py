@@ -49,6 +49,9 @@ class AlisIrsaliyesiService:
                         )
             irsaliye.durum = "İPTAL"
             AlisIrsaliyesiService._siparis_durumunu_guncelle(session, irsaliye.siparis_id)
+        from database.deleted_record_service import ENTITY_ALIS_IRSALIYE, safe_log_cancel
+
+        safe_log_cancel(ENTITY_ALIS_IRSALIYE, irsaliye_id, note="Alış irsaliyesi iptal")
 
     @staticmethod
     def aktif_tedarikcileri() -> list[Cari]:

@@ -170,7 +170,12 @@ class AlisSiparisiService:
             siparis = session.get(AlisSiparisi, siparis_id)
             if siparis is None:
                 raise ValueError("Sipariş bulunamadı.")
+            if siparis.durum == "İPTAL":
+                return
             siparis.durum = "İPTAL"
+        from database.deleted_record_service import ENTITY_ALIS_SIPARIS, safe_log_cancel
+
+        safe_log_cancel(ENTITY_ALIS_SIPARIS, siparis_id, note="Alış siparişi iptal")
 
     @staticmethod
     def siparis_no() -> str:

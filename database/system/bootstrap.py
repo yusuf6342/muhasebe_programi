@@ -62,6 +62,11 @@ IZINLER: list[tuple[str, str, str]] = [
     ("muhasebe_bilanco", "Bilanço görüntüleme", "muhasebe"),
     ("muhasebe_gelir_tablosu", "Gelir tablosu görüntüleme", "muhasebe"),
     ("muhasebe_disa_aktarma", "Muhasebe rapor dışa aktarma", "muhasebe"),
+    ("silinen_kayit_goruntuleme", "Silinen kayıtları görüntüleme", "sistem"),
+    ("silinen_kayit_geri_yukleme", "Silinen kayıt geri yükleme", "sistem"),
+    ("servis_goruntuleme", "Servis ve sistem merkezini görüntüleme", "servis"),
+    ("servis_kontrol", "Servis kontrollerini çalıştırma", "servis"),
+    ("servis_onarim", "Servis onarım işlemleri", "servis"),
 ]
 
 # Rol → izin kodları (* = hepsi)
@@ -93,6 +98,7 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "muhasebe_disa_aktarma",
         "firma_degistirme",
         "donem_degistirme",
+        "silinen_kayit_goruntuleme",
     ],
     "SATIS": [
         "goruntuleme",
@@ -109,6 +115,8 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "finans_goruntuleme",
         "firma_degistirme",
         "donem_degistirme",
+        "silme",
+        "silinen_kayit_goruntuleme",
     ],
     "DEPO": [
         "goruntuleme",

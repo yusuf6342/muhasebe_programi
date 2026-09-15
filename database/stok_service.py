@@ -367,7 +367,10 @@ class StokService:
         with get_session() as session:
             q = (
                 select(StokKarti)
-                .where(StokKarti.aktif.is_(True))
+                .where(
+                    StokKarti.aktif.is_(True),
+                    or_(StokKarti.is_deleted.is_(False), StokKarti.is_deleted.is_(None)),
+                )
                 .options(
                     selectinload(StokKarti.fiyatlar),
                     selectinload(StokKarti.lotlar),
@@ -399,7 +402,10 @@ class StokService:
         with get_session() as session:
             q = (
                 select(StokKarti)
-                .where(StokKarti.aktif.is_(True))
+                .where(
+                    StokKarti.aktif.is_(True),
+                    or_(StokKarti.is_deleted.is_(False), StokKarti.is_deleted.is_(None)),
+                )
                 .options(
                     selectinload(StokKarti.fiyatlar),
                     selectinload(StokKarti.lotlar),
@@ -1488,9 +1494,23 @@ class StokService:
                     f"Aktarılacak stok boşaltılamadı (hareket={kalan_hareket}, lot={kalan_lot})."
                 )
 
+            kaynak_snap = {
+                "entity": {
+                    "id": kaynak.id,
+                    "stok_kodu": eski_kod,
+                    "stok_adi": kaynak.stok_adi,
+                },
+                "related": [
+                    {"type": "hedef_stok_id", "id": hedef.id, "kod": yeni_kod},
+                    {"type": "belge_satir", "count": belge_adet},
+                    {"type": "hareket", "count": hareket_adet},
+                    {"type": "lot", "count": lot_tasinan},
+                ],
+            }
+            kaynak_id = int(kaynak.id)
             session.delete(kaynak)
             session.flush()
-            return {
+            sonuc = {
                 "eski_kod": eski_kod,
                 "yeni_kod": yeni_kod,
                 "yeni_ad": yeni_ad,
@@ -1499,6 +1519,22 @@ class StokService:
                 "hareket": hareket_adet,
                 "lot": lot_tasinan,
             }
+        from database.deleted_record_service import (
+            ENTITY_STOK_BIRLESTIR,
+            safe_log_cancel_snapshot,
+        )
+
+        safe_log_cancel_snapshot(
+            ENTITY_STOK_BIRLESTIR,
+            kaynak_id,
+            note=f"Stok birleştirme: {eski_kod} → {yeni_kod}",
+            snapshot=kaynak_snap,
+            record_code=eski_kod,
+            record_title=f"Stok birleştirildi → {yeni_kod}",
+            module="stok",
+            reason="Cari/stok birleştirme",
+        )
+        return sonuc
 
     # --- Stok paket tanımlama / üretim ---
 

@@ -26,5 +26,5 @@ source .venv/bin/activate
 echo "Bağımlılıklar kontrol ediliyor..."
 pip install -q -r requirements.txt
 
-echo "Muhasebe programı başlatılıyor..."
+echo "Cin Muhasebe başlatılıyor..."
 exec python main.py

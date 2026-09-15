@@ -382,6 +382,9 @@ class SatisIadeFaturasiService:
         from database.muhasebe_entegrasyon import muhasebe_hook
 
         muhasebe_hook("iptal_kaynak", "satis_iade", int(iade_id), "Satış iade iptal")
+        from database.deleted_record_service import ENTITY_SATIS_IADE, safe_log_cancel
+
+        safe_log_cancel(ENTITY_SATIS_IADE, iade_id, note="Satış iade faturası iptal")
 
     @staticmethod
     def toplam(satirlar) -> dict[str, Decimal]:

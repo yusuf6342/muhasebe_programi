@@ -386,3 +386,6 @@ class HizmetFaturasiService:
         from database.muhasebe_entegrasyon import muhasebe_hook
 
         muhasebe_hook("iptal_kaynak", "hizmet_faturasi", int(fatura_id), "Hizmet fatura iptal")
+        from database.deleted_record_service import ENTITY_HIZMET_FATURA, safe_log_cancel
+
+        safe_log_cancel(ENTITY_HIZMET_FATURA, fatura_id, note="Hizmet faturası iptal")

@@ -1,4 +1,4 @@
-# Muhasebe Programı
+# Cin Muhasebe
 
 Python + Tkinter ile yazılmış masaüstü muhasebe uygulaması (stok, cari, fatura, finans, EvoBulut entegrasyonu).
 
@@ -12,7 +12,7 @@ Python + Tkinter ile yazılmış masaüstü muhasebe uygulaması (stok, cari, fa
 irm https://raw.githubusercontent.com/yusuf6342/muhasebe_programi/main/kurulum_masaustu.ps1 | iex
 ```
 
-Kurulum bitince masaüstünde **Muhasebe Programi** kısayolu oluşur. Bundan sonra sadece ona çift tıklayın.
+Kurulum bitince masaüstünde **Cin Muhasebe** kısayolu oluşur. Bundan sonra sadece ona çift tıklayın.
 
 > Bilgisayarda [Python 3](https://www.python.org/downloads/) kurulu olsun. Kurulumda **Add Python to PATH** işaretli olsun.
 

@@ -195,15 +195,69 @@ def _cari_listesini_yukle(cari_turu: str | None = None) -> tuple[list, dict[str,
     cari_map: dict[str, int] = {}
     bakiyeler: dict[int, Decimal] = {}
     try:
-        for o in CariService.listele(hizli=True, cari_turu=cari_turu):
-            cari = o["cari"]
-            kayitlar.append(cari)
+        ozetler = CariService.listele(hizli=True, cari_turu=cari_turu)
+    except Exception:
+        return kayitlar, cari_map, bakiyeler
+    for o in ozetler:
+        try:
+            cari = o.get("cari") if isinstance(o, dict) else None
+            if cari is None:
+                continue
             etiket = _cari_etiket(cari)
+            kayitlar.append(cari)
             cari_map[etiket] = cari.id
             bakiyeler[cari.id] = Decimal(str(o.get("bakiye") or 0))
-    except Exception:
-        pass
+        except Exception:
+            continue
     return kayitlar, cari_map, bakiyeler
+
+
+def _cari_metin_al(dialog) -> str:
+    try:
+        return (dialog.cari_var.get() or "").strip()
+    except (tk.TclError, AttributeError):
+        pass
+    for ad in ("cari_combo", "cari_entry"):
+        w = getattr(dialog, ad, None)
+        if w is None:
+            continue
+        try:
+            return (w.get() or "").strip()
+        except (tk.TclError, AttributeError):
+            continue
+    return ""
+
+
+def _cari_etiketlerini_al(dialog) -> list[str]:
+    etiketler = getattr(dialog, "_tum_cari_etiketleri", None)
+    if etiketler is not None:
+        return list(etiketler)
+    return list(getattr(dialog, "cari_map", {}).keys())
+
+
+def _cari_combo_degerlerini_ayarla(dialog, degerler):
+    combo = getattr(dialog, "cari_combo", None)
+    if combo is None:
+        return
+    try:
+        combo.configure(values=list(degerler))
+    except tk.TclError:
+        try:
+            combo["values"] = list(degerler)
+        except tk.TclError:
+            pass
+
+
+def _musteri_secim_dialog_sinifi():
+    """app.MusteriSecimDialog — sys.modules ile dairesel import riskini azaltır."""
+    import sys
+
+    mod = sys.modules.get("app")
+    if mod is not None and hasattr(mod, "MusteriSecimDialog"):
+        return mod.MusteriSecimDialog
+    from app import MusteriSecimDialog
+
+    return MusteriSecimDialog
 
 
 def _cari_arama_alani_kur(
@@ -214,13 +268,19 @@ def _cari_arama_alani_kur(
     kayit_adi: str = "cari",
     salt_oku: bool = False,
 ):
-    """Satış faturası müşteri satırı: Entry + Ara / F2 + ≥3 harf → MusteriSecimDialog."""
+    """Cari seçimi: Combobox ( ≥3 harf filtre listesi ) + Ara / F2 → MusteriSecimDialog."""
     cari_frame.columnconfigure(0, weight=1)
     parent_dialog.cari_var = tk.StringVar()
-    parent_dialog.cari_entry = ttk.Entry(cari_frame, textvariable=parent_dialog.cari_var, width=48)
-    parent_dialog.cari_entry.grid(row=0, column=0, sticky="ew")
-    # Geriye dönük: eski kod cari_combo bekliyorsa Entry'yi işaret et
-    parent_dialog.cari_combo = parent_dialog.cari_entry
+    etiketler = _cari_etiketlerini_al(parent_dialog)
+    parent_dialog.cari_combo = ttk.Combobox(
+        cari_frame,
+        textvariable=parent_dialog.cari_var,
+        values=etiketler,
+        width=48,
+    )
+    parent_dialog.cari_combo.grid(row=0, column=0, sticky="ew")
+    # Alias: Entry bekleyen kod / odak için
+    parent_dialog.cari_entry = parent_dialog.cari_combo
 
     btn_f = ttk.Frame(cari_frame)
     btn_f.grid(row=0, column=1, sticky="w", padx=(6, 0))
@@ -233,7 +293,7 @@ def _cari_arama_alani_kur(
     parent_dialog._cari_ara_btn.pack(side="left")
     ttk.Label(
         cari_frame,
-        text="≥3 harf veya Ara / F2",
+        text="≥3 harf liste / Ara / F2 seçim ekranı",
         foreground="#666",
         font=("Segoe UI", 8),
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
@@ -244,11 +304,13 @@ def _cari_arama_alani_kur(
     parent_dialog._cari_sec_pencere = None
 
     if salt_oku:
-        parent_dialog.cari_entry.configure(state="disabled")
+        parent_dialog.cari_combo.configure(state="disabled")
         parent_dialog._cari_ara_btn.configure(state="disabled")
     else:
-        parent_dialog.cari_entry.bind("<KeyRelease>", lambda e: _cari_filtrele_debounce(parent_dialog, e))
-        parent_dialog.cari_entry.bind(
+        parent_dialog.cari_combo.bind(
+            "<KeyRelease>", lambda e: _cari_filtrele_debounce(parent_dialog, e)
+        )
+        parent_dialog.cari_combo.bind(
             "<F2>", lambda _e: _cari_secim_penceresi_ac(parent_dialog, zorla=True)
         )
         parent_dialog.bind(
@@ -257,7 +319,7 @@ def _cari_arama_alani_kur(
 
 
 def _secili_cari_id(dialog) -> int | None:
-    metin = (dialog.cari_var.get() or "").strip()
+    metin = _cari_metin_al(dialog)
     if not metin:
         return None
     cid = getattr(dialog, "cari_map", {}).get(metin)
@@ -283,16 +345,24 @@ def _cari_alana_yaz(dialog, metin: str):
     metin = metin or ""
     try:
         dialog.cari_var.set(metin)
-    except tk.TclError:
-        entry = getattr(dialog, "cari_entry", None)
-        if entry is None:
+    except (tk.TclError, AttributeError):
+        combo = getattr(dialog, "cari_combo", None) or getattr(dialog, "cari_entry", None)
+        if combo is None:
             return
         try:
-            entry.delete(0, "end")
-            if metin:
-                entry.insert(0, metin)
+            combo.set(metin)
         except tk.TclError:
-            pass
+            try:
+                combo.delete(0, "end")
+                if metin:
+                    combo.insert(0, metin)
+            except tk.TclError:
+                pass
+    # Seçim sonrası tam listeyi geri yükle (filtre daraltmış olabilir)
+    etiketler = _cari_etiketlerini_al(dialog)
+    if metin and metin not in etiketler:
+        etiketler = [metin] + etiketler
+    _cari_combo_degerlerini_ayarla(dialog, etiketler)
 
 
 def _cari_secildi(dialog, cari):
@@ -304,7 +374,29 @@ def _cari_secildi(dialog, cari):
         kayitlar = getattr(dialog, "_cari_kayitlari", None)
         if kayitlar is not None and cari not in kayitlar:
             kayitlar.append(cari)
+        tum = getattr(dialog, "_tum_cari_etiketleri", None)
+        if isinstance(tum, list) and etiket not in tum:
+            tum.insert(0, etiket)
     _cari_alana_yaz(dialog, etiket)
+
+
+def _cari_listesini_yenile_gerekirse(dialog) -> None:
+    """Boş listeyle açılmayı önlemek için son çare yeniden yükleme."""
+    if getattr(dialog, "_cari_kayitlari", None):
+        return
+    yenile = getattr(dialog, "_cari_listesini_yon_e_gore_yukle", None)
+    if callable(yenile):
+        try:
+            yenile(ilk=True)
+            return
+        except Exception:
+            pass
+    kayitlar, cari_map, bakiyeler = _cari_listesini_yukle(None)
+    dialog._cari_kayitlari = kayitlar
+    dialog.cari_map = cari_map
+    dialog._cari_bakiyeleri = bakiyeler
+    dialog._tum_cari_etiketleri = list(cari_map.keys())
+    _cari_combo_degerlerini_ayarla(dialog, dialog._tum_cari_etiketleri)
 
 
 def _cari_secim_penceresi_ac(dialog, ara=None, zorla=False):
@@ -323,32 +415,69 @@ def _cari_secim_penceresi_ac(dialog, ara=None, zorla=False):
         except tk.TclError:
             pass
     if ara is None:
-        ara = (dialog.cari_var.get() or "").strip()
+        ara = _cari_metin_al(dialog)
     if not zorla:
         secili = _secili_cari_nesne(dialog)
         if secili and (ara or "").strip() == _cari_etiket(secili):
             return
         if len((ara or "").strip()) < 3:
             return
-    from app import MusteriSecimDialog
-
-    dlg = MusteriSecimDialog(
-        dialog,
-        musteriler=getattr(dialog, "_cari_kayitlari", []) or [],
-        bakiyeler=getattr(dialog, "_cari_bakiyeleri", {}) or {},
-        ara=ara or "",
-        on_select=lambda c: _cari_secildi(dialog, c),
-        baslik=getattr(dialog, "_cari_sec_baslik", "Cari Seçimi"),
-        kayit_adi=getattr(dialog, "_cari_sec_kayit_adi", "cari"),
-    )
-    dialog._cari_sec_pencere = dlg
-    dialog.wait_window(dlg)
-    dialog._cari_sec_pencere = None
     try:
-        dialog.cari_entry.focus_set()
-        dialog.cari_entry.icursor("end")
+        _cari_listesini_yenile_gerekirse(dialog)
+        musteriler = getattr(dialog, "_cari_kayitlari", []) or []
+        if not musteriler and zorla:
+            messagebox.showinfo(
+                "Cari",
+                "Gösterilecek cari bulunamadı. Firma / cari kartlarını kontrol edin.",
+                parent=dialog,
+            )
+            return
+        MusteriSecimDialog = _musteri_secim_dialog_sinifi()
+        dlg = MusteriSecimDialog(
+            dialog,
+            musteriler=musteriler,
+            bakiyeler=getattr(dialog, "_cari_bakiyeleri", {}) or {},
+            ara=ara or "",
+            on_select=lambda c: _cari_secildi(dialog, c),
+            baslik=getattr(dialog, "_cari_sec_baslik", "Cari Seçimi"),
+            kayit_adi=getattr(dialog, "_cari_sec_kayit_adi", "cari"),
+        )
+        try:
+            dlg.lift()
+            dlg.focus_force()
+        except tk.TclError:
+            pass
+        dialog._cari_sec_pencere = dlg
+        dialog.wait_window(dlg)
+    except Exception as e:
+        messagebox.showerror(
+            "Cari seçimi",
+            f"Cari seçim ekranı açılamadı:\n{e}",
+            parent=dialog,
+        )
+    finally:
+        dialog._cari_sec_pencere = None
+    try:
+        dialog.cari_combo.focus_set()
+        dialog.cari_combo.icursor("end")
     except tk.TclError:
         pass
+
+
+def _cari_combo_filtrele(dialog) -> str:
+    """Combobox values: boş=tümü, <3=boş liste, ≥3=kod/ünvan contains."""
+    etiketler = _cari_etiketlerini_al(dialog)
+    metin = _cari_metin_al(dialog)
+    if not metin:
+        _cari_combo_degerlerini_ayarla(dialog, etiketler)
+        return metin
+    if len(metin) < 3:
+        _cari_combo_degerlerini_ayarla(dialog, ())
+        return metin
+    ara = metin.casefold()
+    bulunan = [e for e in etiketler if ara in e.casefold()]
+    _cari_combo_degerlerini_ayarla(dialog, bulunan)
+    return metin
 
 
 def _cari_filtrele_debounce(dialog, event=None):
@@ -378,7 +507,7 @@ def _cari_filtrele_debounce(dialog, event=None):
                 return
         except (TypeError, ValueError):
             pass
-    metin = (dialog.cari_var.get() or "").strip()
+    metin = _cari_combo_filtrele(dialog)
     if len(metin) < 3:
         after_id = getattr(dialog, "_cari_arama_after", None)
         if after_id:
@@ -404,7 +533,7 @@ def _cari_filtrele_debounce(dialog, event=None):
 
 def _cari_secim_ac_gecikmeli(dialog, metin: str):
     dialog._cari_arama_after = None
-    guncel = (dialog.cari_var.get() or "").strip()
+    guncel = _cari_metin_al(dialog)
     if guncel != metin or len(guncel) < 3:
         return
     _cari_secim_penceresi_ac(dialog, ara=guncel)
@@ -1260,8 +1389,12 @@ class EvrakDialog(tk.Toplevel):
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=form, anchor="nw")
+        form_pencere = canvas.create_window((0, 0), window=form, anchor="nw")
         canvas.configure(yscrollcommand=kaydir.set)
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfigure(form_pencere, width=e.width),
+        )
         canvas.grid(row=0, column=0, sticky="nsew")
         kaydir.grid(row=0, column=1, sticky="ns")
         form.columnconfigure(1, weight=1)
@@ -1506,6 +1639,7 @@ class EvrakDialog(tk.Toplevel):
         self._tum_cari_etiketleri = list(cari_map.keys())
         self._cari_sec_baslik = self._cari_secim_basligi()
         self._cari_sec_kayit_adi = self._cari_secim_kayit_adi()
+        _cari_combo_degerlerini_ayarla(self, self._tum_cari_etiketleri)
         if onceki_id and onceki_id in cari_map.values():
             for etiket, cid in cari_map.items():
                 if cid == onceki_id:
@@ -1637,10 +1771,14 @@ class EvrakDialog(tk.Toplevel):
                     w.configure(state="disabled")
                 except tk.TclError:
                     pass
-        try:
-            self.cari_entry.configure(state="disabled")
-        except tk.TclError:
-            pass
+        for ad in ("cari_combo", "cari_entry"):
+            w = getattr(self, ad, None)
+            if w is None:
+                continue
+            try:
+                w.configure(state="disabled")
+            except tk.TclError:
+                pass
         btn = getattr(self, "_cari_ara_btn", None)
         if btn is not None:
             try:
@@ -1901,7 +2039,8 @@ class CiroEtDialog(_IslemDialogBase):
         self._cari_kayitlari = kayitlar
         self.cari_map = cari_map
         self._cari_bakiyeleri = bakiyeler
-        self._tum_cari = list(cari_map.keys())
+        self._tum_cari_etiketleri = list(cari_map.keys())
+        self._tum_cari = self._tum_cari_etiketleri
 
         ttk.Label(form, text="Hedef cari *").grid(row=satir, column=0, sticky="nw", padx=4, pady=4)
         cari_f = ttk.Frame(form)
@@ -1913,7 +2052,7 @@ class CiroEtDialog(_IslemDialogBase):
             kayit_adi="cari",
         )
         # Geriye dönük alias
-        self.cari_cb = self.cari_entry
+        self.cari_cb = self.cari_combo
         satir += 1
         satir = self._tarih_alani_ekle(form, satir)
         self._aciklama_alani(form, satir)

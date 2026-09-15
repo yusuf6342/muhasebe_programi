@@ -346,6 +346,10 @@ class KkCekimiService:
             )
             session.flush()
 
+        from database.deleted_record_service import ENTITY_KK_CEKIMI, safe_log_cancel
+
+        safe_log_cancel(ENTITY_KK_CEKIMI, belge_no, note="KK çekimi iptal")
+
     @staticmethod
     def eksik_alacaklari_onar() -> int:
         """

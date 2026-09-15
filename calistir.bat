@@ -37,7 +37,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Muhasebe programi baslatiliyor...
+echo Cin Muhasebe baslatiliyor...
 ".venv\Scripts\python.exe" main.py
 if errorlevel 1 (
   echo.

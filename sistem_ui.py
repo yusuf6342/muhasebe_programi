@@ -33,8 +33,58 @@ def _yetki_yok(parent, mesaj: str = "Bu bölüme erişim yetkiniz yok.") -> bool
         return False
     if oturum.has_permission("kullanici_yonetme") or oturum.has_permission("firma_yonetme"):
         return False
+    if oturum.has_permission("silinen_kayit_goruntuleme") or oturum.has_permission("sistem_ayarlari"):
+        return False
     messagebox.showwarning("Yetki", mesaj, parent=parent)
     return True
+
+
+def _silinen_kayitlar_ac(app) -> None:
+    from silinen_kayitlar_ui import silinen_kayitlar_goster
+
+    silinen_kayitlar_goster(app)
+
+
+def hakkinda_goster(app) -> None:
+    """Cin Muhasebe hakkında bilgisi."""
+    from branding import (
+        APP_DESCRIPTION,
+        APP_ICON_PNG,
+        APP_NAME,
+        APP_TAGLINE,
+        APP_VERSION,
+        LOGO_FILE,
+        SPLASH_FILE,
+        get_brand_image,
+    )
+
+    dlg = tk.Toplevel(app)
+    dlg.title(f"Hakkında — {APP_NAME}")
+    dlg.resizable(False, False)
+    dlg.transient(app)
+    dlg.grab_set()
+    cerceve = ttk.Frame(dlg, padding=24)
+    cerceve.pack(fill="both", expand=True)
+    logo = get_brand_image(SPLASH_FILE, max_width=300, max_height=100)
+    if logo is None:
+        logo = get_brand_image(LOGO_FILE, max_width=260, max_height=80)
+    if logo is None:
+        logo = get_brand_image(APP_ICON_PNG, max_width=96, max_height=96)
+    if logo is not None:
+        dlg._logo_ref = logo
+        tk.Label(cerceve, image=logo).pack(pady=(0, 10))
+    ttk.Label(cerceve, text=APP_NAME, font=("Segoe UI", 16, "bold")).pack()
+    ttk.Label(cerceve, text=APP_TAGLINE).pack(pady=(4, 8))
+    ttk.Label(cerceve, text=f"Sürüm {APP_VERSION}").pack()
+    ttk.Label(cerceve, text=APP_DESCRIPTION, foreground="#555555").pack(pady=(8, 16))
+    ttk.Button(cerceve, text="Kapat", command=dlg.destroy).pack()
+    dlg.update_idletasks()
+    w, h = dlg.winfo_width(), dlg.winfo_height()
+    if w < 2:
+        w, h = 360, 280
+    x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+    y = app.winfo_rooty() + (app.winfo_height() - h) // 2
+    dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
 
 def sistem_menusu_goster(app) -> None:
@@ -49,9 +99,11 @@ def sistem_menusu_goster(app) -> None:
         ("ROLLER VE YETKİLER", lambda: roller_goster(app)),
         ("FİRMALAR", lambda: sistem_firmalar_goster(app)),
         ("ÇALIŞMA DÖNEMLERİ", lambda: donemler_yonet_goster(app)),
+        ("SİLİNEN KAYITLAR", lambda: _silinen_kayitlar_ac(app)),
         ("İŞLEM KAYITLARI", lambda: audit_goster(app)),
         ("VERİTABANI YEDEKLEME", lambda: yedekleme_goster(app)),
         ("GEÇİŞ DOĞRULAMA", lambda: gecis_dogrulama_goster(app)),
+        ("HAKKINDA", lambda: hakkinda_goster(app)),
     ]
     # Yetkiye göre filtre
     if not oturum.has_permission("kullanici_yonetme") and oturum.role_kod != "YONETICI":

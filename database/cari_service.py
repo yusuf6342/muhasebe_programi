@@ -189,6 +189,9 @@ class CariService:
             statement = select(Cari).order_by(Cari.cari_kodu)
             if not hizli:
                 statement = statement.options(selectinload(Cari.satis_hareketleri))
+            statement = statement.where(
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None))
+            )
             statement = CariService._cari_turu_filtresi(statement, cari_turu)
             if arama:
                 ifade = f"%{arama}%"
@@ -836,9 +839,37 @@ class CariService:
                     )
                 session.delete(hedef_hareket)
             CariService._aciklara_geri_al(session, kaynak_islem.cari_id, tutar, belge_no)
+            snap = {
+                "entity": {"belge_no": belge_no, "tutar": str(tutar)},
+                "related": [
+                    {
+                        "type": "cari_islem",
+                        "id": i.id,
+                        "cari_id": i.cari_id,
+                        "borc": str(i.borc),
+                        "alacak": str(i.alacak),
+                    }
+                    for i in islemler
+                ],
+            }
             for islem in islemler:
                 session.delete(islem)
             session.flush()
+        from database.deleted_record_service import (
+            ENTITY_CARI_VIRMAN,
+            safe_log_cancel_snapshot,
+        )
+
+        safe_log_cancel_snapshot(
+            ENTITY_CARI_VIRMAN,
+            belge_no,
+            note="Cari virman iptal",
+            snapshot=snap,
+            record_code=belge_no,
+            record_title=f"Cari virman {belge_no}",
+            amount=tutar,
+            module="cari",
+        )
 
     @staticmethod
     def kk_cekimi_yap(musteri_id: int, tedarikci_id: int, tarih: date, tutar, hesap_adi: str, aciklama: str | None = None) -> tuple[CariIslem, CariIslem]:
@@ -861,7 +892,10 @@ class CariService:
     @staticmethod
     def aktif_cariler(cari_turu: str | None = None) -> list[Cari]:
         with get_session() as session:
-            statement = select(Cari).where(Cari.aktif.is_(True)).order_by(Cari.cari_kodu)
+            statement = select(Cari).where(
+                Cari.aktif.is_(True),
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)),
+            ).order_by(Cari.cari_kodu)
             if cari_turu:
                 statement = statement.where(Cari.cari_turu == cari_turu)
             return list(session.scalars(statement).all())

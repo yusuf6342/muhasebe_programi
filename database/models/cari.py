@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -49,6 +49,10 @@ class Cari(Base):
     ozel_notlar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     uyari_notu: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deletion_log_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     satis_hareketleri: Mapped[list["SatisHareketi"]] = relationship(
         "SatisHareketi",

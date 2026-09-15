@@ -322,6 +322,9 @@ class AlisFaturasiService:
         from database.muhasebe_entegrasyon import muhasebe_hook
 
         muhasebe_hook("alis_faturasi_iptal", fid)
+        from database.deleted_record_service import ENTITY_ALIS_FATURA, safe_log_cancel
+
+        safe_log_cancel(ENTITY_ALIS_FATURA, fatura_id, note="Alış faturası iptal")
 
     @staticmethod
     def _baglantilari_geri_al(session, satirlar):

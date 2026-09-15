@@ -1,4 +1,4 @@
-# Muhasebe Programi - tek tikla kurulum (PowerShell)
+# Cin Muhasebe - tek tikla kurulum (PowerShell)
 # Kullanim (PowerShell penceresinde):
 #   irm https://raw.githubusercontent.com/yusuf6342/muhasebe_programi/main/kurulum_masaustu.ps1 | iex
 # veya:
@@ -7,11 +7,11 @@
 $ErrorActionPreference = 'Stop'
 
 Write-Host ''
-Write-Host ' Muhasebe Programi kuruluyor...'
+Write-Host ' Cin Muhasebe kuruluyor...'
 Write-Host ' (GitHub''dan indirilecek, masaustune kisayol eklenecek)'
 Write-Host ''
 
-$dest = Join-Path $env:USERPROFILE 'MuhasebeProgrami'
+$dest = Join-Path $env:USERPROFILE 'CinMuhasebe'
 $zip = Join-Path $env:TEMP 'muhasebe_programi.zip'
 $url = 'https://github.com/yusuf6342/muhasebe_programi/archive/refs/heads/main.zip'
 
@@ -36,19 +36,23 @@ if (-not (Test-Path $bat)) {
 }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-$lnkPath = Join-Path $desktop 'Muhasebe Programi.lnk'
+$lnkPath = Join-Path $desktop 'Cin Muhasebe.lnk'
+$ico = Join-Path $dest 'assets\branding\cin_muhasebe.ico'
 $w = New-Object -ComObject WScript.Shell
 $s = $w.CreateShortcut($lnkPath)
 $s.TargetPath = $bat
 $s.WorkingDirectory = $dest
 $s.WindowStyle = 1
-$s.Description = 'Muhasebe Programini baslatir'
+$s.Description = 'Cin Muhasebe Programı'
+if (Test-Path -LiteralPath $ico) {
+    $s.IconLocation = "$ico,0"
+}
 $s.Save()
 
 Write-Host ''
 Write-Host ("Kurulum klasoru: " + $dest)
 Write-Host ("Masaustu kisayol: " + $lnkPath)
 Write-Host ''
-Write-Host 'Masaustunde Muhasebe Programi kisayolunu goreceksiniz.'
+Write-Host 'Masaustunde Cin Muhasebe kisayolunu goreceksiniz.'
 Write-Host 'Bitti. Kisayola cift tiklayarak programi acabilirsiniz.'
 explorer.exe $desktop
