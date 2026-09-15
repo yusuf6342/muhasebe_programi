@@ -458,6 +458,7 @@ def cari_kart_schemasini_guncelle() -> None:
 
     doviz_schema_guncelle()
     donem_schemasini_guncelle()
+    hizli_satis_schema_hazirla()
 
 
 def donem_schemasini_guncelle() -> None:
@@ -473,6 +474,17 @@ def donem_schemasini_guncelle() -> None:
         for alan, tip in eklenecekler.items():
             if alan not in sutunlar:
                 connection.execute(text(f'ALTER TABLE "donemler" ADD COLUMN "{alan}" {tip}'))
+
+
+def hizli_satis_schema_hazirla() -> None:
+    """Hızlı Satış bekleyen sepet tabloları (checkfirst; stok rezervasyonu yok)."""
+    try:
+        from database.hizli_satis_service import HizliSatisService
+
+        HizliSatisService.schema_hazirla()
+    except Exception:
+        # Firma DB henüz bağlı değilse / model import gecikmesi — main.py ayrıca çağırır
+        pass
 
 
 def doviz_schema_guncelle() -> None:
@@ -587,6 +599,48 @@ def musteri_gruplarini_hazirla() -> None:
         for grup_adi in baslangic_gruplari:
             if grup_adi not in mevcut_gruplar:
                 session.add(MusteriGrubu(ad=grup_adi))
+    perakende_cari_hazirla()
+
+
+def perakende_cari_hazirla() -> None:
+    """Hızlı Satış varsayılanı: PERAKENDE MÜŞTERİ cari kartı (yoksa oluşturur).
+
+    Müşteri grubu zaten seed edilir; POS için gerçek bir cari_id gerekir.
+    Yetki kontrolü yok — kurulum/seed yolu (musteri_gruplarini_hazirla ile aynı).
+    """
+    from database.models.cari import Cari
+    from hizli_satis_musteri import (
+        PERAKENDE_MUSTERI_GRUP,
+        PERAKENDE_MUSTERI_KOD,
+        PERAKENDE_MUSTERI_UNVAN,
+        VARSAYILAN_FIYAT_LISTESI,
+        varsayilan_cari_bul,
+    )
+
+    with get_session() as session:
+        if varsayilan_cari_bul(session) is not None:
+            return
+        # Kod çakışırsa sıradaki PRK00n dene
+        kod = PERAKENDE_MUSTERI_KOD
+        for i in range(1, 100):
+            aday = f"PRK{i:03d}"
+            var = session.scalar(select(Cari).where(Cari.cari_kodu == aday))
+            if var is None:
+                kod = aday
+                break
+        else:
+            return
+        session.add(
+            Cari(
+                cari_kodu=kod,
+                unvan=PERAKENDE_MUSTERI_UNVAN,
+                cari_turu="Müşteri",
+                musteri_grubu=PERAKENDE_MUSTERI_GRUP,
+                satis_fiyat_listesi=VARSAYILAN_FIYAT_LISTESI,
+                aktif=True,
+                is_deleted=False,
+            )
+        )
 
 
 def tedarikci_odeme_polarity_duzelt() -> None:

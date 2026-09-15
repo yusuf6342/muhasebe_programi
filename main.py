@@ -132,6 +132,13 @@ def baslatma_adimlari(progress) -> None:
     except Exception as e:
         print("Servis sistem şema uyarısı:", e)
 
+    try:
+        from database.hizli_satis_service import HizliSatisService
+
+        HizliSatisService.schema_hazirla()
+    except Exception as e:
+        print("Hızlı Satış bekleyen şema uyarısı:", e)
+
     progress(90, "Arayüz hazırlanıyor...")
     print("Tablolar başarıyla oluşturuldu!")
     print(f"Veritabanı: {db.engine.url}")

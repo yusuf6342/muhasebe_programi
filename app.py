@@ -7919,6 +7919,9 @@ class MuhasebeApp(tk.Tk):
             "ozet_tablolar": lambda: yetki_var(
                 "finans_goruntuleme", "satis_goruntuleme", "goruntuleme"
             ),
+            "hizli_satis": lambda: yetki_var(
+                "satis_duzenleme", "satis_goruntuleme", "goruntuleme"
+            ),
             "giris": lambda: True,
         }
         # Pack sırasını korumak için hepsini unut / yeniden paketle
@@ -7970,6 +7973,19 @@ class MuhasebeApp(tk.Tk):
             "SeciliMenu.TButton",
             background=[("active", "#185582"), ("!disabled", "#1f6aa5")],
             foreground=[("!disabled", "#ffffff")],
+        )
+        # Hızlı Satış menü vurgusu (sarı / koyu gri)
+        stil.configure(
+            "HizliSatisMenu.TButton",
+            anchor="w",
+            padding=(14, 10),
+            foreground="#2B2F33",
+            background="#F5C518",
+        )
+        stil.map(
+            "HizliSatisMenu.TButton",
+            background=[("active", "#E0B010"), ("!disabled", "#F5C518")],
+            foreground=[("!disabled", "#2B2F33")],
         )
         stil.configure("Oturum.TLabel", font=("Segoe UI", 9))
 
@@ -8039,6 +8055,7 @@ class MuhasebeApp(tk.Tk):
             ("GELİR VE GİDERLER", "gelir_gider"),
             ("GENEL MUHASEBE", "genel_muhasebe"),
             ("ÖZET TABLOLAR", "ozet_tablolar"),
+            ("HIZLI SATIŞ", "hizli_satis"),
             ("SİSTEM YÖNETİMİ", "sistem"),
             ("SERVİS VE SİSTEM", "servis"),
         )
@@ -8047,7 +8064,7 @@ class MuhasebeApp(tk.Tk):
             dugme = ttk.Button(
                 self.menu,
                 text=baslik,
-                style="Menu.TButton",
+                style="HizliSatisMenu.TButton" if anahtar == "hizli_satis" else "Menu.TButton",
                 command=lambda secim=anahtar: self.sayfa_goster(secim),
             )
             dugme.pack(fill="x", pady=3)
@@ -8434,6 +8451,7 @@ class MuhasebeApp(tk.Tk):
             "gelir_gider": ("finans_goruntuleme", "goruntuleme"),
             "genel_muhasebe": ("muhasebe_goruntuleme", "goruntuleme"),
             "ozet_tablolar": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
+            "hizli_satis": ("satis_duzenleme", "satis_goruntuleme", "goruntuleme"),
             "sistem": ("kullanici_yonetme", "firma_yonetme", "sistem_ayarlari"),
             "servis": ("servis_goruntuleme", "servis_kontrol", "sistem_ayarlari"),
         }
@@ -8447,7 +8465,12 @@ class MuhasebeApp(tk.Tk):
         self._icerigi_temizle()
         self._busy_nabiz()
         for dugme_anahtari, dugme in self.menu_dugmeleri.items():
-            dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == anahtar else "Menu.TButton")
+            if dugme_anahtari == anahtar:
+                dugme.configure(style="SeciliMenu.TButton")
+            elif dugme_anahtari == "hizli_satis":
+                dugme.configure(style="HizliSatisMenu.TButton")
+            else:
+                dugme.configure(style="Menu.TButton")
 
         basliklar = {
             "giris": "HIZLI GİRİŞ",
@@ -8458,10 +8481,12 @@ class MuhasebeApp(tk.Tk):
             "gelir_gider": "GELİR VE GİDERLER",
             "genel_muhasebe": "GENEL MUHASEBE",
             "ozet_tablolar": "ÖZET TABLOLAR",
+            "hizli_satis": "HIZLI SATIŞ",
             "sistem": "SİSTEM YÖNETİMİ",
             "servis": "SERVİS VE SİSTEM",
         }
-        ttk.Label(self.icerik, text=basliklar[anahtar], style="Baslik.TLabel").pack(anchor="w")
+        if anahtar != "hizli_satis":
+            ttk.Label(self.icerik, text=basliklar[anahtar], style="Baslik.TLabel").pack(anchor="w")
         if anahtar == "giris":
             ttk.Label(self.icerik, text="Sık kullanılan işlemlere buradan hızlıca ulaşın.").pack(
                 anchor="w", pady=(18, 8)
@@ -8495,6 +8520,10 @@ class MuhasebeApp(tk.Tk):
             genel_muhasebe_menusu_goster(self)
         elif anahtar == "ozet_tablolar":
             ozet_tablolar_menusu_goster(self)
+        elif anahtar == "hizli_satis":
+            from hizli_satis_ui import hizli_satis_goster
+
+            hizli_satis_goster(self)
         elif anahtar == "sistem":
             from sistem_ui import sistem_menusu_goster
 
