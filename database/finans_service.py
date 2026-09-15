@@ -57,6 +57,7 @@ GIRIS_HAREKETLERI = (
     "KREDİ KULLANDIRIM",  # ana para → krediler borcu artar
     "KREDİ KULLANDIRIM (MEVDUAT)",  # ana para mevduat/KMH'ye giriş
     "TAHSİLAT MAKBUZU",
+    "ÇEK/SENET TAHSİLAT",
 )
 
 # Bakiyeyi azaltan hareketler
@@ -78,6 +79,7 @@ CIKIS_HAREKETLERI = (
     "KREDİ MASRAF GİDERİ",
     "GİDER FİŞİ",
     "ÖDEME MAKBUZU",
+    "ÇEK/SENET ÖDEME",
 )
 
 MEVDUAT_EVRAK_TURLERI = (

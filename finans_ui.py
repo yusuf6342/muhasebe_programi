@@ -1,4 +1,4 @@
-"""FİNANS menüsü — Kasalar, Bankalar, Çek-Senet."""
+"""FİNANS menüsü — Kasalar, Bankalar, Çek / Senet."""
 
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ def finans_menusu_goster(app):
     ttk.Label(app.icerik, text="FİNANS", style="Baslik.TLabel").pack(anchor="w")
     ttk.Label(
         app.icerik,
-        text="Kasa ve banka hesapları, banka işlem evrakları ve çek-senet.",
+        text="Kasa ve banka hesapları, banka işlem evrakları ve çek / senet.",
     ).pack(anchor="w", pady=(8, 0))
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
@@ -144,7 +144,7 @@ def finans_menusu_goster(app):
         ("KASALAR", lambda: kasalar_sayfasi_goster(app)),
         ("BANKALAR", lambda: bankalar_sayfasi_goster(app)),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
-        ("ÇEK-SENET MODÜLÜ", lambda: cek_senet_menusu_goster(app)),
+        ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
             row=i, column=0, sticky="ew", pady=4
@@ -2503,45 +2503,10 @@ def kk_cekimi_sayfasi_goster(app):
 
 
 def cek_senet_menusu_goster(app):
-    app._icerigi_temizle()
-    _finans_menu_isaretle(app)
-    ust = ttk.Frame(app.icerik)
-    ust.pack(fill="x")
-    ttk.Label(ust, text="ÇEK-SENET MODÜLÜ", style="Baslik.TLabel").pack(side="left")
-    ttk.Button(ust, text="← Finans Menüsü", command=lambda: finans_menusu_goster(app)).pack(side="right")
-    ttk.Label(
-        app.icerik,
-        text="Alınan / verilen çek ve senet portföyü bu bölümde yönetilecek.",
-    ).pack(anchor="w", pady=(14, 8))
-    alt = ttk.Frame(app.icerik)
-    alt.pack(fill="x", pady=(8, 0))
-    alt.columnconfigure(0, weight=1, minsize=520)
-    for i, baslik in enumerate((
-        "ALINAN ÇEKLER",
-        "VERİLEN ÇEKLER",
-        "ALINAN SENETLER",
-        "VERİLEN SENETLER",
-        "VADE TAKİBİ / RAPORLAR",
-    )):
-        ttk.Button(
-            alt,
-            text=baslik,
-            style="AltMenu.TButton",
-            command=lambda b=baslik: _cek_senet_bos(app, b),
-        ).grid(row=i, column=0, sticky="ew", pady=4)
+    """Finans > ÇEK / SENET İŞLEMLERİ — sekmeli ana ekranı açar."""
+    from cek_senet_ui import cek_senet_islemleri_goster
 
-
-def _cek_senet_bos(app, baslik):
-    app._icerigi_temizle()
-    _finans_menu_isaretle(app)
-    ttk.Label(app.icerik, text=baslik, style="Baslik.TLabel").pack(anchor="w")
-    ttk.Label(
-        app.icerik,
-        text="Bu bölüm sonraki adımda hazırlanacaktır (kayıt, vade, tahsil/ödeme, portföy).",
-    ).pack(anchor="w", pady=(18, 0))
-    ttk.Button(app.icerik, text="← Çek-Senet Modülü", command=lambda: cek_senet_menusu_goster(app)).pack(
-        anchor="w", pady=(16, 0)
-    )
+    cek_senet_islemleri_goster(app)
 
 
 class HesapDialog(tk.Toplevel):

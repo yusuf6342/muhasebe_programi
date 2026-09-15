@@ -108,6 +108,8 @@ from database.models.hizmet_faturasi import HizmetFaturasi, HizmetFaturasiSatiri
 
 from database.models.kk_cekimi import KkCekimi
 
+from database.models.cek_senet import CekSenetEvrak, CekSenetHareket
+
 from database.models.doviz import DovizKuru
 
 from database.models.genel_muhasebe import (
@@ -180,6 +182,13 @@ def main():
         MuhasebeService.schema_hazirla()
     except Exception as e:
         print("Genel muhasebe şema uyarısı:", e)
+
+    try:
+        from database.cek_senet_service import CekSenetService
+
+        CekSenetService.schema_hazirla()
+    except Exception as e:
+        print("Çek/Senet şema uyarısı:", e)
 
 
 

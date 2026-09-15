@@ -3415,15 +3415,28 @@ class FaturaKolonAyarDialog(tk.Toplevel):
 
 
 class MusteriSecimDialog(tk.Toplevel):
-    """Fatura müşteri satırı: ünvan/kod içinde arama, alfabetik seçim ekranı."""
+    """Fatura müşteri satırı: ünvan/kod içinde arama, alfabetik seçim ekranı.
 
-    def __init__(self, parent, musteriler, bakiyeler=None, ara="", on_select=None):
+    baslik / kayit_adi ile çek-senet vb. cari seçiminde de yeniden kullanılır.
+    """
+
+    def __init__(
+        self,
+        parent,
+        musteriler,
+        bakiyeler=None,
+        ara="",
+        on_select=None,
+        baslik="Müşteri Seçimi",
+        kayit_adi="müşteri",
+    ):
         super().__init__(parent)
         self.on_select = on_select
         self.result = None
         self._musteriler = list(musteriler or [])
         self._bakiyeler = bakiyeler or {}
-        self.title("Müşteri Seçimi")
+        self._kayit_adi = (kayit_adi or "müşteri").strip() or "müşteri"
+        self.title(baslik or "Müşteri Seçimi")
         self.geometry("640x420")
         self.minsize(520, 320)
         self.transient(parent)
@@ -3512,7 +3525,7 @@ class MusteriSecimDialog(tk.Toplevel):
         elif not bulunan:
             self.bilgi.configure(text="Sonuç yok.")
         else:
-            self.bilgi.configure(text=f"{len(bulunan)} müşteri (alfabetik)")
+            self.bilgi.configure(text=f"{len(bulunan)} {self._kayit_adi} (alfabetik)")
         if bulunan:
             ilk = self.tablo.get_children()
             if ilk:
@@ -3530,7 +3543,9 @@ class MusteriSecimDialog(tk.Toplevel):
     def _sec(self, _event=None):
         secim = self.tablo.selection()
         if not secim:
-            messagebox.showinfo("Seçim", "Listeden müşteri seçin.", parent=self)
+            messagebox.showinfo(
+                "Seçim", f"Listeden {self._kayit_adi} seçin.", parent=self
+            )
             return
         try:
             idx = int(secim[0])
