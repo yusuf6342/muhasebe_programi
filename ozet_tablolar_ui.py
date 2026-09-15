@@ -6,10 +6,17 @@ from tkinter import ttk
 
 
 def _ozet_tablolar_menu_isaretle(app):
+    kabuk = getattr(app, "_ana_panel_kabuk", None)
+    if kabuk is not None:
+        kabuk.menu_secili_guncelle("ozet_tablolar")
+        return
     for dugme_anahtari, dugme in app.menu_dugmeleri.items():
-        dugme.configure(
-            style="SeciliMenu.TButton" if dugme_anahtari == "ozet_tablolar" else "Menu.TButton"
-        )
+        if dugme_anahtari == "ozet_tablolar":
+            dugme.configure(style="SeciliMenu.TButton")
+        elif dugme_anahtari == "hizli_satis":
+            dugme.configure(style="HizliSatisMenu.TButton")
+        else:
+            dugme.configure(style="Menu.TButton")
 
 
 def _bilanco_ac(app):

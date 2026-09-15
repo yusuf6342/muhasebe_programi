@@ -7831,8 +7831,8 @@ class MuhasebeApp(tk.Tk):
         self._cin_basarili = False
         self.withdraw()
         self.title(APP_NAME)
-        self.geometry("1250x680")
-        self.minsize(950, 560)
+        self.geometry("1360x760")
+        self.minsize(1024, 620)
         apply_window_icon(self)
 
         if startup_bootstrap is not None:
@@ -7916,13 +7916,18 @@ class MuhasebeApp(tk.Tk):
             "finans": lambda: yetki_var("finans_goruntuleme", "goruntuleme"),
             "gelir_gider": lambda: yetki_var("finans_goruntuleme", "goruntuleme"),
             "genel_muhasebe": lambda: yetki_var("muhasebe_goruntuleme", "goruntuleme"),
+            "cek_senet": lambda: yetki_var("finans_goruntuleme", "goruntuleme"),
             "ozet_tablolar": lambda: yetki_var(
                 "finans_goruntuleme", "satis_goruntuleme", "goruntuleme"
+            ),
+            "raporlar": lambda: yetki_var(
+                "finans_goruntuleme", "satis_goruntuleme", "stok_goruntuleme", "goruntuleme"
             ),
             "hizli_satis": lambda: yetki_var(
                 "satis_duzenleme", "satis_goruntuleme", "goruntuleme"
             ),
             "giris": lambda: True,
+            "ayarlar": lambda: True,
         }
         # Pack sırasını korumak için hepsini unut / yeniden paketle
         for anahtar, dugme in self.menu_dugmeleri.items():
@@ -7934,7 +7939,7 @@ class MuhasebeApp(tk.Tk):
             kontrol = esleme.get(anahtar, lambda: True)
             try:
                 if kontrol():
-                    dugme.pack(fill="x", pady=3)
+                    dugme.pack(fill="x", pady=1)
             except tk.TclError:
                 pass
 
@@ -7962,117 +7967,21 @@ class MuhasebeApp(tk.Tk):
         self.after(60_000, self._pos_valor_dongu)
 
     def _stil_ayarla(self):
+        from ana_panel_tema import stil_uygula
+
         stil = ttk.Style(self)
-        if "vista" in stil.theme_names():
-            stil.theme_use("vista")
-        stil.configure("Baslik.TLabel", font=("Segoe UI", 18, "bold"))
-        stil.configure("Menu.TButton", anchor="w", padding=(14, 10))
-        stil.configure("AltMenu.TButton", anchor="w", padding=(16, 12))
-        stil.configure("SeciliMenu.TButton", anchor="w", padding=(14, 10), foreground="#ffffff", background="#1f6aa5")
-        stil.map(
-            "SeciliMenu.TButton",
-            background=[("active", "#185582"), ("!disabled", "#1f6aa5")],
-            foreground=[("!disabled", "#ffffff")],
-        )
-        # Hızlı Satış menü vurgusu (sarı / koyu gri)
-        stil.configure(
-            "HizliSatisMenu.TButton",
-            anchor="w",
-            padding=(14, 10),
-            foreground="#2B2F33",
-            background="#F5C518",
-        )
-        stil.map(
-            "HizliSatisMenu.TButton",
-            background=[("active", "#E0B010"), ("!disabled", "#F5C518")],
-            foreground=[("!disabled", "#2B2F33")],
-        )
-        stil.configure("Oturum.TLabel", font=("Segoe UI", 9))
+        stil_uygula(stil)
 
     def _arayuzu_olustur(self):
-        # Üst oturum çubuğu (aktif firma / kullanıcı)
-        self.oturum_cubugu = ttk.Frame(self, padding=(10, 6))
-        self.oturum_cubugu.pack(side="top", fill="x")
-        self.oturum_firma_label = ttk.Label(
-            self.oturum_cubugu, text="", style="Oturum.TLabel"
-        )
-        self.oturum_firma_label.pack(side="left")
-        self.oturum_donem_label = ttk.Label(
-            self.oturum_cubugu, text="", style="Oturum.TLabel"
-        )
-        self.oturum_donem_label.pack(side="left", padx=(16, 0))
-        self.oturum_kullanici_label = ttk.Label(
-            self.oturum_cubugu, text="", style="Oturum.TLabel"
-        )
-        self.oturum_kullanici_label.pack(side="left", padx=(16, 0))
+        from ana_panel_ui import AnaPanelKabuk
 
-        ttk.Button(
-            self.oturum_cubugu, text="Oturumu Kapat", command=self.oturumu_kapat
-        ).pack(side="right", padx=(4, 0))
-        ttk.Button(
-            self.oturum_cubugu, text="Şifre Değiştir", command=self.sifre_degistir_ac
-        ).pack(side="right", padx=(4, 0))
-        ttk.Button(
-            self.oturum_cubugu, text="Dönem Değiştir", command=self.donem_degistir_ac
-        ).pack(side="right", padx=(4, 0))
-        ttk.Button(
-            self.oturum_cubugu, text="Firma Değiştir", command=self.firma_degistir_ac
-        ).pack(side="right", padx=(4, 0))
-
-        # Alt durum çubuğu (EvoBulut aktarım göstergesi)
-        self.durum_cubugu = ttk.Frame(self, padding=(10, 6))
-        self.durum_cubugu.pack(side="bottom", fill="x")
-        self._aktarim_yanip_soner = False
-        self.aktarim_gosterge = tk.Canvas(
-            self.durum_cubugu, width=16, height=16, highlightthickness=0, bg=self.cget("bg")
-        )
-        self.aktarim_gosterge.pack(side="left", padx=(2, 8))
-        self._aktarim_nokta = self.aktarim_gosterge.create_oval(2, 2, 14, 14, fill="#9aa0a6", outline="")
-        self.aktarim_durum_label = ttk.Label(
-            self.durum_cubugu,
-            text="EvoBulut aktarımı yok",
-            font=("Segoe UI", 9),
-        )
-        self.aktarim_durum_label.pack(side="left", fill="x", expand=True)
-
-        govde = ttk.Frame(self)
-        govde.pack(side="top", fill="both", expand=True)
-
-        self.menu = ttk.Frame(govde, padding=(12, 18))
-        self.menu.pack(side="left", fill="y")
-        from branding import APP_NAME
-
-        ttk.Label(self.menu, text=APP_NAME, font=("Segoe UI", 14, "bold")).pack(
-            pady=(4, 22)
-        )
-
-        menu_ogeleri = (
-            ("HIZLI GİRİŞ", "giris"),
-            ("SATIŞLAR", "satislar"),
-            ("SATIN ALMA", "satin_alma"),
-            ("STOKLAR", "stoklar"),
-            ("FİNANS", "finans"),
-            ("GELİR VE GİDERLER", "gelir_gider"),
-            ("GENEL MUHASEBE", "genel_muhasebe"),
-            ("ÖZET TABLOLAR", "ozet_tablolar"),
-            ("HIZLI SATIŞ", "hizli_satis"),
-            ("SİSTEM YÖNETİMİ", "sistem"),
-            ("SERVİS VE SİSTEM", "servis"),
-        )
-        self.menu_dugmeleri = {}
-        for baslik, anahtar in menu_ogeleri:
-            dugme = ttk.Button(
-                self.menu,
-                text=baslik,
-                style="HizliSatisMenu.TButton" if anahtar == "hizli_satis" else "Menu.TButton",
-                command=lambda secim=anahtar: self.sayfa_goster(secim),
-            )
-            dugme.pack(fill="x", pady=3)
-            self.menu_dugmeleri[anahtar] = dugme
+        kabuk = AnaPanelKabuk(self)
+        kabuk.olustur()
         self._sistem_menu_gorunurluk_guncelle()
-
-        self.icerik = ttk.Frame(govde, padding=(24, 20))
-        self.icerik.pack(side="right", fill="both", expand=True)
+        try:
+            kabuk.durum_guncelle()
+        except Exception:
+            pass
 
     def _oturum_cubugunu_guncelle(self):
         from database.session_manager import oturum
@@ -8443,6 +8352,16 @@ class MuhasebeApp(tk.Tk):
     def sayfa_goster(self, anahtar):
         from database.access import yetki_var
 
+        # Aynı ekranın mükerrer açılmasını engelle (giriş hariç yenilenebilir)
+        if (
+            anahtar == getattr(self, "_aktif_sayfa", None)
+            and anahtar not in ("giris",)
+            and getattr(self, "_sayfa_yukleniyor", False) is False
+        ):
+            # İçerik zaten bu sayfa — tekrar çizme
+            if self.icerik.winfo_children():
+                return
+
         gerekli = {
             "satislar": ("satis_goruntuleme", "goruntuleme"),
             "satin_alma": ("alis_goruntuleme",),
@@ -8450,7 +8369,9 @@ class MuhasebeApp(tk.Tk):
             "finans": ("finans_goruntuleme", "goruntuleme"),
             "gelir_gider": ("finans_goruntuleme", "goruntuleme"),
             "genel_muhasebe": ("muhasebe_goruntuleme", "goruntuleme"),
+            "cek_senet": ("finans_goruntuleme", "goruntuleme"),
             "ozet_tablolar": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
+            "raporlar": ("finans_goruntuleme", "satis_goruntuleme", "stok_goruntuleme", "goruntuleme"),
             "hizli_satis": ("satis_duzenleme", "satis_goruntuleme", "goruntuleme"),
             "sistem": ("kullanici_yonetme", "firma_yonetme", "sistem_ayarlari"),
             "servis": ("servis_goruntuleme", "servis_kontrol", "sistem_ayarlari"),
@@ -8462,79 +8383,122 @@ class MuhasebeApp(tk.Tk):
         self._menu_islemi(lambda: self._sayfa_goster_icerik(anahtar))
 
     def _sayfa_goster_icerik(self, anahtar):
-        self._icerigi_temizle()
-        self._busy_nabiz()
-        for dugme_anahtari, dugme in self.menu_dugmeleri.items():
-            if dugme_anahtari == anahtar:
-                dugme.configure(style="SeciliMenu.TButton")
-            elif dugme_anahtari == "hizli_satis":
-                dugme.configure(style="HizliSatisMenu.TButton")
+        self._sayfa_yukleniyor = True
+        try:
+            self._icerigi_temizle()
+            self._busy_nabiz()
+            kabuk = getattr(self, "_ana_panel_kabuk", None)
+            if kabuk is not None:
+                kabuk.menu_secili_guncelle(anahtar)
             else:
-                dugme.configure(style="Menu.TButton")
+                for dugme_anahtari, dugme in self.menu_dugmeleri.items():
+                    if dugme_anahtari == anahtar:
+                        dugme.configure(style="SeciliMenu.TButton")
+                    elif dugme_anahtari == "hizli_satis":
+                        dugme.configure(style="HizliSatisMenu.TButton")
+                    else:
+                        dugme.configure(style="Menu.TButton")
 
-        basliklar = {
-            "giris": "HIZLI GİRİŞ",
-            "satislar": "SATIŞLAR",
-            "satin_alma": "SATIN ALMA",
-            "stoklar": "STOKLAR",
-            "finans": "FİNANS",
-            "gelir_gider": "GELİR VE GİDERLER",
-            "genel_muhasebe": "GENEL MUHASEBE",
-            "ozet_tablolar": "ÖZET TABLOLAR",
-            "hizli_satis": "HIZLI SATIŞ",
-            "sistem": "SİSTEM YÖNETİMİ",
-            "servis": "SERVİS VE SİSTEM",
-        }
-        if anahtar != "hizli_satis":
-            ttk.Label(self.icerik, text=basliklar[anahtar], style="Baslik.TLabel").pack(anchor="w")
-        if anahtar == "giris":
-            ttk.Label(self.icerik, text="Sık kullanılan işlemlere buradan hızlıca ulaşın.").pack(
-                anchor="w", pady=(18, 8)
-            )
-            alt = ttk.Frame(self.icerik)
-            alt.pack(fill="x", pady=(16, 0))
-            alt.columnconfigure(0, weight=1, minsize=520)
-            self._alt_menu_dugme(
-                alt, "HIZLI SATIŞ FATURASI", self.hizli_fatura_ac,
-                row=0, column=0, sticky="ew", pady=4,
-            )
-            self._alt_menu_dugme(
-                alt, "TAHSİLAT MAKBUZU", self.tahsilat_makbuzu_ac,
-                row=1, column=0, sticky="ew", pady=4,
-            )
-            self._alt_menu_dugme(
-                alt, "MÜŞTERİ KARTLARI", self.cariler_goster,
-                row=2, column=0, sticky="ew", pady=4,
-            )
-        elif anahtar == "satislar":
-            self.satislar_menusu_goster()
-        elif anahtar == "satin_alma":
-            self.satin_alma_menusu_goster()
-        elif anahtar == "stoklar":
-            self.stoklar_menusu_goster()
-        elif anahtar == "finans":
-            self.finans_goster()
-        elif anahtar == "gelir_gider":
-            gelir_gider_menusu_goster(self)
-        elif anahtar == "genel_muhasebe":
-            genel_muhasebe_menusu_goster(self)
-        elif anahtar == "ozet_tablolar":
-            ozet_tablolar_menusu_goster(self)
-        elif anahtar == "hizli_satis":
-            from hizli_satis_ui import hizli_satis_goster
+            self._aktif_sayfa = anahtar
 
-            hizli_satis_goster(self)
-        elif anahtar == "sistem":
-            from sistem_ui import sistem_menusu_goster
+            basliklar = {
+                "giris": "ANA PANEL",
+                "satislar": "SATIŞLAR",
+                "satin_alma": "SATIN ALMA",
+                "stoklar": "STOKLAR",
+                "finans": "FİNANS",
+                "gelir_gider": "GELİR VE GİDERLER",
+                "genel_muhasebe": "GENEL MUHASEBE",
+                "cek_senet": "ÇEK VE SENET",
+                "ozet_tablolar": "ÖZET TABLOLAR",
+                "raporlar": "RAPORLAR",
+                "hizli_satis": "HIZLI SATIŞ",
+                "sistem": "KULLANICI VE FİRMA YÖNETİMİ",
+                "servis": "SERVİS VE SİSTEM KONTROLÜ",
+                "ayarlar": "AYARLAR",
+            }
+            if anahtar not in (
+                "hizli_satis",
+                "giris",
+                "finans",
+                "gelir_gider",
+                "genel_muhasebe",
+                "ozet_tablolar",
+                "cek_senet",
+                "raporlar",
+                "ayarlar",
+                "sistem",
+                "servis",
+            ):
+                ttk.Label(
+                    self.icerik, text=basliklar.get(anahtar, anahtar.upper()), style="Baslik.TLabel"
+                ).pack(anchor="w", padx=20, pady=(16, 0))
+            if anahtar == "giris":
+                from ana_panel_ui import giris_dashboard_goster
 
-            sistem_menusu_goster(self)
-        elif anahtar == "servis":
-            from servis_sistem_ui import servis_sistem_goster
+                giris_dashboard_goster(self)
+            elif anahtar == "satislar":
+                self.satislar_menusu_goster()
+            elif anahtar == "satin_alma":
+                self.satin_alma_menusu_goster()
+            elif anahtar == "stoklar":
+                self.stoklar_menusu_goster()
+            elif anahtar == "finans":
+                self.finans_goster()
+            elif anahtar == "gelir_gider":
+                gelir_gider_menusu_goster(self)
+            elif anahtar == "genel_muhasebe":
+                genel_muhasebe_menusu_goster(self)
+            elif anahtar == "cek_senet":
+                from finans_ui import cek_senet_menusu_goster
 
-            servis_sistem_goster(self)
-        else:
-            ttk.Label(self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır.").pack(anchor="w", pady=(18, 0))
-        self._busy_nabiz()
+                cek_senet_menusu_goster(self)
+                if kabuk is not None:
+                    kabuk.menu_secili_guncelle("cek_senet")
+            elif anahtar == "ozet_tablolar":
+                ozet_tablolar_menusu_goster(self)
+            elif anahtar == "raporlar":
+                from ana_panel_ui import raporlar_menusu_goster
+
+                raporlar_menusu_goster(self)
+            elif anahtar == "hizli_satis":
+                from hizli_satis_ui import hizli_satis_goster
+
+                hizli_satis_goster(self)
+            elif anahtar == "sistem":
+                from sistem_ui import sistem_menusu_goster
+
+                sistem_menusu_goster(self)
+            elif anahtar == "servis":
+                from servis_sistem_ui import servis_sistem_goster
+
+                servis_sistem_goster(self)
+            elif anahtar == "ayarlar":
+                from ana_panel_ui import ayarlar_goster
+
+                ayarlar_goster(self)
+            else:
+                ttk.Label(
+                    self.icerik, text="Bu bölüm sonraki aşamada hazırlanacaktır."
+                ).pack(anchor="w", pady=(18, 0), padx=20)
+            self._busy_nabiz()
+            kabuk = getattr(self, "_ana_panel_kabuk", None)
+            if kabuk is not None:
+                try:
+                    kabuk.durum_guncelle()
+                except Exception:
+                    pass
+        finally:
+            self._sayfa_yukleniyor = False
+
+    def odeme_makbuzu_ac(self):
+        """Hızlı giriş: ödeme makbuzu."""
+        if getattr(self, "_busy_pending", False):
+            self._busy_bitir()
+        from kasa_makbuz_ui import KasaMakbuzDialog
+
+        dialog = KasaMakbuzDialog(self, makbuz_turu="ODEME")
+        self.wait_window(dialog)
 
     def stoklar_menusu_goster(self):
         alt_menu = ttk.Frame(self.icerik)

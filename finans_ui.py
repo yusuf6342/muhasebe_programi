@@ -125,8 +125,18 @@ def _tarih(t):
 
 
 def _finans_menu_isaretle(app):
+    kabuk = getattr(app, "_ana_panel_kabuk", None)
+    if kabuk is not None:
+        aktif = getattr(app, "_aktif_sayfa", "finans")
+        kabuk.menu_secili_guncelle("cek_senet" if aktif == "cek_senet" else "finans")
+        return
     for dugme_anahtari, dugme in app.menu_dugmeleri.items():
-        dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == "finans" else "Menu.TButton")
+        if dugme_anahtari == "finans":
+            dugme.configure(style="SeciliMenu.TButton")
+        elif dugme_anahtari == "hizli_satis":
+            dugme.configure(style="HizliSatisMenu.TButton")
+        else:
+            dugme.configure(style="Menu.TButton")
 
 
 def finans_menusu_goster(app):

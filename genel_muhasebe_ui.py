@@ -23,10 +23,17 @@ from database.session_manager import oturum
 
 
 def _menu_isaretle(app):
+    kabuk = getattr(app, "_ana_panel_kabuk", None)
+    if kabuk is not None:
+        kabuk.menu_secili_guncelle("genel_muhasebe")
+        return
     for anahtar, dugme in app.menu_dugmeleri.items():
-        dugme.configure(
-            style="SeciliMenu.TButton" if anahtar == "genel_muhasebe" else "Menu.TButton"
-        )
+        if anahtar == "genel_muhasebe":
+            dugme.configure(style="SeciliMenu.TButton")
+        elif anahtar == "hizli_satis":
+            dugme.configure(style="HizliSatisMenu.TButton")
+        else:
+            dugme.configure(style="Menu.TButton")
 
 
 def _ust_bilgi(parent) -> ttk.Frame:

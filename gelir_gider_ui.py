@@ -27,10 +27,17 @@ def _tarih(t):
 
 
 def _menu_isaretle(app, anahtar="gelir_gider"):
+    kabuk = getattr(app, "_ana_panel_kabuk", None)
+    if kabuk is not None:
+        kabuk.menu_secili_guncelle(anahtar)
+        return
     for dugme_anahtari, dugme in app.menu_dugmeleri.items():
-        dugme.configure(
-            style="SeciliMenu.TButton" if dugme_anahtari == anahtar else "Menu.TButton"
-        )
+        if dugme_anahtari == anahtar:
+            dugme.configure(style="SeciliMenu.TButton")
+        elif dugme_anahtari == "hizli_satis":
+            dugme.configure(style="HizliSatisMenu.TButton")
+        else:
+            dugme.configure(style="Menu.TButton")
 
 
 def _evobulut_gelir_gider(app):
