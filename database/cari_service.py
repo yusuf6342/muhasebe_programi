@@ -1479,3 +1479,67 @@ class CariService:
             "agirlikli_ortalama_gun": bakiye_valor if bakiye >= 0 else alacak_valor,
             "acik_hareket_sayisi": len(borclar) + len(alacaklar),
         }
+
+    @staticmethod
+    def kart_ozet_metrikleri(cari_id: int) -> dict[str, Any] | None:
+        """Cari kart üst özeti — mevcut bakiye/valör/FIFO ve risk mantığını yeniden kullanır.
+
+        Yeni formül icat etmez:
+        - bakiye / valör → ``_ozet``
+        - vadesi geçmiş → FIFO açık dilimlerde ``gun > 0`` tutar toplamı
+        - kullanılabilir risk → ``acik_hesap_risk_degerlendir(...).kalan_limit``
+        - son işlem → defterin en yeni satırı
+        """
+        from hizli_satis_musteri import acik_hesap_risk_degerlendir
+
+        from sqlalchemy.orm import selectinload
+
+        with get_session() as session:
+            cari = session.scalar(
+                select(Cari)
+                .where(Cari.id == int(cari_id))
+                .options(selectinload(Cari.satis_hareketleri))
+            )
+            if cari is None:
+                return None
+            ozet = CariService._ozet(cari, session=session)
+            _tam, acik_dilimler, _dilimler = CariService._fifo_valor_dilimleri(
+                session, cari.id, cari_turu=cari.cari_turu
+            )
+            vadesi_gecmis = sum(
+                (Decimal(str(d.get("tutar") or 0)) for d in acik_dilimler if int(d.get("gun") or 0) > 0),
+                Decimal("0"),
+            )
+            defter = CariService._defter(session, cari.id)
+            son = defter[0] if defter else None
+            bakiye = Decimal(str(ozet.get("bakiye") or 0))
+            risk = acik_hesap_risk_degerlendir(
+                bakiye=bakiye if bakiye > 0 else Decimal("0"),
+                risk_limiti=getattr(cari, "acik_hesap_risk_limiti", None),
+                ek_tutar=0,
+                acik_hesap_yetkisi=True,
+            )
+            session.expunge(cari)
+            return {
+                "cari": cari,
+                "bakiye": bakiye,
+                "bakiye_durumu": ozet.get("bakiye_durumu") or "Bakiye yok",
+                "toplam_borc": ozet.get("toplam_borc", Decimal("0")),
+                "toplam_alacak": ozet.get("toplam_alacak", Decimal("0")),
+                "odenen_ortalama_valor_gun": float(ozet.get("odenen_ortalama_valor_gun") or 0),
+                "bakiye_ortalama_valor_gun": float(ozet.get("bakiye_ortalama_valor_gun") or 0),
+                "vadesi_gecmis": vadesi_gecmis,
+                "kullanilabilir_risk": risk.get("kalan_limit"),
+                "risk_durum": risk.get("durum") or "ok",
+                "risk_mesaj": risk.get("mesaj") or "",
+                "son_islem_tarih": (son or {}).get("tarih"),
+                "son_islem_tutar": (
+                    Decimal(str((son or {}).get("borc") or 0))
+                    - Decimal(str((son or {}).get("alacak") or 0))
+                    if son
+                    else None
+                ),
+                "son_islem_tur": (son or {}).get("tur"),
+                "son_islem_belge": (son or {}).get("belge_no"),
+                "hareketler": defter,
+            }

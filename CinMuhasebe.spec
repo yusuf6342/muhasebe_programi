@@ -44,6 +44,8 @@ a = Analysis(
         "hizli_satis_ui",
         "hizli_satis_urun_panel_ui",
         "hizli_satis_urun_ekle_ui",
+        "cari_kart_ui",
+        "cari_kart_tema",
         "database.hizli_satis_service",
         "database.models.hizli_satis",
     ],
