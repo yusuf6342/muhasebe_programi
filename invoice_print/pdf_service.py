@@ -1,0 +1,101 @@
+"""PDF üretimi — Edge/Chrome headless veya HTML yedek."""
+
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+import tempfile
+from datetime import date, datetime
+from pathlib import Path
+
+from invoice_print.html_renderer import render_invoice_html
+from invoice_print.view_model import InvoicePrintViewModel
+
+_LOG = logging.getLogger("invoice_print.pdf")
+
+
+def safe_pdf_filename(vm: InvoicePrintViewModel) -> str:
+    musteri = (vm.musteri or {}).get("unvan") or "Musteri"
+    musteri = re.sub(r'[<>:"/\\|?*]+', "", musteri)[:40].strip() or "Musteri"
+    musteri = musteri.replace(" ", "_")
+    no = re.sub(r"[^\w\-]+", "_", vm.fatura_no or "Yeni")
+    gun = date.today().isoformat()
+    return f"Satis_Faturasi_{no}_{musteri}_{gun}.pdf"
+
+
+def _html_gecici(vm: InvoicePrintViewModel) -> Path:
+    klasor = Path(tempfile.gettempdir()) / "muhasebe_fatura_a4"
+    klasor.mkdir(parents=True, exist_ok=True)
+    yol = klasor / f"onizleme_{vm.fatura_id or 'yeni'}_{datetime.now():%H%M%S}.html"
+    yol.write_text(render_invoice_html(vm, toolbar=False, zoom_pct=100), encoding="utf-8")
+    return yol
+
+
+def _chrome_edge_paths() -> list[Path]:
+    adaylar = [
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    ]
+    return [p for p in adaylar if p.is_file()]
+
+
+def render_invoice_to_pdf(vm: InvoicePrintViewModel, hedef: Path) -> Path:
+    """A4 PDF. Türkçe karakter için Chromium print-to-pdf tercih edilir."""
+    hedef = Path(hedef)
+    hedef.parent.mkdir(parents=True, exist_ok=True)
+    html_yol = _html_gecici(vm)
+    uri = html_yol.resolve().as_uri()
+    son_hata: Exception | None = None
+    for tarayici in _chrome_edge_paths():
+        try:
+            cmd = [
+                str(tarayici),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={hedef}",
+                uri,
+            ]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            if hedef.is_file() and hedef.stat().st_size > 500:
+                return hedef
+            son_hata = RuntimeError(
+                (proc.stderr or b"").decode("utf-8", errors="ignore")[:300]
+                or f"exit={proc.returncode}"
+            )
+        except Exception as exc:
+            son_hata = exc
+            _LOG.warning("PDF motoru başarısız (%s): %s", tarayici.name, exc)
+
+    # Yedek: HTML'i .pdf uzantısı yerine kullanıcıya HTML kaydet + uyarı
+    yedek = hedef.with_suffix(".html")
+    yedek.write_text(
+        render_invoice_html(vm, toolbar=True, zoom_pct=100), encoding="utf-8"
+    )
+    _LOG.error(
+        "PDF oluşturulamadı, HTML kaydedildi | fatura_id=%s yol=%s hata=%s",
+        vm.fatura_id,
+        yedek,
+        son_hata,
+    )
+    raise ValueError(
+        "Fatura PDF dosyası oluşturulamadı. Kayıt klasörünü ve dosya izinlerini kontrol edin.\n"
+        f"(Geçici HTML: {yedek})"
+    )
+
+
+def html_dosyasi_yaz(vm: InvoicePrintViewModel, hedef: Path | None = None) -> Path:
+    if hedef is None:
+        return _html_gecici(vm)
+    hedef = Path(hedef)
+    hedef.parent.mkdir(parents=True, exist_ok=True)
+    hedef.write_text(render_invoice_html(vm, toolbar=True, zoom_pct=100), encoding="utf-8")
+    return hedef

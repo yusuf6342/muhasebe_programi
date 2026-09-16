@@ -123,6 +123,8 @@ class User(SystemBase):
     sifre_degistirmeli: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # Hızlı işlem PIN (hash; açık metin saklanmaz) — soft ALTER ile eklenir
+    hizli_pin_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     olusturma_tarihi: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
     )

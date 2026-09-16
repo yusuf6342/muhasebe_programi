@@ -19,6 +19,7 @@ class SatisNavigasyonTest(unittest.TestCase):
                 "MÜŞTERİ KARTLARI",
                 "SATIŞ FATURALARI",
                 "ALINAN SİPARİŞLER",
+                "TEKLİFLER",
                 "SATIŞ İRSALİYELERİ",
                 "CARİ HESAP İŞLEMLERİ",
                 "RAPORLAR",

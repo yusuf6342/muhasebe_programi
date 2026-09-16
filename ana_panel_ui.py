@@ -440,6 +440,7 @@ class AnaPanelKabuk:
             ("Bildirim", lambda: messagebox.showinfo("Bildirim", "Yeni bildirim yok.", parent=app)),
             ("Firma", app.firma_degistir_ac),
             ("Dönem", app.donem_degistir_ac),
+            ("Kullanıcı", app.aktif_kullanici_degistir_ac),
             ("Şifre", app.sifre_degistir_ac),
             ("Çıkış", app.oturumu_kapat),
         ):
@@ -1021,7 +1022,9 @@ def ayarlar_goster(app) -> None:
         (
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
             ("DÖNEM DEĞİŞTİR", app.donem_degistir_ac),
+            ("KULLANICI DEĞİŞTİR", app.aktif_kullanici_degistir_ac),
             ("ŞİFRE DEĞİŞTİR", app.sifre_degistir_ac),
+            ("OTOMATİK EKRAN KİLİDİ", app.ekran_kilidi_ayari_ac),
             ("HAKKINDA", lambda: hakkinda_goster(app)),
             ("KULLANICI VE FİRMA YÖNETİMİ", lambda: app.sayfa_goster("sistem")),
         )

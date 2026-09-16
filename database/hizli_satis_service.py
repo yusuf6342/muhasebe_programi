@@ -483,6 +483,20 @@ class HizliSatisService:
         tahsilat_verileri: list[dict],
     ) -> int:
         """Taslak kaydet + onayla tek commit (iç içe get_session yok)."""
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            current_actor,
+            require_user_session,
+            stamp_approve,
+            stamp_create,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+        actor = current_actor()
         with get_session() as session:
             cari = session.get(Cari, int(veriler["cari_id"]))
             if not cari or getattr(cari, "is_deleted", False) or not getattr(cari, "aktif", True):
@@ -552,6 +566,12 @@ class HizliSatisService:
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
             fatura.onaylandi = False
             fatura.durum = "TASLAK"
+            stamp_create(fatura)
+            fatura.tahsilat_alan_user_id = actor["user_id"]
+            fatura.tahsilat_alan_full_name = actor["full_name"]
+            fatura.kasa_terminal = (veriler.get("kasa_terminal") or "").strip() or None
+            fatura.satis_baslangic = veriler.get("satis_baslangic") or actor["now"]
+            fatura.satis_bitis = actor["now"]
             session.flush()
 
             # —— Onay (aynı session) ——
@@ -605,13 +625,21 @@ class HizliSatisService:
 
             fatura.durum = "KAPALI" if tahsilat_toplam >= toplam else "AÇIK"
             fatura.onaylandi = True
+            stamp_approve(fatura)
             SatisFaturasiService._durumlari_guncelle(session, fatura)
             try:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi / onaylanamadı.") from hata
             fid = int(fatura.id)
+            fno = fatura.fatura_no
 
+        audit_document(
+            "HIZLI_SATIS_TAMAMLA",
+            modul="hizli_satis",
+            kayit_id=str(fid),
+            belge_no=fno,
+        )
         from database.muhasebe_entegrasyon import muhasebe_hook
 
         muhasebe_hook("satis_faturasi_fisi", fid)
@@ -1580,7 +1608,7 @@ class HizliSatisService:
             fno = fatura.fatura_no
             session.flush()
 
-        SatisFaturasiService.iptal_et(fid)
+        SatisFaturasiService.iptal_et(fid, sebep=neden_temiz)
 
         try:
             from database.database import get_system_session
@@ -1813,6 +1841,13 @@ class HizliSatisService:
                 firma = (getattr(oturum, "firma_unvan", None) or "").strip()
             except Exception:
                 firma = ""
+            from database.user_audit import display_user
+
+            kasiyer = display_user(
+                getattr(fatura, "created_by_full_name", None)
+                or getattr(fatura, "tahsilat_alan_full_name", None),
+                getattr(fatura, "created_by_user_id", None),
+            )
 
             return {
                 "fatura_id": int(fatura.id),
@@ -1821,9 +1856,7 @@ class HizliSatisService:
                 "islem_saati": fatura.islem_saati,
                 "musteri": fatura.cari.unvan if fatura.cari else "",
                 "cari_kodu": fatura.cari.cari_kodu if fatura.cari else "",
-                "kasiyer": getattr(oturum, "kullanici_adi", None)
-                or getattr(oturum, "ad_soyad", None)
-                or "",
+                "kasiyer": kasiyer,
                 "firma": firma,
                 "ara_toplam": _kurus(toplam["ara_toplam"]),
                 "iskonto": _kurus(toplam["iskonto"]),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import date, datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from sqlalchemy import select
 
@@ -328,10 +328,101 @@ class KullaniciDialog(tk.Toplevel):
             self.varsayilan.set("(yok)")
         satir += 1
 
+        # Hızlı işlem PIN (yalnızca mevcut kullanıcı kartında)
+        if user_id is not None:
+            pin_frm = ttk.LabelFrame(frm, text="Hızlı işlem PIN", padding=8)
+            pin_frm.grid(row=satir, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+            pin_durum = "Tanımlı" if (mevcut or {}).get("pin_tanimli") else "Tanımlı değil"
+            self._pin_durum_lbl = ttk.Label(pin_frm, text=f"Durum: {pin_durum}")
+            self._pin_durum_lbl.pack(anchor="w")
+            ttk.Label(
+                pin_frm,
+                text="PIN açık metin gösterilmez / saklanmaz. Yönetici yalnızca sıfırlayabilir.",
+                wraplength=420,
+            ).pack(anchor="w", pady=(2, 6))
+            pin_btn = ttk.Frame(pin_frm)
+            pin_btn.pack(anchor="w")
+            ttk.Button(
+                pin_btn, text="Hızlı PIN Oluştur / Değiştir", command=self._pin_ayarla
+            ).pack(side="left", padx=(0, 6))
+            ttk.Button(pin_btn, text="Hızlı PIN İptal Et", command=self._pin_iptal).pack(
+                side="left"
+            )
+            satir += 1
+            self.geometry("520x620")
+
         butonlar = ttk.Frame(frm)
         butonlar.grid(row=satir, column=0, columnspan=2, sticky="e", pady=12)
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="left", padx=6)
         ttk.Button(butonlar, text="Kaydet", command=self._kaydet).pack(side="left")
+
+    def _pin_ayarla(self):
+        from database.user_switch import pin_ayarla, pin_tanimli_mi
+        from database.session_manager import oturum as _oturum
+
+        if self.user_id is None:
+            return
+        yeni = simpledialog.askstring(
+            "Hızlı PIN",
+            "Yeni 4–6 haneli hızlı PIN girin:",
+            show="*",
+            parent=self,
+        )
+        if not yeni:
+            return
+        eski = None
+        admin = _oturum.role_kod == "YONETICI" or _oturum.has_permission("kullanici_yonetme")
+        if not admin or _oturum.user_id == self.user_id:
+            eski = simpledialog.askstring(
+                "Doğrulama",
+                "Mevcut şifreniz veya mevcut PIN’iniz:",
+                show="*",
+                parent=self,
+            )
+            if not eski and not admin:
+                return
+        try:
+            pin_ayarla(self.user_id, yeni, eski_pin_veya_sifre=eski)
+            if getattr(self, "_pin_durum_lbl", None):
+                self._pin_durum_lbl.configure(
+                    text=f"Durum: {'Tanımlı' if pin_tanimli_mi(self.user_id) else 'Tanımlı değil'}"
+                )
+            messagebox.showinfo("Hızlı PIN", "Hızlı PIN kaydedildi.", parent=self)
+        except Exception as hata:
+            messagebox.showerror("Hızlı PIN", str(hata), parent=self)
+
+    def _pin_iptal(self):
+        from database.user_switch import pin_iptal, pin_tanimli_mi
+        from database.session_manager import oturum as _oturum
+
+        if self.user_id is None:
+            return
+        if not messagebox.askyesno(
+            "Hızlı PIN İptal",
+            "Bu kullanıcının hızlı PIN’i iptal edilsin mi?\n(Eski PIN görüntülenemez.)",
+            parent=self,
+        ):
+            return
+        dogrulama = None
+        admin = _oturum.role_kod == "YONETICI" or _oturum.has_permission("kullanici_yonetme")
+        if not admin or _oturum.user_id == self.user_id:
+            dogrulama = simpledialog.askstring(
+                "Doğrulama",
+                "Şifrenizi girin:",
+                show="*",
+                parent=self,
+            )
+            if not dogrulama and not admin:
+                return
+        try:
+            pin_iptal(self.user_id, dogrulama=dogrulama)
+            if getattr(self, "_pin_durum_lbl", None):
+                self._pin_durum_lbl.configure(
+                    text=f"Durum: {'Tanımlı' if pin_tanimli_mi(self.user_id) else 'Tanımlı değil'}"
+                )
+            messagebox.showinfo("Hızlı PIN", "Hızlı PIN iptal edildi.", parent=self)
+        except Exception as hata:
+            messagebox.showerror("Hızlı PIN", str(hata), parent=self)
 
     def _kaydet(self):
         try:

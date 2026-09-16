@@ -153,6 +153,14 @@ class SatisFaturasiService:
                     "tahsilat_tutari": tahsilat,
                     "durum": f.durum or "",
                     "onaylandi": bool(getattr(f, "onaylandi", False)),
+                    "created_by_full_name": getattr(f, "created_by_full_name", None),
+                    "created_by_user_id": getattr(f, "created_by_user_id", None),
+                    "approved_by_full_name": getattr(f, "approved_by_full_name", None),
+                    "approved_by_user_id": getattr(f, "approved_by_user_id", None),
+                    "aciklama": getattr(f, "aciklama", None),
+                    "tahsilat_alan_full_name": getattr(f, "tahsilat_alan_full_name", None),
+                    "kasa_terminal": getattr(f, "kasa_terminal", None),
+                    "tahsilat_sekli": getattr(f, "tahsilat_sekli", None),
                 })
             return sonuc
 
@@ -219,6 +227,18 @@ class SatisFaturasiService:
         önce onay_kaldir() çağrılmalıdır.
         """
         yazma_zorunlu("satis_duzenleme", "yeni_kayit")
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_create,
+            stamp_update,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
         tarih, vade = veriler["fatura_tarihi"], veriler["vade_tarihi"]
         if tarih > date.today():
             raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
@@ -228,6 +248,7 @@ class SatisFaturasiService:
             raise ValueError("En az bir fatura satırı ekleyin.")
         tahsilat_verileri = list(tahsilat_verileri or [])
         with get_session() as session:
+            yeni = False
             if fatura_id:
                 fatura = session.get(SatisFaturasi, fatura_id)
                 if not fatura:
@@ -240,6 +261,7 @@ class SatisFaturasiService:
                 fatura.satirlar.clear()
                 fatura.tahsilatlar.clear()
             else:
+                yeni = True
                 fatura = SatisFaturasi(
                     fatura_no=(veriler.get("fatura_no") or "").strip()
                     or SatisFaturasiService.fatura_no()
@@ -388,18 +410,42 @@ class SatisFaturasiService:
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
             fatura.onaylandi = False
             fatura.durum = "TASLAK"
+            if yeni:
+                stamp_create(fatura)
+            else:
+                stamp_update(fatura)
             session.flush()
             SatisFaturasiService._durumlari_guncelle(session, fatura)
             try:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi.") from hata
-            return fatura
+            fid = int(fatura.id)
+            fno = fatura.fatura_no
+            eylem = "FATURA_OLUSTUR" if yeni else "FATURA_DUZENLE"
+        audit_document(
+            eylem,
+            modul="satis_faturasi",
+            kayit_id=str(fid),
+            belge_no=fno,
+        )
+        return SatisFaturasiService.getir(fid) or fatura
 
     @staticmethod
     def onayla(fatura_id):
         """Taslak faturayı onaylar: stok çıkışı, cari borç ve finans tahsilatı oluşturur."""
         yazma_zorunlu("satis_duzenleme")
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_approve,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
         with get_session() as session:
             fatura = session.scalar(
                 select(SatisFaturasi)
@@ -423,6 +469,20 @@ class SatisFaturasiService:
                 raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
 
             for satir in fatura.satirlar:
+                # İrsaliyeden stok çıkışı yapılmışsa fatura satırında tekrar çıkış yapma
+                skip_stok = False
+                if fatura.irsaliye_id and getattr(satir, "irsaliye_satiri_id", None):
+                    from database.models.satis_irsaliyesi import SatisIrsaliyesi
+                    from database.satis_irsaliyesi_service import stok_cikis_gerekli
+
+                    ir = session.get(SatisIrsaliyesi, fatura.irsaliye_id)
+                    if ir is not None and not stok_cikis_gerekli(ir):
+                        skip_stok = True
+                        satir.lot_cikisi = "İrsaliye stokundan"
+                        if getattr(satir, "fifo_birim_maliyeti", None) is None:
+                            satir.fifo_birim_maliyeti = Decimal("0")
+                if skip_stok:
+                    continue
                 try:
                     stok_cikisi = StokService.fatura_cikisi(
                         session,
@@ -512,12 +572,20 @@ class SatisFaturasiService:
 
             fatura.durum = "KAPALI" if tahsilat_toplam >= toplam else "AÇIK"
             fatura.onaylandi = True
+            stamp_approve(fatura)
             SatisFaturasiService._durumlari_guncelle(session, fatura)
             try:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura onaylanamadı.") from hata
             fid = int(fatura.id)
+            fno = fatura.fatura_no
+        audit_document(
+            "FATURA_ONAY",
+            modul="satis_faturasi",
+            kayit_id=str(fid),
+            belge_no=fno,
+        )
 
         from database.muhasebe_entegrasyon import muhasebe_hook
 
@@ -567,8 +635,22 @@ class SatisFaturasiService:
         return SatisFaturasiService.getir(fid)
 
     @staticmethod
-    def iptal_et(fatura_id):
+    def iptal_et(fatura_id, sebep: str | None = None):
         yazma_zorunlu("satis_duzenleme", "iptal")
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_cancel,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+        neden = (sebep or "").strip()
+        if not neden:
+            raise ValueError("İptal nedeni zorunludur.")
         onayliydi = False
         with get_session() as session:
             fatura = session.scalar(
@@ -591,18 +673,27 @@ class SatisFaturasiService:
                     )
                 fatura.onaylandi = False
                 fatura.durum = "İPTAL"
+                stamp_cancel(fatura, neden)
                 SatisFaturasiService._durumlari_guncelle(session, fatura)
                 fid = int(fatura.id)
+                fno = fatura.fatura_no
             else:
                 return
 
+        audit_document(
+            "FATURA_IPTAL",
+            modul="satis_faturasi",
+            kayit_id=str(fid),
+            belge_no=fno,
+            yeni={"cancellation_reason": neden},
+        )
         if onayliydi:
             from database.muhasebe_entegrasyon import muhasebe_hook
 
             muhasebe_hook("satis_faturasi_iptal", fid)
         from database.deleted_record_service import ENTITY_SATIS_FATURA, safe_log_cancel
 
-        safe_log_cancel(ENTITY_SATIS_FATURA, fatura_id, note="Satış faturası iptal")
+        safe_log_cancel(ENTITY_SATIS_FATURA, fatura_id, note=f"Satış faturası iptal: {neden}")
 
     @staticmethod
     def taslak_sil(fatura_id, *, reason: str, note: str | None = None, critical_confirm: str | None = None):

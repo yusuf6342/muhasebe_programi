@@ -460,6 +460,24 @@ def cari_kart_schemasini_guncelle() -> None:
     doviz_schema_guncelle()
     donem_schemasini_guncelle()
     hizli_satis_schema_hazirla()
+    try:
+        from database.user_audit import belge_kullanici_schema_guncelle
+
+        belge_kullanici_schema_guncelle()
+    except Exception:
+        pass
+    try:
+        from database.teklif_service import QuoteService
+
+        QuoteService.schema_hazirla()
+    except Exception:
+        pass
+    try:
+        from database.satis_irsaliyesi_service import SatisIrsaliyesiService
+
+        SatisIrsaliyesiService.schema_hazirla()
+    except Exception:
+        pass
 
 
 def donem_schemasini_guncelle() -> None:

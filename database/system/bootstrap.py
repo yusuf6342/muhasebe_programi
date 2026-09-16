@@ -47,6 +47,8 @@ IZINLER: list[tuple[str, str, str]] = [
     ("stok_duzenleme", "Stok düzenleme", "stok"),
     ("satis_goruntuleme", "Satış görüntüleme", "satis"),
     ("satis_duzenleme", "Satış düzenleme", "satis"),
+    ("teklif_manuel_urun", "Teklif manuel ürün ekleme/düzenleme", "satis"),
+    ("teklif_manuel_stok_donustur", "Manuel ürünü stok kartına dönüştürme", "satis"),
     ("hizli_satis_fiyat_degistirme", "Hızlı satış fiyat değiştirme", "satis"),
     ("hizli_satis_yuksek_iskonto", "Hızlı satış yüksek iskonto", "satis"),
     ("hizli_satis_acik_hesap", "Hızlı satış açık hesap / risk aşımı", "satis"),
@@ -113,6 +115,8 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "excel_pdf",
         "satis_goruntuleme",
         "satis_duzenleme",
+        "teklif_manuel_urun",
+        "teklif_manuel_stok_donustur",
         "hizli_satis_fiyat_degistirme",
         "hizli_satis_yuksek_iskonto",
         "hizli_satis_acik_hesap",
@@ -325,6 +329,12 @@ def sistem_baslat(
     """
     eng = system_engine_olustur(system_db_path)
     system_tablolari_olustur(eng)
+    try:
+        from database.user_switch import users_pin_schema_guncelle
+
+        users_pin_schema_guncelle(eng)
+    except Exception:
+        pass
     SessionLocal = sessionmaker(
         bind=eng, autoflush=False, autocommit=False, expire_on_commit=False
     )

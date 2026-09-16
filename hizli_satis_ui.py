@@ -328,6 +328,70 @@ class HizliSatisPencere(tk.Toplevel):
         self.barkod_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.barkod_entry.bind("<Return>", self._barkod_okut)
 
+        from belge_kullanici_ui import aktif_kullanici_adi
+
+        tk.Label(ust, text="Kasiyer / İşlemi Yapan", bg=ACIK_GRI, fg=KOYU_GRI).grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0)
+        )
+        self.kasiyer_label = tk.Label(
+            ust,
+            text=aktif_kullanici_adi(),
+            bg=ACIK_GRI,
+            fg=KOYU_GRI,
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        )
+        self.kasiyer_label.grid(row=1, column=1, sticky="w", pady=(6, 0))
+
+        def _hs_dirty():
+            if self.sepet_model.satirlar:
+                return "unsaved"
+            return "empty"
+
+        def _hs_meta():
+            return ("hizli_satis", getattr(self, "_son_fatura_id", None))
+
+        def _hs_yenile(_yeni=None):
+            try:
+                from belge_kullanici_ui import aktif_kullanici_adi as _ad
+
+                self.kasiyer_label.configure(text=_ad())
+            except Exception:
+                pass
+            # Yetkileri yeniden uygula
+            try:
+                from database.access import maliyet_izinli
+
+                _ = maliyet_izinli()
+            except Exception:
+                pass
+            parent = self.master
+            while parent and not hasattr(parent, "_oturum_cubugunu_guncelle"):
+                parent = getattr(parent, "master", None)
+            if parent and hasattr(parent, "_oturum_cubugunu_guncelle"):
+                try:
+                    parent._oturum_cubugunu_guncelle()
+                except Exception:
+                    pass
+
+        try:
+            from kullanici_degistir_ui import aktif_kullanici_cubugu
+            from database.session_manager import oturum as _oturum
+
+            cubuk = aktif_kullanici_cubugu(
+                ust,
+                active_screen="HIZLI_SATIS",
+                get_document_meta=_hs_meta,
+                dirty_check=_hs_dirty,
+                on_changed=_hs_yenile,
+                bg=ACIK_GRI,
+            )
+            cubuk["cerceve"].grid(row=1, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(6, 0))
+            self._aktif_kullanici_cubugu = cubuk
+            _oturum.on_user_changed(lambda o, n: _hs_yenile(n))
+        except Exception:
+            pass
+
         tk.Label(ust, text="Ürün Ara", bg=ACIK_GRI, fg=KOYU_GRI).grid(
             row=0, column=2, sticky="w", padx=(0, 6)
         )

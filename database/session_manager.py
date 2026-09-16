@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -14,6 +16,7 @@ class SessionManager:
     role_kod: str | None = None
     role_ad: str | None = None
     sifre_degistirmeli: bool = False
+    login_time: datetime | None = None
 
     company_id: int | None = None
     firma_kodu: str | None = None
@@ -26,6 +29,9 @@ class SessionManager:
 
     permissions: set[str] = field(default_factory=set)
     _extra: dict[str, Any] = field(default_factory=dict)
+    _user_changed_listeners: list[Callable[[dict, dict], None]] = field(
+        default_factory=list, repr=False
+    )
 
     def clear(self) -> None:
         self.user_id = None
@@ -34,6 +40,7 @@ class SessionManager:
         self.role_kod = None
         self.role_ad = None
         self.sifre_degistirmeli = False
+        self.login_time = None
         self.company_id = None
         self.firma_kodu = None
         self.firma_unvan = None
@@ -62,6 +69,60 @@ class SessionManager:
         self.role_ad = role_ad
         self.permissions = set(permissions)
         self.sifre_degistirmeli = sifre_degistirmeli
+        self.login_time = datetime.now()
+
+    def switch_user(
+        self,
+        new_user_id: int,
+        authentication_data: str,
+        *,
+        active_screen: str | None = None,
+        document_type: str | None = None,
+        document_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Şifre/PIN doğrulamalı oturum değişimi — firma/dönem korunur."""
+        from database.user_switch import switch_user as _switch
+
+        return _switch(
+            new_user_id,
+            authentication_data,
+            active_screen=active_screen,
+            document_type=document_type,
+            document_id=document_id,
+        )
+
+    def on_user_changed(self, callback: Callable[[dict, dict], None]) -> None:
+        if callback not in self._user_changed_listeners:
+            self._user_changed_listeners.append(callback)
+
+    def off_user_changed(self, callback: Callable[[dict, dict], None]) -> None:
+        try:
+            self._user_changed_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def notify_user_changed(self, old_user: dict, new_user: dict) -> None:
+        for cb in list(self._user_changed_listeners):
+            try:
+                cb(old_user, new_user)
+            except Exception:
+                pass
+
+    @property
+    def current_user_id(self) -> int | None:
+        return self.user_id
+
+    @property
+    def current_username(self) -> str | None:
+        return self.kullanici_adi
+
+    @property
+    def current_user_full_name(self) -> str | None:
+        return self.ad_soyad
+
+    @property
+    def current_user_role(self) -> str | None:
+        return self.role_kod
 
     def set_company(
         self,

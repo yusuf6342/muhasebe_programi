@@ -13,6 +13,7 @@ from database.models.firma import Firma
 from database.models.donem import Donem
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
+from database.models.satis_teklifi import SatisTeklifi, SatisTeklifiSatiri  # noqa: F401
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri, SatisFaturasiTahsilati
 from database.models.satis_iade_faturasi import SatisIadeFaturasi, SatisIadeFaturasiSatiri

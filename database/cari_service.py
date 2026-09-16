@@ -274,6 +274,9 @@ class CariService:
                 tur = "Alış İadesi" if h.belge_no.startswith("AIAD-") else "Satış"
             else:
                 tur = "Satış"
+            # IAD- satış iadesi olarak işaretle (defter turu)
+            if h.belge_no.startswith("IAD-"):
+                tur = "Satış İadesi"
             kayitlar.append({
                 "tarih": h.satis_tarihi,
                 "tur": tur,
@@ -285,6 +288,9 @@ class CariService:
                 "para_birimi": getattr(h, "para_birimi", None) or "TRY",
                 "doviz_tutari": getattr(h, "doviz_tutari", None) or Decimal("0"),
                 "kur": getattr(h, "kur", None) or Decimal("1"),
+                "cari_id": cari_id,
+                "hareket_kaynak": "satis_hareketi",
+                "hareket_id": int(h.id),
             })
         for islem in islemler:
             aciklama = islem.aciklama or ""
@@ -313,6 +319,9 @@ class CariService:
                 "para_birimi": getattr(islem, "para_birimi", None) or "TRY",
                 "doviz_tutari": doviz_tutar,
                 "kur": getattr(islem, "kur", None) or Decimal("1"),
+                "cari_id": cari_id,
+                "hareket_kaynak": "cari_islem",
+                "hareket_id": int(islem.id),
             })
         # Kronolojik çalışan bakiye → Kalan Bakiye kolonu
         kayitlar.sort(key=lambda item: (item["tarih"], item["belge_no"], item["tur"]))
@@ -321,6 +330,13 @@ class CariService:
             calisan += Decimal(str(kayit["borc"] or 0)) - Decimal(str(kayit["alacak"] or 0))
             kayit["kalan"] = calisan
         kayitlar.reverse()  # ekranda yeniden eskiye
+        try:
+            from database.cari_fatura_detay_service import CariFaturaDetayService
+
+            CariFaturaDetayService.hareketlere_meta_ekle(kayitlar)
+        except Exception:
+            for kayit in kayitlar:
+                kayit.setdefault("genisletilebilir", False)
         return kayitlar
 
     @staticmethod

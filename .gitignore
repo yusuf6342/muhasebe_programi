@@ -16,3 +16,7 @@ data/
 ILK_YONETICI_SIFRE.txt
 entegrasyon/_check_*.py
 
+
+dist/
+build/
+

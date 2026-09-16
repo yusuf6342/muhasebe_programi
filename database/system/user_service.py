@@ -55,6 +55,7 @@ class UserService:
                     "olusturma_tarihi": u.olusturma_tarihi,
                     "son_giris_tarihi": u.son_giris_tarihi,
                     "sifre_degistirmeli": u.sifre_degistirmeli,
+                    "pin_tanimli": bool(getattr(u, "hizli_pin_hash", None)),
                 })
             return sonuc
 
@@ -82,6 +83,7 @@ class UserService:
                 "olusturma_tarihi": u.olusturma_tarihi,
                 "son_giris_tarihi": u.son_giris_tarihi,
                 "sifre_degistirmeli": u.sifre_degistirmeli,
+                "pin_tanimli": bool(getattr(u, "hizli_pin_hash", None)),
             }
 
     @staticmethod

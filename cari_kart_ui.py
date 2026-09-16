@@ -735,6 +735,28 @@ class CariDialog(tk.Toplevel):
             hareket, text="Cari Hareketler", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
         ).pack(anchor="w", pady=(0, 6))
 
+        baslik_satir = tk.Frame(hareket, bg=BEYAZ)
+        baslik_satir.pack(fill="x", pady=(0, 4))
+        tk.Label(
+            baslik_satir,
+            text="Fatura satırlarında ▶ ile ürün detayını açın",
+            bg=BEYAZ,
+            fg=IKINCIL,
+            font=font(8, root=self),
+        ).pack(side="left")
+        tk_buton(
+            baslik_satir,
+            "Tüm Fatura Detaylarını Aç",
+            self._tum_fatura_detaylarini_ac,
+            rol="ikincil",
+        ).pack(side="right", padx=(4, 0))
+        tk_buton(
+            baslik_satir,
+            "Tüm Fatura Detaylarını Kapat",
+            self._tum_fatura_detaylarini_kapat,
+            rol="ikincil",
+        ).pack(side="right")
+
         filtre = tk.Frame(hareket, bg=BEYAZ)
         filtre.pack(fill="x", pady=(0, 4))
         tk.Label(filtre, text="Belge türü:", bg=BEYAZ, fg=IKINCIL, font=font(9, root=self)).pack(
@@ -744,6 +766,9 @@ class CariDialog(tk.Toplevel):
             filtre,
             values=(
                 "Tümü",
+                "Sadece Faturalar",
+                "Sadece Tahsilat/Ödeme",
+                "Sadece Stoklu Faturalar",
                 "Satış",
                 "Alış",
                 "Tahsilat",
@@ -754,7 +779,7 @@ class CariDialog(tk.Toplevel):
                 "Alış İadesi",
             ),
             state="readonly",
-            width=14,
+            width=20,
         )
         self.hareket_tur_filtre.set("Tümü")
         self.hareket_tur_filtre.pack(side="left", padx=(4, 8))
@@ -807,11 +832,13 @@ class CariDialog(tk.Toplevel):
         tablo = ttk.Treeview(
             tablo_cercevesi,
             columns=kolonlar,
-            show="headings",
+            show="tree headings",
             style="CariKart.Treeview",
             selectmode="browse",
             height=10,
         )
+        tablo.heading("#0", text="")
+        tablo.column("#0", width=28, minwidth=28, stretch=False, anchor="center")
         kolon_ayar = {
             "tarih": ("Tarih", 88, "center", False),
             "tur": ("Belge Türü", 110, "w", False),
@@ -837,6 +864,13 @@ class CariDialog(tk.Toplevel):
             )
         tablo.tag_configure("tek", background=BEYAZ)
         tablo.tag_configure("cift", background=STRIPE)
+        tablo.tag_configure(
+            "detay",
+            background="#EEF2F7",
+            foreground="#334155",
+            font=font(8, root=self),
+        )
+        tablo.tag_configure("detay_uyari", background="#FEF3C7", foreground="#92400E")
         dikey = ttk.Scrollbar(tablo_cercevesi, orient="vertical", command=tablo.yview)
         yatay = ttk.Scrollbar(tablo_cercevesi, orient="horizontal", command=tablo.xview)
         tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
@@ -848,9 +882,17 @@ class CariDialog(tk.Toplevel):
         tablo.bind("<Double-1>", self._hareket_belge_ac)
         tablo.bind("<F2>", self._hareket_belge_ac)
         tablo.bind("<Button-3>", self._hareket_context_menu)
+        tablo.bind("<Button-1>", self._hareket_agac_tikla, add="+")
+        tablo.bind("<<TreeviewOpen>>", self._hareket_agac_acildi)
+        tablo.bind("<<TreeviewClose>>", self._hareket_agac_kapandi)
+        tablo.bind("<Right>", self._hareket_sag_ok)
+        tablo.bind("<Left>", self._hareket_sol_ok)
         self.hareket_tablosu = tablo
         self._hareket_menu = tk.Menu(self, tearoff=0)
         self._hareket_menu.add_command(label="Belgeyi Aç", command=self._hareket_belge_ac)
+        self._hareket_menu.add_command(
+            label="Fatura ürünlerini göster/gizle", command=self._secili_fatura_detay_toggle
+        )
         self._hareket_menu.add_command(label="Yenile", command=self.yenile)
 
         toplam = tk.Frame(hareket, bg=BEYAZ)
@@ -868,6 +910,9 @@ class CariDialog(tk.Toplevel):
         )
         self.hareket_alt_toplam.pack(side="left")
         self._hareketler_cache = []
+        self._hareket_iid_meta: dict = {}
+        self._fatura_detay_cache: dict = {}
+        self._hareket_yukleniyor = False
 
     # ─── Doldurma / dirty ─────────────────────────────────────────
     def _alanlari_doldur(self):
@@ -1236,7 +1281,26 @@ class CariDialog(tk.Toplevel):
                     continue
             genel_set.append(hareket)
 
-        if tur and tur != "Tümü":
+        if tur and tur == "Sadece Faturalar":
+            gorunen = [
+                h
+                for h in genel_set
+                if (h.get("tur") or "") in ("Satış", "Alış", "Satış İadesi", "Alış İadesi")
+                or h.get("genisletilebilir")
+            ]
+        elif tur and tur == "Sadece Tahsilat/Ödeme":
+            gorunen = [
+                h
+                for h in genel_set
+                if (h.get("tur") or "") in ("Tahsilat", "Ödeme")
+            ]
+        elif tur and tur == "Sadece Stoklu Faturalar":
+            gorunen = [
+                h
+                for h in genel_set
+                if h.get("genisletilebilir") and h.get("fatura_id")
+            ]
+        elif tur and tur != "Tümü":
             gorunen = [h for h in genel_set if (h.get("tur") or "") == tur]
         else:
             gorunen = list(genel_set)
@@ -1391,6 +1455,9 @@ class CariDialog(tk.Toplevel):
             return
         for item in self.hareket_tablosu.get_children():
             self.hareket_tablosu.delete(item)
+        self._hareket_iid_meta = {}
+        # Filtre yenilemede detay önbelleğini temizle (eski açık satırlar kalkar)
+        self._fatura_detay_cache = {}
         ok, gosterilecek, genel_set, gorunen, meta = self._hareket_filtreli_satirlar()
         if not ok:
             self.hareket_genel_toplam.configure(text="Genel: Borç: —  |  Alacak: —  |  Net: —")
@@ -1444,9 +1511,12 @@ class CariDialog(tk.Toplevel):
             if pb != "TRY"
             else ""
         )
-        self.hareket_tablosu.insert(
+        genislet = bool(hareket.get("genisletilebilir") and hareket.get("fatura_id"))
+        text0 = "▶" if genislet else ""
+        iid = self.hareket_tablosu.insert(
             "",
             "end",
+            text=text0,
             values=(
                 tarih_goster(hareket["tarih"]),
                 hareket["tur"],
@@ -1461,31 +1531,259 @@ class CariDialog(tk.Toplevel):
                 gun,
             ),
             tags=(tag,),
+            open=False,
         )
+        self._hareket_iid_meta[iid] = dict(hareket)
+        if genislet:
+            # Lazy: placeholder child — TreeviewOpen ile gerçek satırlar yüklenir
+            self.hareket_tablosu.insert(
+                iid,
+                "end",
+                text="",
+                values=("", "", "", "  (ürün detayı yüklenmedi)", "", "", "", "", "", "", ""),
+                tags=("detay",),
+                iid=f"{iid}__ph",
+            )
 
-    def _hareket_context_menu(self, event):
+    def _hareket_agac_tikla(self, event):
+        """#0 sütununa tıklanınca aç/kapat."""
+        if not self.hareket_tablosu:
+            return
+        if self.hareket_tablosu.identify_region(event.x, event.y) not in ("tree", "cell"):
+            return
+        col = self.hareket_tablosu.identify_column(event.x)
         row = self.hareket_tablosu.identify_row(event.y)
-        if row:
-            self.hareket_tablosu.selection_set(row)
+        if not row or col != "#0":
+            return
+        meta = self._hareket_iid_meta.get(row)
+        if not meta or not meta.get("genisletilebilir"):
+            return
+        # Toggle open state
+        if self.hareket_tablosu.item(row, "open"):
+            self.hareket_tablosu.item(row, open=False)
+            self.hareket_tablosu.item(row, text="▶")
+        else:
+            self._expand_invoice_row(row)
+            self.hareket_tablosu.item(row, open=True)
+            self.hareket_tablosu.item(row, text="▼")
+        return "break"
+
+    def _hareket_agac_acildi(self, _event=None):
+        secim = self.hareket_tablosu.focus() or (
+            self.hareket_tablosu.selection()[0] if self.hareket_tablosu.selection() else None
+        )
+        if not secim:
+            return
+        if secim in self._hareket_iid_meta:
+            self._expand_invoice_row(secim)
+            self.hareket_tablosu.item(secim, text="▼")
+
+    def _hareket_agac_kapandi(self, _event=None):
+        secim = self.hareket_tablosu.focus() or (
+            self.hareket_tablosu.selection()[0] if self.hareket_tablosu.selection() else None
+        )
+        if secim and secim in self._hareket_iid_meta:
+            self.hareket_tablosu.item(secim, text="▶")
+
+    def _hareket_sag_ok(self, _event=None):
+        secim = self.hareket_tablosu.selection()
+        if not secim:
+            return
+        iid = secim[0]
+        if iid in self._hareket_iid_meta and self._hareket_iid_meta[iid].get("genisletilebilir"):
+            self._expand_invoice_row(iid)
+            self.hareket_tablosu.item(iid, open=True, text="▼")
+        return "break"
+
+    def _hareket_sol_ok(self, _event=None):
+        secim = self.hareket_tablosu.selection()
+        if not secim:
+            return
+        iid = secim[0]
+        if iid in self._hareket_iid_meta:
+            self.hareket_tablosu.item(iid, open=False, text="▶")
+        elif self.hareket_tablosu.parent(iid):
+            parent = self.hareket_tablosu.parent(iid)
+            self.hareket_tablosu.item(parent, open=False, text="▶")
+            self.hareket_tablosu.selection_set(parent)
+        return "break"
+
+    def _secili_fatura_detay_toggle(self):
+        secim = self.hareket_tablosu.selection()
+        if not secim:
+            return
+        iid = secim[0]
+        if iid not in self._hareket_iid_meta:
+            parent = self.hareket_tablosu.parent(iid)
+            if parent:
+                iid = parent
+        if iid not in self._hareket_iid_meta:
+            return
+        if self.hareket_tablosu.item(iid, "open"):
+            self.hareket_tablosu.item(iid, open=False, text="▶")
+        else:
+            self._expand_invoice_row(iid)
+            self.hareket_tablosu.item(iid, open=True, text="▼")
+
+    def _expand_invoice_row(self, iid: str) -> None:
+        meta = self._hareket_iid_meta.get(iid) or {}
+        if not meta.get("genisletilebilir") or not meta.get("fatura_id"):
+            if meta.get("detay_uyari"):
+                messagebox.showinfo("Fatura detayı", meta["detay_uyari"], parent=self)
+            return
+        # Zaten yüklenmiş gerçek detaylar varsa çoğaltma
+        children = list(self.hareket_tablosu.get_children(iid))
+        if children and not any(c.endswith("__ph") for c in children):
+            return
+        for c in children:
+            self.hareket_tablosu.delete(c)
+
+        cache_key = (meta.get("belge_tipi"), int(meta["fatura_id"]))
+        detay = self._fatura_detay_cache.get(cache_key)
+        if detay is None:
+            if self._hareket_yukleniyor:
+                return
+            self._hareket_yukleniyor = True
             try:
-                self._hareket_menu.tk_popup(event.x_root, event.y_root)
+                from database.cari_fatura_detay_service import CariFaturaDetayService
+
+                detay = CariFaturaDetayService.load_invoice_details(
+                    int(meta["fatura_id"]),
+                    str(meta.get("belge_tipi") or ""),
+                    cari_id=int(meta.get("cari_id") or (self.cari.id if self.cari else 0) or 0)
+                    or None,
+                    hareket_id=meta.get("hareket_id"),
+                )
+                self._fatura_detay_cache[cache_key] = detay
+            except ValueError as exc:
+                messagebox.showerror("Fatura detayı", str(exc), parent=self)
+                self.hareket_tablosu.insert(
+                    iid,
+                    "end",
+                    text="",
+                    values=("", "", "", "  Detay yüklenemedi", "", "", "", "", "", "", ""),
+                    tags=("detay_uyari",),
+                )
+                return
             finally:
-                self._hareket_menu.grab_release()
+                self._hareket_yukleniyor = False
+
+        satirlar = detay.get("satirlar") or []
+        if not satirlar:
+            msg = detay.get("uyari") or "Bu faturaya ait ürün detayı bulunamadı"
+            self.hareket_tablosu.insert(
+                iid,
+                "end",
+                text="",
+                values=("", "", "", f"  {msg}", "", "", "", "", "", "", ""),
+                tags=("detay_uyari",),
+            )
+            return
+
+        for s in satirlar:
+            parcalar = [
+                f"#{s.get('sira')}",
+                f"{s.get('miktar_goster')} {s.get('birim') or ''}".strip(),
+                f"Fiyat {s.get('birim_fiyat_goster')}",
+            ]
+            if s.get("iskonto") and str(s.get("iskonto")) not in ("0", "0.0", ""):
+                parcalar.append(f"İsk %{s.get('iskonto')}")
+            parcalar.append(f"KDV {s.get('kdv_orani_goster')} ({s.get('kdv_goster')})")
+            parcalar.append(f"Net {s.get('net_goster')}")
+            parcalar.append(f"Brüt {s.get('brut_goster')}")
+            if s.get("depo"):
+                parcalar.append(f"Depo:{s['depo']}")
+            if s.get("lot"):
+                parcalar.append(f"Lot:{s['lot']}")
+            if s.get("stok_yonu"):
+                parcalar.append(str(s["stok_yonu"]))
+            if s.get("stok_fark_uyari"):
+                parcalar.append(s["stok_fark_uyari"])
+            if s.get("aciklama"):
+                parcalar.append(str(s["aciklama"]))
+            acik = "  " + " · ".join(p for p in parcalar if p)
+            self.hareket_tablosu.insert(
+                iid,
+                "end",
+                text="",
+                values=(
+                    "",
+                    s.get("urun_kodu") or "",
+                    s.get("urun_adi") or "",
+                    acik,
+                    s.get("para_birimi") or "",
+                    "",
+                    "",
+                    s.get("net_goster") or "",
+                    s.get("brut_goster") or "",
+                    "",
+                    "",
+                ),
+                tags=("detay",),
+            )
+
+    def _clear_invoice_detail_cache(self):
+        self._fatura_detay_cache = {}
+        self._hareket_iid_meta = {}
+
+    def _tum_fatura_detaylarini_kapat(self):
+        if not self.hareket_tablosu:
+            return
+        for iid in self.hareket_tablosu.get_children(""):
+            if iid in self._hareket_iid_meta and self._hareket_iid_meta[iid].get(
+                "genisletilebilir"
+            ):
+                self.hareket_tablosu.item(iid, open=False, text="▶")
+
+    def _tum_fatura_detaylarini_ac(self):
+        if not self.hareket_tablosu:
+            return
+        adaylar = [
+            iid
+            for iid in self.hareket_tablosu.get_children("")
+            if self._hareket_iid_meta.get(iid, {}).get("genisletilebilir")
+            and self._hareket_iid_meta.get(iid, {}).get("fatura_id")
+        ]
+        sinir = 25
+        if len(adaylar) > sinir:
+            if not messagebox.askyesno(
+                "Toplu aç",
+                f"Ekranda {len(adaylar)} fatura var. "
+                f"Yalnızca ilk {sinir} fatura detayı açılacak. Devam edilsin mi?",
+                parent=self,
+            ):
+                return
+            adaylar = adaylar[:sinir]
+        for iid in adaylar:
+            self._expand_invoice_row(iid)
+            self.hareket_tablosu.item(iid, open=True, text="▼")
 
     def _hareket_belge_ac(self, _event=None):
         if getattr(self, "_belge_aciliyor", False):
             return "break"
         if not self.hareket_tablosu:
             return "break"
+        # Tree sütununda (#0) çift tık — belge açma
         secim = self.hareket_tablosu.selection()
         if not secim:
             messagebox.showinfo("Belge", "Lütfen açılacak hareket satırını seçin.", parent=self)
             return "break"
-        degerler = self.hareket_tablosu.item(secim[0], "values")
-        if not degerler or len(degerler) < 3:
-            return "break"
-        tur = (degerler[1] or "").strip()
-        belge_no = (degerler[2] or "").strip()
+        iid = secim[0]
+        # Detay satırıysa üst faturayı aç
+        if iid not in self._hareket_iid_meta:
+            parent = self.hareket_tablosu.parent(iid)
+            if parent:
+                iid = parent
+                self.hareket_tablosu.selection_set(iid)
+        meta = self._hareket_iid_meta.get(iid) or {}
+        tur = (meta.get("tur") or "").strip()
+        belge_no = (meta.get("belge_no") or "").strip()
+        if not belge_no:
+            degerler = self.hareket_tablosu.item(iid, "values")
+            if not degerler or len(degerler) < 3:
+                return "break"
+            tur = (degerler[1] or "").strip()
+            belge_no = (degerler[2] or "").strip()
         if not belge_no:
             messagebox.showinfo("Belge", "Bu satırda belge numarası yok.", parent=self)
             return "break"
@@ -1502,11 +1800,18 @@ class CariDialog(tk.Toplevel):
                 self.yenile()
         except ValueError as hata:
             messagebox.showerror("Belge açılamadı", str(hata), parent=self)
-        except Exception as hata:
-            messagebox.showerror("Belge açılamadı", str(hata), parent=self)
         finally:
             self._belge_aciliyor = False
         return "break"
+
+    def _hareket_context_menu(self, event):
+        row = self.hareket_tablosu.identify_row(event.y)
+        if row:
+            self.hareket_tablosu.selection_set(row)
+            try:
+                self._hareket_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._hareket_menu.grab_release()
 
     def _hareket_belgeyi_ac(self, tur: str, belge_no: str) -> bool:
         from belge_onizleme_ui import hareket_belgeyi_ac
@@ -1517,6 +1822,7 @@ class CariDialog(tk.Toplevel):
         if not self.cari:
             return
         self._yukleniyor = True
+        self._fatura_detay_cache = {}
         if hasattr(self, "_yukleniyor_lbl"):
             self._yukleniyor_lbl.configure(text="Yükleniyor…")
             self.update_idletasks()
@@ -1533,7 +1839,13 @@ class CariDialog(tk.Toplevel):
                     if (h.get("tur") or "").strip()
                 }
             )
-            degerler = ["Tümü"] + turler
+            ozel = (
+                "Tümü",
+                "Sadece Faturalar",
+                "Sadece Tahsilat/Ödeme",
+                "Sadece Stoklu Faturalar",
+            )
+            degerler = list(ozel) + [t for t in turler if t not in ozel]
             mevcut = (
                 self.hareket_tur_filtre.get() if hasattr(self, "hareket_tur_filtre") else "Tümü"
             )
@@ -1830,6 +2142,10 @@ class CariDialog(tk.Toplevel):
         return "break"
 
     def destroy(self):
+        try:
+            self._clear_invoice_detail_cache()
+        except Exception:
+            pass
         try:
             self.unbind_all("<F1>")
         except tk.TclError:

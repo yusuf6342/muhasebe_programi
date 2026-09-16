@@ -22,7 +22,15 @@ MALIYET_YONTEMLERI = (
     "ORTALAMA ALIŞ FİYATI",
     "AĞIRLIKLI ORTALAMA ALIŞ FİYATI",
 )
-SIPARIS_DURUMLARI = ("AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL")
+SIPARIS_DURUMLARI = (
+    "TASLAK",
+    "AÇIK",
+    "KISMİ İRSALİYELİ",
+    "İRSALİYELİ",
+    "KISMİ FATURALI",
+    "FATURALI",
+    "İPTAL",
+)
 ODEME_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
 
 
@@ -53,6 +61,8 @@ class SatisSiparisiService:
             .where(SatisSiparisi.id == siparis_id)
         )
         if siparis is None or siparis.durum == "İPTAL":
+            return
+        if siparis.durum == "TASLAK":
             return
         if not siparis.satirlar:
             siparis.durum = "AÇIK"
@@ -89,6 +99,40 @@ class SatisSiparisiService:
             return sonuc
 
     @staticmethod
+    def schema_hazirla() -> None:
+        from sqlalchemy import inspect, text
+
+        from database.database import engine
+
+        import database.models.satis_siparisi  # noqa: F401
+
+        if engine is None:
+            return
+        SatisSiparisi.__table__.create(engine, checkfirst=True)
+        SatisSiparisiSatiri.__table__.create(engine, checkfirst=True)
+        SatisSiparisiTahsilati.__table__.create(engine, checkfirst=True)
+        insp = inspect(engine)
+        if not insp.has_table("satis_siparisi_satirlari"):
+            return
+        mevcut = {c["name"] for c in insp.get_columns("satis_siparisi_satirlari")}
+        eklenecekler = {
+            "is_manual_item": "BOOLEAN DEFAULT 0 NOT NULL",
+            "line_type": "VARCHAR(30) DEFAULT 'STOCK_PRODUCT' NOT NULL",
+            "product_id": "INTEGER",
+            "delivery_term_days": "INTEGER",
+            "estimated_delivery_date": "DATE",
+            "delivery_term_note": "VARCHAR(300)",
+            "stock_pending": "BOOLEAN DEFAULT 0 NOT NULL",
+        }
+        eksikler = {a: t for a, t in eklenecekler.items() if a not in mevcut}
+        if eksikler:
+            with engine.begin() as connection:
+                for alan, tip in eksikler.items():
+                    connection.execute(
+                        text(f'ALTER TABLE "satis_siparisi_satirlari" ADD COLUMN "{alan}" {tip}')
+                    )
+
+    @staticmethod
     def getir(siparis_id: int) -> SatisSiparisi | None:
         with get_session() as session:
             return session.scalar(
@@ -100,6 +144,20 @@ class SatisSiparisiService:
     @staticmethod
     def kaydet(veriler: dict[str, Any], satir_verileri: list[dict[str, Any]], tahsilat_verileri: list[dict[str, Any]], siparis_id: int | None = None) -> SatisSiparisi:
         yazma_zorunlu("satis_duzenleme", "yeni_kayit")
+        SatisSiparisiService.schema_hazirla()
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_approve,
+            stamp_create,
+            stamp_update,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
         siparis_tarihi = veriler["siparis_tarihi"]
         termin_tarihi = veriler["termin_tarihi"]
         if siparis_tarihi > date.today():
@@ -110,6 +168,7 @@ class SatisSiparisiService:
         if not 0 <= hedef < Decimal("100"):
             raise ValueError("Hedef kâr marjı 0 ile 99,99 arasında olmalıdır.")
         with get_session() as session:
+            yeni = False
             if siparis_id:
                 siparis = session.get(SatisSiparisi, siparis_id)
                 if siparis is None:
@@ -117,10 +176,12 @@ class SatisSiparisiService:
                 siparis.satirlar.clear()
                 siparis.tahsilatlar.clear()
             else:
+                yeni = True
                 ozel_no = (veriler.get("siparis_no") or "").strip()
+                baslangic_durum = "AÇIK" if veriler.get("onayla") else "TASLAK"
                 siparis = SatisSiparisi(
                     siparis_no=ozel_no or SatisSiparisiService.siparis_no(),
-                    durum="AÇIK",
+                    durum=baslangic_durum,
                 )
                 session.add(siparis)
             siparis.siparis_tarihi = siparis_tarihi
@@ -129,6 +190,8 @@ class SatisSiparisiService:
             siparis.maliyet_yontemi = veriler["maliyet_yontemi"]
             siparis.hedef_kar_marji = hedef
             siparis.aciklama = veriler.get("aciklama")
+            if veriler.get("onayla") and siparis.durum == "TASLAK":
+                siparis.durum = "AÇIK"
             if siparis.durum == "İPTAL" and not siparis_id:
                 siparis.durum = "AÇIK"
             for veri in satir_verileri:
@@ -142,6 +205,13 @@ class SatisSiparisiService:
                     son_alis_birim_maliyeti=decimal(veri.get("son_alis_birim_maliyeti", 0), "Son alış maliyeti", Decimal("0")),
                     ortalama_birim_maliyeti=decimal(veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyeti", Decimal("0")),
                     agirlikli_ortalama_birim_maliyeti=decimal(veri.get("agirlikli_ortalama_birim_maliyeti", 0), "Ağırlıklı maliyeti", Decimal("0")),
+                    is_manual_item=bool(veri.get("is_manual_item", False)),
+                    line_type=(veri.get("line_type") or ("MANUAL_PRODUCT" if veri.get("is_manual_item") else "STOCK_PRODUCT")),
+                    product_id=int(veri["product_id"]) if veri.get("product_id") not in (None, "") else None,
+                    delivery_term_days=int(veri["delivery_term_days"]) if veri.get("delivery_term_days") not in (None, "") else None,
+                    estimated_delivery_date=veri.get("estimated_delivery_date"),
+                    delivery_term_note=veri.get("delivery_term_note"),
+                    stock_pending=bool(veri.get("stock_pending", veri.get("is_manual_item", False))),
                 )
                 satir.irsaliyelenen_miktar = decimal(veri.get("irsaliyelenen_miktar", 0), "İrsaliyelenen miktar", Decimal("0"))
                 satir.faturalanan_miktar = decimal(veri.get("faturalanan_miktar", 0), "Faturalanan miktar", Decimal("0"))
@@ -154,15 +224,50 @@ class SatisSiparisiService:
                 siparis.tahsilatlar.append(SatisSiparisiTahsilati(tahsilat_tarihi=veri["tahsilat_tarihi"], tutar=tutar, odeme_sekli=veri["odeme_sekli"], hesap=veri.get("hesap"), aciklama=veri.get("aciklama")))
             if tahsilat_toplam > toplam["genel_toplam"]:
                 raise ValueError("Toplam tahsilat sipariş toplamından büyük olamaz.")
+            if yeni:
+                stamp_create(siparis)
+            else:
+                stamp_update(siparis)
+            if veriler.get("onayla"):
+                stamp_approve(siparis)
             try:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Sipariş kaydedilemedi.") from hata
-            return siparis
+            sid = int(siparis.id)
+            sno = siparis.siparis_no
+        audit_document(
+            "SIPARIS_OLUSTUR" if yeni else "SIPARIS_DUZENLE",
+            modul="satis_siparis",
+            kayit_id=str(sid),
+            belge_no=sno,
+        )
+        if veriler.get("onayla"):
+            audit_document(
+                "SIPARIS_ONAY",
+                modul="satis_siparis",
+                kayit_id=str(sid),
+                belge_no=sno,
+            )
+        return SatisSiparisiService.getir(sid) or siparis
 
     @staticmethod
-    def iptal_et(siparis_id: int) -> None:
+    def iptal_et(siparis_id: int, sebep: str | None = None) -> None:
         yazma_zorunlu("satis_duzenleme", "iptal")
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_cancel,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+        neden = (sebep or "").strip()
+        if not neden:
+            raise ValueError("İptal nedeni zorunludur.")
         with get_session() as session:
             siparis = session.get(SatisSiparisi, siparis_id)
             if siparis is None:
@@ -170,13 +275,42 @@ class SatisSiparisiService:
             if siparis.durum == "İPTAL":
                 return
             siparis.durum = "İPTAL"
+            stamp_cancel(siparis, neden)
+            sno = siparis.siparis_no
         from database.deleted_record_service import ENTITY_SATIS_SIPARIS, safe_log_cancel
 
-        safe_log_cancel(ENTITY_SATIS_SIPARIS, siparis_id, note="Satış siparişi iptal")
+        safe_log_cancel(ENTITY_SATIS_SIPARIS, siparis_id, note=f"Satış siparişi iptal: {neden}")
+        audit_document(
+            "SIPARIS_IPTAL",
+            modul="satis_siparis",
+            kayit_id=str(siparis_id),
+            belge_no=sno,
+            aciklama=neden,
+        )
 
     @staticmethod
     def siparis_no() -> str:
         return f"SIP-{datetime.now():%Y%m%d%H%M%S%f}"
+
+    @staticmethod
+    def calculate_order_progress(satirlar) -> dict[str, Decimal]:
+        """Sipariş / sevk / fatura / kalan miktar özeti (tek kaynak)."""
+        siparis = sevk = fatura = Decimal("0")
+        for s in satirlar or []:
+            get = s.get if isinstance(s, dict) else lambda a, d=0: getattr(s, a, d)
+            m = decimal(get("miktar", 0), "Miktar", Decimal("0"))
+            ir = decimal(get("irsaliyelenen_miktar", 0), "Sevk", Decimal("0"))
+            fa = decimal(get("faturalanan_miktar", 0), "Fatura", Decimal("0"))
+            siparis += m
+            sevk += ir
+            fatura += fa
+        return {
+            "siparis_miktar": siparis,
+            "sevk_miktar": sevk,
+            "fatura_miktar": fatura,
+            "kalan_miktar": siparis - sevk,
+            "kalan_faturalanacak": siparis - fatura,
+        }
 
     @staticmethod
     def siparis_toplami(satirlar: list[SatisSiparisiSatiri]) -> dict[str, Decimal | float]:
