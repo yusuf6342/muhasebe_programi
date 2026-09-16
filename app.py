@@ -40,6 +40,11 @@ from genel_muhasebe_ui import genel_muhasebe_menusu_goster
 from ozet_tablolar_ui import ozet_tablolar_menusu_goster
 from doviz_kur_ui import doviz_kur_yonetimi_goster
 from doviz_rapor_ui import doviz_raporlari_goster
+from satis_ui import (
+    cari_hesap_islemleri_goster,
+    satis_raporlar_hub_goster,
+    satislar_hub_goster,
+)
 from database.doviz_service import DovizService
 from database.models.doviz import PARA_BIRIMLERI
 from doviz_fatura_panel import (
@@ -8581,6 +8586,7 @@ class MuhasebeApp(tk.Tk):
                 "ayarlar",
                 "sistem",
                 "servis",
+                "satislar",
             ):
                 ttk.Label(
                     self.icerik, text=basliklar.get(anahtar, anahtar.upper()), style="Baslik.TLabel"
@@ -8590,7 +8596,7 @@ class MuhasebeApp(tk.Tk):
 
                 giris_dashboard_goster(self)
             elif anahtar == "satislar":
-                self.satislar_menusu_goster()
+                satislar_hub_goster(self)
             elif anahtar == "satin_alma":
                 self.satin_alma_menusu_goster()
             elif anahtar == "stoklar":
@@ -8842,58 +8848,43 @@ class MuhasebeApp(tk.Tk):
         messagebox.showinfo("Depo", f"{depo.ad} kullanıma hazır.", parent=self)
 
     def satislar_menusu_goster(self):
-        alt_menu = ttk.Frame(self.icerik)
-        alt_menu.pack(fill="x", pady=(24, 0))
-        alt_menu.columnconfigure(0, weight=1)
-        alt_menu.columnconfigure(0, minsize=520)
+        """Satışlar hub (kurumsal kartlar) — geriye dönük alias."""
+        satislar_hub_goster(self)
 
-        alt_menu_ogeleri = (
-            ("MÜŞTERİ KARTLARI", self.cariler_goster),
-            ("SATIŞ SİPARİŞLERİ", self.satis_siparisleri_goster),
-            ("SATIŞ İRSALİYELERİ", self.satis_irsaliyeleri_goster),
-            ("SATIŞ FATURALARI", self.satis_faturalari_alt_menusu_goster),
-            ("CARİ VİRMAN FİŞLERİ", self.cari_virman_goster),
-            ("MÜŞTERİDEN TEDARİKÇİYE KREDİ KARTI ÇEKİMİ", self.kk_cekimi_goster),
-            ("RAPORLAR", self.satis_raporlari_goster),
-            ("DÖVİZ KURLARI", lambda: doviz_kur_yonetimi_goster(self)),
-            ("DÖVİZ BAZINDA RAPORLAR", lambda: doviz_raporlari_goster(self)),
-        )
-        for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
-            self._alt_menu_dugme(
-                alt_menu, baslik, komut,
-                row=satir, column=0, sticky="ew", pady=4,
-            )
+    def cari_hesap_islemleri_menusu_goster(self):
+        cari_hesap_islemleri_goster(self)
+
+    def satis_raporlar_alt_menusu_goster(self):
+        satis_raporlar_hub_goster(self)
 
     def satis_faturalari_alt_menusu_goster(self):
         """Satış faturaları listesi, hızlı fatura ve iade faturaları alt menüsü."""
         self._icerigi_temizle()
-        for dugme_anahtari, dugme in self.menu_dugmeleri.items():
-            dugme.configure(
-                style="SeciliMenu.TButton" if dugme_anahtari == "satislar" else "Menu.TButton"
-            )
-        ust = ttk.Frame(self.icerik)
-        ust.pack(fill="x")
-        ttk.Label(ust, text="SATIŞ FATURALARI", style="Baslik.TLabel").pack(side="left")
-        ttk.Button(
-            ust,
-            text="← Satışlar",
-            command=lambda: self.sayfa_goster("satislar"),
-        ).pack(side="right")
-        ttk.Label(
-            self.icerik,
-            text="Satış faturaları listesi, hızlı fatura ve satış iade faturaları.",
-        ).pack(anchor="w", pady=(10, 0))
-        alt = ttk.Frame(self.icerik)
-        alt.pack(fill="x", pady=(20, 0))
-        alt.columnconfigure(0, weight=1, minsize=520)
-        for i, (baslik, komut) in enumerate(
-            (
-                ("SATIŞ FATURALARI LİSTESİ", self.satis_faturalari_goster),
-                ("HIZLI FATURA", self.hizli_fatura_ac),
-                ("SATIŞ İADE FATURALARI", self.satis_iade_faturalari_goster),
-            )
-        ):
-            self._alt_menu_dugme(alt, baslik, komut, row=i, column=0, sticky="ew", pady=4)
+        from satis_tema import HubKart, ekran_ust_cubugu, stil_uygula
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "SATIŞ FATURALARI",
+            alt_baslik="Satış faturaları listesi, hızlı fatura ve satış iade faturaları",
+            geri_komut=lambda: satislar_hub_goster(self),
+            geri_metin="← Satışlar",
+        )
+        ızgara = tk.Frame(govde)
+        ızgara.pack(fill="both", expand=True, pady=8)
+        ızgara.columnconfigure(0, weight=1)
+        ogeler = (
+            ("SATIŞ FATURALARI LİSTESİ", "Kayıtlı satış faturalarını inceleyin ve düzenleyin", self.satis_faturalari_goster),
+            ("HIZLI FATURA", "Boş satış faturası kartını hemen açın", self.hizli_fatura_ac),
+            ("SATIŞ İADE FATURALARI", "Satış iade faturalarını yönetin", self.satis_iade_faturalari_goster),
+        )
+        for i, (baslik, aciklama, komut) in enumerate(ogeler):
+            HubKart(
+                ızgara,
+                baslik=baslik,
+                aciklama=aciklama,
+                komut=lambda c=komut: self.nav_ac(c),
+            ).grid(row=i, column=0, sticky="ew", pady=6, padx=4)
         self.nav_sayfa_isaretle(self.satis_faturalari_alt_menusu_goster)
 
     def hizli_fatura_ac(self):
@@ -8946,24 +8937,30 @@ class MuhasebeApp(tk.Tk):
 
     def cari_virman_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="CARİ VİRMAN FİŞLERİ", style="Baslik.TLabel").pack(anchor="w")
-        ttk.Label(
-            self.icerik,
-            text="Alacak yazılan tutar karşı cariye aynı miktarda otomatik borç yazılır.",
-        ).pack(anchor="w", pady=(8, 10))
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
 
-        arama_cerceve = ttk.Frame(self.icerik)
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "CARİ VİRMAN",
+            alt_baslik="Alacak yazılan tutar karşı cariye aynı miktarda otomatik borç yazılır.",
+            geri_komut=lambda: cari_hesap_islemleri_goster(self),
+            geri_metin="← Cari İşlemler",
+        )
+
+        arama_cerceve = ttk.Frame(govde)
         arama_cerceve.pack(fill="x", pady=(0, 8))
         ttk.Label(arama_cerceve, text="Ara:").pack(side="left")
         self.virman_arama = ttk.Entry(arama_cerceve, width=36)
         self.virman_arama.pack(side="left", padx=6)
-        ttk.Button(arama_cerceve, text="Listele", command=self.virman_listesini_yenile).pack(side="left")
+        tk_buton(arama_cerceve, "Listele", self.virman_listesini_yenile, rol="ara").pack(side="left")
 
-        cerceve = ttk.Frame(self.icerik)
+        cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True)
         kolonlar = ("belge", "tarih", "kaynak", "hedef", "tutar", "aciklama")
         basliklar = ("Belge No", "Tarih", "Alacak Cari", "Borç (Karşı) Cari", "Tutar", "Açıklama")
         self.virman_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.virman_tablosu)
         for kolon, baslik in zip(kolonlar, basliklar):
             self.virman_tablosu.heading(kolon, text=baslik)
             self.virman_tablosu.column(kolon, width=140)
@@ -8975,12 +8972,13 @@ class MuhasebeApp(tk.Tk):
         self.virman_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
 
-        alt = ttk.Frame(self.icerik)
+        alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=10)
-        ttk.Button(alt, text="Yeni Virman Fişi", command=self.yeni_virman).pack(side="left")
-        ttk.Button(alt, text="Dosyadan Aktar", command=self.virman_dosyadan_aktar).pack(side="left", padx=8)
-        ttk.Button(alt, text="İptal Et", command=self.virman_iptal).pack(side="left", padx=8)
+        tk_buton(alt, "Yeni Virman Fişi", self.yeni_virman, rol="yeni").pack(side="left")
+        tk_buton(alt, "Dosyadan Aktar", self.virman_dosyadan_aktar, rol="duzenle").pack(side="left", padx=8)
+        tk_buton(alt, "İptal Et", self.virman_iptal, rol="iptal").pack(side="left", padx=8)
         self.virman_listesini_yenile()
+        self.nav_sayfa_isaretle(self.cari_virman_goster)
 
     def virman_dosyadan_aktar(self):
         from cari_virman_aktar_ui import CariVirmanAktarDialog
@@ -9033,20 +9031,25 @@ class MuhasebeApp(tk.Tk):
 
     def kk_cekimi_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="KREDİ KARTI ÇEKİM FİŞLERİ", style="Baslik.TLabel").pack(anchor="w")
-        ttk.Label(
-            self.icerik,
-            text="Müşteriye alacak, tedarikçiye borç yazılır. Banka adı ve taksit sayısı serbest girilir; finans hesabına işlem düşmez.",
-        ).pack(anchor="w", pady=(8, 10))
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
 
-        arama_cerceve = ttk.Frame(self.icerik)
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "MÜŞTERİDEN TEDARİKÇİYE KREDİ KARTI ÇEKİM EVRAKI",
+            alt_baslik="Müşteriye alacak, tedarikçiye borç yazılır. Banka adı ve taksit serbest; finans hesabına düşmez.",
+            geri_komut=lambda: cari_hesap_islemleri_goster(self),
+            geri_metin="← Cari İşlemler",
+        )
+
+        arama_cerceve = ttk.Frame(govde)
         arama_cerceve.pack(fill="x", pady=(0, 8))
         ttk.Label(arama_cerceve, text="Ara:").pack(side="left")
         self.kk_arama = ttk.Entry(arama_cerceve, width=36)
         self.kk_arama.pack(side="left", padx=6)
-        ttk.Button(arama_cerceve, text="Listele", command=self.kk_listesini_yenile).pack(side="left")
+        tk_buton(arama_cerceve, "Listele", self.kk_listesini_yenile, rol="ara").pack(side="left")
 
-        cerceve = ttk.Frame(self.icerik)
+        cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True)
         kolonlar = ("belge", "tarih", "musteri", "tedarikci", "tutar", "banka", "cekim", "taksit", "aciklama")
         basliklar = (
@@ -9054,6 +9057,7 @@ class MuhasebeApp(tk.Tk):
             "Tutar", "Banka", "Çekim Türü", "Taksit", "Açıklama",
         )
         self.kk_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.kk_tablosu)
         for kolon, baslik in zip(kolonlar, basliklar):
             self.kk_tablosu.heading(kolon, text=baslik)
             self.kk_tablosu.column(kolon, width=120)
@@ -9065,13 +9069,14 @@ class MuhasebeApp(tk.Tk):
         self.kk_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
 
-        alt = ttk.Frame(self.icerik)
+        alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=10)
-        ttk.Button(alt, text="Yeni KK Çekim Fişi", command=self.yeni_kk_cekimi).pack(side="left")
-        ttk.Button(alt, text="Güncelle", command=self.kk_cekimi_guncelle).pack(side="left", padx=8)
-        ttk.Button(alt, text="İptal Et", command=self.kk_cekimi_iptal).pack(side="left", padx=8)
+        tk_buton(alt, "Yeni KK Çekim Fişi", self.yeni_kk_cekimi, rol="yeni").pack(side="left")
+        tk_buton(alt, "Güncelle", self.kk_cekimi_guncelle, rol="duzenle").pack(side="left", padx=8)
+        tk_buton(alt, "İptal Et", self.kk_cekimi_iptal, rol="iptal").pack(side="left", padx=8)
         self.kk_tablosu.bind("<Double-1>", lambda _e: self.kk_cekimi_guncelle())
         self.kk_listesini_yenile()
+        self.nav_sayfa_isaretle(self.kk_cekimi_goster)
 
     def kk_listesini_yenile(self):
         if not hasattr(self, "kk_tablosu"):
@@ -9131,12 +9136,20 @@ class MuhasebeApp(tk.Tk):
 
     def satis_raporlari_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="RAPORLAR", style="Baslik.TLabel").pack(anchor="w")
-        alt_menu = ttk.Frame(self.icerik)
-        alt_menu.pack(fill="x", pady=(24, 0))
-        alt_menu.columnconfigure(0, weight=1)
-        alt_menu.columnconfigure(0, minsize=520)
-        for satir, (baslik, komut) in enumerate((
+        from satis_tema import HubKart, ekran_ust_cubugu, stil_uygula
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "SATIŞ RAPORLARI",
+            alt_baslik="Müşteri bakiye, ekstre, tahsilat/ödeme, kar-zarar ve satış özeti",
+            geri_komut=lambda: satis_raporlar_hub_goster(self),
+            geri_metin="← Raporlar",
+        )
+        ızgara = tk.Frame(govde)
+        ızgara.pack(fill="both", expand=True, pady=8)
+        ızgara.columnconfigure(0, weight=1)
+        for i, (baslik, komut) in enumerate((
             ("MÜŞTERİ BAKİYE DURUM (ORTALAMA VADELİ)", self.rapor_musteri_bakiye_durum),
             ("MÜŞTERİ EKSTRESİ (ORTALAMA VALÖRLÜ / AĞIRLIKLI)", self.rapor_musteri_ekstresi),
             ("STOK DETAYLI MÜŞTERİ EKSTRESİ", self.rapor_stok_detayli_ekstre),
@@ -9144,17 +9157,30 @@ class MuhasebeApp(tk.Tk):
             ("MÜŞTERİ SEÇİMLİ KAR / ZARAR RAPORU", self.rapor_kar_zarar),
             ("SATIŞ ÖZETİ", self.rapor_satis_ozeti),
         )):
-            self._alt_menu_dugme(
-                alt_menu, baslik, komut,
-                row=satir, column=0, sticky="ew", pady=4,
-            )
+            HubKart(
+                ızgara,
+                baslik=baslik,
+                aciklama="Satış rapor ekranını açar",
+                komut=lambda c=komut: self.nav_ac(c),
+            ).grid(row=i, column=0, sticky="ew", pady=4, padx=4)
+        self.nav_sayfa_isaretle(self.satis_raporlari_goster)
 
     def _rapor_baslik(self, baslik, geri=True):
-        ust = ttk.Frame(self.icerik)
+        from satis_tema import BEYAZ, LACIVERT, SARI, font, stil_uygula, tk_buton
+
+        stil_uygula(root=self)
+        ust = tk.Frame(self.icerik, bg=LACIVERT)
         ust.pack(fill="x")
-        ttk.Label(ust, text=baslik, style="Baslik.TLabel").pack(side="left")
+        sol = tk.Frame(ust, bg=LACIVERT)
+        sol.pack(side="left", fill="both", expand=True, padx=14, pady=10)
+        tk.Label(sol, text=baslik, bg=LACIVERT, fg=BEYAZ, font=font(16, "bold", self), anchor="w").pack(
+            anchor="w"
+        )
+        tk.Frame(ust, bg=SARI, height=3).pack(fill="x")
         if geri:
-            ttk.Button(ust, text="← Raporlar", command=self.satis_raporlari_goster).pack(side="right")
+            sag = tk.Frame(ust, bg=LACIVERT)
+            sag.pack(side="right", padx=10, pady=8)
+            tk_buton(sag, "← Raporlar", self.satis_raporlari_goster, rol="geri").pack()
         return ust
 
     def _rapor_tablo(self, parent, kolonlar, basliklar, genislikler=None):
@@ -9838,16 +9864,22 @@ class MuhasebeApp(tk.Tk):
 
     def satis_faturalari_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIŞ FATURALARI", style="Baslik.TLabel").pack(anchor="w")
-        ttk.Label(
-            self.icerik,
-            text="Varsayılan: son 2 gün  |  Sol tık: sırala  |  Sağ tık: filtre  |  Eski faturalar için tarih aralığını genişletip Uygula",
-            foreground="#666666",
-        ).pack(anchor="w", pady=(2, 0))
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "SATIŞ FATURALARI",
+            alt_baslik="Varsayılan: son 2 gün  |  Sol tık: sırala  |  Sağ tık: filtre  |  Eski faturalar için tarih aralığını genişletip Uygula",
+            geri_komut=self.satis_faturalari_alt_menusu_goster,
+            geri_metin="← Satış Faturaları",
+        )
+        # İçerik govde üzerine kurulur
+        self._satis_fatura_govde = govde
 
         # Tarih / vade takvim filtreleri
-        tarih_filtre = ttk.Frame(self.icerik)
-        tarih_filtre.pack(fill="x", pady=(8, 0))
+        tarih_filtre = ttk.Frame(govde)
+        tarih_filtre.pack(fill="x", pady=(0, 0))
         ttk.Label(tarih_filtre, text="Fatura Tarihi:").pack(side="left")
         ft_bas = ttk.Frame(tarih_filtre)
         ft_bas.pack(side="left", padx=(4, 2))
@@ -9882,7 +9914,7 @@ class MuhasebeApp(tk.Tk):
         # Varsayılan: son 2 gün (bugün-2 … bugün)
         self._fatura_tarih_varsayilan_yaz()
 
-        cerceve = ttk.Frame(self.icerik)
+        cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
         kolonlar = ("no", "tarih", "saat", "vade", "musteri", "siparis", "irsaliye", "depo", "toplam", "tahsilat", "kalan", "durum", "onay")
         basliklar = ("Fatura No", "Fatura Tarihi", "Saat", "Vade Tarihi", "Müşteri", "Sipariş No", "İrsaliye No", "Depo", "Genel Toplam", "Tahsilat", "Kalan", "Durum", "Onay")
@@ -9910,6 +9942,7 @@ class MuhasebeApp(tk.Tk):
             "onay": (90, "center"),
         }
         self.fatura_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.fatura_tablosu)
         for kolon, baslik in zip(kolonlar, basliklar):
             genislik, hiza = self._fatura_kolon_duzen[kolon]
             self.fatura_tablosu.heading(
@@ -9955,7 +9988,7 @@ class MuhasebeApp(tk.Tk):
         self.fatura_tablosu.bind("<Double-1>", lambda _e: self.fatura_ac())
         self.fatura_tablosu.bind("<Button-3>", self._fatura_baslik_sag_tik)
         self.fatura_tablosu.bind("<Configure>", lambda _e: self._fatura_toplam_genislikleri_esitle())
-        alt = ttk.Frame(self.icerik); alt.pack(fill="x", pady=10)
+        alt = ttk.Frame(govde); alt.pack(fill="x", pady=10)
         ttk.Button(alt, text="Yeni Fatura", command=self.yeni_fatura).pack(side="left")
         ttk.Button(alt, text="Faturayı Aç / Düzenle", command=self.fatura_ac).pack(side="left", padx=8)
         ttk.Button(alt, text="İade Faturası Oluştur", command=self.faturadan_iade_olustur).pack(side="left")
@@ -9973,7 +10006,7 @@ class MuhasebeApp(tk.Tk):
         self.fatura_filtre_ozet.pack(side="left", padx=8)
         self._fatura_toplam_temizle()
         self.fatura_listesini_yenile()
-
+        self.nav_sayfa_isaretle(self.satis_faturalari_goster)
     def _fatura_xview(self, *args):
         self.fatura_tablosu.xview(*args)
         if hasattr(self, "fatura_toplam_satiri"):
@@ -10553,16 +10586,31 @@ class MuhasebeApp(tk.Tk):
             self.iade_listesini_yenile()
 
     def satis_irsaliyeleri_goster(self):
-        self._icerigi_temizle(); ttk.Label(self.icerik, text="SATIŞ İRSALİYELERİ", style="Baslik.TLabel").pack(anchor="w")
-        cerceve = ttk.Frame(self.icerik); cerceve.pack(fill="both", expand=True, pady=(14, 0))
+        self._icerigi_temizle()
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "SATIŞ İRSALİYELERİ",
+            alt_baslik="Sevk ve teslimat irsaliyelerini yönetin",
+            geri_komut=lambda: satislar_hub_goster(self),
+            geri_metin="← Satışlar",
+        )
+        cerceve = ttk.Frame(govde); cerceve.pack(fill="both", expand=True, pady=(4, 0))
         kolonlar = ("no", "tarih", "musteri_kodu", "musteri", "siparis", "toplam", "fatura", "kalan", "durum")
         basliklar = ("İrsaliye Numarası", "İrsaliye Tarihi", "Müşteri Kodu", "Müşteri Adı", "Sipariş Numarası", "Genel Toplam", "Faturalanan Tutar", "Kalan Faturalanabilir Tutar", "Durum")
         self.irsaliye_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.irsaliye_tablosu)
         for kolon, baslik in zip(kolonlar, basliklar): self.irsaliye_tablosu.heading(kolon, text=baslik); self.irsaliye_tablosu.column(kolon, width=140)
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.irsaliye_tablosu.yview); yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=self.irsaliye_tablosu.xview); self.irsaliye_tablosu.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set); self.irsaliye_tablosu.grid(row=0, column=0, sticky="nsew"); dikey.grid(row=0, column=1, sticky="ns"); yatay.grid(row=1, column=0, sticky="ew"); cerceve.rowconfigure(0, weight=1); cerceve.columnconfigure(0, weight=1)
-        alt = ttk.Frame(self.icerik); alt.pack(fill="x", pady=10); ttk.Button(alt, text="Yeni İrsaliye", command=self.yeni_irsaliye).pack(side="left"); ttk.Button(alt, text="İrsaliyeyi Aç / Düzenle", command=self.irsaliye_ac).pack(side="left", padx=8); ttk.Button(alt, text="Faturaya Çevir", command=self.irsaliye_faturaya_cevir).pack(side="left"); ttk.Button(alt, text="İptal Et", command=self.irsaliye_iptal).pack(side="left", padx=8)
+        alt = ttk.Frame(govde); alt.pack(fill="x", pady=10)
+        tk_buton(alt, "Yeni İrsaliye", self.yeni_irsaliye, rol="yeni").pack(side="left")
+        tk_buton(alt, "İrsaliyeyi Aç / Düzenle", self.irsaliye_ac, rol="duzenle").pack(side="left", padx=8)
+        tk_buton(alt, "Faturaya Çevir", self.irsaliye_faturaya_cevir, rol="kaydet").pack(side="left")
+        tk_buton(alt, "İptal Et", self.irsaliye_iptal, rol="iptal").pack(side="left", padx=8)
         self.irsaliye_listesini_yenile()
-
+        self.nav_sayfa_isaretle(self.satis_irsaliyeleri_goster)
     def irsaliye_listesini_yenile(self):
         for item in self.irsaliye_tablosu.get_children(): self.irsaliye_tablosu.delete(item)
         for kayit in SatisIrsaliyesiService.listele():
@@ -10604,12 +10652,22 @@ class MuhasebeApp(tk.Tk):
 
     def satis_siparisleri_goster(self):
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIŞ SİPARİŞLERİ", style="Baslik.TLabel").pack(anchor="w")
-        cerceve = ttk.Frame(self.icerik)
-        cerceve.pack(fill="both", expand=True, pady=(14, 0))
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "ALINAN SİPARİŞLER",
+            alt_baslik="Müşteri siparişlerini ve teslimat sürecini yönetin",
+            geri_komut=lambda: satislar_hub_goster(self),
+            geri_metin="← Satışlar",
+        )
+        cerceve = ttk.Frame(govde)
+        cerceve.pack(fill="both", expand=True, pady=(4, 0))
         kolonlar = ("no", "siparis_tarihi", "termin", "musteri_kodu", "musteri", "toplam", "tahsilat", "kalan", "durum")
         basliklar = {"no": "Sipariş Numarası", "siparis_tarihi": "Sipariş Tarihi", "termin": "Termin Tarihi", "musteri_kodu": "Müşteri Kodu", "musteri": "Müşteri Adı", "toplam": "Sipariş Toplamı", "tahsilat": "Tahsil Edilen", "kalan": "Kalan Tahsilat", "durum": "Durum"}
         self.siparis_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.siparis_tablosu)
         for kolon in kolonlar:
             self.siparis_tablosu.heading(kolon, text=basliklar[kolon])
             self.siparis_tablosu.column(kolon, width=125, anchor="w")
@@ -10623,14 +10681,14 @@ class MuhasebeApp(tk.Tk):
         yatay.grid(row=1, column=0, sticky="ew")
         cerceve.rowconfigure(0, weight=1); cerceve.columnconfigure(0, weight=1)
         self.siparis_tablosu.bind("<Double-1>", lambda _event: self.siparis_ac())
-        alt = ttk.Frame(self.icerik); alt.pack(fill="x", pady=10)
-        ttk.Button(alt, text="Yeni Sipariş", command=self.yeni_siparis).pack(side="left")
-        ttk.Button(alt, text="Siparişi Aç / Düzenle", command=self.siparis_ac).pack(side="left", padx=8)
-        ttk.Button(alt, text="İrsaliyeye Çevir", command=self.siparis_irsaliyeye_cevir).pack(side="left")
-        ttk.Button(alt, text="Faturaya Çevir", command=self.siparis_faturaya_cevir).pack(side="left", padx=8)
-        ttk.Button(alt, text="İptal Et", command=self.siparis_iptal).pack(side="left")
+        alt = ttk.Frame(govde); alt.pack(fill="x", pady=10)
+        tk_buton(alt, "Yeni Sipariş", self.yeni_siparis, rol="yeni").pack(side="left")
+        tk_buton(alt, "Siparişi Aç / Düzenle", self.siparis_ac, rol="duzenle").pack(side="left", padx=8)
+        tk_buton(alt, "İrsaliyeye Çevir", self.siparis_irsaliyeye_cevir, rol="kaydet").pack(side="left")
+        tk_buton(alt, "Faturaya Çevir", self.siparis_faturaya_cevir, rol="kaydet").pack(side="left", padx=8)
+        tk_buton(alt, "İptal Et", self.siparis_iptal, rol="iptal").pack(side="left")
         self.siparis_listesini_yenile()
-
+        self.nav_sayfa_isaretle(self.satis_siparisleri_goster)
     def siparis_listesini_yenile(self):
         for item in self.siparis_tablosu.get_children(): self.siparis_tablosu.delete(item)
         for kayit in SatisSiparisiService.listele():
@@ -10779,18 +10837,34 @@ class MuhasebeApp(tk.Tk):
         tedarikci = cari_turu == "Tedarikçi"
         baslik = "TEDARİKÇİ CARİ HESAP KARTLARI" if tedarikci else "MÜŞTERİ KARTLARI"
         etiket = "Tedarikçi" if tedarikci else "Müşteri"
-        ttk.Label(self.icerik, text=baslik, style="Baslik.TLabel").pack(anchor="w")
-        ust = ttk.Frame(self.icerik)
-        ust.pack(fill="x", pady=14)
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
+
+        stil_uygula(root=self)
+        geri = (
+            (lambda: self.sayfa_goster("satin_alma"))
+            if tedarikci
+            else (lambda: satislar_hub_goster(self))
+        )
+        govde = ekran_ust_cubugu(
+            self,
+            baslik,
+            alt_baslik=f"{etiket} bilgileri, cari hareketler ve bakiye takibi",
+            geri_komut=geri,
+            geri_metin="← Satın Alma" if tedarikci else "← Satışlar",
+        )
+        ust = ttk.Frame(govde)
+        ust.pack(fill="x", pady=(0, 10))
         ttk.Label(ust, text="Ara (en az 3 karakter):").pack(side="left")
         self.cari_arama = ttk.Entry(ust, width=30)
         self.cari_arama.pack(side="left", padx=8)
         self.cari_arama.bind("<Return>", lambda _event: self.cari_listesini_yenile())
-        ttk.Button(ust, text="Ara", command=self.cari_listesini_yenile).pack(side="left")
-        ttk.Button(ust, text="EvoBulut’tan Aktar", command=self.evobulut_cari_aktar).pack(side="right", padx=(0, 8))
-        ttk.Button(ust, text=f"Yeni {etiket}", command=self.yeni_cari).pack(side="right")
+        tk_buton(ust, "Ara", self.cari_listesini_yenile, rol="ara").pack(side="left")
+        tk_buton(ust, "EvoBulut’tan Aktar", self.evobulut_cari_aktar, rol="duzenle").pack(
+            side="right", padx=(0, 8)
+        )
+        tk_buton(ust, f"Yeni {etiket}", self.yeni_cari, rol="yeni").pack(side="right")
 
-        cerceve = ttk.Frame(self.icerik)
+        cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True)
         kolonlar = ("kod", "unvan", "grup", "telefon", "email", "bakiye", "agirlikli", "durum")
         basliklar = {
@@ -10800,6 +10874,7 @@ class MuhasebeApp(tk.Tk):
         }
         genislikler = {"kod": 110, "unvan": 210, "grup": 135, "telefon": 115, "email": 180, "bakiye": 125, "agirlikli": 180, "durum": 75}
         self.cari_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        treeview_stil(self.cari_tablosu)
         for kolon in kolonlar:
             self.cari_tablosu.heading(kolon, text=basliklar[kolon])
             self.cari_tablosu.column(kolon, width=genislikler[kolon], anchor="w")
@@ -10809,13 +10884,14 @@ class MuhasebeApp(tk.Tk):
         kaydirma.pack(side="right", fill="y")
         self.cari_tablosu.bind("<Double-1>", lambda _event: self.cari_detay())
 
-        alt = ttk.Frame(self.icerik)
+        alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=(10, 0))
-        ttk.Button(alt, text=f"{etiket} Kartını Aç", command=self.cari_detay).pack(side="left")
-        ttk.Button(alt, text="Düzenle", command=self.cari_duzenle).pack(side="left", padx=8)
-        ttk.Button(alt, text="Pasife Al", command=self.cari_pasife_al).pack(side="left")
-        ttk.Button(alt, text="Sil", command=self.cari_soft_sil).pack(side="left", padx=8)
+        tk_buton(alt, f"{etiket} Kartını Aç", self.cari_detay, rol="duzenle").pack(side="left")
+        tk_buton(alt, "Düzenle", self.cari_duzenle, rol="kaydet").pack(side="left", padx=8)
+        tk_buton(alt, "Pasife Al", self.cari_pasife_al, rol="ara").pack(side="left")
+        tk_buton(alt, "Sil", self.cari_soft_sil, rol="iptal").pack(side="left", padx=8)
         self.cari_listesini_yenile()
+        self.nav_sayfa_isaretle(lambda: self._cariler_goster(cari_turu=cari_turu))
 
     def cari_listesini_yenile(self):
         if not hasattr(self, "cari_tablosu"):

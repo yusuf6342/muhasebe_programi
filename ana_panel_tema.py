@@ -4,37 +4,54 @@ from __future__ import annotations
 
 from tkinter import ttk
 
-# Marka paleti — sarı yalnızca vurgu
+# Marka paleti — sarı yalnızca vurgu (Satışlar ile aynı kurumsal set)
 LACIVERT = "#102A43"
-KOYU_LACIVERT = "#071A2B"
-SARI = "#F5C518"
-ACIK_BG = "#F4F6F8"
+KOYU_LACIVERT = "#081B2C"
+SARI = "#F4C542"
+ACIK_BG = "#F3F6F9"
 BEYAZ = "#FFFFFF"
-METIN = "#263238"
-PASIF = "#7B8794"
-BASARI = "#2E7D32"
-UYARI = "#D97706"
+METIN = "#172B4D"
+PASIF = "#627D98"
+BASARI = "#1F9D74"
+UYARI = "#D64545"
 
 # Türetilmiş
 LACIVERT_HOVER = "#1A3A56"
 METIN_ACIK = "#E8EEF4"
-SARI_HOVER = "#E0B010"
-CIZGI = "#D0D7DE"
+SARI_HOVER = "#FFE89A"
+CIZGI = "#D9E2EC"
 KART_GOLEGE = "#E2E8EE"
 
 FIRMA_ADI = "RAY MOBİLYA AKSESUARLARI"
 FIRMA_KISA = "RAY"
 
-FONT_UI = ("Segoe UI", 10)
-FONT_UI_BOLD = ("Segoe UI", 10, "bold")
-FONT_BASLIK = ("Segoe UI", 16, "bold")
-FONT_ALT = ("Segoe UI", 9)
-FONT_KUCUK = ("Segoe UI", 8)
-FONT_MENU = ("Segoe UI", 10)
-FONT_MENU_BOLD = ("Segoe UI", 10, "bold")
-FONT_KART_BASLIK = ("Segoe UI", 11, "bold")
-FONT_OZET = ("Segoe UI", 18, "bold")
-FONT_SIDEBAR = ("Segoe UI", 11, "bold")
+# Font ailesi: Segoe UI → Aptos → Calibri → Arial (runtime resolve)
+def _font_aile() -> str:
+    try:
+        from satis_tema import resolve_ui_font
+
+        return resolve_ui_font()
+    except Exception:
+        return "Segoe UI"
+
+
+def _f(size: int, weight: str = "normal") -> tuple:
+    aile = _font_aile()
+    if weight == "bold":
+        return (aile, size, "bold")
+    return (aile, size)
+
+
+FONT_UI = _f(10)
+FONT_UI_BOLD = _f(10, "bold")
+FONT_BASLIK = _f(16, "bold")
+FONT_ALT = _f(9)
+FONT_KUCUK = _f(8)
+FONT_MENU = _f(10)
+FONT_MENU_BOLD = _f(10, "bold")
+FONT_KART_BASLIK = _f(11, "bold")
+FONT_OZET = _f(18, "bold")
+FONT_SIDEBAR = _f(11, "bold")
 
 SOL_MENU_GENISLIK = 250
 

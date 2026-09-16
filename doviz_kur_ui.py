@@ -20,17 +20,31 @@ def _para(tutar) -> str:
 
 def doviz_kur_yonetimi_goster(uygulama) -> None:
     uygulama._icerigi_temizle()
-    ttk.Label(uygulama.icerik, text="DÖVİZ KURLARI", style="Baslik.TLabel").pack(anchor="w")
-    ttk.Label(
-        uygulama.icerik,
-        text=(
-            "USD ve EUR günlük kurları (döviz alış/satış + efektif alış/satış). "
-            "TCMB'den çekilebilir veya manuel girilebilir."
-        ),
-        wraplength=760,
-    ).pack(anchor="w", pady=(8, 12))
+    try:
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil
+        from satis_ui import satis_raporlar_hub_goster
 
-    ust = ttk.LabelFrame(uygulama.icerik, text="Kur İşlemleri", padding=8)
+        stil_uygula(root=uygulama)
+        govde = ekran_ust_cubugu(
+            uygulama,
+            "DÖVİZ KURLARI",
+            alt_baslik="USD ve EUR günlük kurları (döviz alış/satış + efektif). TCMB veya manuel.",
+            geri_komut=lambda: satis_raporlar_hub_goster(uygulama),
+            geri_metin="← Raporlar",
+        )
+    except Exception:
+        govde = uygulama.icerik
+        ttk.Label(govde, text="DÖVİZ KURLARI", style="Baslik.TLabel").pack(anchor="w")
+        ttk.Label(
+            govde,
+            text=(
+                "USD ve EUR günlük kurları (döviz alış/satış + efektif alış/satış). "
+                "TCMB'den çekilebilir veya manuel girilebilir."
+            ),
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 12))
+
+    ust = ttk.LabelFrame(govde, text="Kur İşlemleri", padding=8)
     ust.pack(fill="x", pady=(0, 8))
 
     tarih_var = tk.StringVar(value=datetime.now().strftime("%d.%m.%Y"))
@@ -84,7 +98,7 @@ def doviz_kur_yonetimi_goster(uygulama) -> None:
         command=otomatik_degisti,
     ).grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=4)
 
-    manuel = ttk.LabelFrame(uygulama.icerik, text="Manuel Kur Girişi", padding=8)
+    manuel = ttk.LabelFrame(govde, text="Manuel Kur Girişi", padding=8)
     manuel.pack(fill="x", pady=(0, 8))
 
     pb_var = tk.StringVar(value="USD")
@@ -128,7 +142,7 @@ def doviz_kur_yonetimi_goster(uygulama) -> None:
 
     ttk.Button(manuel, text="Kaydet", command=manuel_kaydet).grid(row=0, column=6, padx=8, pady=4)
 
-    tablo_cerceve = ttk.Frame(uygulama.icerik)
+    tablo_cerceve = ttk.Frame(govde)
     tablo_cerceve.pack(fill="both", expand=True, pady=8)
     kolonlar = ("tarih", "pb", "alis", "satis", "ef_alis", "ef_satis", "kaynak")
     tablo = ttk.Treeview(tablo_cerceve, columns=kolonlar, show="headings", height=18)

@@ -163,23 +163,43 @@ def _gider_fisi_ac(app):
     gider_fisleri_sayfasi(app, geri_fn=giderler_menusu_goster)
 
 
-def hizmet_faturalari_sayfasi(app, fatura_turu: str):
+def hizmet_faturalari_sayfasi(app, fatura_turu: str, geri_fn=None):
     app._icerigi_temizle()
     _menu_isaretle(app)
     gider_mi = (fatura_turu or "").upper() == "GIDER"
     baslik = (
         "HİZMET ALIŞ (GİDER) FATURALARI"
         if gider_mi
+        else "GELİR FİŞİ — HİZMET SATIŞ FATURALARI"
+        if geri_fn is not None and not gider_mi
         else "HİZMET SATIŞ (GELİR) FATURALARI"
     )
-    geri = giderler_menusu_goster if gider_mi else gelirler_menusu_goster
+    if geri_fn is not None:
+        geri = geri_fn
+    else:
+        geri = giderler_menusu_goster if gider_mi else gelirler_menusu_goster
 
-    ust = ttk.Frame(app.icerik)
-    ust.pack(fill="x")
-    ttk.Label(ust, text=baslik, style="Baslik.TLabel").pack(side="left")
-    ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+    try:
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil, tk_buton
 
-    cerceve = ttk.Frame(app.icerik)
+        stil_uygula(root=app)
+        govde = ekran_ust_cubugu(
+            app,
+            baslik,
+            alt_baslik="Hizmet satış / alış faturaları",
+            geri_komut=lambda: geri(app),
+            geri_metin="← Geri",
+        )
+    except Exception:
+        treeview_stil = None  # type: ignore
+        tk_buton = None  # type: ignore
+        govde = app.icerik
+        ust = ttk.Frame(govde)
+        ust.pack(fill="x")
+        ttk.Label(ust, text=baslik, style="Baslik.TLabel").pack(side="left")
+        ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+
+    cerceve = ttk.Frame(govde)
     cerceve.pack(fill="both", expand=True, pady=10)
     tablo = ttk.Treeview(
         cerceve,
@@ -187,6 +207,10 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str):
         show="headings",
         selectmode="browse",
     )
+    try:
+        treeview_stil(tablo)
+    except Exception:
+        pass
     odeme_baslik = "Ödeme" if gider_mi else "Tahsilat"
     for k, b, w in (
         ("no", "Fatura No", 110),
@@ -239,11 +263,16 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str):
         if dlg.result:
             listeyi_yenile()
 
-    butonlar = ttk.Frame(app.icerik)
+    butonlar = ttk.Frame(govde)
     butonlar.pack(fill="x", pady=6)
-    ttk.Button(butonlar, text="Yeni Fatura", command=yeni).pack(side="left", padx=(0, 6))
-    ttk.Button(butonlar, text="Aç / Düzenle", command=ac).pack(side="left", padx=6)
-    ttk.Button(butonlar, text="Yenile", command=listeyi_yenile).pack(side="left", padx=6)
+    try:
+        tk_buton(butonlar, "Yeni Fatura", yeni, rol="yeni").pack(side="left", padx=(0, 6))
+        tk_buton(butonlar, "Aç / Düzenle", ac, rol="duzenle").pack(side="left", padx=6)
+        tk_buton(butonlar, "Yenile", listeyi_yenile, rol="ara").pack(side="left", padx=6)
+    except Exception:
+        ttk.Button(butonlar, text="Yeni Fatura", command=yeni).pack(side="left", padx=(0, 6))
+        ttk.Button(butonlar, text="Aç / Düzenle", command=ac).pack(side="left", padx=6)
+        ttk.Button(butonlar, text="Yenile", command=listeyi_yenile).pack(side="left", padx=6)
     tablo.bind("<Double-1>", lambda _e: ac())
     listeyi_yenile()
 

@@ -200,17 +200,29 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
     _menu_isaretle(app)
     geri = geri_fn or giderler_menusu_goster
 
-    ust = ttk.Frame(app.icerik)
-    ust.pack(fill="x")
-    ttk.Label(ust, text="GİDER FİŞİ", style="Baslik.TLabel").pack(side="left")
-    ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+    try:
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil
 
-    ttk.Label(
-        app.icerik,
-        text="Kasa/bankadan cari olmadan ödeme. Hizmet kartı ile gider sınıfı takip edilir.",
-    ).pack(anchor="w", pady=(10, 4))
+        stil_uygula(root=app)
+        govde = ekran_ust_cubugu(
+            app,
+            "GİDER FİŞİ",
+            alt_baslik="Kasa/bankadan cari olmadan ödeme. Hizmet kartı ile gider sınıfı takip edilir.",
+            geri_komut=lambda: geri(app),
+            geri_metin="← Geri",
+        )
+    except Exception:
+        govde = app.icerik
+        ust = ttk.Frame(govde)
+        ust.pack(fill="x")
+        ttk.Label(ust, text="GİDER FİŞİ", style="Baslik.TLabel").pack(side="left")
+        ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+        ttk.Label(
+            govde,
+            text="Kasa/bankadan cari olmadan ödeme. Hizmet kartı ile gider sınıfı takip edilir.",
+        ).pack(anchor="w", pady=(10, 4))
 
-    cerceve = ttk.Frame(app.icerik)
+    cerceve = ttk.Frame(govde)
     cerceve.pack(fill="both", expand=True, pady=6)
     tablo = ttk.Treeview(
         cerceve,
@@ -287,7 +299,7 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
 
         gider_fisi_onizle(app, belge_no)
 
-    butonlar = ttk.Frame(app.icerik)
+    butonlar = ttk.Frame(govde)
     butonlar.pack(fill="x", pady=6)
     ttk.Button(butonlar, text="Yeni Gider Fişi", command=lambda: yeni()).pack(side="left")
     ttk.Button(butonlar, text="Belgeyi Aç", command=ac).pack(side="left", padx=8)
@@ -296,3 +308,5 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
     tablo.bind("<Double-1>", ac)
 
     yenile()
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: gider_fisleri_sayfasi(app, geri_fn=geri_fn))

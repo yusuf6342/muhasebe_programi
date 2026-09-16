@@ -21,14 +21,28 @@ def _para(tutar, pb="") -> str:
 
 def doviz_raporlari_goster(uygulama) -> None:
     uygulama._icerigi_temizle()
-    ttk.Label(uygulama.icerik, text="DÖVİZ BAZINDA RAPORLAR", style="Baslik.TLabel").pack(anchor="w")
-    ttk.Label(
-        uygulama.icerik,
-        text="TL yekünlü faturaların USD/EUR karşılığı. Kur yöntemi rapor sonucunu doğrudan etkiler.",
-        wraplength=760,
-    ).pack(anchor="w", pady=(8, 12))
+    try:
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil
+        from satis_ui import satis_raporlar_hub_goster
 
-    filtre = ttk.LabelFrame(uygulama.icerik, text="Filtreler", padding=8)
+        stil_uygula(root=uygulama)
+        govde = ekran_ust_cubugu(
+            uygulama,
+            "DÖVİZ BAZINDA RAPORLAR",
+            alt_baslik="TL yekünlü faturaların USD/EUR karşılığı. Kur yöntemi sonucu etkiler.",
+            geri_komut=lambda: satis_raporlar_hub_goster(uygulama),
+            geri_metin="← Raporlar",
+        )
+    except Exception:
+        govde = uygulama.icerik
+        ttk.Label(govde, text="DÖVİZ BAZINDA RAPORLAR", style="Baslik.TLabel").pack(anchor="w")
+        ttk.Label(
+            govde,
+            text="TL yekünlü faturaların USD/EUR karşılığı. Kur yöntemi rapor sonucunu doğrudan etkiler.",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 12))
+
+    filtre = ttk.LabelFrame(govde, text="Filtreler", padding=8)
     filtre.pack(fill="x", pady=(0, 8))
 
     bas_var = tk.StringVar()
@@ -65,7 +79,7 @@ def doviz_raporlari_goster(uygulama) -> None:
     ttk.Label(filtre, text="Sabit Kur:").grid(row=1, column=3, padx=4, pady=4)
     ttk.Entry(filtre, textvariable=sabit_kur, width=12).grid(row=1, column=4, padx=4, pady=4)
 
-    tablo_cerceve = ttk.Frame(uygulama.icerik)
+    tablo_cerceve = ttk.Frame(govde)
     tablo_cerceve.pack(fill="both", expand=True, pady=8)
     kolonlar = (
         "fatura_no",
@@ -96,7 +110,7 @@ def doviz_raporlari_goster(uygulama) -> None:
     tablo.pack(side="left", fill="both", expand=True)
     kaydirma.pack(side="right", fill="y")
 
-    ozet = ttk.Label(uygulama.icerik, text="", foreground="#1565c0")
+    ozet = ttk.Label(govde, text="", foreground="#1565c0")
     ozet.pack(anchor="w", pady=4)
 
     def raporla():

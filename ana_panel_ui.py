@@ -969,6 +969,9 @@ def _hizli_islem_calistir(app, kod: str) -> None:
 
 def raporlar_menusu_goster(app) -> None:
     """Raporlar hub — mevcut rapor giriş noktalarına yönlendirir."""
+    from doviz_kur_ui import doviz_kur_yonetimi_goster
+    from doviz_rapor_ui import doviz_raporlari_goster
+
     app._icerigi_temizle()
     kabuk = getattr(app, "_ana_panel_kabuk", None)
     if kabuk:
@@ -986,6 +989,8 @@ def raporlar_menusu_goster(app) -> None:
         ("SATIŞ RAPORLARI", getattr(app, "satis_raporlari_goster", None)),
         ("SATIN ALMA RAPORLARI", getattr(app, "alis_raporlari_goster", None)),
         ("STOK RAPORLARI", getattr(app, "stok_raporlari_goster", None)),
+        ("DÖVİZ KURLARI", lambda: doviz_kur_yonetimi_goster(app)),
+        ("DÖVİZ BAZINDA RAPORLAR", lambda: doviz_raporlari_goster(app)),
         ("ÖZET TABLOLAR", lambda: app.sayfa_goster("ozet_tablolar")),
     )
     for i, (baslik, komut) in enumerate(ogeler):

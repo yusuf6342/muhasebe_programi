@@ -378,23 +378,35 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     geri = geri_fn or finans_menusu_goster
 
     if makbuz_turu == "TAHSILAT":
-        baslik = "TAHSİLAT MAKBUZLARI"
+        baslik = "TAHSİLAT MAKBUZU"
     elif makbuz_turu == "ODEME":
         baslik = "ÖDEME MAKBUZLARI"
     else:
         baslik = "KASA MAKBUZLARI"
 
-    ust = ttk.Frame(app.icerik)
-    ust.pack(fill="x")
-    ttk.Label(ust, text=baslik, style="Baslik.TLabel").pack(side="left")
-    ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+    try:
+        from satis_tema import ekran_ust_cubugu, stil_uygula, treeview_stil
 
-    ttk.Label(
-        app.icerik,
-        text="Çok satırlı cari tahsilat (TMK) ve ödeme (OMK) makbuzları — nakit, havale, POS.",
-    ).pack(anchor="w", pady=(10, 4))
+        stil_uygula(root=app)
+        govde = ekran_ust_cubugu(
+            app,
+            baslik,
+            alt_baslik="Çok satırlı cari tahsilat (TMK) ve ödeme (OMK) — nakit, havale, POS.",
+            geri_komut=lambda: geri(app),
+            geri_metin="← Geri",
+        )
+    except Exception:
+        govde = app.icerik
+        ust = ttk.Frame(govde)
+        ust.pack(fill="x")
+        ttk.Label(ust, text=baslik, style="Baslik.TLabel").pack(side="left")
+        ttk.Button(ust, text="← Geri", command=lambda: geri(app)).pack(side="right")
+        ttk.Label(
+            govde,
+            text="Çok satırlı cari tahsilat (TMK) ve ödeme (OMK) makbuzları — nakit, havale, POS.",
+        ).pack(anchor="w", pady=(10, 4))
 
-    cerceve = ttk.Frame(app.icerik)
+    cerceve = ttk.Frame(govde)
     cerceve.pack(fill="both", expand=True, pady=6)
     tablo = ttk.Treeview(
         cerceve,
@@ -402,6 +414,10 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         show="headings",
         selectmode="browse",
     )
+    try:
+        treeview_stil(tablo)
+    except Exception:
+        pass
     for k, b, w in (
         ("belge", "Belge", 110),
         ("tarih", "Tarih", 90),
@@ -473,7 +489,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
 
         kasa_makbuz_onizle(app, belge_no)
 
-    butonlar = ttk.Frame(app.icerik)
+    butonlar = ttk.Frame(govde)
     butonlar.pack(fill="x", pady=6)
     if makbuz_turu in (None, "TAHSILAT"):
         ttk.Button(
@@ -489,3 +505,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     tablo.bind("<Double-1>", ac)
 
     yenile()
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(
+            lambda: kasa_makbuzlari_sayfasi(app, makbuz_turu=makbuz_turu, geri_fn=geri_fn)
+        )
