@@ -1,6 +1,8 @@
-"""Hızlı Satış — bekleyen (hold) sepet tabloları.
+"""Hızlı Satış — bekleyen (hold) sepet + hızlı ürün pin tabloları.
 
-Stok hareketi yok; yalnızca bellek sepetinin DB kopyası.
+Bekleyen: stok hareketi yok; bellek sepetinin DB kopyası.
+Pin: mevcut stok kartını POS kart ızgarasına bağlar (stok kartı oluşturmaz / silmez).
+Fiyat / stok / KDV ana stok kartından canlı okunur; pin satırında denormalize edilmez.
 """
 
 from __future__ import annotations
@@ -9,7 +11,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -20,6 +31,69 @@ if TYPE_CHECKING:
 DURUM_BEKLIYOR = "BEKLIYOR"
 DURUM_CAGIRILDI = "CAGIRILDI"
 DURUM_IPTAL = "IPTAL"
+
+
+class HizliSatisGrubu(Base):
+    """POS görsel bölümü (hızlı satış grubu). Stok rapor_grubu ile aynı kavram değildir."""
+
+    __tablename__ = "hizli_satis_gruplari"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ad: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    guncelleme_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    urunler: Mapped[list["HizliSatisHizliUrun"]] = relationship(
+        "HizliSatisHizliUrun",
+        back_populates="grup",
+        cascade="all, delete-orphan",
+    )
+
+
+class HizliSatisHizliUrun(Base):
+    """Stok kartını Hızlı Satış ekranına pinler (stok hareketi / muhasebe yok)."""
+
+    __tablename__ = "hizli_satis_hizli_urunler"
+    __table_args__ = (
+        UniqueConstraint(
+            "stok_id",
+            "hizli_satis_grubu_id",
+            name="uq_hizli_satis_pin_stok_grup",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    stok_id: Mapped[int] = mapped_column(
+        ForeignKey("stok_kartlari.id"), nullable=False, index=True
+    )
+    hizli_satis_grubu_id: Mapped[int] = mapped_column(
+        ForeignKey("hizli_satis_gruplari.id"), nullable=False, index=True
+    )
+    kisa_ad: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    kart_rengi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    gorsel_yolu: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    varsayilan_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    varsayilan_miktar: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, default=1
+    )
+    aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    guncelleme_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    grup: Mapped["HizliSatisGrubu"] = relationship(
+        "HizliSatisGrubu", back_populates="urunler"
+    )
 
 
 class HizliSatisBekleyen(Base):

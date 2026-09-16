@@ -316,6 +316,7 @@ def cari_kart_schemasini_guncelle() -> None:
             "muhasebe_maliyet_kodu": "VARCHAR(50)",
             "muhasebe_kdv_alis_kodu": "VARCHAR(50)",
             "muhasebe_kdv_satis_kodu": "VARCHAR(50)",
+            "kdv_orani": "NUMERIC(7, 2) DEFAULT 20 NOT NULL",
             "iskonto_1": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "iskonto_2": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "iskonto_3": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",

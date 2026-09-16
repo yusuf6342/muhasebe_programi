@@ -89,6 +89,48 @@ def test_iskonto_satir():
     _assert(s.satir_toplam == Decimal("108.00"), s.satir_toplam)
 
 
+def test_varsayilan_kdv_sifir():
+    """Yeni satırda KDV varsayılan %0; stok oranı otomatik gelmez."""
+    from hizli_satis_sepet import VARSAYILAN_KDV
+
+    _assert(VARSAYILAN_KDV == Decimal("0"), VARSAYILAN_KDV)
+    sepet = HizliSatisSepet()
+    sepet.ekle(
+        stok_id=1,
+        stok_kodu="U001",
+        stok_adi="Vida",
+        miktar=2,
+        birim_fiyat="10",
+    )
+    s = sepet.satirlar[0]
+    _assert(s.kdv_orani == Decimal("0"), s.kdv_orani)
+    t = sepet.toplamlar()
+    _assert(t["ara_toplam"] == Decimal("20.00"), t)
+    _assert(t["kdv"] == Decimal("0.00"), t)
+    _assert(t["genel_toplam"] == Decimal("20.00"), t)
+
+
+def test_kdv_orani_degistir_toplamlari_gunceller():
+    sepet = HizliSatisSepet()
+    sepet.ekle(
+        stok_id=1,
+        stok_kodu="U001",
+        stok_adi="Vida",
+        miktar=1,
+        birim_fiyat="100",
+    )
+    _assert(sepet.toplamlar()["genel_toplam"] == Decimal("100.00"), sepet.toplamlar())
+    sepet.kdv_ayarla(0, 20)
+    t = sepet.toplamlar()
+    _assert(sepet.satirlar[0].kdv_orani == Decimal("20"), sepet.satirlar[0].kdv_orani)
+    _assert(t["kdv"] == Decimal("20.00"), t)
+    _assert(t["genel_toplam"] == Decimal("120.00"), t)
+    sepet.kdv_ayarla(0, 10)
+    t2 = sepet.toplamlar()
+    _assert(t2["kdv"] == Decimal("10.00"), t2)
+    _assert(t2["genel_toplam"] == Decimal("110.00"), t2)
+
+
 def test_farkli_birim_ayri_satir():
     sepet = HizliSatisSepet()
     sepet.ekle(stok_id=1, stok_kodu="U001", stok_adi="X", birim="Adet", miktar=1, birim_fiyat=1)
@@ -109,6 +151,29 @@ def test_asama3_grup_sabitleri_ve_import():
     _assert(hasattr(panel, "HizliSatisUrunPanel"), "panel sınıfı")
     _assert(hasattr(ui, "HizliSatisPencere"), "UI pencere")
     _assert(panel.SAYFA_BOYUTU >= 12, "sayfa boyutu dokunmatik için yeterli")
+
+
+def test_asama3_kart_metinleri_barkod_ad_depo():
+    """Kart metinleri sample dict'ten barkod + ad + depo üretir; 120→12 kırılmaz."""
+    import hizli_satis_urun_panel_ui as panel
+
+    _assert(panel._miktar_goster(120) == "120", "120 sıfır kırpılmamalı")
+    _assert(panel._miktar_goster(Decimal("1.50")) == "1,5", "ondalık virgül")
+    ornek = {
+        "stok_id": 1,
+        "stok_kodu": "VIDA01",
+        "stok_adi": "Selectron 3,5x18 Sunta Vidası Uzun Açıklama",
+        "barkod": "8697881202660",
+        "mevcut_stok": 120,
+        "birim": "Adet",
+        "birim_fiyat": Decimal("0.31"),
+        "resim_yolu": None,
+    }
+    m = panel._kart_metinleri(ornek)
+    _assert(m["barkod"] == "8697881202660", m)
+    _assert("Selectron" in m["ad"] and m["ad"].endswith("…"), m)
+    _assert(m["depo"] == "Depo: 120 Adet", m)
+    _assert("0,31" in m["fiyat"], m)
 
 
 def test_asama4_fiyat_listesi_coz():
@@ -432,13 +497,93 @@ def test_asama9_cikti_html_pdf_smoke():
     _assert(any("SF-00001" in s for s in satirlar), satirlar)
 
 
+def test_hedef_toplam_1050_1000():
+    """Örnek: 1050 → 1000; genel toplam ve satır oranları korunur."""
+    sepet = HizliSatisSepet()
+    sepet.ekle(stok_id=1, stok_kodu="A", stok_adi="A", miktar=1, birim_fiyat="525")
+    sepet.ekle(stok_id=2, stok_kodu="B", stok_adi="B", miktar=1, birim_fiyat="525")
+    _assert(sepet.toplamlar()["genel_toplam"] == Decimal("1050.00"), sepet.toplamlar())
+    t = sepet.hedef_toplam_uygula(Decimal("1000"))
+    _assert(t["genel_toplam"] == Decimal("1000.00"), t)
+    # Oranlar eşit kalmalı (525:525 → 500:500)
+    _assert(sepet.satirlar[0].satir_toplam == Decimal("500.00"), sepet.satirlar[0].satir_toplam)
+    _assert(sepet.satirlar[1].satir_toplam == Decimal("500.00"), sepet.satirlar[1].satir_toplam)
+
+
+def test_hedef_toplam_yukari_olcekle():
+    sepet = HizliSatisSepet()
+    sepet.ekle(stok_id=1, stok_kodu="A", stok_adi="A", miktar=2, birim_fiyat="100")
+    sepet.ekle(stok_id=2, stok_kodu="B", stok_adi="B", miktar=1, birim_fiyat="50")
+    _assert(sepet.toplamlar()["genel_toplam"] == Decimal("250.00"), sepet.toplamlar())
+    t = sepet.hedef_toplam_uygula("300")
+    _assert(t["genel_toplam"] == Decimal("300.00"), t)
+    # 200:50 → 240:60
+    _assert(sepet.satirlar[0].satir_toplam == Decimal("240.00"), sepet.satirlar[0].satir_toplam)
+    _assert(sepet.satirlar[1].satir_toplam == Decimal("60.00"), sepet.satirlar[1].satir_toplam)
+
+
+def test_hedef_toplam_kurus_yuvarlama():
+    """Üç satırda kuruş farkı son satırda kapanır."""
+    sepet = HizliSatisSepet()
+    sepet.ekle(stok_id=1, stok_kodu="A", stok_adi="A", miktar=1, birim_fiyat="10")
+    sepet.ekle(stok_id=2, stok_kodu="B", stok_adi="B", miktar=1, birim_fiyat="10")
+    sepet.ekle(stok_id=3, stok_kodu="C", stok_adi="C", miktar=1, birim_fiyat="10")
+    t = sepet.hedef_toplam_uygula(Decimal("10.00"))
+    _assert(t["genel_toplam"] == Decimal("10.00"), t)
+    satir_sum = sum((s.satir_toplam for s in sepet.satirlar), Decimal("0"))
+    _assert(_kurus_check(satir_sum) == Decimal("10.00"), satir_sum)
+
+
+def _kurus_check(tutar) -> Decimal:
+    from decimal import ROUND_HALF_UP
+
+    return Decimal(str(tutar)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def test_hedef_toplam_kdv_dahil():
+    """KDV'li satırlarda da genel (KDV dahil) hedefe eşitlenir."""
+    sepet = HizliSatisSepet()
+    sepet.ekle(
+        stok_id=1, stok_kodu="A", stok_adi="A", miktar=1, birim_fiyat="100", kdv_orani=20
+    )
+    sepet.ekle(
+        stok_id=2, stok_kodu="B", stok_adi="B", miktar=1, birim_fiyat="50", kdv_orani=10
+    )
+    # 120 + 55 = 175
+    _assert(sepet.toplamlar()["genel_toplam"] == Decimal("175.00"), sepet.toplamlar())
+    t = sepet.hedef_toplam_uygula(Decimal("140"))
+    _assert(t["genel_toplam"] == Decimal("140.00"), t)
+
+
+def test_hedef_toplam_bos_sepet():
+    sepet = HizliSatisSepet()
+    try:
+        sepet.hedef_toplam_uygula(100)
+        raise AssertionError("Boş sepet ValueError fırlatmalı")
+    except ValueError:
+        pass
+
+
+def test_hedef_toplam_negatif():
+    sepet = HizliSatisSepet()
+    sepet.ekle(stok_id=1, stok_kodu="A", stok_adi="A", miktar=1, birim_fiyat="10")
+    try:
+        sepet.hedef_toplam_uygula(Decimal("-1"))
+        raise AssertionError("Negatif hedef ValueError fırlatmalı")
+    except ValueError:
+        pass
+
+
 def main():
     testler = [
         test_ekle_birlestir_ve_toplam,
         test_miktar_delta_ve_sil,
         test_iskonto_satir,
+        test_varsayilan_kdv_sifir,
+        test_kdv_orani_degistir_toplamlari_gunceller,
         test_farkli_birim_ayri_satir,
         test_asama3_grup_sabitleri_ve_import,
+        test_asama3_kart_metinleri_barkod_ad_depo,
         test_asama4_fiyat_listesi_coz,
         test_asama4_risk_ve_yetki_kapilari,
         test_asama4_sepet_fiyat_iskonto_ve_gunluk,
@@ -451,6 +596,12 @@ def main():
         test_s23_ondalik_miktar_ve_genel_iskonto,
         test_s23_para_ustu_kuralı,
         test_asama9_cikti_html_pdf_smoke,
+        test_hedef_toplam_1050_1000,
+        test_hedef_toplam_yukari_olcekle,
+        test_hedef_toplam_kurus_yuvarlama,
+        test_hedef_toplam_kdv_dahil,
+        test_hedef_toplam_bos_sepet,
+        test_hedef_toplam_negatif,
     ]
     for fn in testler:
         fn()

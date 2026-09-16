@@ -8,7 +8,10 @@ from typing import Iterable
 
 
 KURUS = Decimal("0.01")
-VARSAYILAN_KDV = Decimal("20")
+# POS fiş satırı: KDV varsayılan %0; stok kartı oranı otomatik uygulanmaz.
+VARSAYILAN_KDV = Decimal("0")
+# Fatura UI (app.KDV_ORANLARI) ile aynı seçenekler
+KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
 
 
 def _d(deger, varsayilan: Decimal = Decimal("0")) -> Decimal:
@@ -143,6 +146,17 @@ class HizliSatisSepet:
         self.satirlar[index].iskonto_orani = oran
         return self.satirlar[index]
 
+    def kdv_ayarla(
+        self, index: int, kdv_orani: Decimal | str | float | int
+    ) -> SepetSatiri | None:
+        if index < 0 or index >= len(self.satirlar):
+            return None
+        oran = _d(kdv_orani)
+        if oran < 0 or oran > 100:
+            raise ValueError("KDV oranı 0–100 arasında olmalıdır.")
+        self.satirlar[index].kdv_orani = oran
+        return self.satirlar[index]
+
     def sil(self, index: int) -> bool:
         if index < 0 or index >= len(self.satirlar):
             return False
@@ -162,6 +176,93 @@ class HizliSatisSepet:
             "kdv": _kurus(kdv),
             "genel_toplam": _kurus(genel),
         }
+
+    @staticmethod
+    def _hedef_satir_genelden_fiyat(satir: SepetSatiri, hedef_satir_genel: Decimal) -> Decimal:
+        """KDV dahil satır tutarından birim fiyatı geri hesaplar."""
+        miktar = _d(satir.miktar)
+        if miktar <= 0:
+            raise ValueError("Miktarı olmayan satıra fiyat yansıtılamaz.")
+        kdv = _d(satir.kdv_orani)
+        isk = max(Decimal("0"), min(_d(satir.iskonto_orani), Decimal("100")))
+        carpani = Decimal("1") - isk / Decimal("100")
+        if carpani <= 0:
+            raise ValueError("%100 iskontolu satıra fiyat yansıtılamaz.")
+        net = Decimal(str(hedef_satir_genel)) / (Decimal("1") + kdv / Decimal("100"))
+        fiyat = net / (miktar * carpani)
+        return fiyat.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+    def hedef_toplam_uygula(self, hedef: Decimal | str | float | int) -> dict[str, Decimal]:
+        """Genel toplamı hedef tutara getirmek için birim fiyatları orantılı ölçekler.
+
+        Her satırın KDV dahil tutarı mevcut ağırlığa göre dağıtılır; son satıra
+        kalan kuruş verilir. Boş sepet / sıfır toplam için ValueError.
+        """
+        hedef_d = _kurus(_d(hedef))
+        if hedef_d < 0:
+            raise ValueError("Hedef toplam negatif olamaz.")
+        if not self.satirlar:
+            raise ValueError("Sepet boş; hedef toplam uygulanamaz.")
+
+        satir_ozet: list[tuple[int, Decimal, Decimal]] = []
+        mevcut_toplam = Decimal("0")
+        for i, s in enumerate(self.satirlar):
+            miktar = _d(s.miktar)
+            if miktar <= 0:
+                continue
+            satir_genel = s.satir_toplam
+            satir_ozet.append((i, satir_genel, miktar))
+            mevcut_toplam += satir_genel
+        mevcut_toplam = _kurus(mevcut_toplam)
+
+        if not satir_ozet:
+            raise ValueError("Fiyat yansıtmak için miktarı olan en az bir satır gerekli.")
+
+        if hedef_d == mevcut_toplam:
+            return self.toplamlar()
+
+        hedefler: dict[int, Decimal] = {}
+        if mevcut_toplam > 0:
+            biriken = Decimal("0")
+            for i, satir_genel, _m in satir_ozet[:-1]:
+                pay = _kurus(hedef_d * (satir_genel / mevcut_toplam))
+                hedefler[i] = pay
+                biriken += pay
+            son_i = satir_ozet[-1][0]
+            hedefler[son_i] = _kurus(hedef_d - biriken)
+        else:
+            # Tüm satırlar 0 TL ise miktara göre dağıt
+            toplam_miktar = sum((m for _i, _g, m in satir_ozet), Decimal("0"))
+            if toplam_miktar <= 0:
+                raise ValueError("Dağıtılacak miktar yok.")
+            biriken = Decimal("0")
+            for i, _g, miktar in satir_ozet[:-1]:
+                pay = _kurus(hedef_d * (miktar / toplam_miktar))
+                hedefler[i] = pay
+                biriken += pay
+            son_i = satir_ozet[-1][0]
+            hedefler[son_i] = _kurus(hedef_d - biriken)
+
+        for i, hedef_satir in hedefler.items():
+            if hedef_satir < 0:
+                raise ValueError("Hesaplanan satır tutarı negatif olamaz.")
+            yeni_fiyat = self._hedef_satir_genelden_fiyat(self.satirlar[i], hedef_satir)
+            if yeni_fiyat < 0:
+                raise ValueError("Hesaplanan birim fiyat negatif olamaz.")
+            self.satirlar[i].birim_fiyat = yeni_fiyat
+
+        # Kuruş farkını son satırda kapat
+        yeni_genel = self.toplamlar()["genel_toplam"]
+        fark = _kurus(hedef_d - yeni_genel)
+        if fark != 0:
+            son_i = satir_ozet[-1][0]
+            son = self.satirlar[son_i]
+            son_hedef = _kurus(son.satir_toplam + fark)
+            if son_hedef < 0:
+                raise ValueError("Yuvarlama sonrası satır tutarı negatif kaldı.")
+            self.satirlar[son_i].birim_fiyat = self._hedef_satir_genelden_fiyat(son, son_hedef)
+
+        return self.toplamlar()
 
     def __iter__(self) -> Iterable[SepetSatiri]:
         return iter(self.satirlar)

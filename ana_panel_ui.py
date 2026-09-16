@@ -557,16 +557,54 @@ class AnaPanelKabuk:
             app.menu_dugmeleri[anahtar] = dugme
             self._menu_sirasi.append(anahtar)
 
-        # İçerik (modüller buraya çizilir)
-        app.icerik = tk.Frame(govde, bg=ACIK_BG)
-        app.icerik.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+        # Sağ alan: geri çubuğu (kalıcı) + içerik (modüller buraya çizilir)
+        sag = tk.Frame(govde, bg=ACIK_BG)
+        sag.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+
+        app.geri_cubugu = tk.Frame(sag, bg=ACIK_BG)
+        # pack/unpack geri_cubugu_guncelle ile yönetilir
+        app.geri_dugme = tk.Button(
+            app.geri_cubugu,
+            text="←  Geri",
+            command=lambda: getattr(app, "geri_git", lambda: None)(),
+            bg=LACIVERT,
+            fg=BEYAZ,
+            activebackground=LACIVERT_HOVER,
+            activeforeground=BEYAZ,
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=6,
+            font=FONT_UI_BOLD,
+            cursor="hand2",
+            highlightthickness=0,
+        )
+        app.geri_dugme.pack(side="left", padx=(4, 0), pady=(0, 6))
+        app.geri_ipucu = tk.Label(
+            app.geri_cubugu,
+            text="Önceki menüye dön",
+            bg=ACIK_BG,
+            fg=PASIF,
+            font=FONT_ALT,
+        )
+        app.geri_ipucu.pack(side="left", padx=10, pady=(0, 6))
+
+        app.icerik = tk.Frame(sag, bg=ACIK_BG)
+        app.icerik.pack(fill="both", expand=True)
 
         app._aktif_sayfa = None
+        app._nav_gecmis = []
+        app._nav_yeniden_ac = None
+        app._nav_geri_gidiyor = False
+        app._nav_son_push = False
+        app._nav_ileri = False
         app._ana_panel_kabuk = self
         self._saat_baslat()
         self._klavye_kisayollari()
 
         app.bind("<Destroy>", self._on_destroy, add="+")
+        if hasattr(app, "geri_cubugu_guncelle"):
+            app.geri_cubugu_guncelle()
 
     def _klavye_kisayollari(self) -> None:
         app = self.app
@@ -954,6 +992,8 @@ def raporlar_menusu_goster(app) -> None:
         if komut is None:
             continue
         app._alt_menu_dugme(alt, baslik, komut, row=i, column=0, sticky="ew", pady=4)
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: raporlar_menusu_goster(app))
 
 
 def ayarlar_goster(app) -> None:

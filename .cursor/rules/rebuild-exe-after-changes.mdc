@@ -1,0 +1,25 @@
+---
+description: After app code changes, always rebuild CinMuhasebe.exe before finishing
+alwaysApply: true
+---
+
+# Rebuild EXE After App Changes
+
+After completing any code change that affects the running desktop app (Python UI, services, branding, assets, `main.py`, `*_ui.py`, etc.), rebuild `CinMuhasebe.exe` before finishing the task.
+
+## Required steps
+
+1. If `CinMuhasebe.exe` is running and locking the file, kill it first.
+2. Rebuild with:
+   `.venv\Scripts\python.exe -m PyInstaller --noconfirm CinMuhasebe.spec`
+3. In the completion summary, mention the new EXE path: `dist\CinMuhasebe.exe` (and size if useful).
+
+## Exceptions — skip rebuild only when
+
+- The user explicitly says not to rebuild the EXE, or
+- The task was docs-only / git-only with no app code change
+
+## Do not
+
+- Commit `dist/` unless the user asks
+- Skip the rebuild after UI/service/branding changes just because the Python script still runs

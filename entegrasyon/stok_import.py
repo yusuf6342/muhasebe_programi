@@ -139,8 +139,17 @@ def map_evobulut_api_satir(satir: dict[str, Any]) -> dict[str, Any]:
 
     kdv_al = al("a_kdv_al")
     kdv_sat = al("a_kdv_sat")
-    # Yerel modelde KDV oranı alanı yok; not olarak açıklamaya ekleme (yalnızca boşsa)
-    if not aciklama and (kdv_al or kdv_sat):
+    kdv_orani = None
+    for aday in (kdv_sat, kdv_al):
+        if aday is None or str(aday).strip() == "":
+            continue
+        try:
+            kdv_orani = str(aday).strip().replace(",", ".")
+            break
+        except Exception:
+            pass
+    # Eski davranış: alan yokken açıklamaya yazılırdı; artık kdv_orani doluysa gerek yok
+    if not aciklama and kdv_orani is None and (kdv_al or kdv_sat):
         parcalar = []
         if kdv_al:
             parcalar.append(f"KDV Alış %{kdv_al}")
@@ -164,6 +173,8 @@ def map_evobulut_api_satir(satir: dict[str, Any]) -> dict[str, Any]:
         "_evobulut_id": al("a_id"),
         "_fiyatlar": fiyatlar,
     }
+    if kdv_orani is not None:
+        veriler["kdv_orani"] = kdv_orani
     return veriler
 
 

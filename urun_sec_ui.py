@@ -91,17 +91,18 @@ class UrunSecDialog(tk.Toplevel):
                 foreground="#555555",
             ).pack(anchor="w", pady=(0, 2))
 
-        kolonlar = ("kod", "ad", "birim", "stok", "fiyat", "kaynak")
+        kolonlar = ("kod", "ad", "birim", "stok", "fiyat", "kaynak", "kdv")
         cerceve = ttk.Frame(self)
         cerceve.pack(fill="both", expand=True, padx=12, pady=4)
         self.tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik, genislik in (
             ("kod", "Ürün Kodu", 120),
-            ("ad", "Ürün Adı", 260),
-            ("birim", "Birim", 80),
+            ("ad", "Ürün Adı", 240),
+            ("birim", "Birim", 70),
             ("stok", "Mevcut Stok", 100),
             ("fiyat", "Fiyat", 110),
-            ("kaynak", "Kaynak", 100),
+            ("kaynak", "Kaynak", 90),
+            ("kdv", "KDV %", 60),
         ):
             self.tablo.heading(kolon, text=baslik)
             self.tablo.column(kolon, width=genislik)
@@ -151,6 +152,12 @@ class UrunSecDialog(tk.Toplevel):
         for sira, stok in enumerate(self._urunler):
             fiyat = _satis_fiyati_nesneden(stok)
             mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
+            kdv = getattr(stok, "kdv_orani", None)
+            kdv_metin = (
+                f"{Decimal(kdv):f}".rstrip("0").rstrip(".")
+                if kdv is not None
+                else "20"
+            ) or "0"
             self.tablo.insert(
                 "",
                 "end",
@@ -162,6 +169,7 @@ class UrunSecDialog(tk.Toplevel):
                     f"{mevcut:f}".rstrip("0").rstrip(".") or "0",
                     str(fiyat),
                     "Stok Kartı",
+                    kdv_metin,
                 ),
             )
         try:

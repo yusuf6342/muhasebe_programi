@@ -5933,10 +5933,10 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
         if "barkod" in self.satir_girdileri:
             self.satir_girdileri["barkod"].delete(0, "end")
-            bulunan = StokService.stoklari_ara(kod)
-            stok = next((s for s in bulunan if s.stok_kodu == kod), None)
-            if stok and stok.barkod:
-                self.satir_girdileri["barkod"].insert(0, stok.barkod)
+        bulunan = StokService.stoklari_ara(kod)
+        stok = next((s for s in bulunan if s.stok_kodu == kod), None)
+        if "barkod" in self.satir_girdileri and stok and stok.barkod:
+            self.satir_girdileri["barkod"].insert(0, stok.barkod)
         if not self.satir_girdileri["miktar"].get().strip():
             self.satir_girdileri["miktar"].insert(0, "1")
         if "iskonto_orani" in self.satir_girdileri and not self.satir_girdileri["iskonto_orani"].get().strip():
@@ -5944,12 +5944,22 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         for alan in ("iskonto_orani_2", "iskonto_orani_3"):
             if alan in self.satir_girdileri and not self.satir_girdileri[alan].get().strip():
                 self.satir_girdileri[alan].insert(0, "0")
-        if "kdv_orani" in self.satir_girdileri and not self.satir_girdileri["kdv_orani"].get().strip():
+        if "kdv_orani" in self.satir_girdileri:
             widget = self.satir_girdileri["kdv_orani"]
+            kdv_ham = getattr(stok, "kdv_orani", None) if stok else None
+            deger = (
+                f"{decimal(kdv_ham if kdv_ham is not None else 20, 'KDV', Decimal('20')):f}"
+                .rstrip("0")
+                .rstrip(".")
+                or "0"
+            )
             if isinstance(widget, ttk.Combobox):
-                widget.set("0")
+                if deger not in widget["values"]:
+                    widget["values"] = tuple(widget["values"]) + (deger,)
+                widget.set(deger)
             else:
-                widget.insert(0, "0")
+                widget.delete(0, "end")
+                widget.insert(0, deger)
         if "lot_no" in self.satir_girdileri:
             self.lotlari_yukle()
             self.lot_cikis_otomatik()
@@ -7847,6 +7857,7 @@ class MuhasebeApp(tk.Tk):
 
         self._stil_ayarla()
         self._arayuzu_olustur()
+        self.protocol("WM_DELETE_WINDOW", self.pencere_kapat_istegi)
 
         # Giriş diyaloğu: withdrawn kök pencere Windows'ta Toplevel'i gizleyebiliyor.
         # Şeffaf ama mapped root ile diyalog görünür kalsın.
@@ -8015,7 +8026,15 @@ class MuhasebeApp(tk.Tk):
         return False
 
     def _ekranlari_temizle(self):
-        self._icerigi_temizle()
+        self._nav_gecmis = []
+        self._nav_yeniden_ac = None
+        self._nav_son_push = False
+        self._nav_geri_gidiyor = True
+        try:
+            self._icerigi_temizle()
+        finally:
+            self._nav_geri_gidiyor = False
+        self.geri_cubugu_guncelle()
         # Açık diyalogları kapat
         for w in list(self.winfo_children()):
             if isinstance(w, tk.Toplevel) and w.winfo_exists():
@@ -8166,14 +8185,132 @@ class MuhasebeApp(tk.Tk):
         self.after(2000, self._aktarim_durum_guncelle)
 
     def _icerigi_temizle(self):
+        # Yalnızca ileri navigasyonda geçmişe yaz (← butonları / geri / sayfa_goster hariç)
+        if (
+            getattr(self, "_nav_ileri", False)
+            and not getattr(self, "_sayfa_yukleniyor", False)
+            and not getattr(self, "_nav_geri_gidiyor", False)
+            and getattr(self, "_aktif_sayfa", "giris") not in (None, "giris")
+        ):
+            self._nav_push_mevcut()
+        self._nav_ileri = False
+        self._nav_son_push = False
         for widget in self.icerik.winfo_children():
             widget.destroy()
+        self.geri_cubugu_guncelle()
+
+    def nav_sayfa_isaretle(self, yeniden_ac):
+        """Mevcut içeriği yeniden açmak için geri yükleme fonksiyonunu kaydeder."""
+        self._nav_yeniden_ac = yeniden_ac
+        self.geri_cubugu_guncelle()
+
+    def nav_ac(self, komut):
+        """Alt sayfa açar; geçmişe yazar (Toplevel diyaloglar için kullanmayın)."""
+        self._nav_ileri = True
+        if getattr(self, "_busy_pending", False) or not hasattr(self, "_menu_islemi"):
+            try:
+                komut()
+            finally:
+                self._nav_ileri = False
+            return
+        self._menu_islemi(komut)
+
+    def _nav_push_mevcut(self):
+        if getattr(self, "_nav_geri_gidiyor", False):
+            return
+        fn = getattr(self, "_nav_yeniden_ac", None)
+        if fn is None:
+            aktif = getattr(self, "_aktif_sayfa", None)
+            if not aktif or aktif == "giris":
+                return
+            fn = lambda a=aktif: self.sayfa_goster(a)
+        if self._nav_gecmis and self._nav_gecmis[-1] is fn:
+            return
+        self._nav_gecmis.append(fn)
+
+    def geri_cubugu_guncelle(self):
+        cubuk = getattr(self, "geri_cubugu", None)
+        if cubuk is None:
+            return
+        goster = (
+            bool(getattr(self, "_nav_gecmis", None))
+            or getattr(self, "_aktif_sayfa", "giris") not in (None, "giris")
+        )
+        try:
+            if goster:
+                if not cubuk.winfo_ismapped():
+                    cubuk.pack(fill="x", before=self.icerik)
+            else:
+                cubuk.pack_forget()
+        except tk.TclError:
+            pass
+
+    def geri_git(self):
+        """Önceki menü/sayfaya döner. Dönüş yapıldıysa True."""
+        gecmis = getattr(self, "_nav_gecmis", None)
+        if gecmis:
+            fn = gecmis.pop()
+            self._nav_geri_gidiyor = True
+            try:
+                fn()
+            finally:
+                self._nav_geri_gidiyor = False
+                self.geri_cubugu_guncelle()
+            return True
+        aktif = getattr(self, "_aktif_sayfa", "giris")
+        if aktif and aktif != "giris":
+            self._nav_geri_gidiyor = True
+            try:
+                self.sayfa_goster("giris")
+            finally:
+                self._nav_geri_gidiyor = False
+            return True
+        return False
+
+    def pencere_kapat_istegi(self):
+        """Ana pencere X: alt sayfadaysa geri dön; Ana Panel'deyse çıkışı onayla."""
+        # Açık Toplevel varken ana pencereyi kapatma / sayfa değiştirme
+        for w in self.winfo_children():
+            if isinstance(w, tk.Toplevel) and w.winfo_exists():
+                try:
+                    if int(w.winfo_viewable()):
+                        w.lift()
+                        try:
+                            w.focus_force()
+                        except tk.TclError:
+                            pass
+                        return
+                except tk.TclError:
+                    continue
+        if self.geri_git():
+            return
+        if self._acik_belge_var_mi():
+            if not messagebox.askyesno(
+                "Çıkış",
+                "Açık belge pencereleri var. Yine de uygulamadan çıkmak istiyor musunuz?",
+                parent=self,
+            ):
+                return
+        elif not messagebox.askyesno(
+            "Çıkış",
+            "Uygulamadan çıkmak istiyor musunuz?",
+            parent=self,
+        ):
+            return
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
 
     def _menu_islemi(self, komut):
         """Menü komutunu çalıştırır; 2 sn'yi aşarsa 'Yükleniyor' göstergesi açar."""
         if getattr(self, "_busy_pending", False):
             # İç içe menü çağrısı — mevcut yükleme göstergesini paylaş
-            komut()
+            try:
+                komut()
+            finally:
+                if getattr(self, "_nav_ileri", False):
+                    self._nav_ileri = False
             self._busy_nabiz()
             return
         self._busy_baslat()
@@ -8183,6 +8320,9 @@ class MuhasebeApp(tk.Tk):
                 komut()
             finally:
                 self._busy_bitir()
+                # Diyalog vb. içerik değiştirmediyse ileri bayrağını temizle
+                if getattr(self, "_nav_ileri", False):
+                    self._nav_ileri = False
 
         # Kısa gecikme: after(2000) zamanlayıcısının kuyruğa girmesini sağlar
         try:
@@ -8339,11 +8479,15 @@ class MuhasebeApp(tk.Tk):
 
     def _alt_menu_dugme(self, parent, baslik, komut, **grid_kwargs):
         """Alt menü butonu — yavaş açılışta yükleniyor göstergesi ile."""
+        def calistir(c=komut):
+            self._nav_ileri = True
+            self._menu_islemi(c)
+
         ttk.Button(
             parent,
             text=baslik,
             style="AltMenu.TButton",
-            command=lambda c=komut: self._menu_islemi(c),
+            command=calistir,
         ).grid(**grid_kwargs)
 
     def ana_sayfa_goster(self):
@@ -8352,14 +8496,21 @@ class MuhasebeApp(tk.Tk):
     def sayfa_goster(self, anahtar):
         from database.access import yetki_var
 
+        # Sol menüden üst düzey geçiş: geçmişi sıfırla (geri ile dönüşte koru)
+        if not getattr(self, "_nav_geri_gidiyor", False):
+            self._nav_gecmis = []
+            self._nav_son_push = False
+
         # Aynı ekranın mükerrer açılmasını engelle (giriş hariç yenilenebilir)
         if (
             anahtar == getattr(self, "_aktif_sayfa", None)
             and anahtar not in ("giris",)
             and getattr(self, "_sayfa_yukleniyor", False) is False
+            and not getattr(self, "_nav_geri_gidiyor", False)
         ):
             # İçerik zaten bu sayfa — tekrar çizme
             if self.icerik.winfo_children():
+                self.geri_cubugu_guncelle()
                 return
 
         gerekli = {
@@ -8400,6 +8551,7 @@ class MuhasebeApp(tk.Tk):
                         dugme.configure(style="Menu.TButton")
 
             self._aktif_sayfa = anahtar
+            self._nav_yeniden_ac = lambda a=anahtar: self.sayfa_goster(a)
 
             basliklar = {
                 "giris": "ANA PANEL",
@@ -8488,6 +8640,7 @@ class MuhasebeApp(tk.Tk):
                     kabuk.durum_guncelle()
                 except Exception:
                     pass
+            self.geri_cubugu_guncelle()
         finally:
             self._sayfa_yukleniyor = False
 
@@ -8546,13 +8699,14 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(ust, text="EvoBulut’tan Aktar", command=self.evobulut_stok_aktar).pack(side="right", padx=(0, 8))
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True)
-        kolonlar = ("kod", "ad", "tur", "barkod", "birim", "fiyatlar", "miktar")
-        basliklar = ("Stok Kodu", "Stok Adı", "Kart Türü", "Barkod", "Birim", "Tanımlı Fiyatlar", "Toplam Mevcut")
+        kolonlar = ("kod", "ad", "tur", "barkod", "birim", "kdv", "fiyatlar", "miktar")
+        basliklar = ("Stok Kodu", "Stok Adı", "Kart Türü", "Barkod", "Birim", "KDV %", "Tanımlı Fiyatlar", "Toplam Mevcut")
         self.stok_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik in zip(kolonlar, basliklar):
             self.stok_tablosu.heading(kolon, text=baslik)
             self.stok_tablosu.column(kolon, width=120, anchor="w")
         self.stok_tablosu.column("ad", width=240)
+        self.stok_tablosu.column("kdv", width=70, anchor="center")
         self.stok_tablosu.column("fiyatlar", width=280)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.stok_tablosu.yview)
         self.stok_tablosu.configure(yscrollcommand=kaydirma.set)
@@ -8603,6 +8757,12 @@ class MuhasebeApp(tk.Tk):
                     f"{f.fiyat_adi}: {para_goster(f.tutar)}" for f in stok.fiyatlar
                 )
                 mevcut = sum((lot.kalan_miktar for lot in stok.lotlar), Decimal("0"))
+                kdv = getattr(stok, "kdv_orani", None)
+                kdv_metin = (
+                    f"{Decimal(kdv):f}".rstrip("0").rstrip(".")
+                    if kdv is not None
+                    else "20"
+                ) or "0"
                 satirlar.append((
                     stok.id,
                     (
@@ -8611,6 +8771,7 @@ class MuhasebeApp(tk.Tk):
                         getattr(stok, "kart_turu", "") or "",
                         stok.barkod or "",
                         stok.birim,
+                        kdv_metin,
                         fiyatlar,
                         mevcut,
                     ),
@@ -8733,6 +8894,7 @@ class MuhasebeApp(tk.Tk):
             )
         ):
             self._alt_menu_dugme(alt, baslik, komut, row=i, column=0, sticky="ew", pady=4)
+        self.nav_sayfa_isaretle(self.satis_faturalari_alt_menusu_goster)
 
     def hizli_fatura_ac(self):
         """Listeye gitmeden boş satış faturası kartını açar (Satış Faturaları → Yeni Fatura ile aynı şablon)."""

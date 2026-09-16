@@ -190,6 +190,65 @@ class HizliSatisServiceTest(unittest.TestCase):
             self.assertTrue(f.onaylandi)
             self.assertEqual(f.durum, "KAPALI")
 
+    def test_kdv_sifir_satirda_korunur(self):
+        """POS satırında seçilen %0 KDV fatura satırına yazılır (or 20 ile ezilmez)."""
+        sepet = HizliSatisSepet()
+        sepet.ekle(
+            stok_id=self.stok_id,
+            stok_kodu="HS001",
+            stok_adi="Test Ürün",
+            miktar="2",
+            birim_fiyat="10",
+            # kdv_orani verilmez → VARSAYILAN_KDV = 0
+        )
+        self.assertEqual(sepet.satirlar[0].kdv_orani, Decimal("0"))
+        self.assertEqual(sepet.toplamlar()["genel_toplam"], Decimal("20.00"))
+        sonuc = HizliSatisService.satisi_tamamla(
+            sepet=sepet,
+            cari_id=self.cari_id,
+            tahsilatlar=[
+                {
+                    "odeme_sekli": "NAKİT / KASA",
+                    "hesap": "ANA KASA",
+                    "tutar": Decimal("20.00"),
+                }
+            ],
+            idempotency_token=HizliSatisService.yeni_idempotency_token(),
+        )
+        self.assertEqual(sonuc["genel_toplam"], Decimal("20.00"))
+        with get_session() as s:
+            f = s.get(SatisFaturasi, sonuc["fatura_id"])
+            self.assertEqual(len(f.satirlar), 1)
+            self.assertEqual(Decimal(str(f.satirlar[0].kdv_orani)), Decimal("0"))
+
+    def test_kdv_degistirilince_faturaya_yazilir(self):
+        sepet = HizliSatisSepet()
+        sepet.ekle(
+            stok_id=self.stok_id,
+            stok_kodu="HS001",
+            stok_adi="Test Ürün",
+            miktar="1",
+            birim_fiyat="100",
+        )
+        sepet.kdv_ayarla(0, 10)
+        self.assertEqual(sepet.toplamlar()["genel_toplam"], Decimal("110.00"))
+        sonuc = HizliSatisService.satisi_tamamla(
+            sepet=sepet,
+            cari_id=self.cari_id,
+            tahsilatlar=[
+                {
+                    "odeme_sekli": "NAKİT / KASA",
+                    "hesap": "ANA KASA",
+                    "tutar": Decimal("110.00"),
+                }
+            ],
+            idempotency_token=HizliSatisService.yeni_idempotency_token(),
+        )
+        self.assertEqual(sonuc["genel_toplam"], Decimal("110.00"))
+        with get_session() as s:
+            f = s.get(SatisFaturasi, sonuc["fatura_id"])
+            self.assertEqual(Decimal(str(f.satirlar[0].kdv_orani)), Decimal("10"))
+
     def test_cift_gonderim_reddedilir(self):
         sepet = self._sepet("1", "10")  # 12.00
         token = HizliSatisService.yeni_idempotency_token()

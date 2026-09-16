@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -14,6 +16,26 @@ from database.database import firma_db_ac, get_system_session
 from database.session_manager import oturum
 from database.system.auth_service import AuthService
 from database.system.models import AppSetting, Company, User
+from firma_secim_theme import (
+    COLOR_BG,
+    COLOR_DANGER,
+    COLOR_MUTED,
+    COLOR_NAVY,
+    COLOR_NAVY_DEEP,
+    COLOR_NAVY_MID,
+    COLOR_OK,
+    COLOR_WHITE,
+    COLOR_YELLOW,
+    COLOR_YELLOW_SOFT,
+    aktif_donem_oku,
+    firmalari_filtrele,
+    kart_sutun_sayisi,
+    konum_metni,
+    ui_font,
+    varsayilan_secim_id,
+)
+
+_log = logging.getLogger("cin_muhasebe.auth_ui")
 
 
 @dataclass
@@ -27,9 +49,16 @@ class FirmaOzet:
     varsayilan_para_birimi: str = "TRY"
     kisa_ad: str | None = None
     logo_yolu: str | None = None
+    vergi_no: str | None = None
+    vergi_dairesi: str | None = None
+    adres: str | None = None
+    il: str | None = None
+    ilce: str | None = None
+    aktif_donem: str | None = None
 
 
-def firma_ozet(f: Company) -> FirmaOzet:
+def firma_ozet(f: Company, *, donem_yukle: bool = True) -> FirmaOzet:
+    donem = aktif_donem_oku(f.db_path) if donem_yukle else None
     return FirmaOzet(
         id=f.id,
         firma_uid=f.firma_uid,
@@ -40,6 +69,12 @@ def firma_ozet(f: Company) -> FirmaOzet:
         varsayilan_para_birimi=f.varsayilan_para_birimi or "TRY",
         kisa_ad=f.kisa_ad,
         logo_yolu=f.logo_yolu,
+        vergi_no=f.vergi_no,
+        vergi_dairesi=f.vergi_dairesi,
+        adres=f.adres,
+        il=f.il,
+        ilce=f.ilce,
+        aktif_donem=donem,
     )
 
 
@@ -339,47 +374,297 @@ class SifreDegistirDialog(tk.Toplevel):
 
 
 class FirmaSecimDialog(tk.Toplevel):
+    """Modern kurumsal firma seçim ekranı — mevcut açılış / yetki akışı korunur."""
+
+    _MSG_SECIM = "Devam etmek için bir firma seçmelisiniz."
+
     def __init__(self, parent: tk.Misc, *, yeni_firma_izinli: bool = False):
         super().__init__(parent)
+        from branding import APP_NAME, APP_VERSION, APP_ICON_PNG, LOGO_FILE, apply_window_icon, center_toplevel_on_screen, get_brand_image
+
         self.title("Firma Seçimi")
-        self.geometry("640x420")
-        self.minsize(520, 360)
+        self.configure(bg=COLOR_BG)
         self.result: FirmaOzet | None = None
         self.yeni_firma_izinli = yeni_firma_izinli
         self.transient(parent)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._iptal)
 
-        ust = ttk.Frame(self, padding=(16, 12))
-        ust.pack(fill="x")
-        ttk.Label(ust, text="Firma Seçimi", font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Label(ust, text="Ara:").pack(side="left", padx=(24, 4))
-        self.arama = ttk.Entry(ust, width=24)
-        self.arama.pack(side="left")
-        self.arama.bind("<KeyRelease>", lambda _e: self._listele())
-
-        self.liste = ttk.Treeview(
-            self, columns=("kod", "unvan", "para"), show="headings", selectmode="browse"
-        )
-        self.liste.heading("kod", text="Kod")
-        self.liste.heading("unvan", text="Ünvan")
-        self.liste.heading("para", text="PB")
-        self.liste.column("kod", width=90, anchor="center")
-        self.liste.column("unvan", width=380, anchor="w")
-        self.liste.column("para", width=50, anchor="center")
-        self.liste.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-        self.liste.bind("<Double-1>", lambda _e: self._gir())
-        self.liste.bind("<Return>", lambda _e: self._gir())
-
-        alt = ttk.Frame(self, padding=(16, 8))
-        alt.pack(fill="x")
-        if yeni_firma_izinli:
-            ttk.Button(alt, text="Yeni Firma Oluştur", command=self._yeni_firma).pack(side="left")
-        ttk.Button(alt, text="İptal", command=self._iptal).pack(side="right")
-        ttk.Button(alt, text="Firmaya Gir", command=self._gir).pack(side="right", padx=(0, 8))
-
         self._firmalar: list[FirmaOzet] = []
+        self._gorunen: list[FirmaOzet] = []
+        self._secili_id: int | None = None
+        self._kartlar: dict[int, dict] = {}
+        self._logo_refs: list = []
+        self._aciliyor = False
+        self._filtre_job: str | None = None
+        self._son_id: str | None = None
+        self._varsayilan_id: int | None = None
+
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w = min(1100, max(900, int(sw * 0.72)))
+        h = min(720, max(560, int(sh * 0.78)))
+        self.geometry(f"{w}x{h}")
+        self.minsize(780, 520)
+
+        apply_window_icon(self)
+        self._build_ui(APP_NAME, APP_VERSION, APP_ICON_PNG, LOGO_FILE, get_brand_image)
+        self.bind("<Escape>", lambda _e: self._iptal())
+        self.bind("<Return>", lambda _e: self._gir())
+        self.arama.bind("<Return>", lambda _e: self._gir())
+        self.bind("<Up>", lambda e: self._okla(-1))
+        self.bind("<Down>", lambda e: self._okla(1))
+        self.bind("<Left>", lambda e: self._okla(-1))
+        self.bind("<Right>", lambda e: self._okla(1))
+        self.bind("<Configure>", self._on_resize)
+
         self._listele(ilk=True)
+        self.update_idletasks()
+        center_toplevel_on_screen(self)
+        self.after(80, lambda: self.arama.focus_set() if self.winfo_exists() else None)
+
+    # ── UI ────────────────────────────────────────────────────
+
+    def _build_ui(self, app_name, app_version, icon_png, logo_file, get_brand_image) -> None:
+        root = tk.Frame(self, bg=COLOR_BG)
+        root.pack(fill="both", expand=True)
+
+        # Header
+        header = tk.Frame(root, bg=COLOR_NAVY, height=96)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header_inner = tk.Frame(header, bg=COLOR_NAVY)
+        header_inner.pack(fill="both", expand=True, padx=28, pady=14)
+
+        self._header_logo = get_brand_image(icon_png, max_width=56, max_height=56)
+        if self._header_logo is None:
+            self._header_logo = get_brand_image(logo_file, max_width=120, max_height=48)
+        if self._header_logo is not None:
+            self._logo_refs.append(self._header_logo)
+            tk.Label(header_inner, image=self._header_logo, bg=COLOR_NAVY).pack(
+                side="left", padx=(0, 16)
+            )
+
+        baslik_kutu = tk.Frame(header_inner, bg=COLOR_NAVY)
+        baslik_kutu.pack(side="left", fill="y")
+        tk.Label(
+            baslik_kutu,
+            text="FİRMA SEÇİMİ",
+            font=ui_font(30, "bold", self),
+            fg=COLOR_WHITE,
+            bg=COLOR_NAVY,
+        ).pack(anchor="w")
+        tk.Label(
+            baslik_kutu,
+            text="Çalışmak istediğiniz firmayı seçiniz",
+            font=ui_font(11, root=self),
+            fg=COLOR_YELLOW_SOFT,
+            bg=COLOR_NAVY,
+        ).pack(anchor="w", pady=(2, 0))
+
+        tk.Frame(root, bg=COLOR_YELLOW, height=4).pack(fill="x")
+
+        # Welcome
+        hos = tk.Frame(root, bg=COLOR_BG)
+        hos.pack(fill="x", padx=28, pady=(16, 4))
+        kullanici = oturum.ad_soyad or oturum.kullanici_adi or ""
+        hos_metin = (
+            f"Hoş geldiniz{', ' + kullanici if kullanici else ''}."
+            " Aşağıdaki listeden firmayı seçerek devam edin."
+        )
+        tk.Label(
+            hos,
+            text=hos_metin,
+            font=ui_font(11, root=self),
+            fg=COLOR_NAVY_MID,
+            bg=COLOR_BG,
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w")
+
+        # Search
+        ara_satir = tk.Frame(root, bg=COLOR_BG)
+        ara_satir.pack(fill="x", padx=28, pady=(12, 8))
+        tk.Label(
+            ara_satir,
+            text="Firma Ara",
+            font=ui_font(10, "bold", self),
+            fg=COLOR_NAVY,
+            bg=COLOR_BG,
+        ).pack(side="left", padx=(0, 10))
+        self.arama = ttk.Entry(ara_satir, width=42, font=ui_font(11, root=self))
+        self.arama.pack(side="left", fill="x", expand=True)
+        entry_yapistirma_etkin(self.arama)
+        self.arama.bind("<KeyRelease>", self._arama_degisti)
+        self._sonuc_etiket = tk.Label(
+            ara_satir,
+            text="",
+            font=ui_font(9, root=self),
+            fg=COLOR_MUTED,
+            bg=COLOR_BG,
+        )
+        self._sonuc_etiket.pack(side="left", padx=(12, 0))
+
+        # Cards scroll area
+        kart_dis = tk.Frame(root, bg=COLOR_BG)
+        kart_dis.pack(fill="both", expand=True, padx=20, pady=(4, 8))
+
+        self._canvas = tk.Canvas(kart_dis, bg=COLOR_BG, highlightthickness=0, bd=0)
+        self._scroll = ttk.Scrollbar(kart_dis, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scroll.set)
+        self._scroll.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self._kart_host = tk.Frame(self._canvas, bg=COLOR_BG)
+        self._kart_window = self._canvas.create_window((0, 0), window=self._kart_host, anchor="nw")
+        self._kart_host.bind("<Configure>", self._scroll_region)
+        self._canvas.bind("<Configure>", self._canvas_boyut)
+        for w in (self, self._canvas, self._kart_host):
+            w.bind("<MouseWheel>", self._mousewheel)
+
+        self._durum = tk.Label(
+            root,
+            text="",
+            font=ui_font(10, root=self),
+            fg=COLOR_NAVY,
+            bg=COLOR_BG,
+        )
+        self._durum.pack(fill="x", padx=28)
+
+        # Buttons
+        alt = tk.Frame(root, bg=COLOR_BG)
+        alt.pack(fill="x", padx=28, pady=(4, 8))
+
+        self._btn_cikis = tk.Button(
+            alt,
+            text="ÇIKIŞ",
+            command=self._iptal,
+            font=ui_font(10, "bold", self),
+            bg="#E8EEF4",
+            fg=COLOR_DANGER,
+            activebackground="#DDE5EE",
+            activeforeground=COLOR_DANGER,
+            relief="flat",
+            bd=0,
+            padx=18,
+            pady=10,
+            cursor="hand2",
+        )
+        self._btn_cikis.pack(side="left")
+
+        sag = tk.Frame(alt, bg=COLOR_BG)
+        sag.pack(side="right")
+
+        self._btn_devam = tk.Button(
+            sag,
+            text="SEÇİLİ FİRMAYLA DEVAM ET",
+            command=self._gir,
+            font=ui_font(11, "bold", self),
+            bg=COLOR_YELLOW,
+            fg=COLOR_NAVY_DEEP,
+            activebackground=COLOR_YELLOW_SOFT,
+            activeforeground=COLOR_NAVY_DEEP,
+            relief="flat",
+            bd=0,
+            padx=22,
+            pady=11,
+            cursor="hand2",
+        )
+        self._btn_devam.pack(side="right")
+
+        if self.yeni_firma_izinli:
+            self._btn_duzenle = tk.Button(
+                sag,
+                text="FİRMA DÜZENLE",
+                command=self._firma_duzenle,
+                font=ui_font(10, "bold", self),
+                bg=COLOR_NAVY,
+                fg=COLOR_WHITE,
+                activebackground=COLOR_NAVY_MID,
+                activeforeground=COLOR_WHITE,
+                relief="flat",
+                bd=0,
+                padx=16,
+                pady=11,
+                cursor="hand2",
+            )
+            self._btn_duzenle.pack(side="right", padx=(0, 10))
+
+            self._btn_yeni = tk.Button(
+                sag,
+                text="YENİ FİRMA OLUŞTUR",
+                command=self._yeni_firma,
+                font=ui_font(10, "bold", self),
+                bg=COLOR_NAVY_MID,
+                fg=COLOR_WHITE,
+                activebackground=COLOR_NAVY,
+                activeforeground=COLOR_WHITE,
+                relief="flat",
+                bd=0,
+                padx=16,
+                pady=11,
+                cursor="hand2",
+            )
+            self._btn_yeni.pack(side="right", padx=(0, 10))
+
+        # Footer
+        footer = tk.Frame(root, bg=COLOR_NAVY_DEEP, height=36)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+        foot_inner = tk.Frame(footer, bg=COLOR_NAVY_DEEP)
+        foot_inner.pack(fill="both", expand=True, padx=20)
+
+        parcalar = [app_name]
+        if app_version:
+            parcalar.append(f"v{app_version}")
+        if kullanici:
+            parcalar.append(kullanici)
+        parcalar.append(datetime.now().strftime("%d.%m.%Y"))
+        tk.Label(
+            foot_inner,
+            text="  ·  ".join(parcalar),
+            font=ui_font(9, root=self),
+            fg=COLOR_YELLOW_SOFT,
+            bg=COLOR_NAVY_DEEP,
+            anchor="w",
+        ).pack(side="left", pady=8)
+
+        self._app_name = app_name
+        self._app_version = app_version
+
+    # ── Scroll / resize ───────────────────────────────────────
+
+    def _scroll_region(self, _event=None) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _canvas_boyut(self, event) -> None:
+        self._canvas.itemconfigure(self._kart_window, width=event.width)
+
+    def _mousewheel(self, event) -> str:
+        try:
+            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _on_resize(self, event) -> None:
+        if event.widget is not self:
+            return
+        sutun = kart_sutun_sayisi(
+            len(self._gorunen),
+            max(event.width - 80, 400),
+        )
+        if sutun == getattr(self, "_son_sutun", None):
+            return
+        self._son_sutun = sutun
+        if getattr(self, "_resize_job", None):
+            try:
+                self.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        self._resize_job = self.after(150, self._kartlari_ciz)
+
+    # ── Data ──────────────────────────────────────────────────
 
     def _iptal(self) -> None:
         self.result = None
@@ -395,72 +680,319 @@ class FirmaSecimDialog(tk.Toplevel):
                 self._firmalar = []
                 self._listele(ilk=True)
         except Exception as hata:
+            _log.exception("Yeni firma açılamadı")
             messagebox.showerror("Yeni Firma", str(hata), parent=self)
 
+    def _firma_duzenle(self) -> None:
+        if self._secili_id is None:
+            messagebox.showinfo("Firma", self._MSG_SECIM, parent=self)
+            return
+        try:
+            from sistem_ui import SistemFirmaDialog
+
+            dlg = SistemFirmaDialog(self, company_id=self._secili_id)
+            self.wait_window(dlg)
+            if dlg.result:
+                self._firmalar = []
+                self._listele(ilk=True)
+        except Exception as hata:
+            _log.exception("Firma düzenleme açılamadı")
+            messagebox.showerror("Firma Düzenle", str(hata), parent=self)
+
     def _kullanici_firmalari(self) -> list[FirmaOzet]:
-        with get_system_session() as session:
-            user = session.scalar(
-                select(User)
-                .options(selectinload(User.role), selectinload(User.companies))
-                .where(User.id == oturum.user_id)
-            )
-            if user is None:
-                return []
-            return [firma_ozet(f) for f in AuthService.kullanici_firmalari(session, user)]
+        try:
+            with get_system_session() as session:
+                user = session.scalar(
+                    select(User)
+                    .options(selectinload(User.role), selectinload(User.companies))
+                    .where(User.id == oturum.user_id)
+                )
+                if user is None:
+                    return []
+                return [firma_ozet(f) for f in AuthService.kullanici_firmalari(session, user)]
+        except Exception as hata:
+            _log.exception("Firma listesi alınamadı: %s", hata)
+            return []
 
     def _listele(self, ilk: bool = False) -> None:
         if ilk or not self._firmalar:
             self._firmalar = self._kullanici_firmalari()
 
-        with get_system_session() as session:
-            son_id = _ayar_oku(session, "son_firma_id")
-            varsayilan_id = None
-            user = session.get(User, oturum.user_id)
-            if user and user.varsayilan_firma_id:
-                varsayilan_id = user.varsayilan_firma_id
+        self._son_id = None
+        self._varsayilan_id = None
+        try:
+            with get_system_session() as session:
+                self._son_id = _ayar_oku(session, "son_firma_id")
+                user = session.get(User, oturum.user_id) if oturum.user_id else None
+                if user and user.varsayilan_firma_id:
+                    self._varsayilan_id = user.varsayilan_firma_id
+        except Exception as hata:
+            _log.warning("Son firma ayarı okunamadı: %s", hata)
 
-        arama = (self.arama.get() or "").strip().casefold()
+        self._filtre_uygula(secimi_koru=not ilk)
+        if ilk:
+            hedef = varsayilan_secim_id(
+                self._gorunen,
+                son_id=self._son_id,
+                varsayilan_id=self._varsayilan_id,
+            )
+            self._secili_id = hedef
+            self._kartlari_ciz()
+
+    def _arama_degisti(self, _event=None) -> None:
+        if self._filtre_job:
+            try:
+                self.after_cancel(self._filtre_job)
+            except tk.TclError:
+                pass
+        self._filtre_job = self.after(120, lambda: self._filtre_uygula(secimi_koru=True))
+
+    def _filtre_uygula(self, *, secimi_koru: bool = True) -> None:
+        onceki = self._secili_id if secimi_koru else None
         sirali = list(self._firmalar)
 
         def _anahtar(f: FirmaOzet):
             ust = 0
-            if son_id and str(f.id) == str(son_id):
+            if self._son_id and str(f.id) == str(self._son_id):
                 ust = -2
-            elif varsayilan_id and f.id == varsayilan_id:
+            elif self._varsayilan_id and f.id == self._varsayilan_id:
                 ust = -1
             return (ust, (f.unvan or "").casefold())
 
         sirali.sort(key=_anahtar)
-        for item in self.liste.get_children():
-            self.liste.delete(item)
-        secilecek = None
-        for f in sirali:
-            if arama and arama not in (f.unvan or "").casefold() and arama not in (
-                f.firma_kodu or ""
-            ).casefold():
-                continue
-            iid = str(f.id)
-            self.liste.insert(
-                "", "end", iid=iid,
-                values=(f.firma_kodu, f.unvan, f.varsayilan_para_birimi or "TRY"),
+        self._gorunen = firmalari_filtrele(sirali, self.arama.get() if hasattr(self, "arama") else "")
+        n = len(self._gorunen)
+        self._sonuc_etiket.configure(
+            text=f"{n} firma" if n else "Sonuç yok"
+        )
+        if onceki and any(f.id == onceki for f in self._gorunen):
+            self._secili_id = onceki
+        elif self._gorunen:
+            self._secili_id = varsayilan_secim_id(
+                self._gorunen,
+                son_id=self._son_id,
+                varsayilan_id=self._varsayilan_id,
             )
-            if secilecek is None:
-                if varsayilan_id and f.id == varsayilan_id:
-                    secilecek = iid
-                elif son_id and str(f.id) == str(son_id):
-                    secilecek = iid
-        if secilecek is None and self.liste.get_children():
-            secilecek = self.liste.get_children()[0]
-        if secilecek:
-            self.liste.selection_set(secilecek)
-            self.liste.focus(secilecek)
+        else:
+            self._secili_id = None
+        self._kartlari_ciz()
+
+    # ── Cards ─────────────────────────────────────────────────
+
+    def _kartlari_ciz(self) -> None:
+        if getattr(self, "_ciziliyor", False):
+            return
+        self._ciziliyor = True
+        try:
+            for child in self._kart_host.winfo_children():
+                child.destroy()
+            self._kartlar.clear()
+
+            if not self._gorunen:
+                tk.Label(
+                    self._kart_host,
+                    text="Gösterilecek firma bulunamadı.",
+                    font=ui_font(12, root=self),
+                    fg=COLOR_MUTED,
+                    bg=COLOR_BG,
+                ).pack(pady=40)
+                return
+
+            self.update_idletasks()
+            genislik = max(self._canvas.winfo_width(), self.winfo_width() - 80, 600)
+            sutun = kart_sutun_sayisi(len(self._gorunen), genislik)
+            self._son_sutun = sutun
+            for c in range(sutun):
+                self._kart_host.columnconfigure(c, weight=1, uniform="kart")
+
+            for i, firma in enumerate(self._gorunen):
+                r, c = divmod(i, sutun)
+                kart = self._kart_olustur(self._kart_host, firma)
+                kart.grid(row=r, column=c, sticky="nsew", padx=8, pady=8)
+                self._kartlar[firma.id] = {"frame": kart, "firma": firma}
+
+            self.after(10, self._scroll_region)
+        finally:
+            self._ciziliyor = False
+
+    def _kart_olustur(self, parent: tk.Misc, firma: FirmaOzet) -> tk.Frame:
+        secili = self._secili_id == firma.id
+        bg = COLOR_NAVY if secili else COLOR_WHITE
+        border = COLOR_YELLOW if secili else COLOR_NAVY
+        dis = tk.Frame(parent, bg=border, bd=0, highlightthickness=0)
+        ic = tk.Frame(dis, bg=bg, padx=14, pady=12)
+        ic.pack(fill="both", expand=True, padx=2, pady=2)
+
+        ust = tk.Frame(ic, bg=bg)
+        ust.pack(fill="x")
+
+        logo_img = self._firma_logo_yukle(firma.logo_yolu)
+        if logo_img is not None:
+            tk.Label(ust, image=logo_img, bg=bg).pack(side="left", padx=(0, 10))
+
+        baslik_fg = COLOR_WHITE if secili else COLOR_NAVY
+        baslik = tk.Label(
+            ust,
+            text=firma.unvan or "—",
+            font=ui_font(13, "bold", self),
+            fg=baslik_fg,
+            bg=bg,
+            anchor="w",
+            justify="left",
+            wraplength=260,
+        )
+        baslik.pack(side="left", fill="x", expand=True)
+
+        check = tk.Label(
+            ust,
+            text="✓" if secili else "",
+            font=ui_font(14, "bold", self),
+            fg=COLOR_YELLOW,
+            bg=bg,
+            width=2,
+        )
+        check.pack(side="right")
+
+        tk.Frame(ic, bg=COLOR_YELLOW, height=3).pack(fill="x", pady=(10, 8))
+
+        muted = COLOR_YELLOW_SOFT if secili else COLOR_MUTED
+        body_fg = COLOR_WHITE if secili else COLOR_NAVY_MID
+
+        def satir(etiket: str, deger: str) -> None:
+            if not deger:
+                return
+            s = tk.Frame(ic, bg=bg)
+            s.pack(fill="x", pady=1)
+            tk.Label(
+                s, text=etiket, font=ui_font(9, root=self), fg=muted, bg=bg, width=12, anchor="w"
+            ).pack(side="left")
+            tk.Label(
+                s,
+                text=deger,
+                font=ui_font(10, root=self),
+                fg=body_fg,
+                bg=bg,
+                anchor="w",
+                wraplength=220,
+                justify="left",
+            ).pack(side="left", fill="x", expand=True)
+
+        satir("Kod", firma.firma_kodu or "")
+        if firma.vergi_no:
+            satir("Vergi No", firma.vergi_no)
+        konum = konum_metni(il=firma.il, ilce=firma.ilce, adres=firma.adres)
+        if konum:
+            satir("Konum", konum)
+        if firma.aktif_donem:
+            satir("Aktif dönem", firma.aktif_donem)
+        if firma.varsayilan_para_birimi:
+            satir("Para birimi", firma.varsayilan_para_birimi)
+
+        durum_fg = COLOR_YELLOW if secili else (COLOR_OK if firma.aktif else COLOR_DANGER)
+        tk.Label(
+            ic,
+            text=("Aktif" if firma.aktif else "Pasif"),
+            font=ui_font(9, "bold", self),
+            fg=durum_fg,
+            bg=bg,
+            anchor="w",
+        ).pack(anchor="w", pady=(8, 0))
+
+        def sec(_e=None, fid=firma.id):
+            self._sec(fid)
+
+        def ac(_e=None, fid=firma.id):
+            self._secili_id = fid
+            self._gir()
+
+        def hover_in(_e=None, frame=dis, fid=firma.id):
+            if self._secili_id != fid:
+                frame.configure(bg=COLOR_YELLOW_SOFT)
+
+        def hover_out(_e=None, frame=dis, fid=firma.id):
+            if self._secili_id != fid:
+                frame.configure(bg=COLOR_NAVY)
+
+        def bagla(w: tk.Misc) -> None:
+            w.bind("<Button-1>", sec)
+            w.bind("<Double-Button-1>", ac)
+            w.bind("<MouseWheel>", self._mousewheel)
+            try:
+                w.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+
+        for w in (dis, ic, ust, baslik, check):
+            bagla(w)
+            w.bind("<Enter>", hover_in)
+            w.bind("<Leave>", hover_out)
+
+        for child in ic.winfo_children():
+            bagla(child)
+            for sub in child.winfo_children():
+                bagla(sub)
+
+        return dis
+
+    def _firma_logo_yukle(self, logo_yolu: str | None):
+        if not logo_yolu:
+            return None
+        yol = Path(logo_yolu)
+        if not yol.is_file():
+            return None
+        try:
+            from PIL import Image, ImageTk  # type: ignore
+
+            with Image.open(yol) as im:
+                im = im.convert("RGBA")
+                im.thumbnail((40, 40), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(im)
+            self._logo_refs.append(photo)
+            return photo
+        except Exception:
+            try:
+                photo = tk.PhotoImage(file=str(yol))
+                self._logo_refs.append(photo)
+                return photo
+            except tk.TclError:
+                return None
+
+    def _sec(self, firma_id: int) -> None:
+        if self._secili_id == firma_id:
+            return
+        self._secili_id = firma_id
+        if getattr(self, "_sec_job", None):
+            try:
+                self.after_cancel(self._sec_job)
+            except tk.TclError:
+                pass
+        self._sec_job = self.after(30, self._kartlari_ciz)
+
+    def _okla(self, delta: int) -> str:
+        if not self._gorunen:
+            return "break"
+        ids = [f.id for f in self._gorunen]
+        if self._secili_id in ids:
+            idx = ids.index(self._secili_id)
+        else:
+            idx = 0
+        idx = max(0, min(len(ids) - 1, idx + delta))
+        self._sec(ids[idx])
+        return "break"
+
+    # ── Open firm ─────────────────────────────────────────────
 
     def _gir(self) -> None:
-        secim = self.liste.selection()
-        if not secim:
-            messagebox.showinfo("Firma", "Lütfen bir firma seçin.", parent=self)
+        if self._aciliyor:
             return
-        firma_id = int(secim[0])
+        if self._secili_id is None:
+            messagebox.showinfo("Firma", self._MSG_SECIM, parent=self)
+            return
+        firma_id = int(self._secili_id)
+        self._aciliyor = True
+        self._durum.configure(text="Firma açılıyor…")
+        self._btn_devam.configure(state="disabled")
+        self.update_idletasks()
         try:
             with get_system_session() as session:
                 kayit = session.get(Company, firma_id)
@@ -469,13 +1001,25 @@ class FirmaSecimDialog(tk.Toplevel):
                 ozet = firma_ozet(kayit)
             firma_oturumu_ac(ozet)
         except PermissionError as hata:
+            _log.warning("Firma yetki hatası: %s", hata)
             messagebox.showerror("Yetki", str(hata), parent=self)
+            self._acma_sifirla()
             return
         except Exception as hata:
+            _log.exception("Firma açılamadı")
             messagebox.showerror("Firma", str(hata), parent=self)
+            self._acma_sifirla()
             return
         self.result = ozet
         self.destroy()
+
+    def _acma_sifirla(self) -> None:
+        self._aciliyor = False
+        self._durum.configure(text="")
+        try:
+            self._btn_devam.configure(state="normal")
+        except tk.TclError:
+            pass
 
 
 def oturum_akisi_calistir(parent: tk.Tk) -> bool:

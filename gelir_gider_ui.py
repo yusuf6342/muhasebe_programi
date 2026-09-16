@@ -57,14 +57,17 @@ def gelir_gider_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("GİDERLER", lambda: giderler_menusu_goster(app)),
         ("GELİRLER", lambda: gelirler_menusu_goster(app)),
         ("EVOBULUT GELİR/GİDER AKTAR", lambda: _evobulut_gelir_gider(app)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: gelir_gider_menusu_goster(app))
 
 
 def giderler_menusu_goster(app):
@@ -83,6 +86,7 @@ def giderler_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(20, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("GİDER HİZMET KARTLARI", lambda: hizmet_kartlari_sayfasi(app, "GIDER")),
         (
@@ -96,9 +100,11 @@ def giderler_menusu_goster(app):
         ),
         ("GİDER RAPORU", lambda: _yer_tutucu(app, "GİDER RAPORU", giderler_menusu_goster)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: giderler_menusu_goster(app))
 
 
 def gelirler_menusu_goster(app):
@@ -117,6 +123,7 @@ def gelirler_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(20, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("GELİR HİZMET KARTLARI", lambda: hizmet_kartlari_sayfasi(app, "GELIR")),
         (
@@ -129,9 +136,11 @@ def gelirler_menusu_goster(app):
         ),
         ("GELİR RAPORU", lambda: _yer_tutucu(app, "GELİR RAPORU", gelirler_menusu_goster)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: gelirler_menusu_goster(app))
 
 
 def _yer_tutucu(app, baslik, geri_fn):

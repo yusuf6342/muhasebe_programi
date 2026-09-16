@@ -110,6 +110,18 @@ def stil_uygula(stil: ttk.Style) -> None:
         foreground=[("!disabled", KOYU_LACIVERT)],
     )
     stil.configure("Oturum.TLabel", font=FONT_ALT, background=BEYAZ, foreground=METIN)
+    stil.configure(
+        "Geri.TButton",
+        font=FONT_UI_BOLD,
+        padding=(12, 6),
+        foreground=BEYAZ,
+        background=LACIVERT,
+    )
+    stil.map(
+        "Geri.TButton",
+        background=[("active", LACIVERT_HOVER), ("!disabled", LACIVERT)],
+        foreground=[("!disabled", BEYAZ)],
+    )
 
     stil.configure(
         "AnaPanel.Treeview",

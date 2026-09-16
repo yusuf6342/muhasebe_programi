@@ -15,6 +15,7 @@ from database.stok_service import (
     StokService,
     fabrika_fiyati_hesapla,
 )
+from database.models.stok import KDV_ORANLARI, VARSAYILAN_KDV_ORANI
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 
@@ -864,11 +865,12 @@ class StokHareketleriDialog(tk.Toplevel):
 class StokKartiDialog(tk.Toplevel):
     FIYAT_ADLARI = STOK_FIYAT_ADLARI
 
-    def __init__(self, parent, stok=None, baslangic=None):
+    def __init__(self, parent, stok=None, baslangic=None, rapor_grubu_zorunlu=False):
         super().__init__(parent)
         self.stok = StokService.stok_getir(stok.id) if stok else None
         self.baslangic = baslangic or {}
         self.result = None
+        self.rapor_grubu_zorunlu = bool(rapor_grubu_zorunlu)
         self.title("Stok Kartını Düzenle" if stok else "Yeni Stok Kartı")
         self.geometry("1220x820")
         self.minsize(1020, 700)
@@ -934,6 +936,7 @@ class StokKartiDialog(tk.Toplevel):
             ("Stok Adı", "stok_adi"),
             ("Kart Türü", "kart_turu"),
             ("Ana Birim", "birim"),
+            ("KDV %", "kdv_orani"),
             ("Marka", "marka"),
             ("Model", "model"),
             ("Renk", "renk"),
@@ -965,6 +968,17 @@ class StokKartiDialog(tk.Toplevel):
                 widget.bind("<<ComboboxSelected>>", self._stok_adi_secildi)
             elif alan == "agirlik":
                 widget = ttk.Entry(form, width=26)
+                widget.grid(row=satir, column=sutun + 1, padx=6, pady=4, sticky="ew")
+            elif alan == "kdv_orani":
+                widget = ttk.Combobox(form, values=KDV_ORANLARI, width=20, state="readonly")
+                mevcut_kdv = getattr(self.stok, "kdv_orani", None) if self.stok else None
+                if mevcut_kdv is None:
+                    widget.set(str(int(VARSAYILAN_KDV_ORANI)))
+                else:
+                    metin = f"{Decimal(mevcut_kdv):f}".rstrip("0").rstrip(".") or "0"
+                    if metin not in KDV_ORANLARI:
+                        widget.configure(values=KDV_ORANLARI + (metin,), state="normal")
+                    widget.set(metin)
                 widget.grid(row=satir, column=sutun + 1, padx=6, pady=4, sticky="ew")
             elif alan == "raf_omru":
                 widget = ttk.Combobox(form, values=StokService.raf_omru_secenekleri(), width=20)
@@ -1525,6 +1539,7 @@ class StokKartiDialog(tk.Toplevel):
             "stok_adi": self.alanlar["stok_adi"].get().strip(),
             "kart_turu": self.alanlar["kart_turu"].get().strip(),
             "birim": self.alanlar["birim"].get().strip() or "Adet",
+            "kdv_orani": self.alanlar["kdv_orani"].get().strip() or str(int(VARSAYILAN_KDV_ORANI)),
             "rapor_grubu": self.alanlar["rapor_grubu"].get().strip(),
             "marka": self.alanlar["marka"].get().strip(),
             "model": self.alanlar["model"].get().strip(),
@@ -1541,6 +1556,33 @@ class StokKartiDialog(tk.Toplevel):
         if not veriler["stok_kodu"] or not veriler["stok_adi"]:
             messagebox.showwarning("Eksik bilgi", "Stok kodu ve stok adı zorunludur.", parent=self)
             return
+        if getattr(self, "rapor_grubu_zorunlu", False) and not veriler.get("rapor_grubu"):
+            messagebox.showwarning(
+                "Stok grubu",
+                "Ürünü kaydetmek için bir stok grubu seçmelisiniz.",
+                parent=self,
+            )
+            try:
+                self.alanlar["rapor_grubu"].focus_set()
+            except Exception:
+                pass
+            return
+        # Satış fiyatı yoksa uyar (engelleme yok)
+        try:
+            sf1 = None
+            for ad, giris in self.fiyat_alanlari.items():
+                if (ad or "").strip().upper() == "SATIŞ FİYATI 1":
+                    sf1 = (giris.get() or "").strip()
+                    break
+            if not sf1 or float(sf1.replace(",", ".")) <= 0:
+                if not messagebox.askyesno(
+                    "Satış fiyatı",
+                    "Satış fiyatı tanımlı değil veya 0. Yine de kaydedilsin mi?",
+                    parent=self,
+                ):
+                    return
+        except Exception:
+            pass
         raf_omru_metin = self.alanlar["raf_omru"].get().strip()
         if raf_omru_metin:
             try:

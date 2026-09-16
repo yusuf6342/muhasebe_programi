@@ -42,10 +42,13 @@ def ozet_tablolar_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("BİLANÇO / ÖZET TABLO", lambda: _bilanco_ac(app)),
         ("GELİR TABLOSU", lambda: _gelir_tablosu_ac(app)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: ozet_tablolar_menusu_goster(app))

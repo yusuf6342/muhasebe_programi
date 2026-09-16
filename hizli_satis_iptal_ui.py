@@ -32,9 +32,11 @@ def _para(tutar) -> str:
 
 
 def _miktar_goster(miktar) -> str:
-    metin = f"{Decimal(str(miktar or 0)):f}".rstrip("0").rstrip(".")
+    d = Decimal(str(miktar or 0))
+    if d == d.to_integral_value():
+        return str(int(d))
+    metin = format(d, "f").rstrip("0").rstrip(".")
     return metin or "0"
-
 
 def _tarih_metin(d) -> str:
     if d is None:

@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from database.database import BASE_DIR, get_session
 from database.access import yazma_zorunlu, maliyet_zorunlu
 from database.models.stok import (
+    VARSAYILAN_KDV_ORANI,
     Depo,
     DepoTransferFisi,
     DepoTransferFisiSatiri,
@@ -368,7 +369,8 @@ class StokService:
 
         Dönüş (dict) veya None:
           stok_id, stok_kodu, stok_adi, barkod, birim, carpan, birim_fiyat,
-          miktar (okutunca eklenecek miktar; paket/koli çarpanı), mevcut_stok
+          miktar (okutunca eklenecek miktar; paket/koli çarpanı), mevcut_stok,
+          kdv_orani (stok kartındaki seçimli KDV)
         """
         kod = (barkod or "").strip()
         if not kod:
@@ -426,6 +428,9 @@ class StokService:
             else:
                 birim_fiyat = paket_fiyat
             mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
+            kdv = getattr(stok, "kdv_orani", None)
+            if kdv is None:
+                kdv = VARSAYILAN_KDV_ORANI
             return {
                 "stok_id": stok.id,
                 "stok_kodu": stok.stok_kodu,
@@ -437,6 +442,7 @@ class StokService:
                 "miktar": carpan if carpan > 0 else Decimal("1"),
                 "birim_fiyat": birim_fiyat,
                 "mevcut_stok": mevcut,
+                "kdv_orani": decimal(kdv, "KDV", Decimal("0")),
             }
 
         with get_session() as session:
@@ -529,8 +535,24 @@ class StokService:
         return yol or None
 
     @staticmethod
+    def _hizli_satis_birincil_barkod(stok) -> str | None:
+        """Ana barkod; yoksa stok_barkodlari listesindeki ilk dolu kod."""
+        ana = (getattr(stok, "barkod", None) or "").strip()
+        if ana:
+            return ana
+        for kayit in getattr(stok, "barkodlar", None) or []:
+            kod = (getattr(kayit, "barkod", None) or "").strip()
+            if kod:
+                return kod
+        return None
+
+    @staticmethod
     def _hizli_satis_urun_dict(stok, fiyat_adi: str | None = None) -> dict:
+        # Depo miktarı = tüm lotların kalan_miktar toplamı (aktif stok kartları üzerinden)
         mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
+        kdv = getattr(stok, "kdv_orani", None)
+        if kdv is None:
+            kdv = VARSAYILAN_KDV_ORANI
         return {
             "stok_id": int(stok.id),
             "stok_kodu": stok.stok_kodu,
@@ -539,19 +561,37 @@ class StokService:
             "birim_fiyat": StokService._hizli_satis_fiyat(stok, fiyat_adi),
             "miktar": Decimal("1"),
             "carpan": Decimal("1"),
-            "barkod": stok.barkod,
+            "barkod": StokService._hizli_satis_birincil_barkod(stok),
             "mevcut_stok": mevcut,
             "resim_yolu": StokService._hizli_satis_resim_yolu(stok),
             "rapor_grubu": (stok.rapor_grubu or "").strip() or None,
             "fiyat_listesi": (fiyat_adi or "").strip() or None,
+            "kdv_orani": decimal(kdv, "KDV", Decimal("0")),
         }
 
     @staticmethod
     def hizli_satis_gruplari():
-        """Sol panel grupları: Sık Satılanlar + rapor_grubu (StokSecenek ∪ stok kartları).
+        """Sol panel grupları.
 
-        Dönüş: [{"kod": str, "ad": str, "ozel": bool}, ...]
+        Pin sistemi aktifse: Sık Satılanlar + hızlı satış grupları.
+        Değilse: Sık Satılanlar + rapor_grubu (eski davranış).
         """
+        try:
+            from database.hizli_satis_service import HizliSatisService
+
+            if HizliSatisService.pin_sistemi_aktif():
+                gruplar: list[dict] = [
+                    {
+                        "kod": StokService.SIK_SATILANLAR_KOD,
+                        "ad": "Sık Satılanlar",
+                        "ozel": True,
+                    }
+                ]
+                gruplar.extend(HizliSatisService.hizli_gruplari_listele())
+                return gruplar
+        except Exception:
+            pass
+
         gruplar: list[dict] = [
             {
                 "kod": StokService.SIK_SATILANLAR_KOD,
@@ -657,17 +697,29 @@ class StokService:
     ) -> dict:
         """Gruba göre ürün kartı verisi (soft-delete dışı, aktif).
 
+        HSG:* kodları → pinli ürünler. Sık Satılanlar / rapor_grubu eski yol.
         Dönüş: {"urunler": [dict, ...], "toplam": int, "limit": int, "offset": int}
         """
         limit = max(1, min(int(limit or 36), 120))
         offset = max(0, int(offset or 0))
         kod = (grup_kod or "").strip()
 
+        if kod.startswith("HSG:"):
+            from database.hizli_satis_service import HizliSatisService
+
+            return HizliSatisService.pinli_urunleri(
+                grup_kod=kod,
+                limit=limit,
+                offset=offset,
+                fiyat_adi=fiyat_adi,
+            )
+
         with get_session() as session:
             opts = (
                 selectinload(StokKarti.fiyatlar),
                 selectinload(StokKarti.lotlar),
                 selectinload(StokKarti.resimler),
+                selectinload(StokKarti.barkodlar),
             )
 
             if kod == StokService.SIK_SATILANLAR_KOD:
@@ -728,6 +780,169 @@ class StokService:
                 "urunler": [
                     StokService._hizli_satis_urun_dict(s, fiyat_adi) for s in stoklar
                 ],
+                "toplam": int(toplam),
+                "limit": limit,
+                "offset": offset,
+            }
+
+    @staticmethod
+    def stok_rapor_grubu_ata(stok_id: int, rapor_grubu: str) -> dict:
+        """Ana stok kartına rapor_grubu (stok grubu) yazar; StokSecenek'e de ekler."""
+        temiz = (rapor_grubu or "").strip()
+        if not temiz:
+            raise ValueError("Stok grubu boş olamaz.")
+        with get_session() as session:
+            stok = session.scalar(
+                select(StokKarti).where(
+                    StokKarti.id == int(stok_id),
+                    *StokService._aktif_stok_kosulu(),
+                )
+            )
+            if not stok:
+                raise ValueError("Stok kartı bulunamadı veya pasif/silinmiş.")
+            StokService._secenek_ekle(session, "rapor_grubu", temiz)
+            stok.rapor_grubu = temiz
+            session.flush()
+            secenek = session.scalar(
+                select(StokSecenek).where(
+                    StokSecenek.tur == "rapor_grubu",
+                    func.lower(StokSecenek.ad) == temiz.casefold(),
+                )
+            )
+            return {
+                "stok_id": int(stok.id),
+                "stok_kodu": stok.stok_kodu,
+                "rapor_grubu": stok.rapor_grubu,
+                "stok_secenek_id": int(secenek.id) if secenek else None,
+            }
+
+    @staticmethod
+    def stok_rapor_grubu_toplu_ata(stok_idler: list[int], rapor_grubu: str) -> dict:
+        """Tek transaction; hata olursa rollback (get_session context)."""
+        temiz = (rapor_grubu or "").strip()
+        if not temiz:
+            raise ValueError("Stok grubu boş olamaz.")
+        idler = [int(x) for x in (stok_idler or []) if x]
+        if not idler:
+            raise ValueError("Ürün seçilmedi.")
+        with get_session() as session:
+            StokService._secenek_ekle(session, "rapor_grubu", temiz)
+            guncellenen = 0
+            for sid in idler:
+                stok = session.scalar(
+                    select(StokKarti).where(
+                        StokKarti.id == sid,
+                        *StokService._aktif_stok_kosulu(),
+                    )
+                )
+                if not stok:
+                    raise ValueError(f"Stok bulunamadı (id={sid}).")
+                stok.rapor_grubu = temiz
+                guncellenen += 1
+            session.flush()
+            secenek = session.scalar(
+                select(StokSecenek).where(
+                    StokSecenek.tur == "rapor_grubu",
+                    func.lower(StokSecenek.ad) == temiz.casefold(),
+                )
+            )
+            return {
+                "guncellenen": guncellenen,
+                "rapor_grubu": temiz,
+                "stok_secenek_id": int(secenek.id) if secenek else None,
+            }
+
+    @staticmethod
+    def hizli_satis_urun_ara(
+        arama: str = "",
+        *,
+        rapor_grubu: str | None = None,
+        marka: str | None = None,
+        sadece_stokta: bool = False,
+        sadece_grupsuz: bool = False,
+        limit: int = 80,
+        offset: int = 0,
+        fiyat_adi: str | None = None,
+    ) -> dict:
+        """ÜRÜN EKLE seçici: kod/ad/barkod/marka/grup/raf — soft-delete dışı."""
+        limit = max(1, min(int(limit or 80), 200))
+        offset = max(0, int(offset or 0))
+        qmetin = (arama or "").strip()
+        marka_f = (marka or "").strip()
+        rapor_f = (rapor_grubu or "").strip()
+
+        with get_session() as session:
+            kosullar = list(StokService._aktif_stok_kosulu())
+            if sadece_grupsuz:
+                kosullar.append(
+                    or_(StokKarti.rapor_grubu.is_(None), StokKarti.rapor_grubu == "")
+                )
+            elif rapor_f and rapor_f not in ("*", "(Tümü)", "Tümü"):
+                kosullar.append(
+                    func.lower(StokKarti.rapor_grubu) == rapor_f.casefold()
+                )
+            if marka_f and marka_f not in ("*", "(Tümü)", "Tümü"):
+                kosullar.append(func.lower(StokKarti.marka) == marka_f.casefold())
+
+            if qmetin:
+                ifade = f"%{qmetin}%"
+                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                kosullar.append(
+                    or_(
+                        StokKarti.stok_kodu.ilike(ifade),
+                        StokKarti.stok_adi.ilike(ifade),
+                        StokKarti.barkod.ilike(ifade),
+                        StokKarti.id.in_(barkod_alt),
+                        StokKarti.marka.ilike(ifade),
+                        StokKarti.rapor_grubu.ilike(ifade),
+                        StokKarti.raf_yeri.ilike(ifade),
+                    )
+                )
+
+            if sadece_stokta:
+                stokta_alt = (
+                    select(StokLotu.stok_id)
+                    .where(StokLotu.kalan_miktar > 0)
+                    .group_by(StokLotu.stok_id)
+                )
+                kosullar.append(StokKarti.id.in_(stokta_alt))
+
+            toplam = (
+                session.scalar(
+                    select(func.count()).select_from(StokKarti).where(*kosullar)
+                )
+                or 0
+            )
+            stoklar = list(
+                session.scalars(
+                    select(StokKarti)
+                    .where(*kosullar)
+                    .options(
+                        selectinload(StokKarti.fiyatlar),
+                        selectinload(StokKarti.lotlar),
+                        selectinload(StokKarti.barkodlar),
+                        selectinload(StokKarti.resimler),
+                        selectinload(StokKarti.birimler),
+                    )
+                    .order_by(StokKarti.stok_adi)
+                    .offset(offset)
+                    .limit(limit)
+                ).all()
+            )
+            satirlar = []
+            for s in stoklar:
+                d = StokService._hizli_satis_urun_dict(s, fiyat_adi)
+                d.update(
+                    {
+                        "marka": (s.marka or "").strip() or None,
+                        "raf_yeri": (s.raf_yeri or "").strip() or None,
+                        "muhasebe_kdv_satis_kodu": (s.muhasebe_kdv_satis_kodu or "").strip()
+                        or None,
+                    }
+                )
+                satirlar.append(d)
+            return {
+                "urunler": satirlar,
                 "toplam": int(toplam),
                 "limit": limit,
                 "offset": offset,
@@ -989,6 +1204,13 @@ class StokService:
             stok.muhasebe_maliyet_kodu = veriler.get("muhasebe_maliyet_kodu") or None
             stok.muhasebe_kdv_alis_kodu = veriler.get("muhasebe_kdv_alis_kodu") or None
             stok.muhasebe_kdv_satis_kodu = veriler.get("muhasebe_kdv_satis_kodu") or None
+            ham_kdv = veriler.get("kdv_orani", VARSAYILAN_KDV_ORANI)
+            if ham_kdv is None or (isinstance(ham_kdv, str) and not str(ham_kdv).strip()):
+                ham_kdv = VARSAYILAN_KDV_ORANI
+            kdv = decimal(ham_kdv, "KDV oranı", Decimal("0"))
+            if kdv < 0 or kdv > 100:
+                raise ValueError("KDV oranı 0–100 arasında olmalıdır.")
+            stok.kdv_orani = kdv
             stok.iskonto_1 = decimal(veriler.get("iskonto_1") or "0", "1. iskonto", Decimal("0"))
             stok.iskonto_2 = decimal(veriler.get("iskonto_2") or "0", "2. iskonto", Decimal("0"))
             stok.iskonto_3 = decimal(veriler.get("iskonto_3") or "0", "3. iskonto", Decimal("0"))

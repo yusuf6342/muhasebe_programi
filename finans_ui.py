@@ -150,15 +150,18 @@ def finans_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("KASALAR", lambda: kasalar_sayfasi_goster(app)),
         ("BANKALAR", lambda: bankalar_sayfasi_goster(app)),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: finans_menusu_goster(app))
 
 
 BANKA_ISLEM_EVRAKLARI = (
@@ -187,6 +190,7 @@ def banka_islemleri_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(8, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, kod) in enumerate(BANKA_ISLEM_EVRAKLARI):
         if kod == "kby":
             komut = lambda: kasadan_bankaya_yatirilan_sayfasi_goster(app)
@@ -210,8 +214,10 @@ def banka_islemleri_menusu_goster(app):
             alt,
             text=baslik,
             style="AltMenu.TButton",
-            command=komut,
+            command=lambda c=komut: nav(c),
         ).grid(row=i, column=0, sticky="ew", pady=4)
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: banka_islemleri_menusu_goster(app))
 
 
 def _banka_islem_bos(app, baslik):

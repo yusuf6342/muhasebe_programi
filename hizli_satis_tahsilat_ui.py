@@ -74,8 +74,6 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("TAHSİLAT — Hızlı Satış")
         self.configure(bg=KOYU_GRI)
-        self.geometry("720x620")
-        self.minsize(640, 540)
         self.transient(parent)
         self.grab_set()
 
@@ -87,17 +85,106 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
         self.result: list[dict[str, Any]] | None = None
         self.odeme_satirlari: list[dict[str, Any]] = []
         self._aktif_sekil = NAKİT
+        self._orta_canvas: tk.Canvas | None = None
+        self._orta_icerik: tk.Frame | None = None
 
         self._ui_kur()
+        self._pencereyi_yerlestir()
         self._ozet_yenile()
         self.protocol("WM_DELETE_WINDOW", self._iptal)
         self.bind("<Escape>", lambda _e: self._iptal())
         self.bind("<F12>", lambda _e: self._tamamla())
         self.after(80, lambda: self.tutar_entry.focus_set())
 
+    def _pencereyi_yerlestir(self) -> None:
+        """Ekrana sığdır; 1366×768 ve küçük çözünürlüklerde alt butonlar kesilmesin."""
+        self.update_idletasks()
+        sw = max(int(self.winfo_screenwidth()), 800)
+        sh = max(int(self.winfo_screenheight()), 600)
+        # Görev çubuğu / DPI payı bırak
+        max_w = min(720, max(560, sw - 40))
+        max_h = min(640, max(480, sh - 80))
+        self.minsize(560, 420)
+        self.geometry(f"{max_w}x{max_h}")
+        x = max(0, (sw - max_w) // 2)
+        y = max(0, (sh - max_h) // 2)
+        self.geometry(f"{max_w}x{max_h}+{x}+{y}")
+
+    def _orta_scroll_guncelle(self, _event=None) -> None:
+        if self._orta_canvas is None:
+            return
+        self._orta_canvas.configure(scrollregion=self._orta_canvas.bbox("all"))
+
+    def _orta_genislik_ayarla(self, event) -> None:
+        if self._orta_canvas is None or self._orta_icerik is None:
+            return
+        self._orta_canvas.itemconfigure(self._orta_pencere_id, width=max(event.width, 1))
+
+    def _orta_tekerlek(self, event) -> None:
+        if self._orta_canvas is None:
+            return
+        # Yalnızca bu dialog üzerindeki tekerlek olaylarını yakala
+        w = event.widget
+        try:
+            while w is not None:
+                if w is self:
+                    break
+                w = w.master
+            else:
+                return
+        except tk.TclError:
+            return
+        if getattr(event, "num", None) == 4:
+            self._orta_canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            self._orta_canvas.yview_scroll(1, "units")
+        else:
+            adim = int(-1 * (event.delta / 120)) if getattr(event, "delta", 0) else 0
+            if adim:
+                self._orta_canvas.yview_scroll(adim, "units")
+
     def _ui_kur(self) -> None:
+        # Sabit alt çubuk ÖNCE pack edilir → her zaman görünür (sticky footer)
+        alt = tk.Frame(self, bg="#1a1d20", pady=10, padx=10)
+        alt.pack(side="bottom", fill="x")
+        alt.columnconfigure(0, weight=1)
+        alt.columnconfigure(1, weight=2)
+        tk.Button(
+            alt,
+            text="İPTAL (Esc)",
+            bg=KIRMIZI,
+            fg=BEYAZ,
+            font=("Segoe UI", 11, "bold"),
+            relief="flat",
+            pady=12,
+            command=self._iptal,
+        ).grid(row=0, column=0, sticky="ew", padx=4)
+        tk.Button(
+            alt,
+            text="SATIŞI ONAYLA (F12)",
+            bg=YESIL,
+            fg=BEYAZ,
+            font=("Segoe UI", 12, "bold"),
+            relief="flat",
+            pady=12,
+            command=self._tamamla,
+        ).grid(row=0, column=1, sticky="ew", padx=4)
+
+        self.ozet_lbl = tk.Label(
+            self,
+            text="",
+            bg=KOYU_GRI,
+            fg=BEYAZ,
+            font=("Segoe UI", 11, "bold"),
+            anchor="e",
+            justify="right",
+            padx=14,
+            pady=6,
+        )
+        self.ozet_lbl.pack(side="bottom", fill="x")
+
         ust = tk.Frame(self, bg=SARİ, pady=10, padx=14)
-        ust.pack(fill="x")
+        ust.pack(side="top", fill="x")
         tk.Label(
             ust,
             text="TAHSİLAT",
@@ -113,9 +200,33 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             font=("Segoe UI", 18, "bold"),
         ).pack(side="right")
 
+        # Kaydırılabilir orta alan (üst form + ödeme listesi)
+        orta_dis = tk.Frame(self, bg=KOYU_GRI)
+        orta_dis.pack(side="top", fill="both", expand=True)
+        orta_dis.rowconfigure(0, weight=1)
+        orta_dis.columnconfigure(0, weight=1)
+
+        self._orta_canvas = tk.Canvas(
+            orta_dis, bg=KOYU_GRI, highlightthickness=0, borderwidth=0
+        )
+        kaydir = ttk.Scrollbar(orta_dis, orient="vertical", command=self._orta_canvas.yview)
+        self._orta_canvas.configure(yscrollcommand=kaydir.set)
+        self._orta_canvas.grid(row=0, column=0, sticky="nsew")
+        kaydir.grid(row=0, column=1, sticky="ns")
+
+        icerik = tk.Frame(self._orta_canvas, bg=KOYU_GRI)
+        self._orta_icerik = icerik
+        self._orta_pencere_id = self._orta_canvas.create_window((0, 0), window=icerik, anchor="nw")
+        icerik.bind("<Configure>", self._orta_scroll_guncelle)
+        self._orta_canvas.bind("<Configure>", self._orta_genislik_ayarla)
+        self.bind_all("<MouseWheel>", self._orta_tekerlek, add="+")
+        self.bind_all("<Button-4>", self._orta_tekerlek, add="+")
+        self.bind_all("<Button-5>", self._orta_tekerlek, add="+")
+        self.bind("<Destroy>", self._orta_tekerlek_temizle, add="+")
+
         if self.musteri_unvan:
             tk.Label(
-                self,
+                icerik,
                 text=f"Müşteri: {self.musteri_unvan}",
                 bg=KOYU_GRI,
                 fg=BEYAZ,
@@ -124,7 +235,7 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             ).pack(fill="x", padx=14, pady=(8, 0))
 
         # Ödeme şekli butonları
-        sekil_fr = tk.Frame(self, bg=KOYU_GRI, pady=8)
+        sekil_fr = tk.Frame(icerik, bg=KOYU_GRI, pady=8)
         sekil_fr.pack(fill="x", padx=10)
         self._sekil_butonlari: dict[str, tk.Button] = {}
         etiketler = (
@@ -153,7 +264,7 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             self._sekil_butonlari[kod] = btn
 
         # Form
-        form = tk.Frame(self, bg=ACIK_GRI, padx=12, pady=10)
+        form = tk.Frame(icerik, bg=ACIK_GRI, padx=12, pady=10)
         form.pack(fill="x", padx=10, pady=6)
 
         tk.Label(form, text="Tutar", bg=ACIK_GRI, fg=KOYU_GRI, font=("Segoe UI", 10, "bold")).grid(
@@ -245,8 +356,8 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
         ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         # Liste
-        liste_fr = tk.Frame(self, bg=KOYU_GRI, padx=10)
-        liste_fr.pack(fill="both", expand=True, pady=6)
+        liste_fr = tk.Frame(icerik, bg=KOYU_GRI, padx=10)
+        liste_fr.pack(fill="x", pady=6)
         tk.Label(
             liste_fr,
             text="Ödeme satırları (kısmi tahsilat desteklenir)",
@@ -259,7 +370,7 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             liste_fr,
             columns=("sekil", "hesap", "tutar"),
             show="headings",
-            height=6,
+            height=4,
         )
         self.liste.heading("sekil", text="Ödeme Şekli")
         self.liste.heading("hesap", text="Hesap")
@@ -267,7 +378,7 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
         self.liste.column("sekil", width=180)
         self.liste.column("hesap", width=220)
         self.liste.column("tutar", width=120, anchor="e")
-        self.liste.pack(fill="both", expand=True, pady=(4, 0))
+        self.liste.pack(fill="x", pady=(4, 0))
         tk.Button(
             liste_fr,
             text="Seçili satırı sil",
@@ -277,43 +388,14 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             command=self._satir_sil,
         ).pack(anchor="e", pady=4)
 
-        self.ozet_lbl = tk.Label(
-            self,
-            text="",
-            bg=KOYU_GRI,
-            fg=BEYAZ,
-            font=("Segoe UI", 11, "bold"),
-            anchor="e",
-            justify="right",
-        )
-        self.ozet_lbl.pack(fill="x", padx=14)
-
-        alt = tk.Frame(self, bg=KOYU_GRI, pady=10, padx=10)
-        alt.pack(fill="x")
-        alt.columnconfigure(0, weight=1)
-        alt.columnconfigure(1, weight=1)
-        tk.Button(
-            alt,
-            text="İPTAL (Esc)",
-            bg=KIRMIZI,
-            fg=BEYAZ,
-            font=("Segoe UI", 11, "bold"),
-            relief="flat",
-            pady=12,
-            command=self._iptal,
-        ).grid(row=0, column=0, sticky="ew", padx=4)
-        tk.Button(
-            alt,
-            text="SATIŞI ONAYLA (F12)",
-            bg=YESIL,
-            fg=BEYAZ,
-            font=("Segoe UI", 12, "bold"),
-            relief="flat",
-            pady=12,
-            command=self._tamamla,
-        ).grid(row=0, column=1, sticky="ew", padx=4)
-
         self._sekil_sec(NAKİT)
+
+    def _orta_tekerlek_temizle(self, event=None) -> None:
+        """Dialog yok edilince scroll referansını bırak (bind_all handler no-op olur)."""
+        if event is not None and event.widget is not self:
+            return
+        self._orta_canvas = None
+        self._orta_icerik = None
 
     def _sekil_sec(self, sekil: str) -> None:
         self._aktif_sekil = sekil
@@ -346,6 +428,7 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
             self.nakit_frame.grid_remove()
 
         self._para_ustu_guncelle()
+        self.after_idle(self._orta_scroll_guncelle)
 
     def _tamami_yaz(self) -> None:
         self._tutar_yaz(self._kalan() if self._kalan() > 0 else self.genel_toplam)

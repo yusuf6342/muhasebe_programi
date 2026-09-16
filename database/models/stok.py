@@ -6,6 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
 
+# Fatura / Hızlı Satış (app.KDV_ORANLARI, hizli_satis_sepet) ile aynı seçenekler
+KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
+VARSAYILAN_KDV_ORANI = Decimal("20")
+
 
 class Depo(Base):
     __tablename__ = "depolar"
@@ -39,6 +43,7 @@ class StokKarti(Base):
     muhasebe_maliyet_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     muhasebe_kdv_alis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     muhasebe_kdv_satis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     iskonto_1: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     iskonto_2: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     iskonto_3: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)

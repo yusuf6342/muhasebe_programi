@@ -60,6 +60,7 @@ def stok_raporlari_menusu_goster(app):
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
+    nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
         ("STOK ENVANTER RAPORU", lambda: rapor_envanter(app)),
         ("STOKLAR KAR / ZARAR RAPORU", lambda: rapor_kar_zarar(app)),
@@ -67,12 +68,14 @@ def stok_raporlari_menusu_goster(app):
         ("STOK DEVİR HIZI", lambda: rapor_devir(app)),
         ("STOK HAREKET RAPORU", lambda: rapor_hareket(app)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=komut).grid(
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
         )
     ttk.Button(app.icerik, text="← Stoklar Menüsü", command=lambda: app.sayfa_goster("stoklar")).pack(
         anchor="w", pady=(16, 0)
     )
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: stok_raporlari_menusu_goster(app))
 
 
 def _rapor_ust(app, baslik):
