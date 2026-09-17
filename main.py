@@ -41,11 +41,14 @@ from database.models.finans import (
     FinansHareketi,
     FinansHesabi,
     BankaKarti,
+    BankAccountMatchRule,  # noqa: F401 — create_all
     PosValorKaydi,
     PosTaksitKomisyon,
     KrediKartiTanimi,
     KrediKartiOdeme,
     KrediKartiOdemeTaksit,
+    KrediKartiEkstre,
+    KrediKartiEkstreOdeme,
     BankaKredisi,
     BankaKrediTaksit,
     BankaKrediOdeme,
@@ -67,6 +70,12 @@ from database.models.genel_muhasebe import (
     MuhasebeFisiSatiri,
     MuhasebeHesapEsleme,
     MuhasebeIslemGecmisi,
+)
+from excel_aktarim.models import (  # noqa: F401
+    ImportBatch,
+    ImportChange,
+    ImportMapping,
+    ImportRow,
 )
 
 from database.stok_service import StokService

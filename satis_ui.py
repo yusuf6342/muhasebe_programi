@@ -49,6 +49,11 @@ SATIS_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
         "Satış, döviz kuru ve döviz bazında raporlar",
         "rapor",
     ),
+    (
+        "EXCEL VERİ AKTARIM",
+        "Müşteri cari ve virman Excel şablonları, doğrulama ve aktarım",
+        "excel_aktarim",
+    ),
 )
 
 CARI_ISLEM_KARTLARI: tuple[tuple[str, str, str], ...] = (
@@ -64,6 +69,7 @@ CARI_ISLEM_KARTLARI: tuple[tuple[str, str, str], ...] = (
 )
 
 RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = (
+    ("SATIŞ KÂR ANALİZİ", "Maliyet yöntemi, marj, zararına satış ve dönem karşılaştırması", "kar_analiz"),
     ("SATIŞ RAPORLARI", "Müşteri bakiye, ekstre, tahsilat ve satış özeti", "satis_rapor"),
     ("DÖVİZ KURLARI", "USD/EUR günlük kur yönetimi (TCMB / manuel)", "doviz_kur"),
     ("DÖVİZ BAZINDA RAPORLAR", "TL faturaların USD/EUR karşılık raporları", "doviz_rapor"),
@@ -95,6 +101,16 @@ def _nav(app, komut: Callable):
 
 
 def _hub_komutlar(app) -> dict[str, Callable]:
+    def excel_aktarim():
+        from excel_aktarim_ui import excel_aktarim_hub_goster
+
+        excel_aktarim_hub_goster(
+            app,
+            modul="satis",
+            baslik="SATIŞ — EXCEL VERİ AKTARIM",
+            geri_fn=lambda: satislar_hub_goster(app),
+        )
+
     return {
         "musteri": app.cariler_goster,
         "fatura": app.satis_faturalari_alt_menusu_goster,
@@ -103,6 +119,7 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "irsaliye": app.satis_irsaliyeleri_goster,
         "cari": lambda: cari_hesap_islemleri_goster(app),
         "rapor": lambda: satis_raporlar_hub_goster(app),
+        "excel_aktarim": excel_aktarim,
     }
 
 
@@ -146,7 +163,13 @@ def _rapor_komutlar(app) -> dict[str, Callable]:
     from doviz_kur_ui import doviz_kur_yonetimi_goster
     from doviz_rapor_ui import doviz_raporlari_goster
 
+    def kar_analiz():
+        from satis_kar_analiz_ui import satis_kar_analizi_goster
+
+        satis_kar_analizi_goster(app)
+
     return {
+        "kar_analiz": kar_analiz,
         "satis_rapor": app.satis_raporlari_goster,
         "doviz_kur": lambda: doviz_kur_yonetimi_goster(app),
         "doviz_rapor": lambda: doviz_raporlari_goster(app),

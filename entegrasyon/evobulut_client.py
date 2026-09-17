@@ -27,6 +27,7 @@ Cari export: POST /CariExport/base/  cmd=export
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -53,22 +54,81 @@ class EvobulutCredentials:
     base_url: str = DEFAULT_BASE
 
 
-def load_credentials(path: Path | None = None) -> EvobulutCredentials:
-    """evobulut.env dosyasından okur. Boş alan varsa EvobulutConfigError."""
-    yol = path or CONFIG_PATH
-    if not yol.is_file():
-        raise EvobulutConfigError(
-            f"EvoBulut yapılandırması yok: {yol.name}\n"
-            f"Şablon: entegrasyon/evobulut_config.example.env → evobulut.env"
-        )
+def resolve_config_path(*, for_write: bool = False, path: Path | None = None) -> Path:
+    """Kaynak: entegrasyon/evobulut.env; EXE: AppData/.../evobulut.env."""
+    if path is not None:
+        return path
+    adaylar: list[Path] = []
+    if getattr(sys, "frozen", False):
+        try:
+            from database.database import DB_DIR
+
+            adaylar.append(DB_DIR / "evobulut.env")
+        except Exception:  # noqa: BLE001
+            pass
+    adaylar.append(CONFIG_PATH)
+    if for_write:
+        return adaylar[0]
+    for yol in adaylar:
+        if yol.is_file():
+            return yol
+    return adaylar[0]
+
+
+def _env_oku(yol: Path) -> dict[str, str]:
     degerler: dict[str, str] = {}
+    if not yol.is_file():
+        return degerler
     for satir in yol.read_text(encoding="utf-8").splitlines():
         satir = satir.strip()
         if not satir or satir.startswith("#") or "=" not in satir:
             continue
         anahtar, _, deger = satir.partition("=")
         degerler[anahtar.strip()] = deger.strip().strip('"').strip("'")
+    return degerler
 
+
+def peek_credentials(path: Path | None = None) -> dict[str, str]:
+    """Dosyadan alanları okur (eksik olsa da). Şifre dahil — yalnız UI ön doldurma."""
+    yol = resolve_config_path(path=path)
+    d = _env_oku(yol)
+    return {
+        "kullanici_kodu": d.get("EVOBULUT_KULLANICI_KODU", "").strip(),
+        "sifre": d.get("EVOBULUT_SIFRE", "").strip(),
+        "app": d.get("EVOBULUT_APP", "muhasebe_programi").strip() or "muhasebe_programi",
+        "base_url": d.get("EVOBULUT_BASE_URL", DEFAULT_BASE).strip() or DEFAULT_BASE,
+        "path": str(yol),
+    }
+
+
+def save_credentials(
+    creds: EvobulutCredentials,
+    path: Path | None = None,
+) -> Path:
+    """Kimliği evobulut.env dosyasına yazar (EXE'de AppData)."""
+    yol = resolve_config_path(for_write=True, path=path)
+    yol.parent.mkdir(parents=True, exist_ok=True)
+    metin = (
+        "# EvoBulut API kimlik bilgileri — git'e eklemeyin.\n"
+        f"EVOBULUT_BASE_URL={creds.base_url.rstrip('/')}\n"
+        f"EVOBULUT_KULLANICI_KODU={creds.kullanici_kodu}\n"
+        f"EVOBULUT_SIFRE={creds.sifre}\n"
+        f"EVOBULUT_APP={creds.app}\n"
+    )
+    yol.write_text(metin, encoding="utf-8")
+    return yol
+
+
+def load_credentials(path: Path | None = None) -> EvobulutCredentials:
+    """evobulut.env dosyasından okur. Boş alan varsa EvobulutConfigError."""
+    yol = resolve_config_path(path=path)
+    if not yol.is_file():
+        raise EvobulutConfigError(
+            f"EvoBulut yapılandırması yok: {yol.name}\n"
+            f"Şablon: entegrasyon/evobulut_config.example.env → evobulut.env\n"
+            "veya uygulamada EvoBulut şifre ekranını kullanın."
+        )
+    degerler = _env_oku(yol)
     kullanici = degerler.get("EVOBULUT_KULLANICI_KODU", "").strip()
     sifre = degerler.get("EVOBULUT_SIFRE", "").strip()
     app = degerler.get("EVOBULUT_APP", "muhasebe_programi").strip() or "muhasebe_programi"
@@ -76,7 +136,7 @@ def load_credentials(path: Path | None = None) -> EvobulutCredentials:
     if not kullanici or not sifre:
         raise EvobulutConfigError(
             "EVOBULUT_KULLANICI_KODU ve EVOBULUT_SIFRE doldurulmalı "
-            f"({yol.name})."
+            f"({yol.name}) veya şifre ekranını kullanın."
         )
     return EvobulutCredentials(
         kullanici_kodu=kullanici,
@@ -632,8 +692,46 @@ class EvobulutClient:
         son_tar: str = "",
         max_sayfa: int = 2000,
     ) -> list[dict]:
+        """Tüm banka işlemleri. Tarih boşsa 2015→bugün yıllık dilimlerle çeker."""
         if not self.uid:
             self.login()
+        if bas_tar or son_tar:
+            return self._banka_islem_sayfala(
+                ara=ara, bas_tar=bas_tar, son_tar=son_tar, max_sayfa=max_sayfa
+            )
+        from datetime import date
+
+        bugun = date.today()
+        tum: list[dict] = []
+        gorulen: set[str] = set()
+        for yil in range(2015, bugun.year + 1):
+            bas = f"01.01.{yil}"
+            son = bugun.strftime("%d.%m.%Y") if yil == bugun.year else f"31.12.{yil}"
+            dilim = self._banka_islem_sayfala(
+                ara=ara, bas_tar=bas, son_tar=son, max_sayfa=max_sayfa
+            )
+            for s in dilim:
+                aid = str(s.get("G.a_id") or s.get("a_id") or "").strip()
+                if aid and aid in gorulen:
+                    continue
+                if aid:
+                    gorulen.add(aid)
+                tum.append(s)
+        if not tum:
+            # Yıllık dilim boşsa tek sefer boş filtre dene
+            tum = self._banka_islem_sayfala(
+                ara=ara, bas_tar="", son_tar="", max_sayfa=max_sayfa
+            )
+        return tum
+
+    def _banka_islem_sayfala(
+        self,
+        *,
+        ara: str = "",
+        bas_tar: str = "",
+        son_tar: str = "",
+        max_sayfa: int = 2000,
+    ) -> list[dict]:
         tum: list[dict] = []
         sayfa = 0
         toplam = None

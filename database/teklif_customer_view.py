@@ -123,17 +123,48 @@ class CustomerQuoteLine:
     kdv_dahil_goster: str = ""
 
 
+# Varsayılan müşteri hitabı (ayarlarla değiştirilebilir)
+DEFAULT_HITAP_METNI = (
+    "Değerli müşterimiz, görüşmemize istinaden hazırlamış olduğumuz teklifimiz aşağıdadır. "
+    "Kıymetli sipariş emirlerinizi bekler, hayırlı işler dileriz."
+)
+
+DEFAULT_SART_MADDELERI = (
+    "Teklif, belirtilen geçerlilik tarihine kadar geçerlidir.",
+    "Stok durumu sipariş onayı tarihinde yeniden kontrol edilir.",
+    "Teslim süresi, sipariş onayı ve ödeme şartlarının tamamlanmasından sonra başlar.",
+    "Ürünlerin miktar, ölçü, renk ve model kontrolü sipariş onayından önce müşteriye aittir.",
+)
+
+MUSTERI_ONAY_BEYANI = (
+    "Yukarıdaki ürün, fiyat ve teklif şartlarını okuyarak kabul ettiğimizi beyan ederiz."
+)
+
+FIRMA_ALT_UNVAN = "Ray Mobilya Aksesuarları"
+FIRMA_ALT_SLOGAN = "Mobilya Aksesuarları ve Hırdavat Ürünleri"
+
+
+def para_birimi_etiket(kod: str) -> str:
+    k = (kod or "TRY").upper()
+    return {"TRY": "TL", "TRL": "TL"}.get(k, k)
+
+
+def para_birimli(tutar_goster: str, para_birimi: str) -> str:
+    return f"{tutar_goster} {para_birimi_etiket(para_birimi)}".strip()
+
+
 @dataclass
 class CustomerQuoteViewModel:
     """Müşteriye gönderilecek teklif — maliyet/kâr alanı YOK."""
 
     sablon_id: str = "customer_quote_template"
-    belge_baslik: str = "TEKLİF FORMU"
+    belge_baslik: str = "FİYAT TEKLİFİ"
     onizleme_baslik: str = "Müşteri Teklif Ön İzlemesi"
     # Firma
     firma: dict[str, Any] = field(default_factory=dict)
     logo_data_uri: str | None = None
-    # Teklif
+    firma_slogan: str = FIRMA_ALT_SLOGAN
+    # Teklif meta
     teklif_no: str = ""
     teklif_tarihi: str = ""
     gecerlilik_tarihi: str = ""
@@ -141,33 +172,60 @@ class CustomerQuoteViewModel:
     konu: str = ""
     proje: str = ""
     hazirlayan: str = ""
+    hazirlayan_gorev: str = ""
     satis_temsilcisi: str = ""
+    durum: str = ""
+    revizyon_no: int = 0
+    revizyon_goster: str = ""
     # Müşteri
     musteri: dict[str, Any] = field(default_factory=dict)
     # Satırlar
     satirlar: list[CustomerQuoteLine] = field(default_factory=list)
+    urun_gorseli_aktif: bool = False
     # Toplamlar
     ara_toplam: Decimal = Decimal("0")
     iskonto_toplam: Decimal = Decimal("0")
+    genel_iskonto: Decimal = Decimal("0")
+    iskonto_sonrasi: Decimal = Decimal("0")
     kdv_toplam: Decimal = Decimal("0")
     kdv_haric_toplam: Decimal = Decimal("0")
+    nakliye: Decimal = Decimal("0")
+    yuvarlama: Decimal = Decimal("0")
     genel_toplam: Decimal = Decimal("0")
     para_birimi: str = "TRY"
+    para_birimi_etiket: str = "TL"
+    kdv_dahil_fiyat: bool = False
+    kdv_aciklama: str = "Fiyatlara KDV dahil değildir."
     ara_goster: str = ""
     iskonto_goster: str = ""
+    genel_iskonto_goster: str = ""
+    iskonto_sonrasi_goster: str = ""
     kdv_goster: str = ""
     kdv_haric_goster: str = ""
+    nakliye_goster: str = ""
+    yuvarlama_goster: str = ""
     genel_goster: str = ""
-    # Ticari şartlar
+    sifir_kalemleri_gizle: bool = True
+    # Hitap / şartlar
+    hitap_metni: str = DEFAULT_HITAP_METNI
     odeme_sekli: str = ""
     termin_suresi: str = ""
     tahmini_teslim_tarihi: str = ""
     teslimat_sekli: str = ""
     gecerlilik_suresi: str = ""
+    nakliye_durumu: str = ""
+    vade_bilgisi: str = ""
+    garanti_kosullari: str = ""
+    kur_aciklama: str = ""
     musteri_notu: str = ""
     ticari_sartlar: str = ""
+    sart_maddeleri: list[str] = field(default_factory=list)
+    sart_satirlari: list[tuple[str, str]] = field(default_factory=list)
     banka_satirlari: list[dict[str, str]] = field(default_factory=list)
     alt_bilgi: str = ""
+    onay_beyani: str = MUSTERI_ONAY_BEYANI
+    olusturma_tarih_saat: str = ""
+    teklif_id: int | None = None
 
 
 @dataclass
@@ -251,6 +309,82 @@ def assert_customer_output_safe(metin: str) -> None:
             )
 
 
+def load_teklif_sablon_ayarlari() -> dict[str, Any]:
+    """Firma teklif şablon ayarları (hitap, şart maddeleri, KDV varsayılanı)."""
+    import json
+
+    from sqlalchemy import select
+
+    from database.database import get_system_session
+    from database.session_manager import oturum
+    from database.system.models import AppSetting
+
+    sonuc = {
+        "hitap_metni": DEFAULT_HITAP_METNI,
+        "sart_maddeleri": list(DEFAULT_SART_MADDELERI),
+        "kdv_dahil_fiyat": False,
+        "urun_gorseli_aktif": False,
+        "sifir_kalemleri_gizle": True,
+        "firma_slogan": FIRMA_ALT_SLOGAN,
+        "onay_beyani": MUSTERI_ONAY_BEYANI,
+    }
+    cid = getattr(oturum, "company_id", None)
+    if not cid:
+        return sonuc
+    anahtar = f"teklif_sablon_{int(cid)}"
+    try:
+        with get_system_session() as session:
+            kayit = session.scalar(select(AppSetting).where(AppSetting.anahtar == anahtar))
+            if kayit and kayit.deger:
+                data = json.loads(kayit.deger)
+                if isinstance(data, dict):
+                    if data.get("hitap_metni"):
+                        sonuc["hitap_metni"] = str(data["hitap_metni"]).strip()
+                    if isinstance(data.get("sart_maddeleri"), list) and data["sart_maddeleri"]:
+                        sonuc["sart_maddeleri"] = [
+                            str(x).strip() for x in data["sart_maddeleri"] if str(x).strip()
+                        ]
+                    for k in (
+                        "kdv_dahil_fiyat",
+                        "urun_gorseli_aktif",
+                        "sifir_kalemleri_gizle",
+                    ):
+                        if k in data:
+                            sonuc[k] = bool(data[k])
+                    if data.get("firma_slogan"):
+                        sonuc["firma_slogan"] = str(data["firma_slogan"]).strip()
+                    if data.get("onay_beyani"):
+                        sonuc["onay_beyani"] = str(data["onay_beyani"]).strip()
+    except Exception:
+        pass
+    return sonuc
+
+
+def save_teklif_sablon_ayarlari(data: dict[str, Any]) -> None:
+    import json
+    from sqlalchemy import select
+    from database.session_manager import oturum
+    from database.database import get_system_session
+    from database.system.models import AppSetting
+
+    cid = getattr(oturum, "company_id", None)
+    if not cid:
+        raise ValueError("Aktif firma seçilmedi.")
+    anahtar = f"teklif_sablon_{int(cid)}"
+    with get_system_session() as session:
+        kayit = session.scalar(select(AppSetting).where(AppSetting.anahtar == anahtar))
+        metin = json.dumps(data, ensure_ascii=False)
+        if kayit:
+            kayit.deger = metin
+        else:
+            session.add(AppSetting(anahtar=anahtar, deger=metin))
+        session.flush()
+
+
+def _adres_satiri(*parcalar) -> str:
+    return " ".join(str(p).strip() for p in parcalar if p and str(p).strip())
+
+
 def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     """TeklifDialog / kayıttan müşteri ViewModel üretir — maliyet alanları kopyalanmaz."""
     from invoice_print.branding import load_company_branding, logo_data_uri
@@ -260,6 +394,7 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
 
     branding = load_company_branding()
     logo = logo_data_uri(branding.get("logo_yolu"))
+    sablon = load_teklif_sablon_ayarlari()
 
     teklif = getattr(dialog, "teklif", None)
     girdiler = getattr(dialog, "girdiler", {}) or {}
@@ -283,6 +418,8 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
         "unvan": "",
         "yetkili": _g("musteri_yetkilisi"),
         "adres": "",
+        "fatura_adresi": "",
+        "teslimat_adresi": "",
         "telefon": _g("musteri_telefon"),
         "email": _g("musteri_email"),
         "vergi_dairesi": "",
@@ -290,11 +427,17 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     }
     if cari:
         musteri["unvan"] = getattr(cari, "unvan", "") or ""
-        musteri["adres"] = getattr(cari, "adres", "") or ""
+        adres = _adres_satiri(
+            getattr(cari, "adres", None),
+            getattr(cari, "ilce", None),
+            getattr(cari, "il", None),
+        )
+        musteri["adres"] = adres
+        musteri["fatura_adresi"] = adres
         musteri["telefon"] = (
             musteri["telefon"]
             or getattr(cari, "telefon", None)
-            or getattr(cari, "cep_telefonu", "")
+            or getattr(cari, "cep_telefonu", None)
             or ""
         )
         musteri["email"] = musteri["email"] or getattr(cari, "email", "") or ""
@@ -305,12 +448,21 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     else:
         musteri["unvan"] = _g("aday_musteri_adi") or "—"
 
+    teslimat = _g("teslimat_adresi")
+    if not teslimat and teklif:
+        teslimat = getattr(teklif, "teslimat_adresi", None) or ""
+    musteri["teslimat_adresi"] = teslimat or musteri.get("fatura_adresi") or ""
+
     teklif_no = _g("teklif_no")
+    revizyon_no = 0
+    durum = ""
     if teklif:
         try:
             teklif_no = QuoteService.gosterim_no(teklif)
         except Exception:
             teklif_no = getattr(teklif, "teklif_no", teklif_no) or teklif_no
+        revizyon_no = int(getattr(teklif, "revizyon_no", 0) or 0)
+        durum = getattr(teklif, "durum", None) or ""
 
     hazirlayan = ""
     if teklif and (
@@ -359,7 +511,6 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
             continue
         sira += 1
         miktar = _d(s.get("miktar", 0))
-        # Yalnız nihai satış/teklif fiyatı — alış/maliyet alanlarına bakılmaz
         birim_fiyat = _d(
             s.get("final_offer_unit_price")
             or s.get("teklif_fiyati")
@@ -381,7 +532,6 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
         ara += satir_ara
         isk_toplam += satir_brut - satir_ara
         kdv_toplam += satir_kdv
-        # Müşteri çıktısı: MANUEL kodu gizle; termin notunu açıklamaya ekle (iç etiket yok)
         kod = str(s.get("urun_kodu") or "")
         if kod.upper() in ("MANUEL", "OZEL") or s.get("is_manual_item"):
             kod = ""
@@ -421,7 +571,31 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
             )
         )
 
-    genel = ara + kdv_toplam
+    # Müşteriye yansıyan nakliye/hizmet (iç masraf değil)
+    nakliye = Decimal("0")
+    fiyat_g = getattr(dialog, "fiyat_girdiler", {}) or {}
+    try:
+        w = fiyat_g.get("customer_expense_amount")
+        if w is not None:
+            nakliye = _d(w.get() or 0)
+    except Exception:
+        pass
+    if nakliye <= 0 and teklif:
+        nakliye = _d(getattr(teklif, "customer_expense_amount", 0) or 0)
+
+    genel_isk_oran = _d(_g("genel_iskonto_orani") or 0)
+    if genel_isk_oran <= 0 and teklif:
+        genel_isk_oran = _d(getattr(teklif, "genel_iskonto_orani", 0) or 0)
+    genel_isk_tutar = Decimal("0")
+    if genel_isk_oran > 0:
+        genel_isk_tutar = (ara * genel_isk_oran / Decimal("100")).quantize(
+            _KURUS, rounding=ROUND_HALF_UP
+        )
+    iskonto_sonrasi = ara - genel_isk_tutar
+    # Genel iskonto sonrası KDV yeniden (basit oran: satır KDV toplamını orantıla)
+    if genel_isk_tutar > 0 and ara > 0:
+        kdv_toplam = (kdv_toplam * iskonto_sonrasi / ara).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    genel = iskonto_sonrasi + kdv_toplam + nakliye
 
     termin_gun = _g("delivery_term_days")
     termin_metin = ""
@@ -455,21 +629,84 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
         if teklif:
             ticari = teklif.ticari_sartlar or ""
 
-    # İç not ASLA eklenmez
+    pb = _g("para_birimi") or (getattr(teklif, "para_birimi", None) or "TRY")
+    pb_etiket = para_birimi_etiket(pb)
+    kdv_dahil = bool(sablon.get("kdv_dahil_fiyat"))
+    # Dialogda açık seçim varsa onu kullan
+    try:
+        if hasattr(dialog, "kdv_dahil_var") and dialog.kdv_dahil_var is not None:
+            kdv_dahil = bool(dialog.kdv_dahil_var.get())
+    except Exception:
+        pass
+
+    odeme = _g("odeme_sekli") or (getattr(teklif, "odeme_sekli", None) or "")
+    teslimat_sekli = (
+        _g("teslimat_sekli")
+        or (getattr(teklif, "teslimat_sekli", None) or "")
+        or (
+            getattr(dialog, "termin_turu", None).get()
+            if hasattr(dialog, "termin_turu")
+            else ""
+        )
+        or (getattr(teklif, "delivery_term_type", None) or "")
+    )
+    gecerlilik_sure = f"{gecerlilik_gun} Gün" if gecerlilik_gun else ""
+
+    kur_aciklama = ""
+    if pb.upper() not in ("TRY", "TRL", "TL"):
+        kur = getattr(teklif, "kur", None) if teklif else None
+        if kur and _d(kur) != 1:
+            kur_aciklama = f"Kur: {_para(kur)} (1 {pb_etiket})"
+        else:
+            kur_aciklama = f"Para birimi: {pb_etiket}"
+
+    sart_satirlari: list[tuple[str, str]] = []
+    for baslik, deger in (
+        ("Teklif geçerlilik süresi", gecerlilik_sure or (_g("gecerlilik_tarihi") or "")),
+        ("Ödeme şekli", odeme),
+        ("Teslim süresi", termin_metin),
+        ("Teslimat şekli", teslimat_sekli),
+        ("Nakliye durumu", _g("nakliye_durumu") or ""),
+        ("Vade bilgisi", _g("vade_bilgisi") or odeme),
+        ("Garanti koşulları", _g("garanti_kosullari") or ""),
+        ("Para birimi / kur", kur_aciklama or pb_etiket),
+        (
+            "KDV",
+            "Fiyatlara KDV dahildir." if kdv_dahil else "Fiyatlara KDV dahil değildir.",
+        ),
+        ("Özel açıklamalar", musteri_notu),
+        ("Ticari şartlar", ticari),
+    ):
+        if deger and str(deger).strip():
+            # Vade = ödeme tekrarıysa ikinci kez ekleme
+            if baslik == "Vade bilgisi" and deger == odeme and ("Ödeme şekli", odeme) in sart_satirlari:
+                continue
+            sart_satirlari.append((baslik, str(deger).strip()))
+
+    firma_adres = _adres_satiri(
+        branding.get("adres"), branding.get("ilce"), branding.get("il")
+    )
+    # Ray Mobilya varsayılan iletişim (firma kartı boşsa)
+    telefon = branding.get("telefon") or "0506 136 97 24"
+    if not firma_adres:
+        firma_adres = "Adnan Kahveci Mah. Kazım Karabekir Cad. No:52 Beylikdüzü/İstanbul"
+    unvan = branding.get("unvan") or "RAY MOBİLYA AKSESUARLARI"
 
     vm = CustomerQuoteViewModel(
+        belge_baslik="FİYAT TEKLİFİ",
         firma={
-            "unvan": branding.get("unvan") or "",
-            "adres": branding.get("adres") or "",
+            "unvan": unvan,
+            "adres": firma_adres,
             "ilce": branding.get("ilce") or "",
             "il": branding.get("il") or "",
-            "telefon": branding.get("telefon") or "",
+            "telefon": telefon,
             "email": branding.get("email") or "",
             "web": branding.get("web") or "",
             "vergi_dairesi": branding.get("vergi_dairesi") or "",
             "vergi_no": branding.get("vergi_no") or "",
         },
         logo_data_uri=logo,
+        firma_slogan=sablon.get("firma_slogan") or FIRMA_ALT_SLOGAN,
         teklif_no=teklif_no,
         teklif_tarihi=_g("teklif_tarihi")
         or (_tarih(teklif.teklif_tarihi) if teklif else ""),
@@ -479,37 +716,59 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
         konu=_g("konu") or (getattr(teklif, "konu", None) or ""),
         proje=_g("proje") or (getattr(teklif, "proje", None) or ""),
         hazirlayan=hazirlayan,
+        hazirlayan_gorev=_g("hazirlayan_gorev") or "",
         satis_temsilcisi=_g("satis_temsilcisi")
         or (getattr(teklif, "satis_temsilcisi", None) or ""),
+        durum=durum,
+        revizyon_no=revizyon_no,
+        revizyon_goster=f"R{revizyon_no:02d}" if revizyon_no else "",
         musteri=musteri,
         satirlar=lines,
+        urun_gorseli_aktif=bool(sablon.get("urun_gorseli_aktif")),
         ara_toplam=ara,
         iskonto_toplam=isk_toplam,
+        genel_iskonto=genel_isk_tutar,
+        iskonto_sonrasi=iskonto_sonrasi,
         kdv_toplam=kdv_toplam,
-        kdv_haric_toplam=ara,
+        kdv_haric_toplam=iskonto_sonrasi,
+        nakliye=nakliye,
+        yuvarlama=Decimal("0"),
         genel_toplam=genel,
-        para_birimi=_g("para_birimi") or (getattr(teklif, "para_birimi", None) or "TRY"),
+        para_birimi=pb,
+        para_birimi_etiket=pb_etiket,
+        kdv_dahil_fiyat=kdv_dahil,
+        kdv_aciklama=(
+            "Fiyatlara KDV dahildir." if kdv_dahil else "Fiyatlara KDV dahil değildir."
+        ),
         ara_goster=_para(ara),
         iskonto_goster=_para(isk_toplam),
+        genel_iskonto_goster=_para(genel_isk_tutar),
+        iskonto_sonrasi_goster=_para(iskonto_sonrasi),
         kdv_goster=_para(kdv_toplam),
-        kdv_haric_goster=_para(ara),
+        kdv_haric_goster=_para(iskonto_sonrasi),
+        nakliye_goster=_para(nakliye),
+        yuvarlama_goster=_para(0),
         genel_goster=_para(genel),
-        odeme_sekli=_g("odeme_sekli") or (getattr(teklif, "odeme_sekli", None) or ""),
+        sifir_kalemleri_gizle=bool(sablon.get("sifir_kalemleri_gizle", True)),
+        hitap_metni=sablon.get("hitap_metni") or DEFAULT_HITAP_METNI,
+        odeme_sekli=odeme,
         termin_suresi=termin_metin,
         tahmini_teslim_tarihi=tahmini,
-        teslimat_sekli=_g("teslimat_sekli")
-        or (getattr(teklif, "teslimat_sekli", None) or "")
-        or (
-            getattr(dialog, "termin_turu", None).get()
-            if hasattr(dialog, "termin_turu")
-            else ""
-        )
-        or (getattr(teklif, "delivery_term_type", None) or ""),
-        gecerlilik_suresi=f"{gecerlilik_gun} Gün" if gecerlilik_gun else "",
+        teslimat_sekli=teslimat_sekli,
+        gecerlilik_suresi=gecerlilik_sure,
+        nakliye_durumu=_g("nakliye_durumu") or "",
+        vade_bilgisi=_g("vade_bilgisi") or "",
+        garanti_kosullari=_g("garanti_kosullari") or "",
+        kur_aciklama=kur_aciklama,
         musteri_notu=musteri_notu,
         ticari_sartlar=ticari,
+        sart_maddeleri=list(sablon.get("sart_maddeleri") or DEFAULT_SART_MADDELERI),
+        sart_satirlari=sart_satirlari,
         banka_satirlari=list(branding.get("ibanlar") or []),
         alt_bilgi=branding.get("alt_bilgi") or "",
+        onay_beyani=sablon.get("onay_beyani") or MUSTERI_ONAY_BEYANI,
+        olusturma_tarih_saat=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        teklif_id=getattr(teklif, "id", None) if teklif else None,
     )
     assert_customer_model_safe(vm)
     return vm

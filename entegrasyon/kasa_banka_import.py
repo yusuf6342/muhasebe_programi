@@ -261,6 +261,41 @@ def _tek_kasa(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
     return api_cagrildi
 
 
+def _evo_banka_id_bul(liste_satir: dict, ana: dict) -> str:
+    return _temiz(
+        ana.get("a_banka_id")
+        or liste_satir.get("a_banka_id")
+        or liste_satir.get("G.a_banka_id")
+        or liste_satir.get("BANKA_ID")
+        or ana.get("a_banka")
+        or liste_satir.get("a_banka")
+    )
+
+
+def _banka_hesap_id_esle(liste_satir: dict, ana: dict) -> int:
+    """Evo banka kart eşleştirmesi → MEVDUAT finans hesabı; yoksa varsayılan."""
+    from entegrasyon.banka_eslestirme import BankAccountMatchingService
+
+    evo_id = _evo_banka_id_bul(liste_satir, ana)
+    iban = _temiz(ana.get("a_iban") or liste_satir.get("a_iban") or liste_satir.get("IBAN"))
+    ad = _temiz(
+        ana.get("a_banka_adi")
+        or liste_satir.get("BANKA")
+        or liste_satir.get("a_banka_adi")
+        or liste_satir.get("banka_adi")
+    )
+    sonuc = BankAccountMatchingService.finans_hesap_bul(
+        evo_banka_id=evo_id or None,
+        iban=iban or None,
+        banka_adi=ad or None,
+        alt_hesap_turu="MEVDUAT",
+    )
+    hesap_id = sonuc.get("finans_hesap_id")
+    if hesap_id:
+        return int(hesap_id)
+    return _varsayilan_banka_hesap_id()
+
+
 def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
     aid = _temiz(liste_satir.get("G.a_id") or liste_satir.get("a_id"))
     if not aid:
@@ -298,7 +333,16 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
     cari = _cari_bul_esnek(liste2, ana2)
     aciklama = _temiz(ana.get("a_ack") or liste_satir.get("G.a_ack") or liste_satir.get("a_ack"))
     aciklama = (aciklama or f"EVB banka {aid} {tur_adi}")[:500]
-    hesap_id = _varsayilan_banka_hesap_id()
+    hesap_id = _banka_hesap_id_esle(liste_satir, ana)
+
+    # Açılış satırı (liste/tur açıklamasında) → acilis_bakiyesi; hareket yazılmaz
+    from entegrasyon.banka_acilis_import import acilis_olarak_uygula, acilis_satiri_mi
+
+    if acilis_satiri_mi(liste_satir, ana):
+        acilis_olarak_uygula(hesap_id, tutar, giris=bool(yon))
+        sonuc.olusturulan += 1
+        return api_cagrildi
+
     hesap = FinansService.hesap_getir(hesap_id)
     hesap_adi = hesap.hesap_adi if hesap else "BANKA HESABI"
 
@@ -309,6 +353,7 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
         "giris" if yon else "cikis",
         aciklama=aciklama,
         belge_no=belge,
+        bakiye_kontrol=False,
     )
 
     if cari is not None:
@@ -433,10 +478,11 @@ def aktar_banka_api_den(
     ara: str = "",
     max_adet: int | None = None,
     progress: Callable[[str], None] | None = None,
+    creds=None,
 ) -> ImportSonuc:
     from entegrasyon.evobulut_client import EvobulutClient, load_credentials
 
-    client = EvobulutClient(load_credentials())
+    client = EvobulutClient(creds or load_credentials())
     client.login()
     progress_log(progress, "Banka işlem listesi çekiliyor…")
     liste = client.tum_banka_islemlerini_cek(ara=ara, bas_tar=bas_tar, son_tar=son_tar)

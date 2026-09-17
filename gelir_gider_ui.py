@@ -46,6 +46,17 @@ def _evobulut_gelir_gider(app):
     EvobulutGelirGiderAktarDialog(app)
 
 
+def _gelir_gider_excel_aktarim(app):
+    from excel_aktarim_ui import excel_aktarim_hub_goster
+
+    excel_aktarim_hub_goster(
+        app,
+        modul="gelir_gider",
+        baslik="GELİR/GİDER — EXCEL VERİ AKTARIM",
+        geri_fn=lambda: gelir_gider_menusu_goster(app),
+    )
+
+
 def gelir_gider_menusu_goster(app):
     app._icerigi_temizle()
     _menu_isaretle(app)
@@ -62,6 +73,7 @@ def gelir_gider_menusu_goster(app):
         ("GİDERLER", lambda: giderler_menusu_goster(app)),
         ("GELİRLER", lambda: gelirler_menusu_goster(app)),
         ("EVOBULUT GELİR/GİDER AKTAR", lambda: _evobulut_gelir_gider(app)),
+        ("EXCEL VERİ AKTARIM", lambda: _gelir_gider_excel_aktarim(app)),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4

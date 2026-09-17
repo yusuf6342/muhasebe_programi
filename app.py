@@ -8361,6 +8361,7 @@ class MuhasebeApp(tk.Tk):
             ("STOK PAKET TANIMLAMA", self.stok_paket_tanimlama_goster),
             ("TOPLU FİYAT DEĞİŞİKLİĞİ", self.toplu_fiyat_degisikligi_goster),
             ("STOK BARKOD BASIMI", self.stok_barkod_basimi_goster),
+            ("EXCEL VERİ AKTARIM", self.stok_excel_aktarim_goster),
             ("RAPORLAR", self.stok_raporlari_goster),
         )
         for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
@@ -8368,6 +8369,40 @@ class MuhasebeApp(tk.Tk):
                 alt_menu, baslik, komut,
                 row=satir, column=0, sticky="ew", pady=4,
             )
+
+    def stok_excel_aktarim_goster(self):
+        from excel_aktarim_ui import excel_aktarim_hub_goster
+
+        excel_aktarim_hub_goster(
+            self,
+            modul="stok",
+            baslik="STOK — EXCEL VERİ AKTARIM",
+            geri_fn=lambda: self.sayfa_goster("stoklar"),
+        )
+
+    def satin_alma_excel_aktarim_goster(self):
+        from excel_aktarim_ui import excel_aktarim_hub_goster
+
+        excel_aktarim_hub_goster(
+            self,
+            modul="satin_alma",
+            baslik="SATIN ALMA — EXCEL VERİ AKTARIM",
+            geri_fn=lambda: self.sayfa_goster("satin_alma"),
+        )
+
+    def alis_fatura_belge_aktar(self):
+        from fatura_belge_aktarim_ui import fatura_belge_aktarim_goster
+
+        fatura_belge_aktarim_goster(
+            self,
+            yon="ALIS",
+            geri_fn=lambda: self.sayfa_goster("satin_alma"),
+        )
+
+    def gelen_efaturalar_goster(self):
+        from fatura_belge_aktarim_ui import gelen_efaturalar_goster
+
+        gelen_efaturalar_goster(self, geri_fn=lambda: self.sayfa_goster("satin_alma"))
 
     def stok_alt_sayfasi_goster(self, baslik, aciklama="Bu bölüm sonraki aşamada hazırlanacaktır."):
         self._icerigi_temizle()
@@ -8566,6 +8601,7 @@ class MuhasebeApp(tk.Tk):
         ogeler = (
             ("SATIŞ FATURALARI LİSTESİ", "Kayıtlı satış faturalarını inceleyin ve düzenleyin", self.satis_faturalari_goster),
             ("HIZLI FATURA", "Boş satış faturası kartını hemen açın", self.hizli_fatura_ac),
+            ("FATURA GÖRSELİ PDF İÇE AKTAR", "PDF/XML/görselden satış faturası taslağı oluşturun", self.satis_fatura_belge_aktar),
             ("SATIŞ İADE FATURALARI", "Satış iade faturalarını yönetin", self.satis_iade_faturalari_goster),
         )
         for i, (baslik, aciklama, komut) in enumerate(ogeler):
@@ -8576,6 +8612,15 @@ class MuhasebeApp(tk.Tk):
                 komut=lambda c=komut: self.nav_ac(c),
             ).grid(row=i, column=0, sticky="ew", pady=6, padx=4)
         self.nav_sayfa_isaretle(self.satis_faturalari_alt_menusu_goster)
+
+    def satis_fatura_belge_aktar(self):
+        from fatura_belge_aktarim_ui import fatura_belge_aktarim_goster
+
+        fatura_belge_aktarim_goster(
+            self,
+            yon="SATIS",
+            geri_fn=self.satis_faturalari_alt_menusu_goster,
+        )
 
     def hizli_fatura_ac(self):
         """Listeye gitmeden boş satış faturası kartını açar (Satış Faturaları → Yeni Fatura ile aynı şablon)."""
@@ -8604,8 +8649,11 @@ class MuhasebeApp(tk.Tk):
             ("SATIN ALMA SİPARİŞLERİ", self.alis_siparisleri_goster),
             ("SATIN ALMA İRSALİYELERİ", self.alis_irsaliyeleri_goster),
             ("SATIN ALMA FATURALARI", self.alis_faturalari_goster),
+            ("FATURA GÖRSELİ PDF İÇE AKTAR", self.alis_fatura_belge_aktar),
+            ("GELEN E-FATURALAR", self.gelen_efaturalar_goster),
             ("SATIN ALMA İADE FATURALARI", self.alis_iade_faturalari_goster),
             ("CARİ VİRMAN FİŞLERİ", self.cari_virman_goster),
+            ("EXCEL VERİ AKTARIM", self.satin_alma_excel_aktarim_goster),
             ("RAPORLAR", self.alis_raporlari_goster),
         )
         for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
@@ -8840,6 +8888,7 @@ class MuhasebeApp(tk.Tk):
         ızgara.pack(fill="both", expand=True, pady=8)
         ızgara.columnconfigure(0, weight=1)
         for i, (baslik, komut) in enumerate((
+            ("SATIŞ KÂR ANALİZİ", self.rapor_satis_kar_analizi),
             ("MÜŞTERİ BAKİYE DURUM (ORTALAMA VADELİ)", self.rapor_musteri_bakiye_durum),
             ("MÜŞTERİ EKSTRESİ (ORTALAMA VALÖRLÜ / AĞIRLIKLI)", self.rapor_musteri_ekstresi),
             ("STOK DETAYLI MÜŞTERİ EKSTRESİ", self.rapor_stok_detayli_ekstre),
@@ -8857,6 +8906,11 @@ class MuhasebeApp(tk.Tk):
                 komut=lambda c=komut: self.nav_ac(c),
             ).grid(row=i, column=0, sticky="ew", pady=4, padx=4)
         self.nav_sayfa_isaretle(self.satis_raporlari_goster)
+
+    def rapor_satis_kar_analizi(self):
+        from satis_kar_analiz_ui import satis_kar_analizi_goster
+
+        satis_kar_analizi_goster(self)
 
     def _rapor_baslik(self, baslik, geri=True):
         from satis_tema import BEYAZ, LACIVERT, SARI, font, stil_uygula, tk_buton

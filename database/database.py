@@ -433,6 +433,11 @@ def cari_kart_schemasini_guncelle() -> None:
             "kart_numarasi": "VARCHAR(32)",
             "son_kullanim": "VARCHAR(7)",
             "guvenlik_kodu": "VARCHAR(4)",
+            "kesimden_sonra_odeme_gun": "INTEGER",
+            "para_birimi": "VARCHAR(10)",
+            "bagli_hesap_id": "INTEGER",
+            "odeme_hesap_id": "INTEGER",
+            "tatil_odeme_kurali": "VARCHAR(20)",
         }
         with engine.begin() as connection:
             for alan, tip in kk_eklenecekler.items():

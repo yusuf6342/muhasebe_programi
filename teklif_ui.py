@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import tkinter as tk
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -336,16 +337,27 @@ class TeklifDialog(tk.Toplevel):
         )
         self.btn_kabul = self._btn(sag, "Kabul Edildi", lambda: self._durum("KABUL EDİLDİ"), YESIL)
         self.btn_siparis = self._btn(sag, "Sipariş Oluştur", self._siparise, LACIVERT)
-        self._btn(sag, "Önizleme", self._onizleme, "#455A64")
+        self._btn(sag, "Ön İzleme", self._onizleme, "#455A64")
         self._btn(sag, "PDF", self._pdf, "#455A64")
+        self._btn(sag, "Word", self._word, "#455A64")
         if maliyet_izinli():
             self._btn(sag, "İç Maliyet Analizi", self._ic_maliyet_analizi, TURUNCU)
         diger = tk.Menubutton(
             sag, text="Diğer ▾", bg="#374151", fg=BEYAZ, relief="flat", font=("Segoe UI", 9, "bold")
         )
         menu = tk.Menu(diger, tearoff=0)
+        menu.add_command(label="Yazdır", command=self._yazdir)
+        menu.add_command(label="E-posta İçin Hazırla", command=self._email_hazirla)
+        menu.add_command(label="WhatsApp İçin PDF", command=self._whatsapp_pdf)
+        menu.add_separator()
+        menu.add_command(label="Teklifi Revize Et", command=self._revizyon)
+        menu.add_command(label="Siparişe Dönüştür", command=self._siparise)
+        menu.add_separator()
+        menu.add_command(label="Şablon / Hitap Ayarları", command=self._sablon_ayarlari)
+        menu.add_command(label="Logo ve Antet Ayarları", command=self._logo_antet_ayarlari)
+        menu.add_command(label="Kayıtlı Çıktıları Aç", command=self._kayitli_ciktilar)
+        menu.add_separator()
         menu.add_command(label="İç Onaylı", command=lambda: self._durum("İÇ ONAYLI"))
-        menu.add_command(label="Revizyon Oluştur", command=self._revizyon)
         menu.add_command(label="Reddet…", command=self._reddet)
         menu.add_command(label="İptal…", command=lambda: self._durum("İPTAL", gerekce_iste=True))
         menu.add_command(label="Geçerlilik Uzat…", command=self._uzat)
@@ -2215,36 +2227,162 @@ class TeklifDialog(tk.Toplevel):
             messagebox.showerror("Önizleme", str(exc), parent=self)
 
     def _pdf(self):
-        """Müşteri PDF — güvenli şablon."""
+        """Önce önizleme; kullanıcı PDF'i oradan kaydeder. Doğrudan kayıt da mümkün."""
         try:
             if not self.teklif:
                 self.kaydet()
-            from teklif_print import musteri_teklif_pdf_uret, safe_customer_pdf_name, musteri_teklif_html_uret
-            from tkinter import filedialog
-            from pathlib import Path
+            from teklif_print import MusteriTeklifOnizlemeDialog
 
-            vm, _html = musteri_teklif_html_uret(self)
-            yol = filedialog.asksaveasfilename(
-                parent=self,
-                defaultextension=".pdf",
-                initialfile=safe_customer_pdf_name(vm),
-                filetypes=[("PDF", "*.pdf")],
-            )
-            if not yol:
-                return
-            musteri_teklif_pdf_uret(self, Path(yol))
-            messagebox.showinfo("PDF", f"Müşteri teklif PDF kaydedildi:\n{yol}", parent=self)
-            if self.teklif:
-                from database.database import get_session
-                from datetime import datetime as dt
-
-                with get_session() as session:
-                    t = session.get(type(self.teklif), self.teklif.id)
-                    if t:
-                        t.pdf_olusturma = dt.now()
-                        session.flush()
+            MusteriTeklifOnizlemeDialog(self, self)
         except Exception as exc:
             messagebox.showerror("PDF", str(exc), parent=self)
+
+    def _word(self):
+        try:
+            if not self.teklif:
+                self.kaydet()
+            from teklif_print import MusteriTeklifOnizlemeDialog
+
+            # Ön izleme üzerinden Word (aynı doğrulanmış veri)
+            dlg = MusteriTeklifOnizlemeDialog(self, self)
+            dlg._word()
+        except Exception as exc:
+            messagebox.showerror("Word", str(exc), parent=self)
+
+    def _yazdir(self):
+        try:
+            if not self.teklif:
+                self.kaydet()
+            from teklif_print import MusteriTeklifOnizlemeDialog
+
+            dlg = MusteriTeklifOnizlemeDialog(self, self)
+            dlg._yazdir()
+        except Exception as exc:
+            messagebox.showerror("Yazdır", str(exc), parent=self)
+
+    def _email_hazirla(self):
+        try:
+            if not self.teklif:
+                self.kaydet()
+            from teklif_print import musteri_teklif_pdf_uret
+            import webbrowser
+
+            pdf = musteri_teklif_pdf_uret(self)
+            messagebox.showinfo(
+                "E-posta",
+                f"PDF hazır:\n{pdf}\n\nE-posta istemcinize ek olarak ekleyebilirsiniz.",
+                parent=self,
+            )
+            webbrowser.open(pdf.resolve().as_uri())
+        except Exception as exc:
+            messagebox.showerror("E-posta", str(exc), parent=self)
+
+    def _whatsapp_pdf(self):
+        try:
+            if not self.teklif:
+                self.kaydet()
+            from teklif_print import MusteriTeklifOnizlemeDialog
+
+            dlg = MusteriTeklifOnizlemeDialog(self, self)
+            dlg._whatsapp()
+        except Exception as exc:
+            messagebox.showerror("WhatsApp", str(exc), parent=self)
+
+    def _sablon_ayarlari(self):
+        """Hitap metni ve varsayılan şart maddeleri."""
+        from database.teklif_customer_view import (
+            load_teklif_sablon_ayarlari,
+            save_teklif_sablon_ayarlari,
+            DEFAULT_HITAP_METNI,
+        )
+
+        ayar = load_teklif_sablon_ayarlari()
+        win = tk.Toplevel(self)
+        win.title("Teklif Şablon / Hitap Ayarları")
+        win.geometry("640x480")
+        win.transient(self)
+        tk.Label(win, text="Müşteri hitap metni", font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", padx=10, pady=(10, 2)
+        )
+        hitap = tk.Text(win, height=4, wrap="word", font=("Segoe UI", 9))
+        hitap.pack(fill="x", padx=10)
+        hitap.insert("1.0", ayar.get("hitap_metni") or DEFAULT_HITAP_METNI)
+        tk.Label(win, text="Varsayılan şart maddeleri (her satır bir madde)", font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", padx=10, pady=(10, 2)
+        )
+        sart = tk.Text(win, height=10, wrap="word", font=("Segoe UI", 9))
+        sart.pack(fill="both", expand=True, padx=10)
+        sart.insert("1.0", "\n".join(ayar.get("sart_maddeleri") or []))
+        kdv_var = tk.BooleanVar(value=bool(ayar.get("kdv_dahil_fiyat")))
+        tk.Checkbutton(
+            win, text="Fiyatlar KDV dahil varsayılsın", variable=kdv_var
+        ).pack(anchor="w", padx=10, pady=6)
+
+        def _kaydet():
+            try:
+                data = dict(ayar)
+                data["hitap_metni"] = hitap.get("1.0", "end").strip()
+                data["sart_maddeleri"] = [
+                    x.strip() for x in sart.get("1.0", "end").splitlines() if x.strip()
+                ]
+                data["kdv_dahil_fiyat"] = bool(kdv_var.get())
+                save_teklif_sablon_ayarlari(data)
+                messagebox.showinfo("Şablon", "Ayarlar kaydedildi.", parent=win)
+                win.destroy()
+            except Exception as exc:
+                messagebox.showerror("Şablon", str(exc), parent=win)
+
+        tk.Button(win, text="Kaydet", command=_kaydet, bg="#e8b923", relief="flat", padx=12, pady=4).pack(
+            pady=10
+        )
+
+    def _logo_antet_ayarlari(self):
+        try:
+            # Mevcut fatura branding / firma ayarları ekranı
+            from sistem_ui import firma_branding_goster
+
+            firma_branding_goster(self)
+        except Exception:
+            try:
+                messagebox.showinfo(
+                    "Logo / Antet",
+                    "Logo ve antet bilgileri Sistem → Firma Ayarları üzerinden düzenlenir.\n"
+                    "Telefon, adres, e-posta, web, vergi dairesi ve vergi no firma kartından alınır.",
+                    parent=self,
+                )
+            except Exception as exc:
+                messagebox.showerror("Logo / Antet", str(exc), parent=self)
+
+    def _kayitli_ciktilar(self):
+        try:
+            from teklif_print import teklif_cikti_klasoru, safe_customer_export_name, musteri_teklif_html_uret
+            import os
+
+            if not self.teklif:
+                messagebox.showinfo("Çıktılar", "Önce teklifi kaydedin.", parent=self)
+                return
+            vm, _ = musteri_teklif_html_uret(self)
+            klasor = teklif_cikti_klasoru()
+            adaylar = [
+                klasor / safe_customer_export_name(vm, "pdf"),
+                klasor / safe_customer_export_name(vm, "docx"),
+            ]
+            bulunan = [p for p in adaylar if p.is_file()]
+            if not bulunan:
+                messagebox.showinfo(
+                    "Çıktılar",
+                    f"Bu teklife ait kayıtlı dosya bulunamadı.\nKlasör: {klasor}",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "Çıktılar",
+                    "Bulunan dosyalar:\n" + "\n".join(str(p) for p in bulunan),
+                    parent=self,
+                )
+            os.startfile(str(klasor))
+        except Exception as exc:
+            messagebox.showerror("Çıktılar", str(exc), parent=self)
 
     def _ic_maliyet_analizi(self):
         try:

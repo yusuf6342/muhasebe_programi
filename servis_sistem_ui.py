@@ -136,6 +136,116 @@ def _preview_dialog(parent, oniz: dict, *, baslik: str = "Onarım Önizlemesi") 
     ttk.Button(frm, text="Kapat", command=win.destroy).pack(anchor="e", pady=(8, 0))
 
 
+def _ocr_panel_ekle(app) -> None:
+    """OCR ve Tesseract Kontrolü — bilgisayar ayarı."""
+    from fatura_belge_aktarim.ocr_config import (
+        DEFAULT_TESSERACT,
+        find_tesseract,
+        list_tesseract_languages,
+        ocr_durum_raporu,
+        set_tesseract_path,
+        tesseract_test_et,
+        tesseract_version,
+    )
+
+    cerceve = ttk.LabelFrame(app.icerik, text="OCR ve Tesseract Kontrolü", padding=8)
+    cerceve.pack(fill="x", pady=(0, 10))
+
+    bilgi_var = tk.StringVar(value="Yükleniyor…")
+    ttk.Label(cerceve, textvariable=bilgi_var, justify="left").pack(anchor="w")
+
+    def _yenile() -> None:
+        r = ocr_durum_raporu()
+        satirlar = [
+            f"Tesseract: {'Bulundu' if r['bulundu'] else 'Bulunamadı'}",
+            f"Sürüm: {r.get('version') or '—'}",
+            f"Yol: {r.get('tesseract_path') or '—'}",
+            f"Diller: {', '.join(r.get('languages') or []) or '—'}",
+            f"Türkçe (tur): {'OK' if r.get('tur') else 'YOK'}  |  "
+            f"İngilizce (eng): {'OK' if r.get('eng') else 'YOK'}  |  "
+            f"OSD: {'OK' if r.get('osd') else 'YOK'}",
+            f"Python paketleri: pytesseract={'OK' if r.get('pytesseract_ok') else 'YOK'}, "
+            f"OpenCV={'OK' if r.get('opencv_ok') else 'YOK'}, "
+            f"PyMuPDF={'OK' if r.get('pymupdf_ok') else 'YOK'}",
+            f"Son test: {r.get('son_test_zamani') or '—'} — {r.get('son_test_sonucu') or '—'}",
+        ]
+        bilgi_var.set("\n".join(satirlar))
+
+    def _yol_sec() -> None:
+        yol = filedialog.askopenfilename(
+            title="tesseract.exe seç",
+            filetypes=[("tesseract.exe", "tesseract.exe"), ("Tümü", "*.*")],
+            initialdir=r"C:\Program Files\Tesseract-OCR",
+        )
+        if not yol:
+            return
+        set_tesseract_path(yol)
+        _yenile()
+        messagebox.showinfo("OCR", f"Tesseract yolu kaydedildi:\n{yol}", parent=app)
+
+    def _varsayilan() -> None:
+        set_tesseract_path(DEFAULT_TESSERACT if Path(DEFAULT_TESSERACT).is_file() else None)
+        # None = otomatik bulma; varsayılan adayı temizlemeden path'i None yapıp find kullansın
+        set_tesseract_path(None)
+        yol = find_tesseract()
+        if yol:
+            messagebox.showinfo("OCR", f"Otomatik yol:\n{yol}\n{tesseract_version(yol) or ''}", parent=app)
+        else:
+            messagebox.showwarning("OCR", "Tesseract otomatik bulunamadı.", parent=app)
+        _yenile()
+
+    def _test() -> None:
+        sonuc = tesseract_test_et()
+        _yenile()
+        if sonuc.get("ok"):
+            messagebox.showinfo("OCR Test", sonuc.get("mesaj") + f"\n\nÇıktı: {sonuc.get('ocr_text')}", parent=app)
+        else:
+            messagebox.showwarning("OCR Test", sonuc.get("mesaj") or "Başarısız", parent=app)
+
+    def _diller() -> None:
+        path = find_tesseract()
+        langs = list_tesseract_languages(path)
+        messagebox.showinfo(
+            "OCR Dilleri",
+            f"Yol: {path or '—'}\n\nKurulu: {', '.join(langs) or 'yok'}",
+            parent=app,
+        )
+        _yenile()
+
+    def _ornek() -> None:
+        from PIL import Image, ImageDraw
+        from fatura_belge_aktarim.ocr_config import configure_pytesseract
+        import pytesseract
+
+        if not configure_pytesseract():
+            messagebox.showerror("OCR", "Tesseract bulunamadı.", parent=app)
+            return
+        img = Image.new("RGB", (640, 160), "white")
+        d = ImageDraw.Draw(img)
+        d.text((20, 40), "Mal/Hizmet  Miktar  Birim Fiyat  Tutar", fill="black")
+        d.text((20, 90), "Test Ürün  10  125,00  1.250,00", fill="black")
+        try:
+            text = pytesseract.image_to_string(img, lang="tur+eng", config="--oem 3 --psm 6")
+            messagebox.showinfo("Örnek Görsel OCR", text.strip() or "(boş çıktı)", parent=app)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("OCR", f"Örnek okuma başarısız.\n{type(exc).__name__}", parent=app)
+        _yenile()
+
+    dugme_satir = ttk.Frame(cerceve)
+    dugme_satir.pack(anchor="w", pady=(8, 0))
+    for text, cmd in (
+        ("Tesseract Yolunu Seç", _yol_sec),
+        ("Tesseract'ı Test Et", _test),
+        ("Kurulu Dilleri Kontrol Et", _diller),
+        ("Örnek Görsel Oku", _ornek),
+        ("Varsayılan Yolu Kullan", _varsayilan),
+        ("Yenile", _yenile),
+    ):
+        ttk.Button(dugme_satir, text=text, command=cmd).pack(side="left", padx=(0, 6))
+
+    _yenile()
+
+
 def servis_sistem_goster(app) -> None:
     if not _yetki_servis(app):
         app.sayfa_goster("giris")
@@ -160,6 +270,8 @@ def servis_sistem_goster(app) -> None:
             "Seviye 3 (birleştirme / kapalı dönem / fiziksel silme) engelli."
         ),
     ).pack(anchor="w", pady=(4, 10))
+
+    _ocr_panel_ekle(app)
 
     ozet_cerceve = ttk.Frame(app.icerik)
     ozet_cerceve.pack(fill="x", pady=(0, 8))

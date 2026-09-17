@@ -161,12 +161,24 @@ def finans_menusu_goster(app):
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
     nav = getattr(app, "nav_ac", lambda c: c())
+
+    def _finans_excel_aktarim(a):
+        from excel_aktarim_ui import excel_aktarim_hub_goster
+
+        excel_aktarim_hub_goster(
+            a,
+            modul="finans",
+            baslik="FİNANS — EXCEL VERİ AKTARIM",
+            geri_fn=lambda: finans_menusu_goster(a),
+        )
+
     for i, (baslik, komut) in enumerate((
         ("KASALAR", lambda: kasalar_sayfasi_goster(app)),
         ("BANKALAR", lambda: bankalar_sayfasi_goster(app)),
         ("BANKA KREDİLERİ", lambda: banka_kredileri_menusu_goster(app) if banka_kredileri_menusu_goster else None),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
+        ("EXCEL VERİ AKTARIM", lambda: _finans_excel_aktarim(app)),
         ("RAPORLAR", lambda: finans_raporlar_menusu_goster(app) if finans_raporlar_menusu_goster else None),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
@@ -3800,7 +3812,7 @@ class KrediKartiTanimDialog(tk.Toplevel):
         self.limit.grid(row=row, column=1, padx=12, pady=5, sticky="w")
 
         row = 8
-        ttk.Label(self, text="Hesap kesim günü (1-28)").grid(
+        ttk.Label(self, text="Hesap kesim günü (1-31)").grid(
             row=row, column=0, padx=12, pady=5, sticky="w"
         )
         self.kesim = ttk.Entry(self, width=8)
@@ -3810,13 +3822,31 @@ class KrediKartiTanimDialog(tk.Toplevel):
         )
 
         row = 9
-        ttk.Label(self, text="Son ödeme günü (1-28)").grid(
+        ttk.Label(self, text="Son ödeme günü (1-31)").grid(
             row=row, column=0, padx=12, pady=5, sticky="w"
         )
         self.son_odeme = ttk.Entry(self, width=8)
         self.son_odeme.grid(row=row, column=1, padx=12, pady=5, sticky="w")
 
         row = 10
+        ttk.Label(self, text="Kesimden sonra ödeme (gün)").grid(
+            row=row, column=0, padx=12, pady=5, sticky="w"
+        )
+        self.kesimden_sonra = ttk.Entry(self, width=8)
+        self.kesimden_sonra.grid(row=row, column=1, padx=12, pady=5, sticky="w")
+        ttk.Label(self, text="Opsiyonel; doluysa kesim+N gün", foreground="#555").grid(
+            row=row, column=2, sticky="w"
+        )
+
+        row = 11
+        ttk.Label(self, text="Para birimi").grid(row=row, column=0, padx=12, pady=5, sticky="w")
+        self.para_birimi = ttk.Combobox(
+            self, values=("TRY", "USD", "EUR"), width=8, state="readonly"
+        )
+        self.para_birimi.set("TRY")
+        self.para_birimi.grid(row=row, column=1, padx=12, pady=5, sticky="w")
+
+        row = 12
         ttk.Label(self, text="Açıklama").grid(row=row, column=0, padx=12, pady=5, sticky="w")
         self.aciklama = ttk.Entry(self, width=40)
         self.aciklama.grid(row=row, column=1, columnspan=2, padx=12, pady=5, sticky="w")
@@ -3838,13 +3868,17 @@ class KrediKartiTanimDialog(tk.Toplevel):
                 self.kesim.insert(0, str(kart.hesap_kesim_gunu))
             if kart.son_odeme_gunu:
                 self.son_odeme.insert(0, str(kart.son_odeme_gunu))
+            if getattr(kart, "kesimden_sonra_odeme_gun", None):
+                self.kesimden_sonra.insert(0, str(kart.kesimden_sonra_odeme_gun))
+            if getattr(kart, "para_birimi", None):
+                self.para_birimi.set(kart.para_birimi)
             self.aciklama.insert(0, kart.aciklama or "")
         else:
             self.kart_bankasi.insert(0, varsayilan_banka)
             self.limit.insert(0, "0")
 
         butonlar = ttk.Frame(self)
-        butonlar.grid(row=11, column=0, columnspan=3, padx=12, pady=12, sticky="e")
+        butonlar.grid(row=13, column=0, columnspan=3, padx=12, pady=12, sticky="e")
         if kart:
             ttk.Button(butonlar, text="Pasif Yap", command=self._pasif).pack(side="left", padx=(0, 12))
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
@@ -3866,6 +3900,8 @@ class KrediKartiTanimDialog(tk.Toplevel):
             "kart_limiti": self.limit.get(),
             "hesap_kesim_gunu": self.kesim.get(),
             "son_odeme_gunu": self.son_odeme.get(),
+            "kesimden_sonra_odeme_gun": self.kesimden_sonra.get(),
+            "para_birimi": self.para_birimi.get(),
             "aciklama": self.aciklama.get(),
             "aktif": True,
         }
@@ -5600,6 +5636,11 @@ def bankalar_sayfasi_goster(app):
     ust = ttk.Frame(app.icerik)
     ust.pack(fill="x")
     ttk.Label(ust, text="BANKALAR", style="Baslik.TLabel").pack(side="left")
+    ttk.Button(
+        ust,
+        text="EvoBulut Banka Kartları…",
+        command=lambda: __import__("evobulut_banka_ui", fromlist=["EvobulutBankaKartAktarDialog"]).EvobulutBankaKartAktarDialog(app),
+    ).pack(side="right", padx=(0, 8))
     ttk.Button(ust, text="← Finans Menüsü", command=lambda: finans_menusu_goster(app)).pack(side="right")
 
     ttk.Label(

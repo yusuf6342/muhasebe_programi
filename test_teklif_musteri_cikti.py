@@ -87,13 +87,27 @@ class MusteriCiktiGuvenlikTest(unittest.TestCase):
 
     def test_musteri_html_maliyet_yok(self):
         html = render_customer_quote_html(self._ornek_vm())
-        self.assertIn("TEKLİF FORMU", html)
+        self.assertIn("FİYAT TEKLİFİ", html)
         self.assertIn("1.200,00", html)
+        self.assertIn("Değerli müşterimiz", html)
         lower = html.lower()
         for kelime in ("alış", "alis fiyat", "maliyet", "tedarikçi", "fifo", "maktu", "marj %"):
             self.assertNotIn(kelime, lower.replace("ı", "i"))
         # Güvenlik tarayıcı
         assert_customer_output_safe(html)
+
+    def test_dosya_adi_formati(self):
+        from teklif_print import safe_customer_export_name
+
+        vm = self._ornek_vm()
+        vm.teklif_no = "TKL-2026-00125"
+        vm.musteri = {"unvan": "Ahmet Yılmaz"}
+        vm.teklif_tarihi = "17.09.2026"
+        ad = safe_customer_export_name(vm, "pdf")
+        self.assertTrue(ad.startswith("Teklif_TKL-2026-00125_"))
+        self.assertIn("Ahmet", ad)
+        self.assertTrue(ad.endswith("17-09-2026.pdf"))
+        self.assertNotRegex(ad, r'[<>:"/\\|?*]')
 
     def test_yasak_metin_engeller(self):
         with self.assertRaises(CustomerQuoteSecurityError):

@@ -437,11 +437,14 @@ class FinansService:
         return bak - asgari
 
     @staticmethod
-    def cikis_kontrol(hesap, tutar, kart=None, hesap_etiket="Hesap"):
+    def cikis_kontrol(hesap, tutar, kart=None, hesap_etiket="Hesap", *, bakiye_kontrol: bool = True):
         """
         Çıkış sonrası bakiye asgari seviyenin altına düşmesin.
         KMH: kredi limiti kadar eksi bakiyeye izin verilir.
+        bakiye_kontrol=False: EvoBulut vb. tarihsel aktarımlarda eksi bakiyeyi gözardı et.
         """
+        if not bakiye_kontrol:
+            return
         from sqlalchemy.orm import object_session
 
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
@@ -671,9 +674,18 @@ class FinansService:
                 h.aktif = False
 
     @staticmethod
-    def banka_manuel_hareket(hesap_id, tarih, tutar, yon, aciklama=None, belge_no=None):
-        """        yazma_zorunlu("finans_duzenleme")
-yon: 'giris' | 'cikis' — alt hesap işlem menüsü."""
+    def banka_manuel_hareket(
+        hesap_id,
+        tarih,
+        tutar,
+        yon,
+        aciklama=None,
+        belge_no=None,
+        *,
+        bakiye_kontrol: bool = True,
+    ):
+        """yon: 'giris' | 'cikis'. bakiye_kontrol=False ile eksi bakiyeye izin (aktarım)."""
+        yazma_zorunlu("finans_duzenleme")
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         yon = (yon or "").strip().lower()
         if yon not in ("giris", "cikis"):
@@ -690,7 +702,12 @@ yon: 'giris' | 'cikis' — alt hesap işlem menüsü."""
             if not hesap:
                 raise ValueError("Hesap bulunamadı.")
             if yon == "cikis":
-                FinansService.cikis_kontrol(hesap, tutar, kart=hesap.banka_karti)
+                FinansService.cikis_kontrol(
+                    hesap,
+                    tutar,
+                    kart=hesap.banka_karti,
+                    bakiye_kontrol=bakiye_kontrol,
+                )
             if hesap.hesap_turu == "KASA":
                 tur = "KASA GİRİŞ" if yon == "giris" else "KASA ÇIKIŞ"
             else:
@@ -2173,13 +2190,23 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             try:
                 g = int(str(ham).strip())
             except ValueError as hata:
-                raise ValueError(f"{etiket} 1-28 arasında olmalıdır.") from hata
-            if g < 1 or g > 28:
-                raise ValueError(f"{etiket} 1-28 arasında olmalıdır.")
+                raise ValueError(f"{etiket} 1-31 arasında olmalıdır.") from hata
+            if g < 1 or g > 31:
+                raise ValueError(f"{etiket} 1-31 arasında olmalıdır (ayda yoksa son gün kullanılır).")
             return g
 
         kesim = _gun("hesap_kesim_gunu", "Hesap kesim günü")
         son_odeme = _gun("son_odeme_gunu", "Son ödeme günü")
+        kesimden_sonra = veriler.get("kesimden_sonra_odeme_gun")
+        if kesimden_sonra in (None, ""):
+            kesimden_sonra_val = None
+        else:
+            try:
+                kesimden_sonra_val = int(str(kesimden_sonra).strip())
+                if kesimden_sonra_val < 0 or kesimden_sonra_val > 45:
+                    raise ValueError("Kesimden sonra ödeme günü 0-45 arasında olmalıdır.")
+            except ValueError as hata:
+                raise ValueError("Kesimden sonra ödeme günü geçerli bir sayı olmalıdır.") from hata
 
         with get_session() as session:
             banka = session.scalar(select(BankaKarti).where(BankaKarti.id == int(banka_karti_id)))
@@ -2206,6 +2233,14 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             kart.kart_limiti = limit
             kart.hesap_kesim_gunu = kesim
             kart.son_odeme_gunu = son_odeme
+            if hasattr(kart, "kesimden_sonra_odeme_gun"):
+                kart.kesimden_sonra_odeme_gun = kesimden_sonra_val
+            if hasattr(kart, "para_birimi"):
+                kart.para_birimi = (veriler.get("para_birimi") or "TRY").strip() or "TRY"
+            if hasattr(kart, "tatil_odeme_kurali"):
+                kart.tatil_odeme_kurali = (
+                    (veriler.get("tatil_odeme_kurali") or "AYNI_GUN").strip() or "AYNI_GUN"
+                )
             kart.aciklama = (veriler.get("aciklama") or "").strip() or None
             if "aktif" in veriler:
                 kart.aktif = bool(veriler["aktif"])
