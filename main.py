@@ -48,6 +48,9 @@ from database.models.finans import (
     KrediKartiOdemeTaksit,
     BankaKredisi,
     BankaKrediTaksit,
+    BankaKrediOdeme,
+    BankaKrediIslemGunlugu,
+    BankaKrediPlanVersiyon,
     GiderFisi,
     KasaMakbuzu,
     KasaMakbuzSatiri,
@@ -139,6 +142,13 @@ def baslatma_adimlari(progress) -> None:
         HizliSatisService.schema_hazirla()
     except Exception as e:
         print("Hızlı Satış bekleyen şema uyarısı:", e)
+
+    try:
+        from database.banka_kredi_service import BankaKrediService
+
+        BankaKrediService.schema_hazirla()
+    except Exception as e:
+        print("Banka kredileri şema uyarısı:", e)
 
     progress(90, "Arayüz hazırlanıyor...")
     print("Tablolar başarıyla oluşturuldu!")

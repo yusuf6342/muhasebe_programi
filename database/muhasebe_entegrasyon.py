@@ -37,11 +37,17 @@ ONERI_HESAPLAR = (
     ("120", "Alıcılar", "Aktif", "musteriler"),
     ("153", "Ticari Mallar", "Aktif", "ticari_mallar"),
     ("191", "İndirilecek KDV", "Aktif", "indirilecek_kdv"),
+    ("300", "Banka Kredileri", "Pasif", "kredi_kisa_vadeli"),
     ("320", "Satıcılar", "Pasif", "tedarikciler"),
     ("391", "Hesaplanan KDV", "Pasif", "hesaplanan_kdv"),
+    ("400", "Banka Kredileri", "Pasif", "kredi_uzun_vadeli"),
     ("600", "Yurtiçi Satışlar", "Gelir", "yurtici_satislar"),
     ("621", "Satılan Ticari Mallar Maliyeti", "Gider", "satilan_mal_maliyeti"),
+    ("646", "Kambiyo Karları", "Gelir", "kur_farki_geliri"),
+    ("656", "Kambiyo Zararları", "Gider", "kur_farki_gideri"),
+    ("660", "Kısa Vadeli Borçlanma Giderleri", "Gider", "kredi_faiz_gideri"),
     ("770", "Genel Yönetim Giderleri", "Gider", "giderler"),
+    ("780", "Finansman Giderleri", "Gider", "kredi_diger_finansman"),
 )
 
 

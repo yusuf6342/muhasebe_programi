@@ -21,6 +21,11 @@ from database.models.finans import (
 )
 from ui_takvim import takvim_butonu
 
+try:
+    from banka_kredi_ui import banka_kredileri_menusu_goster
+except Exception:  # pragma: no cover
+    banka_kredileri_menusu_goster = None
+
 
 def _para(tutar):
     return f"{float(tutar or 0):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -154,6 +159,7 @@ def finans_menusu_goster(app):
     for i, (baslik, komut) in enumerate((
         ("KASALAR", lambda: kasalar_sayfasi_goster(app)),
         ("BANKALAR", lambda: bankalar_sayfasi_goster(app)),
+        ("BANKA KREDİLERİ", lambda: banka_kredileri_menusu_goster(app) if banka_kredileri_menusu_goster else None),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
     )):

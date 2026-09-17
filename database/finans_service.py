@@ -2846,177 +2846,18 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
     @staticmethod
     def banka_kredi_taksit_ode(taksit_id, odeme_tarihi=None, aciklama=None) -> dict:
         """
-        Taksit ödeme:
-        - Anapara: ödeme hesabından çıkış + krediler borcunu azaltır
-        - Faiz / masraf: ödeme hesabından çıkış + gider fişi (kredi borcuna yazılmaz)
+        Eski UI uyumluluğu — tek banka çıkışlı yeni ödeme akışına yönlendirir.
+        Bkz. BankaKrediService.taksit_ode (toplam tutar tek hareket, bileşenler
+        gider fişi olarak yazılır).
         """
-        odeme_tarihi = odeme_tarihi or date.today()
-        if odeme_tarihi > date.today():
-            raise ValueError("Ödeme tarihi gelecek olamaz.")
+        from database.banka_kredi_service import BankaKrediService
 
-        with get_session() as session:
-            taksit = session.scalar(
-                select(BankaKrediTaksit)
-                .where(BankaKrediTaksit.id == int(taksit_id))
-                .options(selectinload(BankaKrediTaksit.kredi))
-            )
-            if not taksit:
-                raise ValueError("Taksit bulunamadı.")
-            if (taksit.durum or "") != "BEKLIYOR":
-                raise ValueError("Bu taksit zaten ödenmiş.")
-            kredi = taksit.kredi
-            if not kredi or kredi.durum != "KULLANDIRILDI":
-                raise ValueError("Kredi aktif değil.")
-
-            kart = session.scalar(
-                select(BankaKarti)
-                .where(BankaKarti.id == kredi.banka_karti_id)
-                .options(selectinload(BankaKarti.alt_hesaplar))
-            )
-            if not kart:
-                raise ValueError("Banka kartı bulunamadı.")
-            kredi_hesap = next(
-                (h for h in kart.alt_hesaplar if (h.alt_hesap_turu or "") == "KREDILER"),
-                None,
-            )
-            odeme_hesap = next(
-                (
-                    h
-                    for h in kart.alt_hesaplar
-                    if (h.alt_hesap_turu or "") == (kredi.odeme_hesap_turu or "MEVDUAT")
-                ),
-                None,
-            )
-            if not kredi_hesap or not odeme_hesap:
-                raise ValueError("Krediler veya ödeme hesabı eksik.")
-
-            anapara = Decimal(str(taksit.anapara))
-            faiz = Decimal(str(taksit.faiz or 0))
-            masraf = Decimal(str(taksit.masraf or 0))
-            toplam = anapara + faiz + masraf
-            if toplam <= 0:
-                raise ValueError("Ödenecek tutar sıfır olamaz.")
-
-            odeme_hesap = session.scalar(
-                select(FinansHesabi)
-                .where(FinansHesabi.id == odeme_hesap.id)
-                .options(
-                    selectinload(FinansHesabi.hareketler),
-                    selectinload(FinansHesabi.banka_karti),
-                )
-            )
-            FinansService.cikis_kontrol(
-                odeme_hesap,
-                toplam,
-                kart=kart,
-                hesap_etiket="Ödeme hesabı",
-            )
-
-            odeme_belge = FinansService._finans_belge_no(session, "KTO")
-            gider_belge = None
-            acik = aciklama or (
-                f"{kredi.kredi_adi} — {taksit.taksit_no}/{kredi.taksit_sayisi}. taksit"
-            )
-
-            if anapara > 0:
-                session.add(
-                    FinansHareketi(
-                        hesap_id=odeme_hesap.id,
-                        tarih=odeme_tarihi,
-                        hareket_turu="KREDİ ANAPARA ÖDEME",
-                        belge_no=odeme_belge,
-                        tutar=anapara,
-                        aciklama=acik,
-                    )
-                )
-                session.add(
-                    FinansHareketi(
-                        hesap_id=kredi_hesap.id,
-                        tarih=odeme_tarihi,
-                        hareket_turu="KREDİ ANAPARA ÖDEME",
-                        belge_no=odeme_belge,
-                        tutar=anapara,
-                        aciklama=acik,
-                    )
-                )
-
-            gider_toplam = faiz + masraf
-            if gider_toplam > 0:
-                gider_belge = FinansService._finans_belge_no(session, "GDF")
-                if faiz > 0:
-                    session.add(
-                        FinansHareketi(
-                            hesap_id=odeme_hesap.id,
-                            tarih=odeme_tarihi,
-                            hareket_turu="KREDİ FAİZ GİDERİ",
-                            belge_no=gider_belge,
-                            tutar=faiz,
-                            aciklama=f"Faiz gideri | {acik}",
-                        )
-                    )
-                    session.add(
-                        GiderFisi(
-                            belge_no=f"{gider_belge}-F",
-                            tarih=odeme_tarihi,
-                            gider_turu="KREDI_FAIZ",
-                            tutar=faiz,
-                            finans_hesap_id=odeme_hesap.id,
-                            bagli_belge_no=odeme_belge,
-                            aciklama=f"Kredi faiz gideri | {acik}",
-                            durum="AÇIK",
-                        )
-                    )
-                if masraf > 0:
-                    session.add(
-                        FinansHareketi(
-                            hesap_id=odeme_hesap.id,
-                            tarih=odeme_tarihi,
-                            hareket_turu="KREDİ MASRAF GİDERİ",
-                            belge_no=gider_belge,
-                            tutar=masraf,
-                            aciklama=f"Masraf gideri | {acik}",
-                        )
-                    )
-                    session.add(
-                        GiderFisi(
-                            belge_no=f"{gider_belge}-M",
-                            tarih=odeme_tarihi,
-                            gider_turu="KREDI_MASRAF",
-                            tutar=masraf,
-                            finans_hesap_id=odeme_hesap.id,
-                            bagli_belge_no=odeme_belge,
-                            aciklama=f"Kredi masraf gideri | {acik}",
-                            durum="AÇIK",
-                        )
-                    )
-
-            taksit.durum = "ODENDI"
-            taksit.odeme_tarihi = odeme_tarihi
-            taksit.odeme_belge_no = odeme_belge
-            taksit.gider_belge_no = gider_belge
-
-            bekleyen = session.scalars(
-                select(BankaKrediTaksit).where(
-                    BankaKrediTaksit.kredi_id == kredi.id,
-                    BankaKrediTaksit.durum == "BEKLIYOR",
-                    BankaKrediTaksit.id != taksit.id,
-                )
-            ).first()
-            if bekleyen is None:
-                kredi.durum = "KAPALI"
-
-            session.flush()
-            return {
-                "odeme_belge_no": odeme_belge,
-                "gider_belge_no": gider_belge,
-                "anapara": anapara,
-                "faiz": faiz,
-                "masraf": masraf,
-                "toplam": toplam,
-                "kredi_adi": kredi.kredi_adi,
-                "taksit_no": taksit.taksit_no,
-                "kredi_kapandi": kredi.durum == "KAPALI",
-            }
+        return BankaKrediService.taksit_ode(
+            taksit_id=taksit_id,
+            odeme_tarihi=odeme_tarihi,
+            aciklama=aciklama,
+            odeme_turu="TAKSIT",
+        )
 
     # --- Gider fişi (cari yok, hizmet kartı zorunlu) ---
 

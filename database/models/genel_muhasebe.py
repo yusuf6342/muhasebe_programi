@@ -56,6 +56,20 @@ ESLEME_ANAHTARLARI = (
     ("hesaplanan_kdv", "Hesaplanan KDV"),
     ("indirilecek_kdv", "İndirilecek KDV"),
     ("giderler", "Gider hesapları (genel)"),
+    # Banka kredileri
+    ("kredi_kisa_vadeli", "Kısa vadeli banka kredileri (300)"),
+    ("kredi_uzun_vadeli", "Uzun vadeli banka kredileri (400)"),
+    ("kredi_faiz_gideri", "Faiz giderleri"),
+    ("kredi_bsmv_gideri", "BSMV giderleri"),
+    ("kredi_kkdf_gideri", "KKDF giderleri"),
+    ("kredi_komisyon_gideri", "Banka komisyon giderleri"),
+    ("kredi_sigorta_gideri", "Sigorta giderleri"),
+    ("kredi_dosya_masrafi", "Dosya/işlem masrafları"),
+    ("kredi_gecikme_faizi", "Gecikme faizleri"),
+    ("kredi_diger_finansman", "Diğer finansman giderleri"),
+    ("kredi_ara_hesap", "Kredi ara hesabı"),
+    ("kur_farki_geliri", "Kur farkı gelirleri"),
+    ("kur_farki_gideri", "Kur farkı giderleri"),
 )
 
 
