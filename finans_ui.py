@@ -26,6 +26,11 @@ try:
 except Exception:  # pragma: no cover
     banka_kredileri_menusu_goster = None
 
+try:
+    from odeme_durumu_ui import finans_raporlar_menusu_goster
+except Exception:  # pragma: no cover
+    finans_raporlar_menusu_goster = None
+
 
 def _para(tutar):
     return f"{float(tutar or 0):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -162,6 +167,7 @@ def finans_menusu_goster(app):
         ("BANKA KREDİLERİ", lambda: banka_kredileri_menusu_goster(app) if banka_kredileri_menusu_goster else None),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
+        ("RAPORLAR", lambda: finans_raporlar_menusu_goster(app) if finans_raporlar_menusu_goster else None),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
             row=i, column=0, sticky="ew", pady=4
