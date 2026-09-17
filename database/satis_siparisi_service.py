@@ -85,6 +85,7 @@ class SatisSiparisiService:
 
     @staticmethod
     def listele() -> list[dict[str, Any]]:
+        SatisSiparisiService.schema_hazirla()
         with get_session() as session:
             siparisler = session.scalars(
                 select(SatisSiparisi)
@@ -134,6 +135,7 @@ class SatisSiparisiService:
 
     @staticmethod
     def getir(siparis_id: int) -> SatisSiparisi | None:
+        SatisSiparisiService.schema_hazirla()
         with get_session() as session:
             return session.scalar(
                 select(SatisSiparisi)

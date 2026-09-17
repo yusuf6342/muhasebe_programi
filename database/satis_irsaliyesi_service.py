@@ -180,6 +180,10 @@ class SatisIrsaliyesiService:
                                 f'ALTER TABLE "satis_irsaliyesi_satirlari" ADD COLUMN "{alan}" {tip}'
                             )
                         )
+        # Sipariş satırı manuel ürün kolonları — irsaliye açılışında selectinload için gerekli
+        from database.satis_siparisi_service import SatisSiparisiService
+
+        SatisSiparisiService.schema_hazirla()
 
     @staticmethod
     def _siparis_durumunu_guncelle(session, siparis_id: int | None) -> None:
@@ -313,6 +317,10 @@ class SatisIrsaliyesiService:
 
     @staticmethod
     def acik_siparisler() -> list[SatisSiparisi]:
+        # Manuel ürün kolonları soft ALTER ile eklenir; yüklemeden önce şema hazır olmalı
+        from database.satis_siparisi_service import SatisSiparisiService
+
+        SatisSiparisiService.schema_hazirla()
         with get_session() as session:
             return list(
                 session.scalars(
