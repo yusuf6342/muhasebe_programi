@@ -96,25 +96,34 @@ class AlisSiparisiService:
         odeme_verileri: list[dict[str, Any]],
         siparis_id: int | None = None,
     ) -> AlisSiparisi:
-        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
+        yazma_zorunlu("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")
         siparis_tarihi = veriler["siparis_tarihi"]
         termin_tarihi = veriler["termin_tarihi"]
         if siparis_tarihi > date.today():
             raise ValueError("Sipariş tarihi gelecek bir tarih olamaz.")
         if termin_tarihi < siparis_tarihi:
             raise ValueError("Termin tarihi sipariş tarihinden önce olamaz.")
+        beklenen_versiyon = veriler.get("row_version")
         with get_session() as session:
             if siparis_id:
                 siparis = session.get(AlisSiparisi, siparis_id)
                 if siparis is None:
                     raise ValueError("Sipariş bulunamadı.")
+                mevcut_v = int(getattr(siparis, "row_version", 1) or 1)
+                if beklenen_versiyon is not None and int(beklenen_versiyon) != mevcut_v:
+                    raise ValueError(
+                        "Bu sipariş başka bir kullanıcı tarafından değiştirilmiş. "
+                        "Listeyi yenileyip tekrar açın."
+                    )
                 siparis.satirlar.clear()
                 siparis.odemeler.clear()
+                siparis.row_version = mevcut_v + 1
             else:
                 ozel_no = (veriler.get("siparis_no") or "").strip()
                 siparis = AlisSiparisi(
                     siparis_no=ozel_no or AlisSiparisiService.siparis_no(),
                     durum="AÇIK",
+                    row_version=1,
                 )
                 session.add(siparis)
             siparis.siparis_tarihi = siparis_tarihi
@@ -165,7 +174,7 @@ class AlisSiparisiService:
 
     @staticmethod
     def iptal_et(siparis_id: int) -> None:
-        yazma_zorunlu("alis_duzenleme", "iptal")
+        yazma_zorunlu("alis_siparis_duzenleme", "alis_duzenleme", "iptal")
         with get_session() as session:
             siparis = session.get(AlisSiparisi, siparis_id)
             if siparis is None:

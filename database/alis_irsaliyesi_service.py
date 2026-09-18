@@ -27,7 +27,7 @@ class AlisIrsaliyesiService:
 
     @staticmethod
     def iptal_et(irsaliye_id: int) -> None:
-        yazma_zorunlu("alis_duzenleme", "iptal")
+        yazma_zorunlu("alis_irsaliye_duzenleme", "alis_duzenleme", "iptal")
         with get_session() as session:
             irsaliye = session.scalar(
                 select(AlisIrsaliyesi)
@@ -124,15 +124,22 @@ class AlisIrsaliyesiService:
         satir_verileri: list[dict[str, Any]],
         irsaliye_id: int | None = None,
     ) -> AlisIrsaliyesi:
-        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
+        yazma_zorunlu("alis_irsaliye_duzenleme", "alis_duzenleme", "yeni_kayit")
         irsaliye_tarihi = veriler["irsaliye_tarihi"]
         if irsaliye_tarihi > date.today():
             raise ValueError("İrsaliye tarihi gelecek bir tarih olamaz.")
+        beklenen_versiyon = veriler.get("row_version")
         with get_session() as session:
             if irsaliye_id:
                 irsaliye = session.get(AlisIrsaliyesi, irsaliye_id)
                 if irsaliye is None:
                     raise ValueError("İrsaliye bulunamadı.")
+                mevcut_v = int(getattr(irsaliye, "row_version", 1) or 1)
+                if beklenen_versiyon is not None and int(beklenen_versiyon) != mevcut_v:
+                    raise ValueError(
+                        "Bu irsaliye başka bir kullanıcı tarafından değiştirilmiş. "
+                        "Listeyi yenileyip tekrar açın."
+                    )
                 if any(satir.faturalanan_miktar > 0 for satir in irsaliye.satirlar):
                     raise ValueError("Faturalanmış irsaliye satırı düzenlenemez.")
                 for eski_satir in irsaliye.satirlar:
@@ -141,11 +148,13 @@ class AlisIrsaliyesiService:
                         if siparis_satiri:
                             siparis_satiri.irsaliyelenen_miktar -= eski_satir.miktar
                 irsaliye.satirlar.clear()
+                irsaliye.row_version = mevcut_v + 1
             else:
                 ozel_no = (veriler.get("irsaliye_no") or "").strip()
                 irsaliye = AlisIrsaliyesi(
                     irsaliye_no=ozel_no or AlisIrsaliyesiService.irsaliye_no(),
                     durum="AÇIK",
+                    row_version=1,
                 )
                 session.add(irsaliye)
             irsaliye.irsaliye_tarihi = irsaliye_tarihi

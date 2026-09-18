@@ -277,6 +277,10 @@ class AuditDeleteService:
                 for alan, tip in soft_cols.items():
                     if alan not in mevcut:
                         conn.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+                if tablo == "stok_kartlari" and "birlestirildi_hedef_id" not in mevcut:
+                    conn.execute(
+                        text('ALTER TABLE "stok_kartlari" ADD COLUMN "birlestirildi_hedef_id" INTEGER')
+                    )
 
     @staticmethod
     def create_deletion_snapshot(entity_type: str, obj: Any, session: Session) -> dict[str, Any]:

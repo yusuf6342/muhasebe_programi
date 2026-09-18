@@ -23,6 +23,7 @@ class AlisIrsaliyesi(Base):
     durum: Mapped[str] = mapped_column(String(30), nullable=False, default="AÇIK")
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     ayrintili_notlar: Mapped[str | None] = mapped_column(Text, nullable=True)
+    row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     cari: Mapped["Cari"] = relationship("Cari")

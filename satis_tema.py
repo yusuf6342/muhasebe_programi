@@ -351,6 +351,63 @@ def treeview_stil(tablo: ttk.Treeview) -> None:
     tablo.tag_configure("cift", background=ACIK_BG)
 
 
+# Müşteri / tedarikçi kart listesi — okunabilir punto + belirgin şerit
+_CARI_LISTE_STRIPE = "#E4EBF3"
+_CARI_LISTE_BAKIYE_FG = "#081B2C"
+
+
+def cari_liste_treeview_stil(tablo: ttk.Treeview, root: tk.Misc | None = None) -> None:
+    """Müşteri/tedarikçi kart listesi: büyük punto, görünür kolon başlıkları, şerit."""
+    stil = ttk.Style(root)
+    # Vista Treeview heading arka planı boyamaz; beyaz yazı kaybolur → clam zorunlu
+    try:
+        if "clam" in stil.theme_names():
+            stil.theme_use("clam")
+    except tk.TclError:
+        pass
+
+    f_govde = font(11, root=root)
+    f_baslik = font(12, "bold", root=root)
+    f_bakiye = font(12, "bold", root=root)
+    stil.configure(
+        "CariListe.Treeview",
+        font=f_govde,
+        rowheight=34,
+        fieldbackground=BEYAZ,
+        background=BEYAZ,
+        foreground=METIN,
+        borderwidth=1,
+        relief="solid",
+    )
+    stil.configure(
+        "CariListe.Treeview.Heading",
+        font=f_baslik,
+        background=LACIVERT,
+        foreground=BEYAZ,
+        relief="flat",
+        borderwidth=0,
+        padding=(8, 8),
+    )
+    stil.map(
+        "CariListe.Treeview",
+        background=[("selected", ACIK_SARI)],
+        foreground=[("selected", KOYU_LACIVERT)],
+    )
+    stil.map(
+        "CariListe.Treeview.Heading",
+        background=[("active", LACIVERT_HOVER), ("pressed", LACIVERT_HOVER)],
+        foreground=[("active", BEYAZ), ("pressed", BEYAZ)],
+    )
+    tablo.configure(style="CariListe.Treeview")
+    tablo.tag_configure("tek", background=BEYAZ)
+    tablo.tag_configure("cift", background=_CARI_LISTE_STRIPE)
+    tablo.tag_configure(
+        "bakiye_koyu",
+        foreground=_CARI_LISTE_BAKIYE_FG,
+        font=f_bakiye,
+    )
+
+
 class HubKart(tk.Frame):
     """Büyük tıklanabilir menü kartı (hover sarı/lacivert)."""
 

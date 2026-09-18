@@ -121,7 +121,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None):
-        yazma_zorunlu("alis_duzenleme", "yeni_kayit")
+        yazma_zorunlu("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")
         tarih, vade = veriler["fatura_tarihi"], veriler["vade_tarihi"]
         if tarih > date.today():
             raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
@@ -129,6 +129,7 @@ class AlisFaturasiService:
             raise ValueError("Vade tarihi fatura tarihinden önce olamaz.")
         if not satir_verileri:
             raise ValueError("En az bir fatura satırı ekleyin.")
+        beklenen_versiyon = veriler.get("row_version")
         with get_session() as session:
             if fatura_id:
                 fatura = session.get(AlisFaturasi, fatura_id)
@@ -136,13 +137,21 @@ class AlisFaturasiService:
                     raise ValueError("Fatura bulunamadı.")
                 if fatura.durum == "İPTAL":
                     raise ValueError("İptal edilmiş fatura düzenlenemez.")
+                mevcut_v = int(getattr(fatura, "row_version", 1) or 1)
+                if beklenen_versiyon is not None and int(beklenen_versiyon) != mevcut_v:
+                    raise ValueError(
+                        "Bu fatura başka bir kullanıcı tarafından değiştirilmiş. "
+                        "Listeyi yenileyip tekrar açın."
+                    )
                 AlisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
                 StokService.fatura_girislerini_geri_al(session, fatura.fatura_no)
                 FinansService.fatura_odemesini_geri_al(session, fatura.fatura_no)
                 fatura.satirlar.clear()
+                fatura.row_version = mevcut_v + 1
             else:
                 fatura = AlisFaturasi(
-                    fatura_no=(veriler.get("fatura_no") or "").strip() or AlisFaturasiService.fatura_no()
+                    fatura_no=(veriler.get("fatura_no") or "").strip() or AlisFaturasiService.fatura_no(),
+                    row_version=1,
                 )
                 session.add(fatura)
             fatura.fatura_tarihi, fatura.vade_tarihi = tarih, vade
@@ -299,7 +308,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def iptal_et(fatura_id):
-        yazma_zorunlu("alis_duzenleme", "iptal")
+        yazma_zorunlu("alis_fatura_duzenleme", "alis_duzenleme", "iptal")
         with get_session() as session:
             fatura = session.scalar(
                 select(AlisFaturasi)

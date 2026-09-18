@@ -4,7 +4,7 @@ from pathlib import Path
 import random
 import shutil
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -29,8 +29,23 @@ from database.models.stok import (
 )
 from database.satis_siparisi_service import decimal
 
-GIRIS_HAREKETLERI = ("GİRİŞ", "FATURA GİRİŞ", "İADE GİRİŞ", "TRANSFER GİRİŞ", "PAKET GİRİŞ")
-CIKIS_HAREKETLERI = ("FATURA ÇIKIŞ", "ÇIKIŞ", "TRANSFER ÇIKIŞ", "PAKET ÇIKIŞ")
+GIRIS_HAREKETLERI = (
+    "GİRİŞ",
+    "FATURA GİRİŞ",
+    "İADE GİRİŞ",
+    "TRANSFER GİRİŞ",
+    "PAKET GİRİŞ",
+    "SAYIM GİRİŞ",
+    "İRSALİYE İADE GİRİŞ",
+)
+CIKIS_HAREKETLERI = (
+    "FATURA ÇIKIŞ",
+    "ÇIKIŞ",
+    "TRANSFER ÇIKIŞ",
+    "PAKET ÇIKIŞ",
+    "SAYIM ÇIKIŞ",
+    "İRSALİYE ÇIKIŞ",
+)
 
 STOK_SECENEK_TURLERI = (
     "rapor_grubu",
@@ -117,6 +132,84 @@ def net_alis_hesapla(liste_fiyat, iskonto_1=0, iskonto_2=0, iskonto_3=0) -> Deci
 
 fabrika_fiyati_hesapla = net_alis_hesapla
 
+SATIS_FIYAT_ALANLARI = tuple(f"satis_{i}" for i in range(1, 11))
+
+
+def _birim_kayit_normalize(kayit, ana_birim="Adet") -> dict:
+    """Eski (adi, carpan) veya yeni dict birim kaydını standart dict'e çevirir."""
+    if isinstance(kayit, dict):
+        ad = (kayit.get("birim_adi") or kayit.get("birim") or "").strip()
+        carpan = kayit.get("carpan") or kayit.get("temel_carpan") or "1"
+        satis = dict(kayit.get("satis_fiyatlari") or {})
+        for i, ad_fiyat in enumerate(SATIS_FIYAT_ADLARI, start=1):
+            alan = f"satis_{i}"
+            if ad_fiyat not in satis and kayit.get(alan) is not None:
+                satis[ad_fiyat] = kayit.get(alan)
+        return {
+            "birim_adi": ad,
+            "carpan": carpan,
+            "referans_birim": (kayit.get("referans_birim") or kayit.get("hedef") or ana_birim or "").strip()
+            or ana_birim,
+            "referans_carpan": kayit.get("referans_carpan") or kayit.get("ust_carpan") or carpan,
+            "fiyat_modu": (kayit.get("fiyat_modu") or "manuel").strip().lower() or "manuel",
+            "alis_fiyati": kayit.get("alis_fiyati"),
+            "satis_fiyatlari": satis,
+            "alis_kullanilabilir": bool(kayit.get("alis_kullanilabilir", True)),
+            "satis_kullanilabilir": bool(kayit.get("satis_kullanilabilir", True)),
+            "varsayilan_goruntuleme": bool(kayit.get("varsayilan_goruntuleme", False)),
+            "varsayilan_alis": bool(kayit.get("varsayilan_alis", False)),
+            "varsayilan_satis": bool(kayit.get("varsayilan_satis", False)),
+            "birim_barkod": (kayit.get("birim_barkod") or "").strip() or None,
+            "ondalik": int(kayit.get("ondalik") or 0),
+            "aktif": bool(kayit.get("aktif", True)),
+        }
+    birim_adi = (kayit[0] if kayit else "") or ""
+    carpan = kayit[1] if len(kayit) > 1 else "1"
+    hedef = kayit[2] if len(kayit) > 2 else ana_birim
+    return _birim_kayit_normalize(
+        {
+            "birim_adi": birim_adi,
+            "carpan": carpan,
+            "referans_birim": hedef,
+            "referans_carpan": carpan,
+        },
+        ana_birim=ana_birim,
+    )
+
+
+def _birim_orm_to_dict(b: StokBirim) -> dict:
+    satis = {}
+    for i, ad in enumerate(SATIS_FIYAT_ADLARI, start=1):
+        deger = getattr(b, f"satis_{i}", None)
+        if deger is not None:
+            satis[ad] = f"{Decimal(deger):f}".rstrip("0").rstrip(".")
+    return {
+        "birim_adi": b.birim_adi,
+        "carpan": f"{Decimal(b.carpan):f}".rstrip("0").rstrip("."),
+        "referans_birim": getattr(b, "referans_birim", None) or "",
+        "referans_carpan": (
+            f"{Decimal(b.referans_carpan):f}".rstrip("0").rstrip(".")
+            if getattr(b, "referans_carpan", None) is not None
+            else ""
+        ),
+        "fiyat_modu": getattr(b, "fiyat_modu", None) or "manuel",
+        "alis_fiyati": (
+            f"{Decimal(b.alis_fiyati):f}".rstrip("0").rstrip(".")
+            if getattr(b, "alis_fiyati", None) is not None
+            else ""
+        ),
+        "satis_fiyatlari": satis,
+        "alis_kullanilabilir": bool(getattr(b, "alis_kullanilabilir", True)),
+        "satis_kullanilabilir": bool(getattr(b, "satis_kullanilabilir", True)),
+        "varsayilan_goruntuleme": bool(getattr(b, "varsayilan_goruntuleme", False)),
+        "varsayilan_alis": bool(getattr(b, "varsayilan_alis", False)),
+        "varsayilan_satis": bool(getattr(b, "varsayilan_satis", False)),
+        "birim_barkod": getattr(b, "birim_barkod", None) or "",
+        "ondalik": int(getattr(b, "ondalik", 0) or 0),
+        "aktif": bool(getattr(b, "aktif", True)),
+    }
+
+
 KART_TURLERI = (
     "Ticari Mal",
     "Hammadde",
@@ -159,11 +252,142 @@ def ean13_uret(govde_12: str) -> str:
 
 class StokService:
     @staticmethod
+    def birim_carpani(stok_veya_birimler, birim_adi, ana_birim="Adet") -> Decimal:
+        """1 kaynak birim = kaç temel birim. Bilinmeyen birim → 1."""
+        hedef = (birim_adi or "").strip().casefold()
+        if hasattr(stok_veya_birimler, "birim"):
+            ana = (getattr(stok_veya_birimler, "birim", None) or ana_birim or "Adet").strip()
+            birimler = list(getattr(stok_veya_birimler, "birimler", None) or [])
+        else:
+            ana = (ana_birim or "Adet").strip()
+            birimler = list(stok_veya_birimler or [])
+        ana_cf = ana.casefold()
+        if not hedef or hedef == ana_cf:
+            return Decimal("1")
+        for b in birimler:
+            if isinstance(b, dict):
+                ad = (b.get("birim_adi") or "").strip().casefold()
+                if ad == hedef:
+                    c = Decimal(str(b.get("carpan") or 1))
+                    return c if c > 0 else Decimal("1")
+            else:
+                ad = (getattr(b, "birim_adi", None) or "").strip().casefold()
+                if ad == hedef:
+                    if getattr(b, "aktif", True) is False:
+                        continue
+                    c = Decimal(str(getattr(b, "carpan", 1) or 1))
+                    return c if c > 0 else Decimal("1")
+        return Decimal("1")
+
+    @staticmethod
+    def temel_miktara_cevir(miktar, birim_adi, stok_veya_birimler, ana_birim="Adet") -> Decimal:
+        """Evrak miktarını temel stok birimine çevirir (Decimal)."""
+        m = Decimal(str(miktar or 0))
+        return (m * StokService.birim_carpani(stok_veya_birimler, birim_adi, ana_birim)).quantize(
+            Decimal("0.000001")
+        )
+
+    @staticmethod
+    def birim_fiyati_getir(
+        stok,
+        birim_adi,
+        *,
+        fiyat_adi="SATIŞ FİYATI 1",
+        alis=False,
+    ) -> Decimal | None:
+        """Birime özel manuel fiyat; yoksa otomatik modda temel×çarpan; yoksa None.
+
+        None = fiyat tanımsız (sessizce 0 kullanma).
+        """
+        birim_adi = (birim_adi or "").strip()
+        ana = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
+        carpan = StokService.birim_carpani(stok, birim_adi, ana)
+
+        # Temel kart fiyatları
+        ana_map = {}
+        for f in getattr(stok, "fiyatlar", None) or []:
+            ana_map[(f.fiyat_adi or "").strip().upper()] = Decimal(str(f.tutar))
+
+        hedef_kayit = None
+        for b in getattr(stok, "birimler", None) or []:
+            if (b.birim_adi or "").strip().casefold() == birim_adi.casefold():
+                hedef_kayit = b
+                break
+
+        if birim_adi.casefold() == ana.casefold() or hedef_kayit is None:
+            if alis:
+                v = ana_map.get("ALIŞ FİYATI")
+                return v
+            return ana_map.get((fiyat_adi or "").strip().upper())
+
+        mod = (getattr(hedef_kayit, "fiyat_modu", None) or "manuel").lower()
+        if alis:
+            manuel = getattr(hedef_kayit, "alis_fiyati", None)
+            if mod.startswith("oto"):
+                temel = ana_map.get("ALIŞ FİYATI")
+                if temel is None:
+                    return Decimal(str(manuel)) if manuel is not None else None
+                return (temel * carpan).quantize(Decimal("0.0001"))
+            if manuel is not None:
+                return Decimal(str(manuel))
+            return None
+
+        # Satış 1-10
+        idx = None
+        ad_u = (fiyat_adi or "").strip().upper()
+        for i, ad in enumerate(SATIS_FIYAT_ADLARI, start=1):
+            if ad.upper() == ad_u:
+                idx = i
+                break
+        if idx is None:
+            idx = 1
+            ad_u = "SATIŞ FİYATI 1"
+        manuel = getattr(hedef_kayit, f"satis_{idx}", None)
+        if mod.startswith("oto"):
+            temel = ana_map.get(ad_u)
+            if temel is None:
+                return Decimal(str(manuel)) if manuel is not None else None
+            return (temel * carpan).quantize(Decimal("0.0001"))
+        if manuel is not None:
+            return Decimal(str(manuel))
+        return None
+
+    @staticmethod
+    def birimleri_dict_listesi(stok) -> list[dict]:
+        return [_birim_orm_to_dict(b) for b in (getattr(stok, "birimler", None) or [])]
+
+    @staticmethod
+    def birim_donusum_onizleme(miktar, kaynak_birim, hedef_birim, stok_veya_birimler, ana_birim="Adet"):
+        """Kaynak→hedef ve kaynak→temel önizleme."""
+        kaynak_c = StokService.birim_carpani(stok_veya_birimler, kaynak_birim, ana_birim)
+        hedef_c = StokService.birim_carpani(stok_veya_birimler, hedef_birim, ana_birim)
+        m = Decimal(str(miktar or 0))
+        temel = m * kaynak_c
+        hedef_miktar = (temel / hedef_c) if hedef_c > 0 else Decimal("0")
+        return {
+            "temel_miktar": temel.quantize(Decimal("0.000001")),
+            "hedef_miktar": hedef_miktar.quantize(Decimal("0.000001")),
+            "kaynak_carpan": kaynak_c,
+            "hedef_carpan": hedef_c,
+        }
+
+    @staticmethod
     def varsayilanlari_hazirla():
         RESIM_KLASORU.mkdir(parents=True, exist_ok=True)
         with get_session() as session:
-            if not session.scalar(select(Depo).where(Depo.ad == "ANA DEPO")):
-                session.add(Depo(ad="ANA DEPO"))
+            ana = session.scalar(select(Depo).where(Depo.ad == "ANA DEPO"))
+            if not ana:
+                session.add(
+                    Depo(kod="ANA", ad="ANA DEPO", aktif=True, varsayilan=True)
+                )
+            else:
+                if not getattr(ana, "kod", None):
+                    ana.kod = "ANA"
+                if not any(
+                    bool(getattr(d, "varsayilan", False))
+                    for d in session.scalars(select(Depo)).all()
+                ):
+                    ana.varsayilan = True
             baslangic = {
                 "rapor_grubu": ("GENEL", "HAMMADDE", "MAMUL", "SARF"),
                 "renk": ("BEYAZ", "SİYAH", "GRİ", "MAVİ", "KIRMIZI", "YEŞİL"),
@@ -175,6 +399,250 @@ class StokService:
                     )
                     if not mevcut:
                         session.add(StokSecenek(tur=tur, ad=ad))
+
+    @staticmethod
+    def depolar(aktif_only: bool = True):
+        with get_session() as session:
+            q = select(Depo).order_by(Depo.ad)
+            if aktif_only:
+                q = q.where(Depo.aktif.is_(True))
+            return list(session.scalars(q).all())
+
+    @staticmethod
+    def depo_getir(depo_id: int) -> Depo | None:
+        with get_session() as session:
+            return session.get(Depo, int(depo_id))
+
+    @staticmethod
+    def _depo_normalize(metin: str) -> str:
+        return (metin or "").strip()
+
+    @staticmethod
+    def depo_ekle(
+        ad,
+        *,
+        kod: str | None = None,
+        aciklama: str | None = None,
+        aktif: bool = True,
+        varsayilan: bool = False,
+    ):
+        from database.access import yazma_zorunlu
+        from database.user_audit import audit_document
+
+        yazma_zorunlu("stok_duzenleme", "yeni_kayit")
+        ad_n = StokService._depo_normalize(ad).upper()
+        kod_n = StokService._depo_normalize(kod or ad_n).upper()
+        if not ad_n:
+            raise ValueError("Depo adı zorunludur.")
+        if not kod_n:
+            raise ValueError("Depo kodu zorunludur.")
+        with get_session() as session:
+            ad_cakisan = session.scalar(
+                select(Depo).where(func.lower(Depo.ad) == ad_n.lower())
+            )
+            if ad_cakisan:
+                raise ValueError(f"Bu firma içinde «{ad_cakisan.ad}» adlı depo zaten var.")
+            kod_cakisan = session.scalar(
+                select(Depo).where(
+                    Depo.kod.is_not(None),
+                    func.lower(Depo.kod) == kod_n.lower(),
+                )
+            )
+            if kod_cakisan:
+                raise ValueError(f"Bu firma içinde «{kod_cakisan.kod}» kodlu depo zaten var.")
+            if varsayilan:
+                for d in session.scalars(select(Depo).where(Depo.varsayilan.is_(True))).all():
+                    d.varsayilan = False
+            depo = Depo(
+                kod=kod_n,
+                ad=ad_n,
+                aciklama=(aciklama or None),
+                aktif=bool(aktif),
+                varsayilan=bool(varsayilan),
+            )
+            session.add(depo)
+            session.flush()
+            depo_id = int(depo.id)
+            audit_document(
+                "depo_olustur",
+                modul="stok",
+                kayit_id=str(depo_id),
+                yeni={"kod": kod_n, "ad": ad_n, "varsayilan": bool(varsayilan)},
+            )
+            # Geriye uyum: eski çağrılar Depo nesnesi bekleyebilir
+            return session.get(Depo, depo_id)
+
+    @staticmethod
+    def depo_kullanim_ozeti(depo_id: int) -> dict:
+        """Silme öncesi ilişki sayıları."""
+        from database.models.stok_sayim import StokSayimFisi
+
+        with get_session() as session:
+            depo = session.get(Depo, int(depo_id))
+            if depo is None:
+                raise ValueError("Depo bulunamadı.")
+            lot_adet = int(
+                session.scalar(
+                    select(func.count()).select_from(StokLotu).where(StokLotu.depo_id == depo.id)
+                )
+                or 0
+            )
+            bakiye = session.scalar(
+                select(func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).where(
+                    StokLotu.depo_id == depo.id
+                )
+            )
+            hareket = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(StokHareketi)
+                    .where(StokHareketi.depo_id == depo.id)
+                )
+                or 0
+            )
+            sayim = 0
+            try:
+                sayim = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(StokSayimFisi)
+                        .where(StokSayimFisi.depo_id == depo.id)
+                    )
+                    or 0
+                )
+            except Exception:
+                sayim = 0
+            transfer = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(DepoTransferFisi)
+                    .where(
+                        (DepoTransferFisi.cikis_depo == depo.ad)
+                        | (DepoTransferFisi.giris_depo == depo.ad)
+                    )
+                )
+                or 0
+            )
+            bakiye_d = Decimal(str(bakiye or 0))
+            engel = bakiye_d != 0 or hareket > 0 or lot_adet > 0 or sayim > 0 or transfer > 0
+            return {
+                "depo_id": depo.id,
+                "kod": getattr(depo, "kod", None) or "",
+                "ad": depo.ad,
+                "varsayilan": bool(getattr(depo, "varsayilan", False)),
+                "lot_adet": lot_adet,
+                "bakiye": bakiye_d,
+                "hareket": hareket,
+                "sayim": sayim,
+                "transfer": transfer,
+                "silinebilir": not engel,
+            }
+
+    @staticmethod
+    def depo_sil(depo_id: int) -> None:
+        from database.access import yazma_zorunlu
+        from database.user_audit import audit_document
+
+        yazma_zorunlu("stok_duzenleme", "silme")
+        ozet = StokService.depo_kullanim_ozeti(depo_id)
+        if ozet["varsayilan"]:
+            raise ValueError(
+                "Varsayılan depo silinemez. Önce başka bir depoyu varsayılan yapın."
+            )
+        if not ozet["silinebilir"]:
+            raise ValueError(
+                f"«{ozet['kod']} / {ozet['ad']}» deposu silinemez. "
+                f"Lot: {ozet['lot_adet']}, bakiye: {ozet['bakiye']}, "
+                f"hareket: {ozet['hareket']}, sayım: {ozet['sayim']}, "
+                f"transfer: {ozet['transfer']}. İsterseniz pasife alabilirsiniz."
+            )
+        with get_session() as session:
+            depo = session.get(Depo, int(depo_id))
+            if depo is None:
+                raise ValueError("Depo bulunamadı.")
+            eski = {"kod": depo.kod, "ad": depo.ad}
+            session.delete(depo)
+            session.flush()
+            audit_document(
+                "depo_sil",
+                modul="stok",
+                kayit_id=str(depo_id),
+                eski=eski,
+            )
+
+    @staticmethod
+    def depo_pasife_al(depo_id: int) -> None:
+        from database.access import yazma_zorunlu
+        from database.user_audit import audit_document
+
+        yazma_zorunlu("stok_duzenleme", "duzenleme")
+        with get_session() as session:
+            depo = session.get(Depo, int(depo_id))
+            if depo is None:
+                raise ValueError("Depo bulunamadı.")
+            if getattr(depo, "varsayilan", False):
+                raise ValueError(
+                    "Varsayılan depo pasife alınamaz. Önce başka bir varsayılan seçin."
+                )
+            eski = {"aktif": depo.aktif}
+            depo.aktif = False
+            session.flush()
+            audit_document(
+                "depo_pasife",
+                modul="stok",
+                kayit_id=str(depo.id),
+                eski=eski,
+                yeni={"aktif": False, "kod": depo.kod, "ad": depo.ad},
+            )
+
+    @staticmethod
+    def depo_varsayilan_yap(depo_id: int) -> None:
+        from database.access import yazma_zorunlu
+        from database.user_audit import audit_document
+
+        yazma_zorunlu("stok_duzenleme", "duzenleme")
+        with get_session() as session:
+            depo = session.get(Depo, int(depo_id))
+            if depo is None:
+                raise ValueError("Depo bulunamadı.")
+            if not depo.aktif:
+                raise ValueError("Pasif depo varsayılan yapılamaz.")
+            for d in session.scalars(select(Depo).where(Depo.varsayilan.is_(True))).all():
+                d.varsayilan = False
+            depo.varsayilan = True
+            session.flush()
+            audit_document(
+                "depo_varsayilan",
+                modul="stok",
+                kayit_id=str(depo.id),
+                yeni={"kod": depo.kod, "ad": depo.ad},
+            )
+
+    @staticmethod
+    def _secenek_ekle(session, tur: str, ad: str) -> None:
+        """StokSecenek ekler; Türkçe İ / unique çakışmalarında sessizce geçilir."""
+        deger = (ad or "").strip()
+        if not deger:
+            return
+        mevcut = session.scalar(
+            select(StokSecenek).where(StokSecenek.tur == tur, StokSecenek.ad == deger)
+        )
+        if mevcut:
+            return
+        mevcut = session.scalar(
+            select(StokSecenek).where(
+                StokSecenek.tur == tur,
+                func.lower(StokSecenek.ad) == deger.lower(),
+            )
+        )
+        if mevcut:
+            return
+        try:
+            with session.begin_nested():
+                session.add(StokSecenek(tur=tur, ad=deger))
+                session.flush()
+        except IntegrityError:
+            pass
 
     @staticmethod
     def secenekleri_listele(tur):
@@ -226,12 +694,205 @@ class StokService:
 
     @staticmethod
     def _barkod_kullaniliyor_mu(session, barkod: str, haric_stok_id=None) -> bool:
-        q1 = select(StokKarti.id).where(StokKarti.barkod == barkod)
-        q2 = select(StokBarkod.id).where(StokBarkod.barkod == barkod)
+        kod = (barkod or "").strip()
+        if not kod:
+            return False
+        q1 = select(StokKarti.id).where(StokKarti.barkod == kod)
+        q2 = select(StokBarkod.id).where(StokBarkod.barkod == kod)
+        q3 = select(StokBirim.id).where(StokBirim.birim_barkod == kod)
         if haric_stok_id:
-            q1 = q1.where(StokKarti.id != int(haric_stok_id))
-            q2 = q2.where(StokBarkod.stok_id != int(haric_stok_id))
-        return session.scalar(q1) is not None or session.scalar(q2) is not None
+            hid = int(haric_stok_id)
+            q1 = q1.where(StokKarti.id != hid)
+            q2 = q2.where(StokBarkod.stok_id != hid)
+            q3 = q3.where(StokBirim.stok_id != hid)
+        return (
+            session.scalar(q1) is not None
+            or session.scalar(q2) is not None
+            or session.scalar(q3) is not None
+        )
+
+    @staticmethod
+    def _birimleri_sessiona_yaz(session, stok, birimler: list, *, ana_birim: str | None = None) -> list[dict]:
+        """Birim satırlarını stok'a yazar (transaction içinde). Eski/yeni özeti döner."""
+        ana = (ana_birim or stok.birim or "Adet").strip() or "Adet"
+        eski = [
+            {
+                "birim_adi": b.birim_adi,
+                "carpan": str(b.carpan),
+                "birim_barkod": b.birim_barkod,
+                "aktif": b.aktif,
+            }
+            for b in list(stok.birimler or [])
+        ]
+        stok.birimler.clear()
+        session.flush()
+        gorulen_ad = set()
+        gorulen_barkod = set()
+        for ham in birimler or []:
+            kayit = _birim_kayit_normalize(ham, ana_birim=ana)
+            ad = kayit["birim_adi"]
+            if not ad:
+                raise ValueError("Birim adı boş olamaz.")
+            if ad.casefold() == ana.casefold():
+                # Ana birim satırı: katsayı 1 olmalı; DB'ye alternatif olarak yazılmaz
+                try:
+                    c_ana = decimal(kayit["carpan"], "Ana birim katsayısı", Decimal("1"))
+                except Exception:
+                    c_ana = Decimal("1")
+                if c_ana != 1:
+                    raise ValueError("Ana birim dönüşüm katsayısı 1 olmalıdır.")
+                continue
+            if ad.casefold() in gorulen_ad:
+                raise ValueError(f"Aynı stokta «{ad}» birimi birden fazla tanımlı.")
+            gorulen_ad.add(ad.casefold())
+            carpan_d = decimal(kayit["carpan"], f"{ad} temel çarpanı", Decimal("0.000001"))
+            if carpan_d <= 0:
+                raise ValueError(f"«{ad}» dönüşüm katsayısı sıfır veya negatif olamaz.")
+            bb = kayit.get("birim_barkod")
+            if bb:
+                if bb.casefold() in {x.casefold() for x in gorulen_barkod}:
+                    raise ValueError(f"Birim barkodu mükerrer: {bb}")
+                gorulen_barkod.add(bb)
+                # Aynı stokun ana barkodu veya ek barkodları
+                ana_bk = (getattr(stok, "barkod", None) or "").strip()
+                if ana_bk and ana_bk.casefold() == bb.casefold():
+                    raise ValueError(
+                        f"«{bb}» barkodu bu stokun ana barkodu olarak kayıtlı."
+                    )
+                for ekstra in list(getattr(stok, "barkodlar", None) or []):
+                    ek = (getattr(ekstra, "barkod", None) or "").strip()
+                    if ek and ek.casefold() == bb.casefold():
+                        raise ValueError(
+                            f"«{bb}» barkodu bu stokun başka bir barkod kaydında kullanılıyor."
+                        )
+                if StokService._barkod_kullaniliyor_mu(session, bb, haric_stok_id=stok.id):
+                    raise ValueError(
+                        f"«{bb}» barkodu başka bir stokta veya birimde kullanılıyor."
+                    )
+            ref_c = kayit.get("referans_carpan")
+            ref_c_d = None
+            if ref_c not in (None, ""):
+                ref_c_d = decimal(ref_c, f"{ad} referans çarpanı", Decimal("0.000001"))
+                if ref_c_d <= 0:
+                    raise ValueError(f"«{ad}» referans katsayısı sıfırdan büyük olmalıdır.")
+            alis_d = None
+            if kayit.get("alis_fiyati") not in (None, ""):
+                alis_d = decimal(kayit["alis_fiyati"], f"{ad} alış", None)
+                if alis_d < 0:
+                    raise ValueError(f"«{ad}» alış fiyatı negatif olamaz.")
+            satis_kwargs = {}
+            for i, fiyat_adi in enumerate(SATIS_FIYAT_ADLARI, start=1):
+                ham_f = (kayit.get("satis_fiyatlari") or {}).get(fiyat_adi)
+                if ham_f not in (None, ""):
+                    tutar = decimal(ham_f, fiyat_adi, None)
+                    if tutar < 0:
+                        raise ValueError(f"{fiyat_adi} negatif olamaz.")
+                    satis_kwargs[f"satis_{i}"] = tutar
+            stok.birimler.append(
+                StokBirim(
+                    birim_adi=ad,
+                    carpan=carpan_d,
+                    referans_birim=(kayit.get("referans_birim") or ana).strip() or ana,
+                    referans_carpan=ref_c_d,
+                    fiyat_modu="otomatik"
+                    if (kayit.get("fiyat_modu") or "").startswith("oto")
+                    else "manuel",
+                    alis_fiyati=alis_d,
+                    alis_kullanilabilir=bool(kayit.get("alis_kullanilabilir", True)),
+                    satis_kullanilabilir=bool(kayit.get("satis_kullanilabilir", True)),
+                    varsayilan_goruntuleme=bool(kayit.get("varsayilan_goruntuleme", False)),
+                    varsayilan_alis=bool(kayit.get("varsayilan_alis", False)),
+                    varsayilan_satis=bool(kayit.get("varsayilan_satis", False)),
+                    birim_barkod=bb,
+                    ondalik=max(0, min(6, int(kayit.get("ondalik") or 0))),
+                    aktif=bool(kayit.get("aktif", True)),
+                    **satis_kwargs,
+                )
+            )
+            StokService._secenek_ekle(session, "birim", ad)
+        yeni = [
+            {
+                "birim_adi": b.birim_adi,
+                "carpan": str(b.carpan),
+                "birim_barkod": b.birim_barkod,
+                "aktif": b.aktif,
+            }
+            for b in list(stok.birimler or [])
+        ]
+        return [{"eski": eski, "yeni": yeni}]
+
+    @staticmethod
+    def stok_birimleri_kaydet(
+        stok_id: int,
+        birimler: list,
+        *,
+        varsayilan_goruntuleme_birim: str | None = None,
+        varsayilan_alis_birim: str | None = None,
+        varsayilan_satis_birim: str | None = None,
+        ana_birim: str | None = None,
+    ) -> dict:
+        """Birim Dönüştürücü kaydı — tek transaction, audit."""
+        from database.access import yazma_zorunlu
+        from database.session_manager import oturum
+        from database.user_audit import audit_document
+
+        yazma_zorunlu("stok_duzenleme", "duzenleme")
+        if not stok_id:
+            raise ValueError("Birim kaydı için önce stok kartını kaydedin.")
+        if not oturum.firma_secili:
+            raise ValueError("Aktif firma seçilmedi. Birim kaydı yapılamaz.")
+        with get_session() as session:
+            stok = session.get(StokKarti, int(stok_id))
+            if stok is None or getattr(stok, "is_deleted", False):
+                raise ValueError("Stok kartı bulunamadı veya silinmiş.")
+            # Firma bağlamı: company_db zaten firma-scoped
+            if ana_birim:
+                stok.birim = (ana_birim or "").strip() or stok.birim
+            ozet = StokService._birimleri_sessiona_yaz(
+                session, stok, birimler, ana_birim=stok.birim
+            )
+            if varsayilan_goruntuleme_birim is not None:
+                stok.varsayilan_goruntuleme_birim = (
+                    (varsayilan_goruntuleme_birim or "").strip() or None
+                )
+            if varsayilan_alis_birim is not None:
+                stok.varsayilan_alis_birim = ((varsayilan_alis_birim or "").strip() or None)
+            if varsayilan_satis_birim is not None:
+                stok.varsayilan_satis_birim = ((varsayilan_satis_birim or "").strip() or None)
+            for b in stok.birimler:
+                if b.varsayilan_goruntuleme and not stok.varsayilan_goruntuleme_birim:
+                    stok.varsayilan_goruntuleme_birim = b.birim_adi
+                if b.varsayilan_alis and not stok.varsayilan_alis_birim:
+                    stok.varsayilan_alis_birim = b.birim_adi
+                if b.varsayilan_satis and not stok.varsayilan_satis_birim:
+                    stok.varsayilan_satis_birim = b.birim_adi
+            session.flush()
+            audit_document(
+                "stok_birim_kaydet",
+                modul="stok",
+                kayit_id=str(stok.id),
+                eski=ozet[0]["eski"] if ozet else None,
+                yeni={
+                    "birimler": ozet[0]["yeni"] if ozet else [],
+                    "stok_id": int(stok.id),
+                    "stok_kodu": stok.stok_kodu,
+                    "firma_id": getattr(oturum, "company_id", None),
+                    "firma_kodu": getattr(oturum, "firma_kodu", None),
+                    "kullanici": getattr(oturum, "kullanici_adi", None),
+                    "varsayilan_goruntuleme_birim": stok.varsayilan_goruntuleme_birim,
+                    "varsayilan_alis_birim": stok.varsayilan_alis_birim,
+                    "varsayilan_satis_birim": stok.varsayilan_satis_birim,
+                },
+            )
+            return {
+                "stok_id": int(stok.id),
+                "birim_adet": len(stok.birimler),
+                "birimler": StokService.birimleri_dict_listesi(stok),
+                "varsayilan_goruntuleme_birim": stok.varsayilan_goruntuleme_birim,
+                "varsayilan_alis_birim": stok.varsayilan_alis_birim,
+                "varsayilan_satis_birim": stok.varsayilan_satis_birim,
+                "ana_birim": stok.birim,
+            }
 
     @staticmethod
     def ean13_olustur(onek=EAN13_ONEK, stok_id=None, haric_barkodlar=None) -> str:
@@ -298,51 +959,6 @@ class StokService:
         return StokService.ean13_olustur()
 
     @staticmethod
-    def depolar():
-        with get_session() as session:
-            return list(session.scalars(select(Depo).where(Depo.aktif.is_(True)).order_by(Depo.ad)).all())
-
-    @staticmethod
-    def depo_ekle(ad):
-        ad = ad.strip().upper()
-        if not ad:
-            raise ValueError("Depo adı boş olamaz.")
-        with get_session() as session:
-            mevcut = session.scalar(select(Depo).where(func.lower(Depo.ad) == ad.lower()))
-            if mevcut:
-                return mevcut
-            depo = Depo(ad=ad)
-            session.add(depo)
-            session.flush()
-            return depo
-
-    @staticmethod
-    def _secenek_ekle(session, tur: str, ad: str) -> None:
-        """StokSecenek ekler; Türkçe İ / unique çakışmalarında sessizce geçilir."""
-        deger = (ad or "").strip()
-        if not deger:
-            return
-        mevcut = session.scalar(
-            select(StokSecenek).where(StokSecenek.tur == tur, StokSecenek.ad == deger)
-        )
-        if mevcut:
-            return
-        mevcut = session.scalar(
-            select(StokSecenek).where(
-                StokSecenek.tur == tur,
-                func.lower(StokSecenek.ad) == deger.lower(),
-            )
-        )
-        if mevcut:
-            return
-        try:
-            with session.begin_nested():
-                session.add(StokSecenek(tur=tur, ad=deger))
-                session.flush()
-        except IntegrityError:
-            pass
-
-    @staticmethod
     def _stok_yukle(session, stok_id=None, stok_kodu=None):
         q = select(StokKarti).options(
             selectinload(StokKarti.fiyatlar),
@@ -386,26 +1002,23 @@ class StokService:
             return True
 
         def _birim_carpani(stok, birim_adi) -> Decimal:
-            hedef = (birim_adi or "").strip().casefold()
-            ana = (stok.birim or "Adet").strip().casefold()
-            if not hedef or hedef == ana:
-                return Decimal("1")
-            for b in stok.birimler or []:
-                if (b.birim_adi or "").strip().casefold() == hedef:
-                    c = Decimal(str(b.carpan or 1))
-                    return c if c > 0 else Decimal("1")
-            return Decimal("1")
+            return StokService.birim_carpani(stok, birim_adi)
 
         def _barkod_fiyati(stok, barkod_kayit) -> Decimal:
+            barkod_birim = (
+                (barkod_kayit.birim if barkod_kayit else None) or stok.birim or "Adet"
+            ).strip() or "Adet"
             if barkod_kayit is not None:
                 bf = Decimal(str(barkod_kayit.fiyat or 0))
                 if bf > 0:
                     return bf
-                fiyat_adi = (barkod_kayit.fiyat_adi or "").strip()
-                if fiyat_adi:
-                    for f in stok.fiyatlar or []:
-                        if (f.fiyat_adi or "").strip().upper() == fiyat_adi.upper():
-                            return Decimal(str(f.tutar))
+                fiyat_adi = (barkod_kayit.fiyat_adi or "").strip() or "SATIŞ FİYATI 1"
+                birim_f = StokService.birim_fiyati_getir(stok, barkod_birim, fiyat_adi=fiyat_adi)
+                if birim_f is not None and birim_f > 0:
+                    return birim_f
+            birim_f = StokService.birim_fiyati_getir(stok, barkod_birim, fiyat_adi="SATIŞ FİYATI 1")
+            if birim_f is not None:
+                return birim_f
             for f in stok.fiyatlar or []:
                 ad = (f.fiyat_adi or "").strip().upper()
                 if ad == "SATIŞ FİYATI 1":
@@ -420,10 +1033,22 @@ class StokService:
             barkod_birim = (
                 (barkod_kayit.birim if barkod_kayit else None) or stok.birim or "Adet"
             ).strip() or "Adet"
+            # Birim barkodu eşleşmesi
+            if barkod_kayit is None:
+                for b in stok.birimler or []:
+                    if (getattr(b, "birim_barkod", None) or "").strip() == kod:
+                        barkod_birim = (b.birim_adi or barkod_birim).strip()
+                        break
             carpan = _birim_carpani(stok, barkod_birim)
             paket_fiyat = _barkod_fiyati(stok, barkod_kayit)
-            # Paket/koli barkodu: miktar = çarpan (ana birim), birim fiyat = birim başına
-            if carpan != Decimal("1") and paket_fiyat > 0:
+            # Birime özel fiyat zaten paket/koli tutarıdır — ana birime bölme
+            birim_ozel = StokService.birim_fiyati_getir(
+                stok, barkod_birim, fiyat_adi="SATIŞ FİYATI 1"
+            )
+            if birim_ozel is not None and birim_ozel > 0 and carpan != Decimal("1"):
+                # Hızlı satışta miktar = carpan (temel), birim_fiyat = temel başına
+                birim_fiyat = (birim_ozel / carpan).quantize(Decimal("0.0001"))
+            elif carpan != Decimal("1") and paket_fiyat > 0:
                 birim_fiyat = (paket_fiyat / carpan).quantize(Decimal("0.0001"))
             else:
                 birim_fiyat = paket_fiyat
@@ -441,6 +1066,7 @@ class StokService:
                 "carpan": carpan,
                 "miktar": carpan if carpan > 0 else Decimal("1"),
                 "birim_fiyat": birim_fiyat,
+                "paket_fiyat": paket_fiyat,
                 "mevcut_stok": mevcut,
                 "kdv_orani": decimal(kdv, "KDV", Decimal("0")),
             }
@@ -473,6 +1099,25 @@ class StokService:
             )
             if stok is not None:
                 return _sonuc(stok, None)
+
+            # Birime özel barkod
+            birim_kayit = session.scalar(
+                select(StokBirim)
+                .where(StokBirim.birim_barkod == kod, StokBirim.aktif.is_(True))
+                .options(
+                    selectinload(StokBirim.stok).selectinload(StokKarti.fiyatlar),
+                    selectinload(StokBirim.stok).selectinload(StokKarti.birimler),
+                    selectinload(StokBirim.stok).selectinload(StokKarti.lotlar),
+                )
+            )
+            if birim_kayit is not None and _aktif_silinmemis(birim_kayit.stok):
+                # Sahte barkod kaydı gibi davran: birim adını taşı
+                class _Sahte:
+                    birim = birim_kayit.birim_adi
+                    fiyat = Decimal("0")
+                    fiyat_adi = "SATIŞ FİYATI 1"
+
+                return _sonuc(birim_kayit.stok, _Sahte())
         return None
 
     # —— Hızlı Satış Aşama 3: grup / kart listeleri ——
@@ -979,6 +1624,519 @@ class StokService:
             return list(session.scalars(q).all())
 
     @staticmethod
+    def stoklari_ayrintili_ara(
+        kelimeler=None,
+        *,
+        yontem: str = "and",
+        hizli_arama: str = "",
+        min_harf: int = 2,
+    ):
+        """Ürün adında çoklu kelime araması (AND/OR), hızlı arama ile birleşik.
+
+        Her dolu kutu bağımsız içerir koşuludur; kelime sırası önemli değildir.
+        Yanlış:  stok_adi LIKE '%SAMET DEVE FREN%'  (birleşik/sıralı)
+        Doğru:   LIKE '%SAMET%' AND LIKE '%DEVE%' AND LIKE '%FREN%'
+
+        kelimeler: en fazla 5 ifade; boşlar atılır. Her dolu kutu ≥ min_harf olmalı.
+        yontem: 'and' = tüm kelimeler (sıra bağımsız), 'or' = herhangi biri.
+        hizli_arama: üstteki kod/ad/barkod kutusu (mevcut stoklari_ara mantığı).
+        """
+        from database.turkce_normalize import arama_like_varyantlari, turkce_normalize
+
+        min_harf = max(1, int(min_harf or 2))
+        yontem = (yontem or "and").strip().lower()
+        if yontem not in ("and", "or"):
+            yontem = "and"
+
+        temiz = []
+        for k in kelimeler or []:
+            t = (k or "").strip()
+            if not t:
+                continue
+            if len(t) < min_harf:
+                continue
+            temiz.append(t)
+        # Aynı ifadeyi bir kez kullan (sıra korunmaz; set değil liste — ama birleşik metin yok)
+        gorulen = set()
+        benzersiz = []
+        for t in temiz:
+            anahtar = turkce_normalize(t)
+            if not anahtar or anahtar in gorulen:
+                continue
+            gorulen.add(anahtar)
+            benzersiz.append(t)
+        temiz = benzersiz[:5]
+
+        hizli = (hizli_arama or "").strip()
+
+        with get_session() as session:
+            q = (
+                select(StokKarti)
+                .where(
+                    StokKarti.aktif.is_(True),
+                    or_(StokKarti.is_deleted.is_(False), StokKarti.is_deleted.is_(None)),
+                )
+                .options(
+                    selectinload(StokKarti.fiyatlar),
+                    selectinload(StokKarti.lotlar),
+                    selectinload(StokKarti.barkodlar),
+                )
+                .order_by(StokKarti.stok_adi)
+            )
+
+            if hizli:
+                ifade = f"%{hizli}%"
+                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                hizli_kosul = [
+                    StokKarti.stok_kodu.ilike(ifade),
+                    StokKarti.barkod.ilike(ifade),
+                    StokKarti.id.in_(barkod_alt),
+                ]
+                if len(hizli) >= 3:
+                    hizli_kosul.append(StokKarti.stok_adi.ilike(ifade))
+                q = q.where(or_(*hizli_kosul))
+
+            # Her kelime için ayrı LIKE — asla " ".join(kelimeler) ile birleşik arama yok
+            kelime_kosullari = []
+            for kelime in temiz:
+                patterns = arama_like_varyantlari(kelime, max_n=16)
+                if not patterns:
+                    patterns = [f"%{kelime}%"]
+                kelime_kosullari.append(
+                    or_(*[StokKarti.stok_adi.ilike(p) for p in patterns])
+                )
+
+            if kelime_kosullari:
+                if yontem == "or":
+                    q = q.where(or_(*kelime_kosullari))
+                else:
+                    # AND: hepsi ürün adında olsun; sıranın / bitişikliğin önemi yok
+                    q = q.where(and_(*kelime_kosullari))
+
+            adaylar = list(session.scalars(q).all())
+
+        # Normalize ile kesinleştir: nk in n_ad → sıra ve bitişiklik bağımsız
+        if not temiz:
+            return adaylar
+
+        n_kelimeler = [turkce_normalize(k) for k in temiz]
+        sonuc = []
+        gorulen_id = set()
+        for stok in adaylar:
+            if stok.id in gorulen_id:
+                continue
+            n_ad = turkce_normalize(stok.stok_adi or "")
+            if yontem == "or":
+                eslesti = any(nk in n_ad for nk in n_kelimeler if nk)
+            else:
+                eslesti = all(nk in n_ad for nk in n_kelimeler if nk)
+            if eslesti:
+                gorulen_id.add(stok.id)
+                sonuc.append(stok)
+        return sonuc
+
+    @staticmethod
+    def stok_liste_filtre_secenekleri():
+        """Filtre paneli için grup / tür / birim / KDV / depo listeleri."""
+        with get_session() as session:
+            gruplar = [
+                g
+                for g in session.scalars(
+                    select(StokKarti.rapor_grubu)
+                    .where(StokKarti.rapor_grubu.is_not(None), StokKarti.rapor_grubu != "")
+                    .distinct()
+                    .order_by(StokKarti.rapor_grubu)
+                ).all()
+            ]
+            turler = [
+                t
+                for t in session.scalars(
+                    select(StokKarti.kart_turu)
+                    .where(StokKarti.kart_turu.is_not(None), StokKarti.kart_turu != "")
+                    .distinct()
+                    .order_by(StokKarti.kart_turu)
+                ).all()
+            ]
+            birimler = [
+                b
+                for b in session.scalars(
+                    select(StokKarti.birim)
+                    .where(StokKarti.birim.is_not(None), StokKarti.birim != "")
+                    .distinct()
+                    .order_by(StokKarti.birim)
+                ).all()
+            ]
+            kdvler = [
+                f"{Decimal(k):f}".rstrip("0").rstrip(".")
+                for k in session.scalars(
+                    select(StokKarti.kdv_orani).where(StokKarti.kdv_orani.is_not(None)).distinct()
+                ).all()
+                if k is not None
+            ]
+            kdvler = sorted(set(kdvler), key=lambda x: Decimal(x.replace(",", ".") if "," in x else x))
+            depolar = list(
+                session.scalars(select(Depo.ad).where(Depo.aktif.is_(True)).order_by(Depo.ad)).all()
+            )
+        ana_gruplar = []
+        try:
+            from database.stok_grup_service import SEVIYE_ANA, StokGrupService
+
+            ana_gruplar = StokGrupService.listele(seviye=SEVIYE_ANA, aktif_only=True)
+        except Exception:
+            ana_gruplar = []
+        return {
+            "gruplar": gruplar,
+            "kart_turleri": turler,
+            "birimler": birimler,
+            "kdv_oranlari": kdvler,
+            "depolar": depolar,
+            "ana_gruplar": ana_gruplar,
+            "tali_gruplar": [],
+            "alt_gruplar": [],
+        }
+
+    @staticmethod
+    def stoklari_liste_filtreli(
+        kelimeler=None,
+        *,
+        yontem: str = "and",
+        hizli_arama: str = "",
+        min_harf: int = 2,
+        filtre: dict | None = None,
+        limit: int = 250,
+        offset: int = 0,
+        siralama: str | None = None,
+        siralama_desc: bool = False,
+        alis_goster: bool = True,
+    ):
+        """Stok listesi: hızlı + ayrıntılı + gelişmiş filtre; ayrı fiyat alanları.
+
+        Dönüş: {"satirlar": [...], "toplam": int, "gosterilen": int}
+        Her satır: id + display değerleri + sort sayısal alanlar.
+        """
+        from database.turkce_normalize import arama_like_varyantlari, turkce_normalize
+
+        filtre = dict(filtre or {})
+        # Filtre panelindeki ek metin → hızlı aramaya birleştir
+        ekstra_metin = (filtre.get("metin") or "").strip()
+        hizli = (hizli_arama or "").strip()
+        if ekstra_metin and ekstra_metin.casefold() not in hizli.casefold():
+            hizli = f"{hizli} {ekstra_metin}".strip() if hizli else ekstra_metin
+
+        min_harf = max(1, int(min_harf or 2))
+        yontem = (yontem or "and").strip().lower()
+        if yontem not in ("and", "or"):
+            yontem = "and"
+        limit = max(1, min(int(limit or 250), 500))
+        offset = max(0, int(offset or 0))
+
+        temiz = []
+        for k in kelimeler or []:
+            t = (k or "").strip()
+            if t and len(t) >= min_harf:
+                temiz.append(t)
+        gorulen = set()
+        benzersiz = []
+        for t in temiz:
+            anahtar = turkce_normalize(t)
+            if not anahtar or anahtar in gorulen:
+                continue
+            gorulen.add(anahtar)
+            benzersiz.append(t)
+        temiz = benzersiz[:5]
+
+        aktiflik = str(filtre.get("aktiflik") or "aktif").lower()
+        stok_durumu = str(filtre.get("stok_durumu") or "tumu").lower()
+
+        miktar_sub = (
+            select(
+                StokLotu.stok_id.label("stok_id"),
+                func.coalesce(func.sum(StokLotu.kalan_miktar), 0).label("miktar"),
+            )
+            .group_by(StokLotu.stok_id)
+        )
+        depolar = [d for d in (filtre.get("depolar") or []) if d]
+        if depolar:
+            miktar_sub = (
+                select(
+                    StokLotu.stok_id.label("stok_id"),
+                    func.coalesce(func.sum(StokLotu.kalan_miktar), 0).label("miktar"),
+                )
+                .join(Depo, Depo.id == StokLotu.depo_id)
+                .where(Depo.ad.in_(depolar))
+                .group_by(StokLotu.stok_id)
+            )
+        miktar_sub = miktar_sub.subquery()
+
+        alis_sub = (
+            select(StokFiyati.stok_id.label("stok_id"), StokFiyati.tutar.label("tutar"))
+            .where(StokFiyati.fiyat_adi == "ALIŞ FİYATI")
+            .subquery()
+        )
+        satis_sub = (
+            select(StokFiyati.stok_id.label("stok_id"), StokFiyati.tutar.label("tutar"))
+            .where(StokFiyati.fiyat_adi == "SATIŞ FİYATI 1")
+            .subquery()
+        )
+
+        with get_session() as session:
+            q = (
+                select(
+                    StokKarti,
+                    func.coalesce(miktar_sub.c.miktar, 0).label("toplam_miktar"),
+                    alis_sub.c.tutar.label("alis_tutar"),
+                    satis_sub.c.tutar.label("satis1_tutar"),
+                )
+                .outerjoin(miktar_sub, miktar_sub.c.stok_id == StokKarti.id)
+                .outerjoin(alis_sub, alis_sub.c.stok_id == StokKarti.id)
+                .outerjoin(satis_sub, satis_sub.c.stok_id == StokKarti.id)
+                .where(or_(StokKarti.is_deleted.is_(False), StokKarti.is_deleted.is_(None)))
+                .options(
+                    selectinload(StokKarti.fiyatlar),
+                    selectinload(StokKarti.barkodlar),
+                )
+            )
+
+            if aktiflik == "aktif":
+                q = q.where(StokKarti.aktif.is_(True))
+            elif aktiflik == "pasif":
+                q = q.where(StokKarti.aktif.is_(False))
+
+            if hizli:
+                ifade = f"%{hizli}%"
+                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                hizli_kosul = [
+                    StokKarti.stok_kodu.ilike(ifade),
+                    StokKarti.barkod.ilike(ifade),
+                    StokKarti.id.in_(barkod_alt),
+                ]
+                if len(hizli) >= 3:
+                    hizli_kosul.append(StokKarti.stok_adi.ilike(ifade))
+                q = q.where(or_(*hizli_kosul))
+
+            kelime_kosullari = []
+            for kelime in temiz:
+                patterns = arama_like_varyantlari(kelime, max_n=16) or [f"%{kelime}%"]
+                kelime_kosullari.append(or_(*[StokKarti.stok_adi.ilike(p) for p in patterns]))
+            if kelime_kosullari:
+                q = q.where(or_(*kelime_kosullari) if yontem == "or" else and_(*kelime_kosullari))
+
+            gruplar = [g for g in (filtre.get("gruplar") or []) if g]
+            if gruplar:
+                q = q.where(StokKarti.rapor_grubu.in_(gruplar))
+            # Üç seviyeli grup filtreleri (kademeli; üst seçim altları da kapsar)
+            ana_gid = filtre.get("ana_grup_id")
+            tali_gid = filtre.get("tali_grup_id")
+            alt_gid = filtre.get("alt_grup_id")
+            if alt_gid:
+                q = q.where(StokKarti.alt_grup_id == int(alt_gid))
+            elif tali_gid:
+                q = q.where(StokKarti.tali_grup_id == int(tali_gid))
+            elif ana_gid:
+                q = q.where(StokKarti.ana_grup_id == int(ana_gid))
+            turler = [t for t in (filtre.get("kart_turleri") or []) if t]
+            if turler:
+                q = q.where(StokKarti.kart_turu.in_(turler))
+            birimler = [b for b in (filtre.get("birimler") or []) if b]
+            if birimler:
+                q = q.where(StokKarti.birim.in_(birimler))
+            kdvler = []
+            for k in filtre.get("kdv_oranlari") or []:
+                try:
+                    kdvler.append(Decimal(str(k).replace(",", ".")))
+                except Exception:
+                    pass
+            if kdvler:
+                q = q.where(StokKarti.kdv_orani.in_(kdvler))
+
+            def _aralik_kosul(kolon, min_v, max_v, bos_dahil):
+                kosullar = []
+                if min_v is not None:
+                    kosullar.append(kolon >= min_v)
+                if max_v is not None:
+                    kosullar.append(kolon <= max_v)
+                if not kosullar:
+                    return None
+                aralik = and_(*kosullar)
+                if bos_dahil:
+                    return or_(kolon.is_(None), aralik)
+                return and_(kolon.is_not(None), aralik)
+
+            if alis_goster:
+                alis_k = _aralik_kosul(
+                    alis_sub.c.tutar,
+                    filtre.get("alis_min"),
+                    filtre.get("alis_max"),
+                    bool(filtre.get("alis_bos_dahil")),
+                )
+                if alis_k is not None:
+                    q = q.where(alis_k)
+            satis_k = _aralik_kosul(
+                satis_sub.c.tutar,
+                filtre.get("satis1_min"),
+                filtre.get("satis1_max"),
+                bool(filtre.get("satis1_bos_dahil")),
+            )
+            if satis_k is not None:
+                q = q.where(satis_k)
+
+            miktar_kol = func.coalesce(miktar_sub.c.miktar, 0)
+            miktar_k = _aralik_kosul(
+                miktar_kol,
+                filtre.get("miktar_min"),
+                filtre.get("miktar_max"),
+                False,
+            )
+            if miktar_k is not None:
+                q = q.where(miktar_k)
+
+            if stok_durumu == "var":
+                q = q.where(miktar_kol > 0)
+            elif stok_durumu == "sifir":
+                q = q.where(miktar_kol == 0)
+            elif stok_durumu == "eksi":
+                q = q.where(miktar_kol < 0)
+
+            # Ayrıntılı kelime kesinleştirme için önce adayları çek (normalize)
+            # Sayım: sayfalama öncesi toplam
+            adaylar = list(session.execute(q).all())
+
+        if temiz:
+            n_kelimeler = [turkce_normalize(k) for k in temiz]
+            filtrelenmis = []
+            for stok, miktar, alis_t, satis_t in adaylar:
+                n_ad = turkce_normalize(stok.stok_adi or "")
+                if yontem == "or":
+                    eslesti = any(nk in n_ad for nk in n_kelimeler if nk)
+                else:
+                    eslesti = all(nk in n_ad for nk in n_kelimeler if nk)
+                if eslesti:
+                    filtrelenmis.append((stok, miktar, alis_t, satis_t))
+            adaylar = filtrelenmis
+
+        # Sıralama
+        siralama_map = {
+            "kod": lambda r: (r[0].stok_kodu or "").casefold(),
+            "ad": lambda r: (r[0].stok_adi or "").casefold(),
+            "barkod": lambda r: (r[0].barkod or "").casefold(),
+            "birim": lambda r: (r[0].birim or "").casefold(),
+            "kdv": lambda r: Decimal(str(r[0].kdv_orani or 0)),
+            "alis": lambda r: Decimal(str(r[2])) if r[2] is not None else Decimal("-1"),
+            "satis1": lambda r: Decimal(str(r[3])) if r[3] is not None else Decimal("-1"),
+            "miktar": lambda r: Decimal(str(r[1] or 0)),
+            "tur": lambda r: (r[0].kart_turu or "").casefold(),
+            "grup": lambda r: (r[0].rapor_grubu or "").casefold(),
+            "aktif": lambda r: 0 if r[0].aktif else 1,
+        }
+
+        def _fiyat_map(stok):
+            mp = {}
+            for f in stok.fiyatlar or []:
+                ad = (f.fiyat_adi or "").strip().upper()
+                if ad:
+                    mp[ad] = f.tutar
+            return mp
+
+        if siralama in ("satis2", "satis3", "satis4"):
+            idx = {"satis2": "SATIŞ FİYATI 2", "satis3": "SATIŞ FİYATI 3", "satis4": "SATIŞ FİYATI 4"}[
+                siralama
+            ]
+
+            def _key(r, ad=idx):
+                v = _fiyat_map(r[0]).get(ad)
+                return Decimal(str(v)) if v is not None else Decimal("-1")
+
+            adaylar.sort(key=_key, reverse=bool(siralama_desc))
+        elif siralama in siralama_map:
+            adaylar.sort(key=siralama_map[siralama], reverse=bool(siralama_desc))
+        else:
+            adaylar.sort(key=lambda r: (r[0].stok_adi or "").casefold())
+
+        toplam = len(adaylar)
+        sayfa = adaylar[offset : offset + limit]
+
+        from stok_liste_ui import miktar_goster, para_goster_bos
+
+        satirlar = []
+        for stok, miktar, alis_t, satis_t in sayfa:
+            fmap = _fiyat_map(stok)
+            # SQL'den gelen alış/satış1 tercih; yoksa fiyat map
+            alis = alis_t if alis_t is not None else fmap.get("ALIŞ FİYATI")
+            s1 = satis_t if satis_t is not None else fmap.get("SATIŞ FİYATI 1")
+            s2 = fmap.get("SATIŞ FİYATI 2")
+            s3 = fmap.get("SATIŞ FİYATI 3")
+            s4 = fmap.get("SATIŞ FİYATI 4")
+            if "ALIŞ FİYATI" not in fmap and alis_t is None:
+                alis = None
+            if "SATIŞ FİYATI 1" not in fmap and satis_t is None:
+                s1 = None
+
+            kdv = getattr(stok, "kdv_orani", None)
+            kdv_metin = (
+                f"{Decimal(kdv):f}".rstrip("0").rstrip(".") if kdv is not None else "20"
+            ) or "0"
+            barkod = stok.barkod or ""
+            if not barkod and stok.barkodlar:
+                barkod = stok.barkodlar[0].barkod or ""
+
+            miktar_d = Decimal(str(miktar or 0))
+            values = {
+                "kod": stok.stok_kodu or "",
+                "ad": stok.stok_adi or "",
+                "barkod": barkod,
+                "birim": stok.birim or "",
+                "kdv": kdv_metin,
+                "alis": para_goster_bos(alis) if alis_goster else "—",
+                "satis1": para_goster_bos(s1),
+                "satis2": para_goster_bos(s2),
+                "satis3": para_goster_bos(s3),
+                "satis4": para_goster_bos(s4),
+                "miktar": miktar_goster(miktar_d),
+                "tur": getattr(stok, "kart_turu", "") or "",
+                "grup": getattr(stok, "rapor_grubu", "") or "",
+                "ana_grup": "",
+                "tali_grup": "",
+                "alt_grup": "",
+                "aktif": "Aktif" if stok.aktif else "Pasif",
+            }
+            try:
+                from database.models.stok import StokGrubu as _SG
+
+                if stok.ana_grup_id:
+                    ana = session.get(_SG, stok.ana_grup_id)
+                    values["ana_grup"] = (ana.ad if ana else "") or ""
+                if stok.tali_grup_id:
+                    tali = session.get(_SG, stok.tali_grup_id)
+                    values["tali_grup"] = (tali.ad if tali else "") or ""
+                if stok.alt_grup_id:
+                    alt = session.get(_SG, stok.alt_grup_id)
+                    values["alt_grup"] = (alt.ad if alt else "") or ""
+            except Exception:
+                pass
+            sort = {
+                "kod": stok.stok_kodu or "",
+                "ad": stok.stok_adi or "",
+                "barkod": barkod,
+                "birim": stok.birim or "",
+                "kdv": Decimal(kdv_metin.replace(",", ".")),
+                "alis": Decimal(str(alis)) if alis is not None and alis_goster else None,
+                "satis1": Decimal(str(s1)) if s1 is not None else None,
+                "satis2": Decimal(str(s2)) if s2 is not None else None,
+                "satis3": Decimal(str(s3)) if s3 is not None else None,
+                "satis4": Decimal(str(s4)) if s4 is not None else None,
+                "miktar": miktar_d,
+                "tur": values["tur"],
+                "grup": values["grup"],
+                "aktif": values["aktif"],
+            }
+            if not alis_goster:
+                values["alis"] = "—"
+                sort["alis"] = None
+            satirlar.append({"id": stok.id, "values": values, "sort": sort})
+
+        return {"satirlar": satirlar, "toplam": toplam, "gosterilen": len(satirlar)}
+
+    @staticmethod
     def stoklari_filtrele(kod="", ad="", limit=250, sadece_stokta=False, depo_ad=None):
         """Ürün kodu ve/veya adı ile AND filtre (fatura satırı seçimi).
         sadece_stokta=True ise kalan miktarı > 0 olanlar (opsiyonel depo)."""
@@ -1273,6 +2431,7 @@ class StokService:
                     "toplam_giris": Decimal("0"),
                     "toplam_cikis": Decimal("0"),
                     "kalan": Decimal("0"),
+                    "lot_kalan": Decimal("0"),
                     "fifo_deger": Decimal("0"),
                 }
             hareketler = list(
@@ -1286,8 +2445,10 @@ class StokService:
                 (h.miktar for h in hareketler if h.hareket_turu in CIKIS_HAREKETLERI),
                 Decimal("0"),
             )
+            # Kalan = hareket neti (devir/açılış dahil tüm giriş − çıkış)
+            kalan = toplam_giris - toplam_cikis
             lotlar = list(session.scalars(select(StokLotu).where(StokLotu.stok_id == stok.id)).all())
-            kalan = sum((lot.kalan_miktar for lot in lotlar), Decimal("0"))
+            lot_kalan = sum((lot.kalan_miktar for lot in lotlar), Decimal("0"))
             fifo_deger = sum(
                 (lot.kalan_miktar * lot.birim_maliyet for lot in lotlar),
                 Decimal("0"),
@@ -1296,8 +2457,41 @@ class StokService:
                 "toplam_giris": toplam_giris,
                 "toplam_cikis": toplam_cikis,
                 "kalan": kalan,
+                "lot_kalan": lot_kalan,
                 "fifo_deger": fifo_deger,
             }
+
+    @staticmethod
+    def stok_depo_ozeti(stok_id):
+        """Depo bazlı kalan miktar ve FIFO değer (lotlardan; bakiye elle değişmez)."""
+        with get_session() as session:
+            stok = session.get(StokKarti, int(stok_id))
+            if not stok:
+                return []
+            satirlar = session.execute(
+                select(
+                    Depo.ad,
+                    func.coalesce(func.sum(StokLotu.kalan_miktar), 0),
+                    func.coalesce(
+                        func.sum(StokLotu.kalan_miktar * StokLotu.birim_maliyet),
+                        0,
+                    ),
+                )
+                .join(StokLotu, StokLotu.depo_id == Depo.id)
+                .where(StokLotu.stok_id == stok.id)
+                .group_by(Depo.ad)
+                .order_by(Depo.ad)
+            ).all()
+            raf = (stok.raf_yeri or "").strip()
+            return [
+                {
+                    "depo": ad or "",
+                    "mevcut": Decimal(str(miktar or 0)),
+                    "fifo_deger": Decimal(str(deger or 0)),
+                    "raf": raf,
+                }
+                for ad, miktar, deger in satirlar
+            ]
 
     @staticmethod
     def fiyat_gecmisi(stok_id):
@@ -1411,7 +2605,24 @@ class StokService:
 
             stok.stok_kodu = yeni_kod
             stok.stok_adi = veriler["stok_adi"].strip()
-            stok.birim = veriler.get("birim") or "Adet"
+            yeni_birim = (veriler.get("birim") or "Adet").strip() or "Adet"
+            eski_birim = (stok.birim or "").strip()
+            if eski_birim and eski_birim != yeni_birim:
+                from database.user_audit import audit_document
+
+                audit_document(
+                    "stok_ana_birim_degisti",
+                    modul="stok",
+                    kayit_id=str(stok.id),
+                    eski={"birim": eski_birim},
+                    yeni={"birim": yeni_birim, "stok_kodu": yeni_kod},
+                )
+            stok.birim = yeni_birim
+            stok.varsayilan_goruntuleme_birim = (
+                (veriler.get("varsayilan_goruntuleme_birim") or "").strip() or None
+            )
+            stok.varsayilan_alis_birim = (veriler.get("varsayilan_alis_birim") or "").strip() or None
+            stok.varsayilan_satis_birim = (veriler.get("varsayilan_satis_birim") or "").strip() or None
             stok.kart_turu = veriler.get("kart_turu") or "Ticari Mal"
             stok.aciklama = veriler.get("aciklama") or None
             stok.muhasebe_stok_kodu = veriler.get("muhasebe_stok_kodu") or None
@@ -1440,8 +2651,30 @@ class StokService:
             stok.birim2 = veriler.get("birim2") or None
             stok.birim3 = veriler.get("birim3") or None
             stok.rapor_grubu = veriler.get("rapor_grubu") or None
+            # Üç seviyeli grup (servis doğrulaması)
+            ana_gid = veriler.get("ana_grup_id")
+            tali_gid = veriler.get("tali_grup_id")
+            alt_gid = veriler.get("alt_grup_id")
+            if ana_gid or tali_gid or alt_gid or "ana_grup_id" in veriler:
+                from database.stok_grup_service import StokGrupService
+
+                dog = StokGrupService.hiyerarsi_dogrula(ana_gid, tali_gid, alt_gid)
+                if dog.get("pasif_uyari"):
+                    # UI uyarmış olmalı; yine de kaydet — kullanıcı onayladı
+                    pass
+                stok.ana_grup_id = dog["ana_grup_id"]
+                stok.tali_grup_id = dog["tali_grup_id"]
+                stok.alt_grup_id = dog["alt_grup_id"]
+                if dog["rapor_grubu"]:
+                    stok.rapor_grubu = dog["rapor_grubu"]
             stok.raf_yeri = veriler.get("raf_yeri") or None
             stok.raf_omru = veriler.get("raf_omru") or None
+            try:
+                stok.minimum_stok = decimal(
+                    veriler.get("minimum_stok") or "0", "Minimum stok", Decimal("0")
+                )
+            except Exception:
+                stok.minimum_stok = Decimal("0")
 
             for tur in STOK_SECENEK_TURLERI:
                 deger = (veriler.get(tur) or "").strip()
@@ -1502,15 +2735,17 @@ class StokService:
                     )
 
             if birimler is not None:
-                stok.birimler.clear()
-                session.flush()
-                for birim_adi, carpan in birimler:
-                    ad = (birim_adi or "").strip()
-                    if not ad:
-                        continue
-                    stok.birimler.append(
-                        StokBirim(birim_adi=ad, carpan=decimal(carpan, f"{ad} çarpanı", Decimal("0.000001")))
-                    )
+                StokService._birimleri_sessiona_yaz(
+                    session, stok, birimler, ana_birim=stok.birim
+                )
+                # Kart seviyesindeki varsayılanlar birim bayraklarından da türetilebilir
+                for b in stok.birimler:
+                    if b.varsayilan_goruntuleme and not stok.varsayilan_goruntuleme_birim:
+                        stok.varsayilan_goruntuleme_birim = b.birim_adi
+                    if b.varsayilan_alis and not stok.varsayilan_alis_birim:
+                        stok.varsayilan_alis_birim = b.birim_adi
+                    if b.varsayilan_satis and not stok.varsayilan_satis_birim:
+                        stok.varsayilan_satis_birim = b.birim_adi
 
             if barkodlar is not None:
                 temiz_barkodlar = []
@@ -2254,8 +3489,8 @@ class StokService:
             return fis.id
 
     @staticmethod
-    def _belge_urun_kodlarini_guncelle(session, eski_kod, yeni_kod, yeni_ad, yeni_birim):
-        """Belge satırlarındaki urun_kodu / ad / birim alanlarını hedef stoka çeker."""
+    def _belge_satir_sayisi(session, urun_kodu: str) -> int:
+        """Geçmiş belge satırlarını sayar; snapshot alanlarına dokunmaz."""
         from database.models.alis_faturasi import AlisFaturasiSatiri
         from database.models.alis_iade_faturasi import AlisIadeFaturasiSatiri
         from database.models.alis_irsaliyesi import AlisIrsaliyesiSatiri
@@ -2265,6 +3500,9 @@ class StokService:
         from database.models.satis_irsaliyesi import SatisIrsaliyesiSatiri
         from database.models.satis_siparisi import SatisSiparisiSatiri
 
+        kod = (urun_kodu or "").strip()
+        if not kod:
+            return 0
         tablolar = (
             SatisSiparisiSatiri,
             SatisIrsaliyesiSatiri,
@@ -2276,163 +3514,487 @@ class StokService:
             AlisIadeFaturasiSatiri,
             DepoTransferFisiSatiri,
         )
-        guncellenen = 0
+        toplam = 0
         for model in tablolar:
-            satirlar = list(session.scalars(select(model).where(model.urun_kodu == eski_kod)).all())
-            for satir in satirlar:
-                satir.urun_kodu = yeni_kod
-                if hasattr(satir, "urun_adi"):
-                    satir.urun_adi = yeni_ad
-                if hasattr(satir, "birim"):
-                    satir.birim = yeni_birim
-                guncellenen += 1
-        return guncellenen
+            adet = session.scalar(
+                select(func.count()).select_from(model).where(model.urun_kodu == kod)
+            )
+            toplam += int(adet or 0)
+        return toplam
 
     @staticmethod
-    def stok_birlestir(aktarilacak_id, aktarilan_id):
-        yazma_zorunlu("stok_duzenleme")
-        """
-        Aktarılacak stok kartını aktarılan (hedef) karta birleştirir.
-        Hareketler, lotlar ve belge satırları hedefe geçer; birim hedef stoktan devam eder.
-        Kaynak boşalınca silinir.
-        """
-        if int(aktarilacak_id) == int(aktarilan_id):
-            raise ValueError("Aktarılacak ve aktarılan stok aynı olamaz.")
+    def _hareket_miktar_ozeti(session, stok_id: int) -> dict:
+        hareketler = list(
+            session.scalars(select(StokHareketi).where(StokHareketi.stok_id == int(stok_id))).all()
+        )
+        toplam_giris = sum(
+            (h.miktar for h in hareketler if h.hareket_turu in GIRIS_HAREKETLERI),
+            Decimal("0"),
+        )
+        toplam_cikis = sum(
+            (h.miktar for h in hareketler if h.hareket_turu in CIKIS_HAREKETLERI),
+            Decimal("0"),
+        )
+        return {
+            "adet": len(hareketler),
+            "toplam_giris": toplam_giris,
+            "toplam_cikis": toplam_cikis,
+            "net": toplam_giris - toplam_cikis,
+        }
 
+    @staticmethod
+    def _lot_kalan_ve_depolar(session, stok_id: int) -> tuple[Decimal, int, dict]:
+        lotlar = list(
+            session.scalars(select(StokLotu).where(StokLotu.stok_id == int(stok_id))).all()
+        )
+        depo_map: dict[int | None, Decimal] = {}
+        toplam = Decimal("0")
+        for lot in lotlar:
+            miktar = lot.kalan_miktar or Decimal("0")
+            toplam += miktar
+            depo_map[lot.depo_id] = depo_map.get(lot.depo_id, Decimal("0")) + miktar
+        return toplam, len({d for d in depo_map if d is not None or depo_map.get(d)}), depo_map
+
+    @staticmethod
+    def _stok_birlestir_dogrula(session, aktarilacak_id, aktarilan_id):
+        if int(aktarilacak_id) == int(aktarilan_id):
+            raise ValueError("Kaynak ve hedef stok aynı olamaz.")
+
+        kaynak = session.scalar(
+            select(StokKarti)
+            .where(StokKarti.id == int(aktarilacak_id))
+            .with_for_update()
+        )
+        hedef = session.scalar(
+            select(StokKarti)
+            .where(StokKarti.id == int(aktarilan_id))
+            .with_for_update()
+        )
+        if not kaynak or not hedef:
+            raise ValueError("Stok kartı bulunamadı.")
+        if bool(getattr(kaynak, "is_deleted", False)) or getattr(
+            kaynak, "birlestirildi_hedef_id", None
+        ):
+            raise ValueError(
+                "Kaynak stok zaten birleştirilmiş veya silinmiş; işlem tekrarlanamaz."
+            )
+        if not kaynak.aktif:
+            raise ValueError("Kaynak stok kartı pasif; birleştirilemez.")
+        if bool(getattr(hedef, "is_deleted", False)):
+            raise ValueError("Hedef stok silinmiş; birleştirilemez.")
+        if not hedef.aktif:
+            raise ValueError("Hedef stok kartı pasif; birleştirilemez.")
+        # Aynı firma DB oturumunda çalışır; farklı firma stokları aynı session'da olamaz.
+        return kaynak, hedef
+
+    @staticmethod
+    def stok_birlestir_onizleme(aktarilacak_id, aktarilan_id):
+        """Birleştirme öncesi etki özeti (salt okunur)."""
         with get_session() as session:
-            kaynak = StokService._stok_yukle(session, stok_id=aktarilacak_id)
-            hedef = StokService._stok_yukle(session, stok_id=aktarilan_id)
+            if int(aktarilacak_id) == int(aktarilan_id):
+                raise ValueError("Kaynak ve hedef stok aynı olamaz.")
+            kaynak = session.get(StokKarti, int(aktarilacak_id))
+            hedef = session.get(StokKarti, int(aktarilan_id))
             if not kaynak or not hedef:
                 raise ValueError("Stok kartı bulunamadı.")
-            if not kaynak.aktif:
-                raise ValueError("Aktarılacak stok kartı zaten pasif/silinmiş.")
+            if bool(getattr(kaynak, "is_deleted", False)) or getattr(
+                kaynak, "birlestirildi_hedef_id", None
+            ):
+                raise ValueError("Kaynak stok zaten birleştirilmiş veya silinmiş.")
+
+            kaynak_h = StokService._hareket_miktar_ozeti(session, kaynak.id)
+            hedef_h = StokService._hareket_miktar_ozeti(session, hedef.id)
+            kaynak_lot, kaynak_depo_adet, kaynak_depo_map = StokService._lot_kalan_ve_depolar(
+                session, kaynak.id
+            )
+            hedef_lot, _, hedef_depo_map = StokService._lot_kalan_ve_depolar(session, hedef.id)
+            belge_adet = StokService._belge_satir_sayisi(session, kaynak.stok_kodu)
+            beklenen_hedef = hedef_lot + kaynak_lot
+            etkilenen_depolar = set(kaynak_depo_map) | set(hedef_depo_map)
+
+            return {
+                "kaynak_id": int(kaynak.id),
+                "kaynak_kod": kaynak.stok_kodu,
+                "kaynak_ad": kaynak.stok_adi,
+                "hedef_id": int(hedef.id),
+                "hedef_kod": hedef.stok_kodu,
+                "hedef_ad": hedef.stok_adi,
+                "kaynak_toplam_giris": kaynak_h["toplam_giris"],
+                "kaynak_toplam_cikis": kaynak_h["toplam_cikis"],
+                "kaynak_net": kaynak_h["net"],
+                "kaynak_lot_miktar": kaynak_lot,
+                "hedef_mevcut": hedef_lot,
+                "hedef_hareket_net": hedef_h["net"],
+                "beklenen_hedef_miktar": beklenen_hedef,
+                "hareket_adet": kaynak_h["adet"],
+                "belge_satir_adet": belge_adet,
+                "depo_adet": len([d for d in etkilenen_depolar if d is not None])
+                or len(etkilenen_depolar),
+                "kaynak_depo_bakiyeleri": {
+                    str(k): v for k, v in kaynak_depo_map.items()
+                },
+                "hedef_depo_bakiyeleri": {
+                    str(k): v for k, v in hedef_depo_map.items()
+                },
+            }
+
+    @staticmethod
+    def _paket_referanslarini_aktar(session, kaynak_id: int, hedef_id: int) -> int:
+        """Paket bileşen / üretim stok_id bağlarını hedefe çeker."""
+        adet = 0
+        # Bileşen olarak kaynak → hedef
+        for satir in list(
+            session.scalars(
+                select(StokPaketBilesen).where(StokPaketBilesen.bilesen_stok_id == kaynak_id)
+            ).all()
+        ):
+            mevcut = session.scalar(
+                select(StokPaketBilesen).where(
+                    StokPaketBilesen.paket_stok_id == satir.paket_stok_id,
+                    StokPaketBilesen.bilesen_stok_id == hedef_id,
+                )
+            )
+            if mevcut is not None:
+                mevcut.miktar = (mevcut.miktar or Decimal("0")) + (satir.miktar or Decimal("0"))
+                session.delete(satir)
+            else:
+                satir.bilesen_stok_id = hedef_id
+            adet += 1
+
+        # Paket kartı olarak kaynak → hedef (bileşen satırlarını taşı / birleştir)
+        for satir in list(
+            session.scalars(
+                select(StokPaketBilesen).where(StokPaketBilesen.paket_stok_id == kaynak_id)
+            ).all()
+        ):
+            if satir.bilesen_stok_id == hedef_id:
+                # Hedef kendi bileşeni olamaz
+                session.delete(satir)
+                adet += 1
+                continue
+            mevcut = session.scalar(
+                select(StokPaketBilesen).where(
+                    StokPaketBilesen.paket_stok_id == hedef_id,
+                    StokPaketBilesen.bilesen_stok_id == satir.bilesen_stok_id,
+                )
+            )
+            if mevcut is not None:
+                mevcut.miktar = (mevcut.miktar or Decimal("0")) + (satir.miktar or Decimal("0"))
+                session.delete(satir)
+            else:
+                satir.paket_stok_id = hedef_id
+            adet += 1
+
+        for uretim in list(
+            session.scalars(
+                select(StokPaketUretim).where(StokPaketUretim.paket_stok_id == kaynak_id)
+            ).all()
+        ):
+            uretim.paket_stok_id = hedef_id
+            adet += 1
+        return adet
+
+    @staticmethod
+    def _hizli_satis_referanslarini_aktar(session, kaynak_id: int, hedef_id: int) -> int:
+        """Hızlı satış pin ve bekleyen sepet satırlarında stok_id günceller (snapshot korunur)."""
+        from database.models.hizli_satis import HizliSatisBekleyenSatiri, HizliSatisHizliUrun
+
+        adet = 0
+        for pin in list(
+            session.scalars(
+                select(HizliSatisHizliUrun).where(HizliSatisHizliUrun.stok_id == kaynak_id)
+            ).all()
+        ):
+            mevcut = session.scalar(
+                select(HizliSatisHizliUrun).where(
+                    HizliSatisHizliUrun.stok_id == hedef_id,
+                    HizliSatisHizliUrun.hizli_satis_grubu_id == pin.hizli_satis_grubu_id,
+                )
+            )
+            if mevcut is not None:
+                session.delete(pin)
+            else:
+                pin.stok_id = hedef_id
+            adet += 1
+
+        for satir in list(
+            session.scalars(
+                select(HizliSatisBekleyenSatiri).where(
+                    HizliSatisBekleyenSatiri.stok_id == kaynak_id
+                )
+            ).all()
+        ):
+            # stok_kodu / stok_adi / birim snapshot korunur
+            satir.stok_id = hedef_id
+            adet += 1
+        return adet
+
+    @staticmethod
+    def stok_birlestir(aktarilacak_id, aktarilan_id, gerekce: str | None = None):
+        """
+        Kaynak stok kartını hedef karta birleştirir.
+
+        Hareket ve FIFO lot bağlantıları hedef stock_id'ye taşınır; geçmiş belge
+        satırlarındaki ürün adı/kod/birim snapshot'ları korunur. Kaynak kart
+        hard-delete edilmez (delete-orphan lot kaybını önlemek için); pasife
+        alınır ve birlestirildi_hedef_id saklanır.
+        """
+        yazma_zorunlu("stok_duzenleme")
+        gerekce_metin = (gerekce or "").strip() or "Stok birleştirme"
+
+        with get_session() as session:
+            from sqlalchemy.orm.attributes import set_committed_value
+
+            kaynak, hedef = StokService._stok_birlestir_dogrula(
+                session, aktarilacak_id, aktarilan_id
+            )
+            # İlişkileri kilitleme sonrası yükle
+            kaynak = StokService._stok_yukle(session, stok_id=kaynak.id)
+            hedef = StokService._stok_yukle(session, stok_id=hedef.id)
 
             eski_kod = kaynak.stok_kodu
+            eski_ad = kaynak.stok_adi
             yeni_kod = hedef.stok_kodu
             yeni_ad = hedef.stok_adi
             yeni_birim = hedef.birim or "Adet"
+            kaynak_id = int(kaynak.id)
+            hedef_id = int(hedef.id)
 
-            belge_adet = StokService._belge_urun_kodlarini_guncelle(
-                session, eski_kod, yeni_kod, yeni_ad, yeni_birim
+            kaynak_h_once = StokService._hareket_miktar_ozeti(session, kaynak_id)
+            hedef_h_once = StokService._hareket_miktar_ozeti(session, hedef_id)
+            kaynak_lot_once, _, kaynak_depo_once = StokService._lot_kalan_ve_depolar(
+                session, kaynak_id
             )
+            hedef_lot_once, _, hedef_depo_once = StokService._lot_kalan_ve_depolar(
+                session, hedef_id
+            )
+            belge_adet = StokService._belge_satir_sayisi(session, eski_kod)
+            beklenen_hedef = hedef_lot_once + kaynak_lot_once
 
-            # Lotlar: çakışmada miktar birleştir, aksi halde stok_id taşı
-            hedef_lot_map = {
-                (lot.depo_id, lot.lot_no): lot for lot in list(hedef.lotlar)
-            }
+            # --- Lot / FIFO katmanları ---
+            hedef_lot_map = {(lot.depo_id, lot.lot_no): lot for lot in list(hedef.lotlar)}
             lot_tasinan = 0
-            for lot in list(kaynak.lotlar):
+            lot_birlesen = 0
+            for lot in list(
+                session.scalars(select(StokLotu).where(StokLotu.stok_id == kaynak_id)).all()
+            ):
                 anahtar = (lot.depo_id, lot.lot_no)
                 mevcut = hedef_lot_map.get(anahtar)
                 if mevcut is None:
-                    lot.stok_id = hedef.id
+                    lot.stok_id = hedef_id
                     hedef_lot_map[anahtar] = lot
                     lot_tasinan += 1
                     continue
-                # Aynı depo+lot: miktarları birleştir (ağırlıklı maliyet)
-                toplam_miktar = mevcut.kalan_miktar + lot.kalan_miktar
+                toplam_miktar = (mevcut.kalan_miktar or Decimal("0")) + (
+                    lot.kalan_miktar or Decimal("0")
+                )
                 if toplam_miktar > 0:
                     mevcut.birim_maliyet = (
-                        (mevcut.kalan_miktar * mevcut.birim_maliyet)
-                        + (lot.kalan_miktar * lot.birim_maliyet)
+                        ((mevcut.kalan_miktar or Decimal("0")) * (mevcut.birim_maliyet or Decimal("0")))
+                        + ((lot.kalan_miktar or Decimal("0")) * (lot.birim_maliyet or Decimal("0")))
                     ) / toplam_miktar
                 mevcut.kalan_miktar = toplam_miktar
-                # Hareketleri yeni lot'a bağla
                 for hareket in session.scalars(
                     select(StokHareketi).where(StokHareketi.lot_id == lot.id)
                 ).all():
                     hareket.lot_id = mevcut.id
-                    hareket.stok_id = hedef.id
+                    hareket.stok_id = hedef_id
                 session.delete(lot)
-                lot_tasinan += 1
+                lot_birlesen += 1
 
-            # Kalan hareketler (lot'suz veya taşınmış lotlu)
+            # --- Stok hareketleri ---
             hareket_adet = 0
-            for hareket in session.scalars(
-                select(StokHareketi).where(StokHareketi.stok_id == kaynak.id)
-            ).all():
-                hareket.stok_id = hedef.id
+            aktarilan_giris = Decimal("0")
+            aktarilan_cikis = Decimal("0")
+            for hareket in list(
+                session.scalars(
+                    select(StokHareketi).where(StokHareketi.stok_id == kaynak_id)
+                ).all()
+            ):
+                if hareket.hareket_turu in GIRIS_HAREKETLERI:
+                    aktarilan_giris += hareket.miktar or Decimal("0")
+                elif hareket.hareket_turu in CIKIS_HAREKETLERI:
+                    aktarilan_cikis += hareket.miktar or Decimal("0")
+                hareket.stok_id = hedef_id
                 hareket_adet += 1
 
-            # Fiyatlar: hedefte yoksa taşı
+            # --- Kart yan tabloları ---
             hedef_fiyat_adlari = {f.fiyat_adi for f in hedef.fiyatlar}
-            for fiyat in list(kaynak.fiyatlar):
+            for fiyat in list(
+                session.scalars(select(StokFiyati).where(StokFiyati.stok_id == kaynak_id)).all()
+            ):
                 if fiyat.fiyat_adi in hedef_fiyat_adlari:
                     session.delete(fiyat)
                 else:
-                    fiyat.stok_id = hedef.id
+                    fiyat.stok_id = hedef_id
                     hedef_fiyat_adlari.add(fiyat.fiyat_adi)
 
-            # Birimler
             hedef_birimler = {b.birim_adi for b in hedef.birimler}
-            for birim in list(kaynak.birimler):
+            for birim in list(
+                session.scalars(select(StokBirim).where(StokBirim.stok_id == kaynak_id)).all()
+            ):
                 if birim.birim_adi in hedef_birimler:
                     session.delete(birim)
                 else:
-                    birim.stok_id = hedef.id
+                    birim.stok_id = hedef_id
                     hedef_birimler.add(birim.birim_adi)
 
-            # Barkodlar (benzersiz)
             hedef_barkodlar = {(b.barkod or "").strip() for b in hedef.barkodlar}
             if (hedef.barkod or "").strip():
                 hedef_barkodlar.add(hedef.barkod.strip())
-            for barkod in list(kaynak.barkodlar):
+            for barkod in list(
+                session.scalars(select(StokBarkod).where(StokBarkod.stok_id == kaynak_id)).all()
+            ):
                 kod = (barkod.barkod or "").strip()
                 if not kod or kod in hedef_barkodlar:
                     session.delete(barkod)
                 else:
-                    barkod.stok_id = hedef.id
+                    barkod.stok_id = hedef_id
                     hedef_barkodlar.add(kod)
             kaynak_barkod = (kaynak.barkod or "").strip()
-            if kaynak_barkod and kaynak_barkod not in hedef_barkodlar and not (hedef.barkod or "").strip():
+            if (
+                kaynak_barkod
+                and kaynak_barkod not in hedef_barkodlar
+                and not (hedef.barkod or "").strip()
+            ):
                 hedef.barkod = kaynak_barkod
                 hedef_barkodlar.add(kaynak_barkod)
             kaynak.barkod = None
 
-            # Resimler ve fiyat geçmişi
-            for resim in list(kaynak.resimler):
-                resim.stok_id = hedef.id
-            for gecmis in list(kaynak.fiyat_gecmisi):
-                gecmis.stok_id = hedef.id
+            for resim in list(
+                session.scalars(select(StokResmi).where(StokResmi.stok_id == kaynak_id)).all()
+            ):
+                resim.stok_id = hedef_id
+            for gecmis in list(
+                session.scalars(
+                    select(StokFiyatGecmisi).where(StokFiyatGecmisi.stok_id == kaynak_id)
+                ).all()
+            ):
+                gecmis.stok_id = hedef_id
+
+            paket_adet = StokService._paket_referanslarini_aktar(session, kaynak_id, hedef_id)
+            hizli_adet = StokService._hizli_satis_referanslarini_aktar(
+                session, kaynak_id, hedef_id
+            )
 
             session.flush()
-            # Kaynakta kalan bağımlılık kalmamalı
+            # İlişki koleksiyonlarını boşalt — hard-delete olmasa da orphan riskini kes
+            set_committed_value(kaynak, "lotlar", [])
+            set_committed_value(kaynak, "fiyatlar", [])
+            set_committed_value(kaynak, "birimler", [])
+            set_committed_value(kaynak, "barkodlar", [])
+            set_committed_value(kaynak, "resimler", [])
+            set_committed_value(kaynak, "fiyat_gecmisi", [])
+
             kalan_hareket = session.scalar(
-                select(func.count()).select_from(StokHareketi).where(StokHareketi.stok_id == kaynak.id)
+                select(func.count())
+                .select_from(StokHareketi)
+                .where(StokHareketi.stok_id == kaynak_id)
             )
             kalan_lot = session.scalar(
-                select(func.count()).select_from(StokLotu).where(StokLotu.stok_id == kaynak.id)
+                select(func.count()).select_from(StokLotu).where(StokLotu.stok_id == kaynak_id)
             )
             if kalan_hareket or kalan_lot:
                 raise ValueError(
-                    f"Aktarılacak stok boşaltılamadı (hareket={kalan_hareket}, lot={kalan_lot})."
+                    f"Kaynak stok boşaltılamadı (hareket={kalan_hareket}, lot={kalan_lot})."
+                )
+
+            hedef_lot_sonra, _, hedef_depo_sonra = StokService._lot_kalan_ve_depolar(
+                session, hedef_id
+            )
+            hedef_h_sonra = StokService._hareket_miktar_ozeti(session, hedef_id)
+
+            if abs(hedef_lot_sonra - beklenen_hedef) > Decimal("0.0001"):
+                raise ValueError(
+                    "Hedef stok bakiyesi doğrulanamadı: "
+                    f"beklenen={beklenen_hedef}, hesaplanan={hedef_lot_sonra}."
+                )
+
+            # Soft-delete: geçmiş belgeler için kart kalır, aramalarda görünmez
+            now = datetime.now()
+            kaynak.aktif = False
+            kaynak.is_deleted = True
+            kaynak.deleted_at = now
+            kaynak.birlestirildi_hedef_id = hedef_id
+            session.flush()
+
+            depo_rapor = []
+            tum_depolar = set(hedef_depo_once) | set(kaynak_depo_once) | set(hedef_depo_sonra)
+            for depo_id in sorted(tum_depolar, key=lambda x: (x is None, x or 0)):
+                depo_rapor.append(
+                    {
+                        "depo_id": depo_id,
+                        "onceki": hedef_depo_once.get(depo_id, Decimal("0")),
+                        "kaynak": kaynak_depo_once.get(depo_id, Decimal("0")),
+                        "sonra": hedef_depo_sonra.get(depo_id, Decimal("0")),
+                    }
                 )
 
             kaynak_snap = {
                 "entity": {
-                    "id": kaynak.id,
+                    "id": kaynak_id,
                     "stok_kodu": eski_kod,
-                    "stok_adi": kaynak.stok_adi,
+                    "stok_adi": eski_ad,
+                    "birlestirildi_hedef_id": hedef_id,
                 },
                 "related": [
-                    {"type": "hedef_stok_id", "id": hedef.id, "kod": yeni_kod},
-                    {"type": "belge_satir", "count": belge_adet},
+                    {"type": "hedef_stok_id", "id": hedef_id, "kod": yeni_kod, "ad": yeni_ad},
+                    {"type": "belge_satir_snapshot_korundu", "count": belge_adet},
                     {"type": "hareket", "count": hareket_adet},
-                    {"type": "lot", "count": lot_tasinan},
+                    {"type": "lot_tasinan", "count": lot_tasinan},
+                    {"type": "lot_birlesen", "count": lot_birlesen},
+                    {
+                        "type": "miktar",
+                        "kaynak_once": str(kaynak_lot_once),
+                        "hedef_once": str(hedef_lot_once),
+                        "hedef_sonra": str(hedef_lot_sonra),
+                    },
+                    {"type": "gerekce", "value": gerekce_metin},
                 ],
+                "audit": {
+                    "kaynak_stock_id": kaynak_id,
+                    "kaynak_kod": eski_kod,
+                    "kaynak_ad": eski_ad,
+                    "hedef_stock_id": hedef_id,
+                    "hedef_kod": yeni_kod,
+                    "hedef_ad": yeni_ad,
+                    "kaynak_miktar_once": str(kaynak_lot_once),
+                    "hedef_miktar_once": str(hedef_lot_once),
+                    "hedef_miktar_sonra": str(hedef_lot_sonra),
+                    "aktarilan_hareket": hareket_adet,
+                    "gerekce": gerekce_metin,
+                    "tarih": now.isoformat(sep=" ", timespec="seconds"),
+                },
             }
-            kaynak_id = int(kaynak.id)
-            session.delete(kaynak)
-            session.flush()
             sonuc = {
                 "eski_kod": eski_kod,
+                "eski_ad": eski_ad,
                 "yeni_kod": yeni_kod,
                 "yeni_ad": yeni_ad,
                 "yeni_birim": yeni_birim,
+                "kaynak_id": kaynak_id,
+                "hedef_id": hedef_id,
                 "belge_satir": belge_adet,
                 "hareket": hareket_adet,
-                "lot": lot_tasinan,
+                "lot": lot_tasinan + lot_birlesen,
+                "lot_tasinan": lot_tasinan,
+                "lot_birlesen": lot_birlesen,
+                "paket_ref": paket_adet,
+                "hizli_satis_ref": hizli_adet,
+                "aktarilan_giris": aktarilan_giris,
+                "aktarilan_cikis": aktarilan_cikis,
+                "kaynak_miktar_once": kaynak_lot_once,
+                "hedef_miktar_once": hedef_lot_once,
+                "hedef_miktar_sonra": hedef_lot_sonra,
+                "hedef_hareket_net_sonra": hedef_h_sonra["net"],
+                "kaynak_hareket_giris": kaynak_h_once["toplam_giris"],
+                "kaynak_hareket_cikis": kaynak_h_once["toplam_cikis"],
+                "hedef_hareket_net_once": hedef_h_once["net"],
+                "depo_bakiyeleri": depo_rapor,
+                "kaynak_durum": "pasif_soft_delete",
+                "gerekce": gerekce_metin,
             }
+
         from database.deleted_record_service import (
             ENTITY_STOK_BIRLESTIR,
             safe_log_cancel_snapshot,
@@ -2441,12 +4003,17 @@ class StokService:
         safe_log_cancel_snapshot(
             ENTITY_STOK_BIRLESTIR,
             kaynak_id,
-            note=f"Stok birleştirme: {eski_kod} → {yeni_kod}",
+            note=(
+                f"Stok birleştirme: {eski_kod} → {yeni_kod} | "
+                f"miktar {sonuc['hedef_miktar_once']} → {sonuc['hedef_miktar_sonra']} | "
+                f"{gerekce_metin}"
+            ),
             snapshot=kaynak_snap,
             record_code=eski_kod,
             record_title=f"Stok birleştirildi → {yeni_kod}",
             module="stok",
-            reason="Cari/stok birleştirme",
+            reason="Stok birleştirme",
+            amount=sonuc["hedef_miktar_sonra"],
         )
         return sonuc
 

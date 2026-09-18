@@ -8350,25 +8350,16 @@ class MuhasebeApp(tk.Tk):
         self.wait_window(dialog)
 
     def stoklar_menusu_goster(self):
-        alt_menu = ttk.Frame(self.icerik)
-        alt_menu.pack(fill="x", pady=(24, 0))
-        alt_menu.columnconfigure(0, weight=1)
-        alt_menu.columnconfigure(0, minsize=520)
-        alt_menu_ogeleri = (
-            ("STOK KARTLARI", self.stok_kartlari_goster),
-            ("DEPO TRANSFER FİŞİ", self.depo_transfer_fisi_goster),
-            ("STOK BİRLEŞTİR", self.stok_birlestir_goster),
-            ("STOK PAKET TANIMLAMA", self.stok_paket_tanimlama_goster),
-            ("TOPLU FİYAT DEĞİŞİKLİĞİ", self.toplu_fiyat_degisikligi_goster),
-            ("STOK BARKOD BASIMI", self.stok_barkod_basimi_goster),
-            ("EXCEL VERİ AKTARIM", self.stok_excel_aktarim_goster),
-            ("RAPORLAR", self.stok_raporlari_goster),
-        )
-        for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
-            self._alt_menu_dugme(
-                alt_menu, baslik, komut,
-                row=satir, column=0, sticky="ew", pady=4,
-            )
+        """Stoklar hub (kurumsal kartlar + özet)."""
+        from stoklar_ui import stoklar_hub_goster
+
+        stoklar_hub_goster(self)
+
+    def stok_raporlari_goster(self):
+        from stoklar_ui import stoklar_raporlar_hub_goster
+
+        stoklar_raporlar_hub_goster(self)
+
 
     def stok_excel_aktarim_goster(self):
         from excel_aktarim_ui import excel_aktarim_hub_goster
@@ -8418,39 +8409,481 @@ class MuhasebeApp(tk.Tk):
         self._icerigi_temizle()
         for dugme_anahtari, dugme in self.menu_dugmeleri.items():
             dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == "stoklar" else "Menu.TButton")
-        ttk.Label(self.icerik, text="STOK KARTLARI", style="Baslik.TLabel").pack(anchor="w")
-        ust = ttk.Frame(self.icerik)
-        ust.pack(fill="x", pady=14)
-        ttk.Label(ust, text="Ara:").pack(side="left")
-        self.stok_arama = ttk.Entry(ust, width=32)
+        from database.access import maliyet_izinli
+        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton
+        from stok_liste_ui import (
+            STOK_LISTE_KOLONLARI,
+            StokFiltreDialog,
+            StokKolonAyarDialog,
+            aktif_filtre_sayisi,
+            kolon_anchor,
+            stok_liste_ayarlari_yukle,
+            stok_liste_treeview_stil,
+        )
+
+        stil_uygula(root=self)
+        govde = ekran_ust_cubugu(
+            self,
+            "STOK KARTLARI",
+            alt_baslik="Hızlı arama · gelişmiş filtre · ayrı fiyat kolonları",
+            geri_komut=lambda: self.sayfa_goster("stoklar"),
+            geri_metin="← Stoklar",
+        )
+        self._stok_liste_govde = govde
+        self._stok_liste_filtre = getattr(self, "_stok_liste_filtre", {}) or {}
+        self._stok_liste_ayar = stok_liste_ayarlari_yukle()
+        self._stok_liste_siralama = None
+        self._stok_liste_siralama_desc = False
+        self._stok_liste_sayfa = 0
+        self._stok_liste_sayfa_boyutu = 100
+        self._stok_liste_ham = []
+        self._stok_liste_toplam = 0
+        self._stok_alis_izinli = maliyet_izinli()
+
+        ust = ttk.Frame(govde)
+        ust.pack(fill="x", pady=(0, 6))
+        ttk.Label(ust, text="Hızlı Ara (kod / ad / barkod):").pack(side="left")
+        self.stok_arama = ttk.Entry(ust, width=36)
         self.stok_arama.pack(side="left", padx=8)
         self.stok_arama.bind("<Return>", lambda _e: self.stok_listesini_yenile())
-        ttk.Button(ust, text="Ara", command=self.stok_listesini_yenile).pack(side="left")
-        ttk.Button(ust, text="← Stoklar Menüsü", command=lambda: self.sayfa_goster("stoklar")).pack(side="right")
-        ttk.Button(ust, text="EvoBulut’tan Aktar", command=self.evobulut_stok_aktar).pack(side="right", padx=(0, 8))
-        cerceve = ttk.Frame(self.icerik)
+        self.stok_arama.bind("<KeyRelease>", self._stok_hizli_debounce)
+        tk_buton(ust, "Ara", self.stok_listesini_yenile, rol="ara").pack(side="left")
+        self.stok_filtre_btn = tk_buton(ust, "Filtreler", self._stok_filtre_ac, rol="duzenle")
+        self.stok_filtre_btn.pack(side="left", padx=(8, 0))
+        tk_buton(ust, "Kolon Ayarları", self._stok_kolon_ayarlari_ac, rol="ara").pack(side="left", padx=8)
+        tk_buton(ust, "EvoBulut’tan Aktar", self.evobulut_stok_aktar, rol="duzenle").pack(side="right")
+
+        # --- Ayrıntılı Ürün Arama ---
+        ayrinti = ttk.LabelFrame(govde, text="Ayrıntılı Ürün Arama", padding=10)
+        ayrinti.pack(fill="x", pady=(0, 8))
+        kutular = ttk.Frame(ayrinti)
+        kutular.pack(fill="x")
+        self._stok_ayrinti_ph = (
+            "1. kelimeyi yazın",
+            "2. kelimeyi yazın",
+            "3. kelimeyi yazın",
+            "4. kelimeyi yazın",
+            "5. kelimeyi yazın",
+        )
+        self.stok_ayrinti_kutular = []
+        for i, ph in enumerate(self._stok_ayrinti_ph):
+            col = ttk.Frame(kutular)
+            col.pack(side="left", fill="x", expand=True, padx=(0 if i == 0 else 8, 0))
+            ttk.Label(col, text=f"Ürün Kelimesi {i + 1}").pack(anchor="w")
+            e = ttk.Entry(col)
+            e.pack(fill="x", pady=(2, 0))
+            self._stok_ayrinti_placeholder_kur(e, ph)
+            e.bind("<Return>", lambda _ev: self.stok_listesini_yenile())
+            e.bind("<KeyRelease>", self._stok_ayrinti_debounce)
+            self.stok_ayrinti_kutular.append(e)
+
+        kontrol = ttk.Frame(ayrinti)
+        kontrol.pack(fill="x", pady=(8, 0))
+        ttk.Label(kontrol, text="Arama Yöntemi:").pack(side="left")
+        self.stok_ayrinti_yontem = ttk.Combobox(
+            kontrol,
+            values=("Tüm kelimeler bulunsun", "Kelimelerden herhangi biri bulunsun"),
+            state="readonly",
+            width=34,
+        )
+        self.stok_ayrinti_yontem.set("Tüm kelimeler bulunsun")
+        self.stok_ayrinti_yontem.pack(side="left", padx=8)
+        self.stok_ayrinti_yontem.bind("<<ComboboxSelected>>", lambda _e: self.stok_listesini_yenile())
+        tk_buton(kontrol, "Ara", self.stok_listesini_yenile, rol="ara").pack(side="left", padx=(4, 0))
+        tk_buton(kontrol, "Temizle", self._stok_ayrinti_temizle, rol="iptal").pack(side="left", padx=8)
+        self.stok_ayrinti_durum = ttk.Label(kontrol, text="")
+        self.stok_ayrinti_durum.pack(side="left", padx=(12, 0))
+        self.stok_kayit_sayisi = ttk.Label(kontrol, text="Toplam 0 kart · Gösterilen 0")
+        self.stok_kayit_sayisi.pack(side="right")
+        ttk.Label(
+            ayrinti,
+            text="Kelime sırası önemli değildir; her kutu ürün adının herhangi bir yerinde bağımsız aranır.",
+            foreground="#627D98",
+        ).pack(anchor="w", pady=(6, 0))
+        self._stok_ayrinti_after = None
+        self._stok_hizli_after = None
+        self._stok_yenile_token = 0
+
+        # Aktif filtre etiketleri
+        self.stok_filtre_serit = ttk.Frame(govde)
+        self.stok_filtre_serit.pack(fill="x", pady=(0, 4))
+        self._stok_filtre_rozet_yenile()
+
+        # Sayfalama
+        sayfa_cubuk = ttk.Frame(govde)
+        sayfa_cubuk.pack(fill="x", pady=(0, 4))
+        ttk.Label(sayfa_cubuk, text="Sayfa boyutu:").pack(side="left")
+        self.stok_sayfa_boyut = ttk.Combobox(
+            sayfa_cubuk, values=("50", "100", "250", "500"), state="readonly", width=6
+        )
+        self.stok_sayfa_boyut.set("100")
+        self.stok_sayfa_boyut.pack(side="left", padx=6)
+        self.stok_sayfa_boyut.bind("<<ComboboxSelected>>", self._stok_sayfa_boyut_degisti)
+        tk_buton(sayfa_cubuk, "◀", self._stok_onceki_sayfa, rol="iptal").pack(side="left", padx=(12, 0))
+        tk_buton(sayfa_cubuk, "▶", self._stok_sonraki_sayfa, rol="iptal").pack(side="left", padx=4)
+        self.stok_sayfa_lbl = ttk.Label(sayfa_cubuk, text="Sayfa 1")
+        self.stok_sayfa_lbl.pack(side="left", padx=8)
+
+        cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True)
-        kolonlar = ("kod", "ad", "tur", "barkod", "birim", "kdv", "fiyatlar", "miktar")
-        basliklar = ("Stok Kodu", "Stok Adı", "Kart Türü", "Barkod", "Birim", "KDV %", "Tanımlı Fiyatlar", "Toplam Mevcut")
-        self.stok_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        for kolon, baslik in zip(kolonlar, basliklar):
-            self.stok_tablosu.heading(kolon, text=baslik)
-            self.stok_tablosu.column(kolon, width=120, anchor="w")
-        self.stok_tablosu.column("ad", width=240)
-        self.stok_tablosu.column("kdv", width=70, anchor="center")
-        self.stok_tablosu.column("fiyatlar", width=280)
-        kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.stok_tablosu.yview)
-        self.stok_tablosu.configure(yscrollcommand=kaydirma.set)
-        self.stok_tablosu.pack(side="left", fill="both", expand=True)
-        kaydirma.pack(side="right", fill="y")
+        kolonlar = tuple(k for k, _, _, _ in STOK_LISTE_KOLONLARI)
+        self._stok_liste_kolonlar = kolonlar
+        self.stok_tablosu = ttk.Treeview(
+            cerceve, columns=kolonlar, show="headings", selectmode="browse"
+        )
+        stok_liste_treeview_stil(self.stok_tablosu, root=self)
+        self._stok_kolonlari_uygula(self._stok_liste_ayar)
+        y_kaydir = ttk.Scrollbar(cerceve, orient="vertical", command=self.stok_tablosu.yview)
+        x_kaydir = ttk.Scrollbar(cerceve, orient="horizontal", command=self.stok_tablosu.xview)
+        self.stok_tablosu.configure(yscrollcommand=y_kaydir.set, xscrollcommand=x_kaydir.set)
+        self.stok_tablosu.grid(row=0, column=0, sticky="nsew")
+        y_kaydir.grid(row=0, column=1, sticky="ns")
+        x_kaydir.grid(row=1, column=0, sticky="ew")
+        cerceve.rowconfigure(0, weight=1)
+        cerceve.columnconfigure(0, weight=1)
         self.stok_tablosu.bind("<Double-1>", lambda _e: self.stok_duzenle())
-        alt = ttk.Frame(self.icerik)
-        alt.pack(fill="x", pady=10)
-        ttk.Button(alt, text="Yeni Stok Kartı", command=self.yeni_stok).pack(side="left")
-        ttk.Button(alt, text="Stok Kartını Düzenle", command=self.stok_duzenle).pack(side="left", padx=8)
-        ttk.Button(alt, text="Sil", command=self.stok_soft_sil).pack(side="left")
-        ttk.Button(alt, text="Stok Girişi", command=self.stok_girisi).pack(side="left", padx=8)
-        ttk.Button(alt, text="Yeni Depo", command=self.yeni_depo).pack(side="left", padx=8)
+        self.stok_tablosu.bind("<Return>", lambda _e: self.stok_duzenle())
+        self.stok_tablosu.bind("<Control-c>", self._stok_hucre_kopyala)
+        self.stok_tablosu.bind("<Control-C>", self._stok_hucre_kopyala)
+
+        alt = ttk.Frame(govde)
+        alt.pack(fill="x", pady=(10, 0))
+        tk_buton(alt, "Yeni Stok Kartı", self.yeni_stok, rol="yeni").pack(side="left")
+        tk_buton(alt, "Stok Kartını Düzenle", self.stok_duzenle, rol="duzenle").pack(side="left", padx=8)
+        tk_buton(alt, "Sil", self.stok_soft_sil, rol="iptal").pack(side="left")
+        tk_buton(alt, "Stok Girişi", self.stok_girisi, rol="kaydet").pack(side="left", padx=8)
+        tk_buton(alt, "Yeni Depo", self.yeni_depo, rol="ara").pack(side="left", padx=8)
+        self.stok_listesini_yenile()
+        self.nav_sayfa_isaretle(self.stok_kartlari_goster)
+
+    def _stok_hizli_debounce(self, _event=None):
+        after_id = getattr(self, "_stok_hizli_after", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._stok_liste_sayfa = 0
+        self._stok_hizli_after = self.after(300, self.stok_listesini_yenile)
+
+    def _stok_kolonlari_uygula(self, ayarlar=None):
+        from stok_liste_ui import kolon_anchor, stok_liste_varsayilan_ayarlari
+
+        if not hasattr(self, "stok_tablosu"):
+            return
+        ayarlar = ayarlar or getattr(self, "_stok_liste_ayar", None) or stok_liste_varsayilan_ayarlari()
+        if not getattr(self, "_stok_alis_izinli", True):
+            kolonlar = ayarlar.setdefault("kolonlar", {})
+            if "alis" in kolonlar:
+                kolonlar["alis"]["gorunur"] = False
+        self._stok_liste_ayar = ayarlar
+        sira = list(ayarlar.get("sira") or [])
+        kolon_cfg = ayarlar.get("kolonlar") or {}
+        gorunen = []
+        for anahtar in sira:
+            cfg = kolon_cfg.get(anahtar) or {}
+            baslik = cfg.get("baslik") or anahtar
+            if self._stok_liste_siralama == anahtar:
+                baslik = f"{baslik} {'▼' if self._stok_liste_siralama_desc else '▲'}"
+            ank = kolon_anchor(anahtar)
+            genislik = max(40, int(cfg.get("genislik", 100)))
+            self.stok_tablosu.heading(
+                anahtar,
+                text=baslik,
+                anchor=ank,
+                command=lambda c=anahtar: self._stok_kolon_sirala(c),
+            )
+            self.stok_tablosu.column(anahtar, width=genislik, minwidth=40, stretch=False, anchor=ank)
+            if cfg.get("gorunur", True) and not (anahtar == "alis" and not self._stok_alis_izinli):
+                gorunen.append(anahtar)
+        if "ad" not in gorunen:
+            gorunen.insert(0, "ad")
+        if not gorunen:
+            gorunen = ["kod", "ad"]
+        self.stok_tablosu["displaycolumns"] = gorunen
+
+    def _stok_kolon_ayarlari_ac(self):
+        from stok_liste_ui import StokKolonAyarDialog, stok_liste_ayarlari_yukle
+
+        self._stok_kolon_genislikleri_senkron()
+        mevcut = getattr(self, "_stok_liste_ayar", None) or stok_liste_ayarlari_yukle()
+
+        def _uygula(ayar):
+            self._stok_liste_ayar = ayar
+            self._stok_kolonlari_uygula(ayar)
+            self._stok_listeyi_goster(getattr(self, "_stok_liste_ham", []))
+
+        StokKolonAyarDialog(self, mevcut, on_uygula=_uygula)
+
+    def _stok_kolon_genislikleri_senkron(self):
+        """Treeview'da sürüklenen genişlikleri ayar sözlüğüne yazar."""
+        if not hasattr(self, "stok_tablosu"):
+            return
+        ayar = getattr(self, "_stok_liste_ayar", None)
+        if not ayar:
+            return
+        kolonlar = ayar.setdefault("kolonlar", {})
+        for anahtar in getattr(self, "_stok_liste_kolonlar", ()) or ():
+            try:
+                w = int(self.stok_tablosu.column(anahtar, "width"))
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            cfg = kolonlar.setdefault(anahtar, {})
+            cfg["genislik"] = max(40, min(w, 600))
+
+    def _stok_filtre_ac(self):
+        from stok_liste_ui import StokFiltreDialog
+
+        try:
+            secenekler = StokService.stok_liste_filtre_secenekleri()
+        except Exception as exc:
+            messagebox.showerror("Filtre", str(exc), parent=self)
+            return
+
+        def _uygula(filtre):
+            self._stok_liste_filtre = filtre or {}
+            self._stok_liste_sayfa = 0
+            self._stok_filtre_rozet_yenile()
+            self.stok_listesini_yenile()
+
+        StokFiltreDialog(
+            self,
+            getattr(self, "_stok_liste_filtre", {}) or {},
+            gruplar=secenekler.get("gruplar") or [],
+            kart_turleri=secenekler.get("kart_turleri") or [],
+            birimler=secenekler.get("birimler") or [],
+            kdv_oranlari=secenekler.get("kdv_oranlari") or [],
+            depolar=secenekler.get("depolar") or [],
+            on_uygula=_uygula,
+        )
+
+    def _stok_filtre_rozet_yenile(self):
+        from stok_liste_ui import aktif_filtre_sayisi
+        from satis_tema import tk_buton
+
+        sayi = aktif_filtre_sayisi(getattr(self, "_stok_liste_filtre", {}) or {})
+        if getattr(self, "stok_filtre_btn", None):
+            try:
+                self.stok_filtre_btn.configure(text=f"Filtreler ({sayi})" if sayi else "Filtreler")
+            except tk.TclError:
+                pass
+        serit = getattr(self, "stok_filtre_serit", None)
+        if not serit:
+            return
+        for cocuk in serit.winfo_children():
+            cocuk.destroy()
+        if not sayi:
+            return
+        ttk.Label(serit, text="Aktif filtreler:").pack(side="left")
+        filtre = self._stok_liste_filtre or {}
+        etiketler = []
+        if filtre.get("metin"):
+            etiketler.append(("metin", f"Metin: {filtre['metin']}"))
+        if filtre.get("gruplar"):
+            etiketler.append(("gruplar", f"Grup: {len(filtre['gruplar'])}"))
+        if filtre.get("kart_turleri"):
+            etiketler.append(("kart_turleri", f"Tür: {len(filtre['kart_turleri'])}"))
+        if filtre.get("birimler"):
+            etiketler.append(("birimler", f"Birim: {len(filtre['birimler'])}"))
+        if filtre.get("kdv_oranlari"):
+            etiketler.append(("kdv_oranlari", f"KDV: {len(filtre['kdv_oranlari'])}"))
+        if filtre.get("alis_min") is not None or filtre.get("alis_max") is not None:
+            etiketler.append(("alis", "Alış aralığı"))
+        if filtre.get("satis1_min") is not None or filtre.get("satis1_max") is not None:
+            etiketler.append(("satis1", "Satış 1 aralığı"))
+        if filtre.get("miktar_min") is not None or filtre.get("miktar_max") is not None:
+            etiketler.append(("miktar", "Miktar aralığı"))
+        if (filtre.get("stok_durumu") or "tumu") != "tumu":
+            etiketler.append(("stok_durumu", f"Durum: {filtre.get('stok_durumu')}"))
+        if (filtre.get("aktiflik") or "aktif") != "aktif":
+            etiketler.append(("aktiflik", f"Aktiflik: {filtre.get('aktiflik')}"))
+        if filtre.get("depolar"):
+            etiketler.append(("depolar", f"Depo: {len(filtre['depolar'])}"))
+        for anahtar, metin in etiketler:
+            tk_buton(
+                serit,
+                f"✕ {metin}",
+                lambda k=anahtar: self._stok_filtre_etiket_kaldir(k),
+                rol="iptal",
+            ).pack(side="left", padx=3)
+        tk_buton(serit, "Tümünü Temizle", self._stok_filtre_tumunu_temizle, rol="duzenle").pack(
+            side="left", padx=8
+        )
+
+    def _stok_filtre_etiket_kaldir(self, anahtar: str):
+        f = dict(getattr(self, "_stok_liste_filtre", {}) or {})
+        if anahtar == "alis":
+            f.pop("alis_min", None)
+            f.pop("alis_max", None)
+            f.pop("alis_bos_dahil", None)
+        elif anahtar == "satis1":
+            f.pop("satis1_min", None)
+            f.pop("satis1_max", None)
+            f.pop("satis1_bos_dahil", None)
+        elif anahtar == "miktar":
+            f.pop("miktar_min", None)
+            f.pop("miktar_max", None)
+        elif anahtar == "stok_durumu":
+            f["stok_durumu"] = "tumu"
+        elif anahtar == "aktiflik":
+            f["aktiflik"] = "aktif"
+        else:
+            f.pop(anahtar, None)
+        self._stok_liste_filtre = f
+        self._stok_liste_sayfa = 0
+        self._stok_filtre_rozet_yenile()
+        self.stok_listesini_yenile()
+
+    def _stok_filtre_tumunu_temizle(self):
+        self._stok_liste_filtre = {}
+        self._stok_liste_sayfa = 0
+        self._stok_filtre_rozet_yenile()
+        self.stok_listesini_yenile()
+
+    def _stok_kolon_sirala(self, kolon: str):
+        if self._stok_liste_siralama == kolon:
+            self._stok_liste_siralama_desc = not self._stok_liste_siralama_desc
+        else:
+            self._stok_liste_siralama = kolon
+            self._stok_liste_siralama_desc = False
+        self._stok_liste_sayfa = 0
+        self._stok_kolonlari_uygula(self._stok_liste_ayar)
+        self.stok_listesini_yenile()
+
+    def _stok_sayfa_boyut_degisti(self, _e=None):
+        try:
+            self._stok_liste_sayfa_boyutu = int(self.stok_sayfa_boyut.get())
+        except (TypeError, ValueError):
+            self._stok_liste_sayfa_boyutu = 100
+        self._stok_liste_sayfa = 0
+        self.stok_listesini_yenile()
+
+    def _stok_onceki_sayfa(self):
+        if getattr(self, "_stok_liste_sayfa", 0) <= 0:
+            return
+        self._stok_liste_sayfa -= 1
+        self.stok_listesini_yenile()
+
+    def _stok_sonraki_sayfa(self):
+        boyut = getattr(self, "_stok_liste_sayfa_boyutu", 100) or 100
+        toplam = getattr(self, "_stok_liste_toplam", 0) or 0
+        sayfa = getattr(self, "_stok_liste_sayfa", 0) or 0
+        if (sayfa + 1) * boyut >= toplam:
+            return
+        self._stok_liste_sayfa = sayfa + 1
+        self.stok_listesini_yenile()
+
+    def _stok_hucre_kopyala(self, _event=None):
+        if not hasattr(self, "stok_tablosu"):
+            return "break"
+        secim = self.stok_tablosu.selection()
+        if not secim:
+            return "break"
+        degerler = self.stok_tablosu.item(secim[0], "values")
+        if not degerler:
+            return "break"
+        # Seçili sütun yoksa stok kodunu kopyala
+        metin = str(degerler[0] if degerler else "")
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(metin)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _stok_listeyi_goster(self, satirlar):
+        if not hasattr(self, "stok_tablosu"):
+            return
+        for item in self.stok_tablosu.get_children():
+            self.stok_tablosu.delete(item)
+        kolonlar = getattr(self, "_stok_liste_kolonlar", ()) or ()
+        for i, satir in enumerate(satirlar or []):
+            values_map = satir.get("values") or {}
+            values = tuple(values_map.get(k, "") for k in kolonlar)
+            serit = "cift" if i % 2 else "tek"
+            tags = [serit]
+            if (values_map.get("aktif") or "") == "Pasif":
+                tags.append("pasif")
+            self.stok_tablosu.insert("", "end", iid=str(satir["id"]), values=values, tags=tuple(tags))
+
+    def _stok_ayrinti_placeholder_kur(self, entry, placeholder: str):
+        entry._ph = placeholder  # type: ignore[attr-defined]
+        entry.insert(0, placeholder)
+        try:
+            entry.configure(foreground="#98A2B3")
+        except tk.TclError:
+            pass
+
+        def _in(_e=None, w=entry, ph=placeholder):
+            if w.get() == ph:
+                w.delete(0, "end")
+                try:
+                    w.configure(foreground="#172B4D")
+                except tk.TclError:
+                    pass
+
+        def _out(_e=None, w=entry, ph=placeholder):
+            if not w.get().strip():
+                w.delete(0, "end")
+                w.insert(0, ph)
+                try:
+                    w.configure(foreground="#98A2B3")
+                except tk.TclError:
+                    pass
+
+        entry.bind("<FocusIn>", _in, add="+")
+        entry.bind("<FocusOut>", _out, add="+")
+
+    def _stok_ayrinti_deger(self, entry) -> str:
+        metin = (entry.get() or "").strip()
+        ph = getattr(entry, "_ph", "")
+        if ph and metin == ph:
+            return ""
+        return metin
+
+    def _stok_ayrinti_kelimeler(self) -> list[str]:
+        if not getattr(self, "stok_ayrinti_kutular", None):
+            return []
+        return [self._stok_ayrinti_deger(e) for e in self.stok_ayrinti_kutular]
+
+    def _stok_ayrinti_yontem_kod(self) -> str:
+        metin = ""
+        if getattr(self, "stok_ayrinti_yontem", None):
+            metin = (self.stok_ayrinti_yontem.get() or "").strip()
+        if "herhangi" in metin.casefold():
+            return "or"
+        return "and"
+
+    def _stok_ayrinti_debounce(self, _event=None):
+        after_id = getattr(self, "_stok_ayrinti_after", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._stok_liste_sayfa = 0
+        self._stok_ayrinti_after = self.after(300, self.stok_listesini_yenile)
+
+    def _stok_ayrinti_temizle(self):
+        after_id = getattr(self, "_stok_ayrinti_after", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except tk.TclError:
+                pass
+            self._stok_ayrinti_after = None
+        for e in getattr(self, "stok_ayrinti_kutular", []) or []:
+            ph = getattr(e, "_ph", "")
+            e.delete(0, "end")
+            if ph:
+                e.insert(0, ph)
+                try:
+                    e.configure(foreground="#98A2B3")
+                except tk.TclError:
+                    pass
+        if getattr(self, "stok_ayrinti_yontem", None):
+            self.stok_ayrinti_yontem.set("Tüm kelimeler bulunsun")
+        self._stok_liste_sayfa = 0
         self.stok_listesini_yenile()
 
     def depo_transfer_fisi_goster(self):
@@ -8468,59 +8901,112 @@ class MuhasebeApp(tk.Tk):
     def stok_barkod_basimi_goster(self):
         barkod_basim_sayfasini_ac(self)
 
-    def stok_raporlari_goster(self):
-        stok_raporlari_menusu_goster(self)
-
     def finans_goster(self):
         finans_menusu_goster(self)
 
     def stok_listesini_yenile(self):
         if not hasattr(self, "stok_tablosu"):
             return
-        for item in self.stok_tablosu.get_children():
-            self.stok_tablosu.delete(item)
-        arama = self.stok_arama.get().strip()
+        from ui_bg import arka_planda
+
+        hizli = self.stok_arama.get().strip() if getattr(self, "stok_arama", None) else ""
+        kelimeler = self._stok_ayrinti_kelimeler()
+        yontem = self._stok_ayrinti_yontem_kod()
+        filtre = dict(getattr(self, "_stok_liste_filtre", {}) or {})
+        sayfa = int(getattr(self, "_stok_liste_sayfa", 0) or 0)
+        boyut = int(getattr(self, "_stok_liste_sayfa_boyutu", 100) or 100)
+        if getattr(self, "stok_sayfa_boyut", None):
+            try:
+                boyut = int(self.stok_sayfa_boyut.get())
+                self._stok_liste_sayfa_boyutu = boyut
+            except (TypeError, ValueError):
+                pass
+        token = getattr(self, "_stok_yenile_token", 0) + 1
+        self._stok_yenile_token = token
+        if getattr(self, "stok_ayrinti_durum", None):
+            self.stok_ayrinti_durum.configure(text="Aranıyor…")
+
+        alis_goster = bool(getattr(self, "_stok_alis_izinli", True))
+        siralama = getattr(self, "_stok_liste_siralama", None)
+        siralama_desc = bool(getattr(self, "_stok_liste_siralama_desc", False))
 
         def _yukle():
-            satirlar = []
-            for stok in StokService.stoklari_ara(arama):
-                fiyatlar = " | ".join(
-                    f"{f.fiyat_adi}: {para_goster(f.tutar)}" for f in stok.fiyatlar
-                )
-                mevcut = sum((lot.kalan_miktar for lot in stok.lotlar), Decimal("0"))
-                kdv = getattr(stok, "kdv_orani", None)
-                kdv_metin = (
-                    f"{Decimal(kdv):f}".rstrip("0").rstrip(".")
-                    if kdv is not None
-                    else "20"
-                ) or "0"
-                satirlar.append((
-                    stok.id,
-                    (
-                        stok.stok_kodu,
-                        stok.stok_adi,
-                        getattr(stok, "kart_turu", "") or "",
-                        stok.barkod or "",
-                        stok.birim,
-                        kdv_metin,
-                        fiyatlar,
-                        mevcut,
-                    ),
-                ))
-            return satirlar
+            return StokService.stoklari_liste_filtreli(
+                kelimeler,
+                yontem=yontem,
+                hizli_arama=hizli,
+                min_harf=2,
+                filtre=filtre,
+                limit=boyut,
+                offset=sayfa * boyut,
+                siralama=siralama,
+                siralama_desc=siralama_desc,
+                alis_goster=alis_goster,
+            )
 
-        satirlar = self._busy_servis(_yukle) or []
-        for i, (stok_id, values) in enumerate(satirlar):
-            if i % 40 == 0:
-                self._busy_nabiz()
-            self.stok_tablosu.insert("", "end", iid=str(stok_id), values=values)
+        def _doldur(sonuc):
+            if getattr(self, "_stok_yenile_token", 0) != token:
+                return
+            if not hasattr(self, "stok_tablosu"):
+                return
+            sonuc = sonuc or {"satirlar": [], "toplam": 0, "gosterilen": 0}
+            satirlar = sonuc.get("satirlar") or []
+            toplam = int(sonuc.get("toplam") or 0)
+            self._stok_liste_ham = satirlar
+            self._stok_liste_toplam = toplam
+            self._stok_listeyi_goster(satirlar)
+            gosterilen = len(satirlar)
+            if getattr(self, "stok_kayit_sayisi", None):
+                self.stok_kayit_sayisi.configure(
+                    text=f"Toplam {toplam:,} kart · Gösterilen {gosterilen}".replace(",", ".")
+                )
+            if getattr(self, "stok_sayfa_lbl", None):
+                max_sayfa = max(1, (toplam + boyut - 1) // boyut) if toplam else 1
+                self.stok_sayfa_lbl.configure(text=f"Sayfa {sayfa + 1} / {max_sayfa}")
+            if getattr(self, "stok_ayrinti_durum", None):
+                self.stok_ayrinti_durum.configure(text="")
+
+        def _hata(exc):
+            if getattr(self, "_stok_yenile_token", 0) != token:
+                return
+            if getattr(self, "stok_ayrinti_durum", None):
+                self.stok_ayrinti_durum.configure(text="")
+            messagebox.showerror("Stok arama", str(exc), parent=self)
+
+        arka_planda(self, _yukle, on_ok=_doldur, on_err=_hata)
 
     def _secili_stok(self):
         secim = self.stok_tablosu.selection()
         if not secim:
             messagebox.showinfo("Stok seçimi", "Lütfen bir stok kartı seçin.", parent=self)
             return None
-        return next((s for s in StokService.stoklari_ara() if s.id == int(secim[0])), None)
+        try:
+            stok_id = int(secim[0])
+        except (TypeError, ValueError):
+            return None
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from database.database import get_session
+        from database.models.stok import StokKarti
+
+        with get_session() as session:
+            stok = session.scalar(
+                select(StokKarti)
+                .where(StokKarti.id == stok_id)
+                .options(
+                    selectinload(StokKarti.fiyatlar),
+                    selectinload(StokKarti.lotlar),
+                    selectinload(StokKarti.birimler),
+                    selectinload(StokKarti.barkodlar),
+                    selectinload(StokKarti.resimler),
+                )
+            )
+            if not stok:
+                messagebox.showinfo("Stok seçimi", "Seçili stok bulunamadı.", parent=self)
+                return None
+            session.expunge(stok)
+            return stok
 
     def yeni_stok(self):
         dialog = StokKartiDialog(self)
@@ -8640,27 +9126,16 @@ class MuhasebeApp(tk.Tk):
         self.wait_window(dialog)
 
     def satin_alma_menusu_goster(self):
-        alt_menu = ttk.Frame(self.icerik)
-        alt_menu.pack(fill="x", pady=(24, 0))
-        alt_menu.columnconfigure(0, weight=1)
-        alt_menu.columnconfigure(0, minsize=520)
-        alt_menu_ogeleri = (
-            ("TEDARİKÇİ CARİ HESAP KARTLARI", self.tedarikciler_goster),
-            ("SATIN ALMA SİPARİŞLERİ", self.alis_siparisleri_goster),
-            ("SATIN ALMA İRSALİYELERİ", self.alis_irsaliyeleri_goster),
-            ("SATIN ALMA FATURALARI", self.alis_faturalari_goster),
-            ("FATURA GÖRSELİ PDF İÇE AKTAR", self.alis_fatura_belge_aktar),
-            ("GELEN E-FATURALAR", self.gelen_efaturalar_goster),
-            ("SATIN ALMA İADE FATURALARI", self.alis_iade_faturalari_goster),
-            ("CARİ VİRMAN FİŞLERİ", self.cari_virman_goster),
-            ("EXCEL VERİ AKTARIM", self.satin_alma_excel_aktarim_goster),
-            ("RAPORLAR", self.alis_raporlari_goster),
-        )
-        for satir, (baslik, komut) in enumerate(alt_menu_ogeleri):
-            self._alt_menu_dugme(
-                alt_menu, baslik, komut,
-                row=satir, column=0, sticky="ew", pady=4,
-            )
+        """Satın Alma hub (kurumsal kartlar + özet)."""
+        from satin_alma_ui import satin_alma_hub_goster
+
+        satin_alma_hub_goster(self)
+
+    def alis_raporlari_goster(self):
+        from satin_alma_ui import satin_alma_raporlar_hub_goster
+
+        satin_alma_raporlar_hub_goster(self)
+
 
     def satis_alt_sayfasi_goster(self, baslik):
         self._icerigi_temizle()
@@ -10811,7 +11286,7 @@ class MuhasebeApp(tk.Tk):
         tedarikci = cari_turu == "Tedarikçi"
         baslik = "TEDARİKÇİ CARİ HESAP KARTLARI" if tedarikci else "MÜŞTERİ KARTLARI"
         etiket = "Tedarikçi" if tedarikci else "Müşteri"
-        from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
+        from satis_tema import cari_liste_treeview_stil, ekran_ust_cubugu, stil_uygula, tk_buton
 
         stil_uygula(root=self)
         geri = (
@@ -10846,12 +11321,14 @@ class MuhasebeApp(tk.Tk):
             "telefon": "Telefon", "email": "E-posta", "bakiye": "Yekûn Bakiye",
             "agirlikli": "Ağırlıklı Ortalama Geçen Gün", "durum": "Durum",
         }
-        genislikler = {"kod": 110, "unvan": 210, "grup": 135, "telefon": 115, "email": 180, "bakiye": 125, "agirlikli": 180, "durum": 75}
+        genislikler = {"kod": 110, "unvan": 220, "grup": 135, "telefon": 115, "email": 180, "bakiye": 140, "agirlikli": 180, "durum": 75}
         self.cari_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        treeview_stil(self.cari_tablosu)
+        cari_liste_treeview_stil(self.cari_tablosu, root=self)
+        sag_kolonlar = {"bakiye", "agirlikli"}
         for kolon in kolonlar:
-            self.cari_tablosu.heading(kolon, text=basliklar[kolon])
-            self.cari_tablosu.column(kolon, width=genislikler[kolon], anchor="w")
+            ank = "e" if kolon in sag_kolonlar else "w"
+            self.cari_tablosu.heading(kolon, text=basliklar[kolon], anchor=ank)
+            self.cari_tablosu.column(kolon, width=genislikler[kolon], anchor=ank, minwidth=60)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.cari_tablosu.yview)
         self.cari_tablosu.configure(yscrollcommand=kaydirma.set)
         self.cari_tablosu.pack(side="left", fill="both", expand=True)
@@ -10890,12 +11367,14 @@ class MuhasebeApp(tk.Tk):
                 return
             if not hasattr(self, "cari_tablosu"):
                 return
-            for ozet in cariler:
+            for i, ozet in enumerate(cariler):
                 cari = ozet["cari"]
+                serit = "cift" if i % 2 else "tek"
                 self.cari_tablosu.insert(
                     "",
                     "end",
                     iid=str(cari.id),
+                    tags=(serit, "bakiye_koyu"),
                     values=(
                         cari.cari_kodu,
                         cari.unvan,
@@ -10975,24 +11454,6 @@ class MuhasebeApp(tk.Tk):
 
     # --- Satın Alma belgeler ---
 
-    def alis_raporlari_goster(self):
-        self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIN ALMA RAPORLARI", style="Baslik.TLabel").pack(anchor="w")
-        alt = ttk.Frame(self.icerik)
-        alt.pack(fill="x", pady=(24, 0))
-        alt.columnconfigure(0, weight=1)
-        for satir, (baslik, komut) in enumerate((
-            ("TEDARİKÇİ BAKİYE DURUM (ORTALAMA VADELİ)", self.rapor_tedarikci_bakiye_durum),
-            ("TEDARİKÇİ EKSTRESİ", self.rapor_tedarikci_ekstresi),
-            ("STOK DETAYLI TEDARİKÇİ EKSTRESİ", self.rapor_stok_detayli_tedarikci_ekstre),
-            ("TARİH ARALIKLI ÖDEME VE TAHSİLAT RAPORU", self.rapor_tahsilat_odeme),
-            ("SATIN ALMA ÖZETİ", self.rapor_alis_ozeti),
-        )):
-            self._alt_menu_dugme(
-                alt, baslik, komut,
-                row=satir, column=0, sticky="ew", pady=4,
-            )
-
     def _alis_rapor_baslik(self, metin):
         ust = ttk.Frame(self.icerik)
         ust.pack(fill="x")
@@ -11000,22 +11461,9 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(ust, text="← Raporlar", command=self.alis_raporlari_goster).pack(side="right")
 
     def rapor_tedarikci_bakiye_durum(self):
-        self._icerigi_temizle()
-        self._alis_rapor_baslik("TEDARİKÇİ BAKİYE DURUM (ORTALAMA VADELİ)")
-        satirlar = RaporService.musteri_bakiye_durum(cari_turu="Tedarikçi")
-        self.kar_ozet = ttk.Label(self.icerik, text=f"{len(satirlar)} tedarikçi")
-        self.kar_ozet.pack(anchor="w", pady=(8, 0))
-        tablo = self._rapor_tablo(
-            self.icerik,
-            ("kod", "unvan", "bakiye", "ort", "agirlikli", "geciken"),
-            ("Kod", "Ünvan", "Bakiye", "Ort. Gün", "Ağırlıklı Gün", "Geciken Gün"),
-            (90, 220, 110, 90, 110, 100),
-        )
-        for s in satirlar:
-            tablo.insert("", "end", values=(
-                s["cari_kodu"], s["unvan"], para_goster(s["bakiye"]),
-                f"{s['ortalama_gun']:.1f}", f"{s['agirlikli_ortalama_gun']:.1f}", s["geciken_gun"],
-            ))
+        from satin_alma_ui import tedarikci_bakiye_durum_goster
+
+        tedarikci_bakiye_durum_goster(self)
 
     def rapor_tedarikci_ekstresi(self):
         self._icerigi_temizle()
@@ -11165,41 +11613,137 @@ class MuhasebeApp(tk.Tk):
                 para_goster(k["genel_toplam"]), para_goster(f.odeme_tutari or 0), f.durum,
             ))
 
+    def rapor_aylik_alis_analizi(self):
+        from datetime import date as _date
+        from database.satin_alma_hub_service import SatinAlmaHubService
+
+        self._icerigi_temizle()
+        self._alis_rapor_baslik("AYLIK ALIŞ ANALİZİ")
+        yil = _date.today().year
+        satirlar = SatinAlmaHubService.aylik_alis_analizi(yil)
+        ttk.Label(
+            self.icerik,
+            text=f"{yil} yılı — fatura tutarı, adet ve tedarikçi çeşitliliği",
+        ).pack(anchor="w", pady=(0, 8))
+        tablo = self._rapor_tablo(
+            self.icerik,
+            ("ay", "adet", "tedarikci", "miktar", "tutar"),
+            ("Ay", "Fatura", "Tedarikçi", "Miktar", "Tutar"),
+            (100, 80, 100, 110, 140),
+        )
+        for s in satirlar:
+            tablo.insert(
+                "",
+                "end",
+                values=(
+                    s["ay"],
+                    s["fatura_sayisi"],
+                    s["tedarikci_sayisi"],
+                    f"{float(s['miktar']):,.4f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", "."),
+                    para_goster(s["tutar"]),
+                ),
+            )
+        if not satirlar:
+            ttk.Label(self.icerik, text="Bu yıl için alış faturası yok.").pack(anchor="w", pady=8)
+
+    def rapor_stok_yenileme_onerisi(self):
+        from database.satin_alma_hub_service import SatinAlmaHubService
+
+        self._icerigi_temizle()
+        self._alis_rapor_baslik("STOK YENİLEME ÖNERİSİ")
+        ttk.Label(
+            self.icerik,
+            text="minimum_stok > mevcut olan aktif kartlar (Stok kartında Minimum Stok alanı)",
+        ).pack(anchor="w", pady=(0, 8))
+        oneriler = SatinAlmaHubService.stok_yenileme_onerileri()
+        tablo = self._rapor_tablo(
+            self.icerik,
+            ("kod", "ad", "birim", "mevcut", "min", "onerilen"),
+            ("Stok Kodu", "Stok Adı", "Birim", "Mevcut", "Min. Stok", "Önerilen"),
+            (110, 220, 70, 90, 90, 100),
+        )
+        for o in oneriler:
+            tablo.insert(
+                "",
+                "end",
+                values=(
+                    o["stok_kodu"],
+                    o["stok_adi"],
+                    o["birim"],
+                    f"{float(o['mevcut']):,.4f}".rstrip("0").rstrip("."),
+                    f"{float(o['minimum_stok']):,.4f}".rstrip("0").rstrip("."),
+                    f"{float(o['onerilen_miktar']):,.4f}".rstrip("0").rstrip("."),
+                ),
+            )
+        if not oneriler:
+            ttk.Label(
+                self.icerik,
+                text="Yenileme önerisi yok. Stok kartlarında Minimum Stok > 0 tanımlayın.",
+            ).pack(anchor="w", pady=8)
+
     def alis_siparisleri_goster(self):
         from database.alis_siparisi_service import AlisSiparisiService
         from alis_ui import AlisSiparisiDialog
+        from alis_liste_ui import (
+            AlisKolonAyarDialog,
+            alis_liste_ayarlari_yukle,
+            alis_liste_degerleri,
+            alis_liste_uygula,
+        )
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIN ALMA SİPARİŞLERİ", style="Baslik.TLabel").pack(anchor="w")
+        ust = ttk.Frame(self.icerik)
+        ust.pack(fill="x")
+        ttk.Label(ust, text="SATIN ALMA SİPARİŞLERİ", style="Baslik.TLabel").pack(side="left", anchor="w")
+        ekran = "alis_siparis_listesi"
+        self._alis_siparis_kolon_ayarlari = alis_liste_ayarlari_yukle(ekran)
+
+        def kolon_uygula(ayarlar=None):
+            if ayarlar is not None:
+                self._alis_siparis_kolon_ayarlari = ayarlar
+            alis_liste_uygula(
+                self.alis_siparis_tablosu, ekran, self._alis_siparis_kolon_ayarlari
+            )
+            yenile()
+
+        ttk.Button(
+            ust, text="Kolon Ayarları",
+            command=lambda: AlisKolonAyarDialog(
+                self, ekran, self._alis_siparis_kolon_ayarlari, on_uygula=kolon_uygula
+            ),
+        ).pack(side="right")
+
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
         kolonlar = ("no", "tarih", "termin", "kod", "tedarikci", "toplam", "odeme", "kalan", "durum")
-        basliklar = {
-            "no": "Sipariş No", "tarih": "Tarih", "termin": "Termin", "kod": "Kod",
-            "tedarikci": "Tedarikçi", "toplam": "Toplam", "odeme": "Ödeme", "kalan": "Kalan", "durum": "Durum",
-        }
         self.alis_siparis_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        for kolon in kolonlar:
-            self.alis_siparis_tablosu.heading(kolon, text=basliklar[kolon])
-            self.alis_siparis_tablosu.column(kolon, width=120)
-        self.alis_siparis_tablosu.column("tedarikci", width=200)
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.alis_siparis_tablosu.yview)
         self.alis_siparis_tablosu.configure(yscrollcommand=dikey.set)
         self.alis_siparis_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
         self.alis_siparis_tablosu.bind("<Double-1>", lambda _e: self.alis_siparis_ac())
+        alis_liste_uygula(self.alis_siparis_tablosu, ekran, self._alis_siparis_kolon_ayarlari)
 
         def yenile():
             for item in self.alis_siparis_tablosu.get_children():
                 self.alis_siparis_tablosu.delete(item)
+            ayar = self._alis_siparis_kolon_ayarlari
             for kayit in AlisSiparisiService.listele():
                 s = kayit["siparis"]
                 t = kayit["tedarikci"]
-                self.alis_siparis_tablosu.insert("", "end", iid=str(s.id), values=(
-                    s.siparis_no, tarih_goster(s.siparis_tarihi), tarih_goster(s.termin_tarihi),
-                    t.cari_kodu if t else "", t.unvan if t else "",
-                    para_goster(kayit["toplam"]), para_goster(kayit["odeme"]),
-                    para_goster(kayit["kalan"]), s.durum,
-                ))
+                ham = {
+                    "no": s.siparis_no,
+                    "tarih": tarih_goster(s.siparis_tarihi),
+                    "termin": tarih_goster(s.termin_tarihi),
+                    "kod": t.cari_kodu if t else "",
+                    "tedarikci": t.unvan if t else "",
+                    "toplam": para_goster(kayit["toplam"]),
+                    "odeme": para_goster(kayit["odeme"]),
+                    "kalan": para_goster(kayit["kalan"]),
+                    "durum": s.durum,
+                }
+                self.alis_siparis_tablosu.insert(
+                    "", "end", iid=str(s.id), values=alis_liste_degerleri(ekran, ayar, ham)
+                )
         self._alis_siparis_yenile = yenile
 
         alt = ttk.Frame(self.icerik)
@@ -11288,40 +11832,65 @@ class MuhasebeApp(tk.Tk):
     def alis_irsaliyeleri_goster(self):
         from database.alis_irsaliyesi_service import AlisIrsaliyesiService
         from alis_ui import AlisIrsaliyesiDialog, AlisFaturasiDialog
+        from alis_liste_ui import (
+            AlisKolonAyarDialog,
+            alis_liste_ayarlari_yukle,
+            alis_liste_degerleri,
+            alis_liste_uygula,
+        )
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIN ALMA İRSALİYELERİ", style="Baslik.TLabel").pack(anchor="w")
+        ust = ttk.Frame(self.icerik)
+        ust.pack(fill="x")
+        ttk.Label(ust, text="SATIN ALMA İRSALİYELERİ", style="Baslik.TLabel").pack(side="left", anchor="w")
+        ekran = "alis_irsaliye_listesi"
+        self._alis_irs_kolon_ayarlari = alis_liste_ayarlari_yukle(ekran)
+
+        def kolon_uygula(ayarlar=None):
+            if ayarlar is not None:
+                self._alis_irs_kolon_ayarlari = ayarlar
+            alis_liste_uygula(self.alis_irs_tablosu, ekran, self._alis_irs_kolon_ayarlari)
+            yenile()
+
+        ttk.Button(
+            ust, text="Kolon Ayarları",
+            command=lambda: AlisKolonAyarDialog(
+                self, ekran, self._alis_irs_kolon_ayarlari, on_uygula=kolon_uygula
+            ),
+        ).pack(side="right")
+
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
         kolonlar = ("no", "tarih", "kod", "tedarikci", "siparis", "toplam", "fatura", "kalan", "durum")
         self.alis_irs_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        for kolon, baslik, w in (
-            ("no", "İrsaliye No", 140), ("tarih", "Tarih", 90), ("kod", "Kod", 80),
-            ("tedarikci", "Tedarikçi", 180), ("siparis", "Sipariş", 130),
-            ("toplam", "Toplam", 100), ("fatura", "Faturalanan", 100), ("kalan", "Kalan", 100),
-            ("durum", "Durum", 110),
-        ):
-            self.alis_irs_tablosu.heading(kolon, text=baslik)
-            self.alis_irs_tablosu.column(kolon, width=w)
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.alis_irs_tablosu.yview)
         self.alis_irs_tablosu.configure(yscrollcommand=dikey.set)
         self.alis_irs_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
         self.alis_irs_tablosu.bind("<Double-1>", lambda _e: ac())
+        alis_liste_uygula(self.alis_irs_tablosu, ekran, self._alis_irs_kolon_ayarlari)
 
         def yenile():
             for item in self.alis_irs_tablosu.get_children():
                 self.alis_irs_tablosu.delete(item)
+            ayar = self._alis_irs_kolon_ayarlari
             for kayit in AlisIrsaliyesiService.listele():
                 i = kayit["irsaliye"]
                 cari = i.cari
                 siparis = i.siparis
-                self.alis_irs_tablosu.insert("", "end", iid=str(i.id), values=(
-                    i.irsaliye_no, tarih_goster(i.irsaliye_tarihi),
-                    cari.cari_kodu if cari else "", cari.unvan if cari else "",
-                    siparis.siparis_no if siparis else "",
-                    para_goster(kayit["toplam"]), para_goster(kayit["faturalanan"]),
-                    para_goster(kayit["kalan"]), i.durum,
-                ))
+                ham = {
+                    "no": i.irsaliye_no,
+                    "tarih": tarih_goster(i.irsaliye_tarihi),
+                    "kod": cari.cari_kodu if cari else "",
+                    "tedarikci": cari.unvan if cari else "",
+                    "siparis": siparis.siparis_no if siparis else "",
+                    "toplam": para_goster(kayit["toplam"]),
+                    "fatura": para_goster(kayit["faturalanan"]),
+                    "kalan": para_goster(kayit["kalan"]),
+                    "durum": i.durum,
+                }
+                self.alis_irs_tablosu.insert(
+                    "", "end", iid=str(i.id), values=alis_liste_degerleri(ekran, ayar, ham)
+                )
 
         def yeni():
             dialog = AlisIrsaliyesiDialog(self)
@@ -11376,41 +11945,68 @@ class MuhasebeApp(tk.Tk):
     def alis_faturalari_goster(self):
         from database.alis_faturasi_service import AlisFaturasiService
         from alis_ui import AlisFaturasiDialog, AlisIadeFaturasiDialog
+        from alis_liste_ui import (
+            AlisKolonAyarDialog,
+            alis_liste_ayarlari_yukle,
+            alis_liste_degerleri,
+            alis_liste_uygula,
+        )
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIN ALMA FATURALARI", style="Baslik.TLabel").pack(anchor="w")
+        ust = ttk.Frame(self.icerik)
+        ust.pack(fill="x")
+        ttk.Label(ust, text="SATIN ALMA FATURALARI", style="Baslik.TLabel").pack(side="left", anchor="w")
+        ekran = "alis_fatura_listesi"
+        self._alis_fat_kolon_ayarlari = alis_liste_ayarlari_yukle(ekran)
+
+        def kolon_uygula(ayarlar=None):
+            if ayarlar is not None:
+                self._alis_fat_kolon_ayarlari = ayarlar
+            alis_liste_uygula(self.alis_fat_tablosu, ekran, self._alis_fat_kolon_ayarlari)
+            yenile()
+
+        ttk.Button(
+            ust, text="Kolon Ayarları",
+            command=lambda: AlisKolonAyarDialog(
+                self, ekran, self._alis_fat_kolon_ayarlari, on_uygula=kolon_uygula
+            ),
+        ).pack(side="right")
+
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
         kolonlar = ("no", "tarih", "saat", "vade", "tedarikci", "siparis", "irsaliye", "depo", "genel", "odeme", "kalan", "durum")
         self.alis_fat_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        for kolon, baslik, w in (
-            ("no", "Fatura No", 130), ("tarih", "Tarih", 85), ("saat", "Saat", 60), ("vade", "Vade", 85),
-            ("tedarikci", "Tedarikçi", 170), ("siparis", "Sipariş", 110), ("irsaliye", "İrsaliye", 110),
-            ("depo", "Depo", 90), ("genel", "Genel", 95), ("odeme", "Ödeme", 95),
-            ("kalan", "Kalan", 95), ("durum", "Durum", 80),
-        ):
-            self.alis_fat_tablosu.heading(kolon, text=baslik)
-            self.alis_fat_tablosu.column(kolon, width=w)
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.alis_fat_tablosu.yview)
         self.alis_fat_tablosu.configure(yscrollcommand=dikey.set)
         self.alis_fat_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
         self.alis_fat_tablosu.bind("<Double-1>", lambda _e: ac())
+        alis_liste_uygula(self.alis_fat_tablosu, ekran, self._alis_fat_kolon_ayarlari)
 
         def yenile():
             for item in self.alis_fat_tablosu.get_children():
                 self.alis_fat_tablosu.delete(item)
+            ayar = self._alis_fat_kolon_ayarlari
             for kayit in AlisFaturasiService.listele():
                 f = kayit["fatura"]
                 toplam = kayit["genel_toplam"]
                 odeme = f.odeme_tutari or Decimal("0")
-                self.alis_fat_tablosu.insert("", "end", iid=str(f.id), values=(
-                    f.fatura_no, tarih_goster(f.fatura_tarihi), f.islem_saati or "", tarih_goster(f.vade_tarihi),
-                    f.cari.unvan if f.cari else "",
-                    f.siparis.siparis_no if f.siparis else "",
-                    f.irsaliye.irsaliye_no if f.irsaliye else "",
-                    f.depo, para_goster(toplam), para_goster(odeme),
-                    para_goster(toplam - odeme), f.durum,
-                ))
+                ham = {
+                    "no": f.fatura_no,
+                    "tarih": tarih_goster(f.fatura_tarihi),
+                    "saat": f.islem_saati or "",
+                    "vade": tarih_goster(f.vade_tarihi),
+                    "tedarikci": f.cari.unvan if f.cari else "",
+                    "siparis": f.siparis.siparis_no if f.siparis else "",
+                    "irsaliye": f.irsaliye.irsaliye_no if f.irsaliye else "",
+                    "depo": f.depo,
+                    "genel": para_goster(toplam),
+                    "odeme": para_goster(odeme),
+                    "kalan": para_goster(toplam - odeme),
+                    "durum": f.durum,
+                }
+                self.alis_fat_tablosu.insert(
+                    "", "end", iid=str(f.id), values=alis_liste_degerleri(ekran, ayar, ham)
+                )
 
         def yeni():
             dialog = AlisFaturasiDialog(self, cari_ac=lambda c: CariDialog(self, c, cari_turu="Tedarikçi"))

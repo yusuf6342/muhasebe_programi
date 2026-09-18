@@ -332,11 +332,116 @@ def cari_kart_schemasini_guncelle() -> None:
             "rapor_grubu": "VARCHAR(100)",
             "raf_yeri": "VARCHAR(100)",
             "raf_omru": "DATE",
+            "varsayilan_goruntuleme_birim": "VARCHAR(30)",
+            "varsayilan_alis_birim": "VARCHAR(30)",
+            "varsayilan_satis_birim": "VARCHAR(30)",
+            "birlestirildi_hedef_id": "INTEGER",
+            "minimum_stok": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
+            "ana_grup_id": "INTEGER",
+            "tali_grup_id": "INTEGER",
+            "alt_grup_id": "INTEGER",
         }
         with engine.begin() as connection:
             for alan, tip in stok_eklenecekler.items():
                 if alan not in stok_sutunlar:
                     connection.execute(text(f'ALTER TABLE "{stok_tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    # Üç seviyeli stok grupları tablosu + eski rapor_grubu → Ana Grup migration
+    try:
+        from database.models.stok import StokGrubu  # noqa: F401
+
+        if not inspect(engine).has_table("stok_gruplari"):
+            StokGrubu.__table__.create(bind=engine, checkfirst=True)
+        from database.stok_grup_service import StokGrupService
+
+        StokGrupService.migration_rapor_grubundan()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("stok_gruplari schema/migration")
+
+    # Toplu stok grubu eşleştirme işlem tabloları
+    try:
+        from database.models.stok import StokGrupTopluIslem, StokGrupTopluIslemSatiri
+
+        if not inspect(engine).has_table("stok_grup_toplu_islemler"):
+            StokGrupTopluIslem.__table__.create(bind=engine, checkfirst=True)
+        if not inspect(engine).has_table("stok_grup_toplu_islem_satirlari"):
+            StokGrupTopluIslemSatiri.__table__.create(bind=engine, checkfirst=True)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("stok_grup_toplu schema")
+
+    if inspect(engine).has_table("depolar"):
+        depo_sutunlar = {s["name"] for s in inspect(engine).get_columns("depolar")}
+        depo_eklenecekler = {
+            "kod": "VARCHAR(50)",
+            "aciklama": "TEXT",
+            "varsayilan": "BOOLEAN DEFAULT 0 NOT NULL",
+        }
+        with engine.begin() as connection:
+            for alan, tip in depo_eklenecekler.items():
+                if alan not in depo_sutunlar:
+                    connection.execute(text(f'ALTER TABLE "depolar" ADD COLUMN "{alan}" {tip}'))
+            # Eski kayıtlarda kod boşsa ad ile doldur; ANA DEPO varsayılan
+            connection.execute(
+                text(
+                    'UPDATE "depolar" SET "kod" = upper("ad") '
+                    'WHERE "kod" IS NULL OR trim("kod") = \'\''
+                )
+            )
+            connection.execute(
+                text(
+                    'UPDATE "depolar" SET "varsayilan" = 1 '
+                    'WHERE upper("ad") = \'ANA DEPO\' AND NOT EXISTS ('
+                    'SELECT 1 FROM "depolar" d2 WHERE d2."varsayilan" = 1)'
+                )
+            )
+
+    for alis_tablo in ("alis_siparisleri", "alis_irsaliyeleri", "alis_faturalari"):
+        if inspect(engine).has_table(alis_tablo):
+            alis_sutunlar = {s["name"] for s in inspect(engine).get_columns(alis_tablo)}
+            if "row_version" not in alis_sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "{alis_tablo}" '
+                            f'ADD COLUMN "row_version" INTEGER DEFAULT 1 NOT NULL'
+                        )
+                    )
+
+    birim_tablo = "stok_birimleri"
+    if inspect(engine).has_table(birim_tablo):
+        birim_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(birim_tablo)}
+        birim_eklenecekler = {
+            "referans_birim": "VARCHAR(30)",
+            "referans_carpan": "NUMERIC(18, 6)",
+            "fiyat_modu": "VARCHAR(20) DEFAULT 'manuel' NOT NULL",
+            "alis_fiyati": "NUMERIC(18, 4)",
+            "satis_1": "NUMERIC(18, 4)",
+            "satis_2": "NUMERIC(18, 4)",
+            "satis_3": "NUMERIC(18, 4)",
+            "satis_4": "NUMERIC(18, 4)",
+            "satis_5": "NUMERIC(18, 4)",
+            "satis_6": "NUMERIC(18, 4)",
+            "satis_7": "NUMERIC(18, 4)",
+            "satis_8": "NUMERIC(18, 4)",
+            "satis_9": "NUMERIC(18, 4)",
+            "satis_10": "NUMERIC(18, 4)",
+            "alis_kullanilabilir": "BOOLEAN DEFAULT 1 NOT NULL",
+            "satis_kullanilabilir": "BOOLEAN DEFAULT 1 NOT NULL",
+            "varsayilan_goruntuleme": "BOOLEAN DEFAULT 0 NOT NULL",
+            "varsayilan_alis": "BOOLEAN DEFAULT 0 NOT NULL",
+            "varsayilan_satis": "BOOLEAN DEFAULT 0 NOT NULL",
+            "birim_barkod": "VARCHAR(100)",
+            "ondalik": "INTEGER DEFAULT 0 NOT NULL",
+            "aktif": "BOOLEAN DEFAULT 1 NOT NULL",
+        }
+        with engine.begin() as connection:
+            for alan, tip in birim_eklenecekler.items():
+                if alan not in birim_sutunlar:
+                    connection.execute(text(f'ALTER TABLE "{birim_tablo}" ADD COLUMN "{alan}" {tip}'))
 
     barkod_tablo = "stok_barkodlari"
     if inspect(engine).has_table(barkod_tablo):

@@ -14,8 +14,11 @@ VARSAYILAN_KDV_ORANI = Decimal("20")
 class Depo(Base):
     __tablename__ = "depolar"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kod: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     ad: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    varsayilan: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class StokSecenek(Base):
@@ -28,6 +31,32 @@ class StokSecenek(Base):
     ad: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
+class StokGrubu(Base):
+    """Üç seviyeli stok sınıflandırma: 1=Ana, 2=Tali, 3=Alt."""
+
+    __tablename__ = "stok_gruplari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kod: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    ad: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    seviye: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stok_gruplari.id"), nullable=True, index=True
+    )
+    aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    guncelleme_tarihi: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    parent: Mapped["StokGrubu | None"] = relationship(
+        "StokGrubu", remote_side="StokGrubu.id", back_populates="cocuklar"
+    )
+    cocuklar: Mapped[list["StokGrubu"]] = relationship(
+        "StokGrubu", back_populates="parent"
+    )
+
+
 class StokKarti(Base):
     __tablename__ = "stok_kartlari"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -35,6 +64,9 @@ class StokKarti(Base):
     stok_adi: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     barkod: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     birim: Mapped[str] = mapped_column(String(20), nullable=False, default="Adet")
+    varsayilan_goruntuleme_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    varsayilan_alis_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    varsayilan_satis_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
     kart_turu: Mapped[str] = mapped_column(String(50), nullable=False, default="Ticari Mal")
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     muhasebe_stok_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -57,6 +89,16 @@ class StokKarti(Base):
     birim2: Mapped[str | None] = mapped_column(String(30), nullable=True)
     birim3: Mapped[str | None] = mapped_column(String(30), nullable=True)
     rapor_grubu: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Üç seviyeli stok grubu (id ilişkisi; rapor_grubu geriye uyum yolu metni)
+    ana_grup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stok_gruplari.id"), nullable=True, index=True
+    )
+    tali_grup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stok_gruplari.id"), nullable=True, index=True
+    )
+    alt_grup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stok_gruplari.id"), nullable=True, index=True
+    )
     raf_yeri: Mapped[str | None] = mapped_column(String(100), nullable=True)
     raf_omru: Mapped[date | None] = mapped_column(Date, nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -64,6 +106,12 @@ class StokKarti(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deletion_log_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Stok birleştirme: kaynak kart pasife alınır; hedef id burada saklanır
+    birlestirildi_hedef_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    # Satın alma yenileme önerisi eşiği (0 = kapalı / kullanılmaz)
+    minimum_stok: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     fiyatlar: Mapped[list["StokFiyati"]] = relationship(
         "StokFiyati", back_populates="stok", cascade="all, delete-orphan"
     )
@@ -101,10 +149,32 @@ class StokBirim(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     stok_id: Mapped[int] = mapped_column(ForeignKey("stok_kartlari.id"), nullable=False, index=True)
     birim_adi: Mapped[str] = mapped_column(String(30), nullable=False)
+    # 1 birim_adi = carpan * temel (ana) birim — saklanan temel karşılık
     carpan: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
-    # 1 birim_adi = carpan * ana birim (ör. 1 Paket = 1000 Adet)
+    referans_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # 1 birim_adi = referans_carpan * referans_birim (UI zinciri; carpan hâlâ temel karşılık)
+    referans_carpan: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    fiyat_modu: Mapped[str] = mapped_column(String(20), nullable=False, default="manuel")
+    alis_fiyati: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_1: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_2: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_3: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_4: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_5: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_6: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_7: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_8: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_9: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    satis_10: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    alis_kullanilabilir: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    satis_kullanilabilir: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    varsayilan_goruntuleme: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    varsayilan_alis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    varsayilan_satis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    birim_barkod: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ondalik: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     stok: Mapped["StokKarti"] = relationship("StokKarti", back_populates="birimler")
-
 
 class StokResmi(Base):
     __tablename__ = "stok_resimleri"
@@ -227,3 +297,51 @@ class StokPaketUretim(Base):
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     paket_stok: Mapped["StokKarti"] = relationship("StokKarti", foreign_keys=[paket_stok_id])
+
+
+class StokGrupTopluIslem(Base):
+    """Toplu stok grubu eşleştirme işlem başlığı (geri alma için)."""
+
+    __tablename__ = "stok_grup_toplu_islemler"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    islem_no: Mapped[str] = mapped_column(String(40), unique=True, nullable=False, index=True)
+    kullanici_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kullanici_adi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    politika: Mapped[str] = mapped_column(String(40), nullable=False, default="sadece_grupsuz")
+    hedef_ana_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hedef_tali_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hedef_alt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hedef_yol: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    secilen_adet: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    guncellenen_adet: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    atlanan_adet: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hatali_adet: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    durum: Mapped[str] = mapped_column(String(30), nullable=False, default="tamamlandi")
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    geri_alinma_tarihi: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    geri_alan_kullanici: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    satirlar: Mapped[list["StokGrupTopluIslemSatiri"]] = relationship(
+        "StokGrupTopluIslemSatiri", back_populates="islem", cascade="all, delete-orphan"
+    )
+
+
+class StokGrupTopluIslemSatiri(Base):
+    __tablename__ = "stok_grup_toplu_islem_satirlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    islem_id: Mapped[int] = mapped_column(
+        ForeignKey("stok_grup_toplu_islemler.id"), nullable=False, index=True
+    )
+    stok_id: Mapped[int] = mapped_column(ForeignKey("stok_kartlari.id"), nullable=False, index=True)
+    stok_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    eski_ana_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eski_tali_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eski_alt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eski_yol: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    yeni_ana_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yeni_tali_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yeni_alt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yeni_yol: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    durum: Mapped[str] = mapped_column(String(40), nullable=False, default="guncellendi")
+    islem: Mapped["StokGrupTopluIslem"] = relationship(
+        "StokGrupTopluIslem", back_populates="satirlar"
+    )

@@ -24,7 +24,10 @@ def _satis_fiyati_nesneden(stok, varsayilan=Decimal("0")) -> Decimal:
 
 
 class UrunSecDialog(tk.Toplevel):
-    """Ürün kodu / adı filtreli seçim; bulunamazsa yeni stok kartı açar."""
+    """Ürün kodu / adı filtreli seçim; bulunamazsa yeni stok kartı açar.
+
+    ayrintili=True ise stok listesindeki gibi 5 kelimelik ayrıntılı ürün araması açılır.
+    """
 
     def __init__(
         self,
@@ -35,10 +38,11 @@ class UrunSecDialog(tk.Toplevel):
         ad="",
         sadece_stokta=False,
         depo_ad=None,
+        ayrintili=False,
     ):
         super().__init__(parent)
         self.title("Ürün Seçimi" + (" — Stokta Olanlar" if sadece_stokta else ""))
-        self.geometry("860x440")
+        self.geometry("920x560" if ayrintili else "860x440")
         self.transient(parent)
         self.grab_set()
         self.on_select = on_select
@@ -46,6 +50,7 @@ class UrunSecDialog(tk.Toplevel):
         self._arama_after = None
         self.sadece_stokta = bool(sadece_stokta)
         self.depo_ad = (depo_ad or "").strip() or None
+        self.ayrintili = bool(ayrintili)
 
         # Tek sorgu geldiyse hem koda hem ada koy (eski çağrılar)
         kod = (kod or "").strip()
@@ -60,21 +65,82 @@ class UrunSecDialog(tk.Toplevel):
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 4))
         ust.pack(fill="x")
-        ttk.Label(ust, text="Ürün Kodu").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.kod_filtre = ttk.Entry(ust, width=22)
-        self.kod_filtre.grid(row=0, column=1, sticky="w", padx=(0, 16))
-        self.kod_filtre.insert(0, kod)
-        ttk.Label(ust, text="Ürün Adı").grid(row=0, column=2, sticky="w", padx=(0, 6))
-        self.ad_filtre = ttk.Entry(ust, width=36)
-        self.ad_filtre.grid(row=0, column=3, sticky="ew")
-        self.ad_filtre.insert(0, ad)
-        ust.columnconfigure(3, weight=1)
-        ttk.Button(ust, text="Ara", command=self.listeyi_yenile).grid(row=0, column=4, padx=(10, 0))
+        if self.ayrintili:
+            ttk.Label(ust, text="Hızlı Ara (kod / barkod):").pack(side="left")
+            self.kod_filtre = ttk.Entry(ust, width=28)
+            self.kod_filtre.pack(side="left", padx=(6, 10))
+            self.kod_filtre.insert(0, kod or ad)
+            # Ayrıntılı modda tek satır ad filtresi yok; kelime kutuları kullanılır
+            self.ad_filtre = ttk.Entry(ust)  # gizli tutulmaz; boş bırakılır (API uyumu)
+            ttk.Button(ust, text="Ara", command=self.listeyi_yenile).pack(side="left")
+            self.kayit_sayisi = ttk.Label(ust, text="Bulunan: 0")
+            self.kayit_sayisi.pack(side="right")
 
-        self.kod_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
-        self.ad_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
-        self.kod_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
-        self.ad_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
+            ayrinti = ttk.LabelFrame(self, text="Ayrıntılı Ürün Arama", padding=10)
+            ayrinti.pack(fill="x", padx=12, pady=(0, 4))
+            kutular = ttk.Frame(ayrinti)
+            kutular.pack(fill="x")
+            self._ayrinti_ph = (
+                "1. kelimeyi yazın",
+                "2. kelimeyi yazın",
+                "3. kelimeyi yazın",
+                "4. kelimeyi yazın",
+                "5. kelimeyi yazın",
+            )
+            self.ayrinti_kutular = []
+            # İlk ad sorgusu 1. kutuya
+            ilk_kelimeler = [p for p in (ad or "").split() if p][:5]
+            for i, ph in enumerate(self._ayrinti_ph):
+                col = ttk.Frame(kutular)
+                col.pack(side="left", fill="x", expand=True, padx=(0 if i == 0 else 6, 0))
+                ttk.Label(col, text=f"Ürün Kelimesi {i + 1}").pack(anchor="w")
+                e = ttk.Entry(col)
+                e.pack(fill="x", pady=(2, 0))
+                if i < len(ilk_kelimeler):
+                    e.insert(0, ilk_kelimeler[i])
+                else:
+                    self._placeholder_kur(e, ph)
+                e.bind("<Return>", lambda _ev: self.listeyi_yenile())
+                e.bind("<KeyRelease>", self._arama_gecikmeli)
+                self.ayrinti_kutular.append(e)
+            kontrol = ttk.Frame(ayrinti)
+            kontrol.pack(fill="x", pady=(8, 0))
+            ttk.Label(kontrol, text="Arama Yöntemi:").pack(side="left")
+            self.ayrinti_yontem = ttk.Combobox(
+                kontrol,
+                values=("Tüm kelimeler bulunsun", "Kelimelerden herhangi biri bulunsun"),
+                state="readonly",
+                width=34,
+            )
+            self.ayrinti_yontem.set("Tüm kelimeler bulunsun")
+            self.ayrinti_yontem.pack(side="left", padx=8)
+            self.ayrinti_yontem.bind("<<ComboboxSelected>>", lambda _e: self.listeyi_yenile())
+            ttk.Button(kontrol, text="Temizle", command=self._ayrinti_temizle).pack(side="left", padx=4)
+            ttk.Label(
+                ayrinti,
+                text="Kelime sırası önemli değildir; her kutu ürün adının herhangi bir yerinde bağımsız aranır.",
+                foreground="#627D98",
+            ).pack(anchor="w", pady=(6, 0))
+            self.kod_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
+            self.kod_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
+        else:
+            ttk.Label(ust, text="Ürün Kodu").grid(row=0, column=0, sticky="w", padx=(0, 6))
+            self.kod_filtre = ttk.Entry(ust, width=22)
+            self.kod_filtre.grid(row=0, column=1, sticky="w", padx=(0, 16))
+            self.kod_filtre.insert(0, kod)
+            ttk.Label(ust, text="Ürün Adı").grid(row=0, column=2, sticky="w", padx=(0, 6))
+            self.ad_filtre = ttk.Entry(ust, width=36)
+            self.ad_filtre.grid(row=0, column=3, sticky="ew")
+            self.ad_filtre.insert(0, ad)
+            ust.columnconfigure(3, weight=1)
+            ttk.Button(ust, text="Ara", command=self.listeyi_yenile).grid(row=0, column=4, padx=(10, 0))
+            self.kod_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
+            self.ad_filtre.bind("<KeyRelease>", self._arama_gecikmeli)
+            self.kod_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
+            self.ad_filtre.bind("<Return>", lambda _e: self.listeyi_yenile())
+            self.kayit_sayisi = None
+            self.ayrinti_kutular = []
+            self.ayrinti_yontem = None
 
         bos_metin = (
             "Stokta ürün bulunamadı. Tüm kartlar için STOK LİSTESİ'ni kullanın."
@@ -122,12 +188,77 @@ class UrunSecDialog(tk.Toplevel):
         ttk.Button(alt, text="Seç", command=self.sec).pack(side="right", padx=8)
 
         self.listeyi_yenile()
-        if ad and not kod:
+        if self.ayrintili:
+            self.kod_filtre.focus_set()
+            self.kod_filtre.icursor("end")
+        elif ad and not kod:
             self.ad_filtre.focus_set()
             self.ad_filtre.icursor("end")
         else:
             self.kod_filtre.focus_set()
             self.kod_filtre.icursor("end")
+
+    def _placeholder_kur(self, entry, placeholder: str):
+        entry._ph = placeholder  # type: ignore[attr-defined]
+        entry.insert(0, placeholder)
+        try:
+            entry.configure(foreground="#98A2B3")
+        except tk.TclError:
+            pass
+
+        def _in(_e=None, w=entry, ph=placeholder):
+            if w.get() == ph:
+                w.delete(0, "end")
+                try:
+                    w.configure(foreground="#172B4D")
+                except tk.TclError:
+                    pass
+
+        def _out(_e=None, w=entry, ph=placeholder):
+            if not w.get().strip():
+                w.delete(0, "end")
+                w.insert(0, ph)
+                try:
+                    w.configure(foreground="#98A2B3")
+                except tk.TclError:
+                    pass
+
+        entry.bind("<FocusIn>", _in, add="+")
+        entry.bind("<FocusOut>", _out, add="+")
+
+    def _ayrinti_deger(self, entry) -> str:
+        metin = (entry.get() or "").strip()
+        ph = getattr(entry, "_ph", "")
+        if ph and metin == ph:
+            return ""
+        return metin
+
+    def _ayrinti_kelimeler(self) -> list[str]:
+        return [self._ayrinti_deger(e) for e in getattr(self, "ayrinti_kutular", []) or []]
+
+    def _ayrinti_yontem_kod(self) -> str:
+        metin = ""
+        if getattr(self, "ayrinti_yontem", None):
+            metin = (self.ayrinti_yontem.get() or "").strip()
+        if "herhangi" in metin.casefold():
+            return "or"
+        return "and"
+
+    def _ayrinti_temizle(self):
+        for e in getattr(self, "ayrinti_kutular", []) or []:
+            ph = getattr(e, "_ph", "")
+            e.delete(0, "end")
+            if ph:
+                e.insert(0, ph)
+                try:
+                    e.configure(foreground="#98A2B3")
+                except tk.TclError:
+                    pass
+        if getattr(self, "ayrinti_yontem", None):
+            self.ayrinti_yontem.set("Tüm kelimeler bulunsun")
+        if getattr(self, "kod_filtre", None):
+            self.kod_filtre.delete(0, "end")
+        self.listeyi_yenile()
 
     def _arama_gecikmeli(self, _event=None):
         if self._arama_after is not None:
@@ -139,16 +270,46 @@ class UrunSecDialog(tk.Toplevel):
 
     def listeyi_yenile(self):
         self._arama_after = None
-        kod = self.kod_filtre.get().strip()
-        ad = self.ad_filtre.get().strip()
         for item in self.tablo.get_children():
             self.tablo.delete(item)
-        self._urunler = StokService.stoklari_filtrele(
-            kod=kod,
-            ad=ad,
-            sadece_stokta=self.sadece_stokta,
-            depo_ad=self.depo_ad if self.sadece_stokta else None,
-        )
+
+        if self.ayrintili:
+            hizli = self.kod_filtre.get().strip()
+            kelimeler = self._ayrinti_kelimeler()
+            yontem = self._ayrinti_yontem_kod()
+            self._urunler = StokService.stoklari_ayrintili_ara(
+                kelimeler,
+                yontem=yontem,
+                hizli_arama=hizli,
+                min_harf=2,
+            )
+            if self.sadece_stokta:
+                depo = self.depo_ad
+                filtrelenmis = []
+                for stok in self._urunler:
+                    mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
+                    if depo:
+                        mevcut = sum(
+                            (
+                                lot.kalan_miktar
+                                for lot in (stok.lotlar or [])
+                                if (getattr(getattr(lot, "depo", None), "ad", None) or "") == depo
+                            ),
+                            Decimal("0"),
+                        )
+                    if mevcut > 0:
+                        filtrelenmis.append(stok)
+                self._urunler = filtrelenmis
+        else:
+            kod = self.kod_filtre.get().strip()
+            ad = self.ad_filtre.get().strip()
+            self._urunler = StokService.stoklari_filtrele(
+                kod=kod,
+                ad=ad,
+                sadece_stokta=self.sadece_stokta,
+                depo_ad=self.depo_ad if self.sadece_stokta else None,
+            )
+
         for sira, stok in enumerate(self._urunler):
             fiyat = _satis_fiyati_nesneden(stok)
             mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
@@ -172,6 +333,8 @@ class UrunSecDialog(tk.Toplevel):
                     kdv_metin,
                 ),
             )
+        if getattr(self, "kayit_sayisi", None):
+            self.kayit_sayisi.configure(text=f"Bulunan: {len(self._urunler)}")
         try:
             self.bos_lbl.pack_forget()
         except tk.TclError:
@@ -196,11 +359,18 @@ class UrunSecDialog(tk.Toplevel):
         callback(degerler)
 
     def yeni_urun(self):
+        if self.ayrintili:
+            kelimeler = [k for k in self._ayrinti_kelimeler() if k]
+            baslangic_ad = " ".join(kelimeler)
+            baslangic_kod = self.kod_filtre.get().strip()
+        else:
+            baslangic_kod = self.kod_filtre.get().strip()
+            baslangic_ad = self.ad_filtre.get().strip()
         dialog = StokKartiDialog(
             self,
             baslangic={
-                "stok_kodu": self.kod_filtre.get().strip(),
-                "stok_adi": self.ad_filtre.get().strip(),
+                "stok_kodu": baslangic_kod,
+                "stok_adi": baslangic_ad,
             },
         )
         self.wait_window(dialog)

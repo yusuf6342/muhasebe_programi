@@ -333,6 +333,7 @@ class AlisSiparisiDialog(tk.Toplevel):
                 "termin_tarihi": datetime.strptime(self.girdiler["termin_tarihi"].get(), "%d.%m.%Y").date(),
                 "cari_id": tedarikci.id,
                 "aciklama": self.girdiler["aciklama"].get().strip() or None,
+                "row_version": int(getattr(self.siparis, "row_version", 1) or 1) if self.siparis else None,
             }
             AlisSiparisiService.kaydet(
                 veriler, self.satirlar, self.odemeler,
@@ -522,6 +523,9 @@ class AlisIrsaliyesiDialog(tk.Toplevel):
                     "siparis_id": siparis_id,
                     "aciklama": self.aciklama.get().strip() or None,
                     "ayrintili_notlar": None,
+                    "row_version": int(getattr(self.irsaliye, "row_version", 1) or 1)
+                    if self.irsaliye
+                    else None,
                 },
                 self.satirlar,
                 self.irsaliye.id if self.irsaliye else None,
@@ -1595,6 +1599,9 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "odeme_hesabi": ilk_odeme.get("hesap"),
                 "aciklama": aciklama or None,
                 "dokuman_yolu": self.dokuman.get().strip() or None,
+                "row_version": int(getattr(self.fatura, "row_version", 1) or 1)
+                if self.fatura
+                else None,
             }
             if hasattr(self, "_doviz_para_birimi"):
                 veriler.update(doviz_verilerini_topla(self))

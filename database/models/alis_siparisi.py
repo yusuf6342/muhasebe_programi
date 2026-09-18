@@ -21,6 +21,7 @@ class AlisSiparisi(Base):
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     durum: Mapped[str] = mapped_column(String(30), nullable=False, default="AÇIK")
+    row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     cari: Mapped["Cari"] = relationship("Cari")
