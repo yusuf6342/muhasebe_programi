@@ -161,6 +161,8 @@ class SatisFaturasiService:
                     "tahsilat_alan_full_name": getattr(f, "tahsilat_alan_full_name", None),
                     "kasa_terminal": getattr(f, "kasa_terminal", None),
                     "tahsilat_sekli": getattr(f, "tahsilat_sekli", None),
+                    "sales_person_id": getattr(f, "sales_person_id", None),
+                    "sales_person_full_name": getattr(f, "sales_person_full_name", None),
                 })
             return sonuc
 
@@ -246,6 +248,9 @@ class SatisFaturasiService:
             raise ValueError("Vade tarihi fatura tarihinden önce olamaz.")
         if not satir_verileri:
             raise ValueError("En az bir fatura satırı ekleyin.")
+        from database.satis_personeli import secimi_dogrula
+
+        sp_id, sp_ad = secimi_dogrula(veriler.get("sales_person_id"))
         tahsilat_verileri = list(tahsilat_verileri or [])
         with get_session() as session:
             yeni = False
@@ -343,6 +348,7 @@ class SatisFaturasiService:
                         birim_fiyat_doviz=doviz_satir["birim_fiyat_doviz"],
                         tl_birim_fiyat=doviz_satir["tl_birim_fiyat"],
                         tl_tutar=doviz_satir["tl_tutar"],
+                        manuel_fiyat=bool(veri.get("manuel_fiyat")),
                     )
                 )
 
@@ -410,6 +416,8 @@ class SatisFaturasiService:
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
             fatura.onaylandi = False
             fatura.durum = "TASLAK"
+            fatura.sales_person_id = sp_id
+            fatura.sales_person_full_name = sp_ad
             if yeni:
                 stamp_create(fatura)
             else:
@@ -430,6 +438,64 @@ class SatisFaturasiService:
             belge_no=fno,
         )
         return SatisFaturasiService.getir(fid) or fatura
+
+    @staticmethod
+    def satis_personeli_guncelle(fatura_id, sales_person_id):
+        """Onaylı fatura dahil satış personelini günceller; değişiklik audit'e yazılır."""
+        yazma_zorunlu("satis_duzenleme")
+        from database.satis_personeli import secimi_dogrula
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_update,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+        sp_id, sp_ad = secimi_dogrula(sales_person_id)
+        with get_session() as session:
+            fatura = session.get(SatisFaturasi, int(fatura_id))
+            if not fatura:
+                raise ValueError("Fatura bulunamadı.")
+            if fatura.durum == "İPTAL":
+                raise ValueError("İptal edilmiş faturada satış personeli değiştirilemez.")
+            eski_id = getattr(fatura, "sales_person_id", None)
+            eski_ad = getattr(fatura, "sales_person_full_name", None)
+            if eski_id is not None and int(eski_id) == int(sp_id):
+                return SatisFaturasiService.getir(int(fatura_id))
+            fatura.sales_person_id = sp_id
+            fatura.sales_person_full_name = sp_ad
+            stamp_update(fatura)
+            session.flush()
+            fid = int(fatura.id)
+            fno = fatura.fatura_no
+            onayli = bool(getattr(fatura, "onaylandi", False))
+        if onayli:
+            audit_document(
+                "SATIS_PERSONELI_DEGISTI",
+                modul="satis_faturasi",
+                kayit_id=str(fid),
+                belge_no=fno,
+                eski={
+                    "sales_person_id": eski_id,
+                    "sales_person_full_name": eski_ad,
+                },
+                yeni={
+                    "sales_person_id": sp_id,
+                    "sales_person_full_name": sp_ad,
+                },
+            )
+        else:
+            audit_document(
+                "FATURA_DUZENLE",
+                modul="satis_faturasi",
+                kayit_id=str(fid),
+                belge_no=fno,
+            )
+        return SatisFaturasiService.getir(fid)
 
     @staticmethod
     def onayla(fatura_id):
@@ -484,13 +550,20 @@ class SatisFaturasiService:
                 if skip_stok:
                     continue
                 try:
+                    from fatura_satir_birim_service import temel_miktar
+
+                    stok_miktar = temel_miktar(
+                        satir.miktar,
+                        getattr(satir, "birim", None) or "Adet",
+                        (satir.urun_kodu or "").strip(),
+                    )
                     stok_cikisi = StokService.fatura_cikisi(
                         session,
                         fatura.fatura_no,
                         tarih,
                         satir.urun_kodu.strip(),
                         fatura.depo,
-                        satir.miktar,
+                        stok_miktar,
                         satir.lot_no or "",
                     )
                 except ValueError as hata:
@@ -747,15 +820,10 @@ class SatisFaturasiService:
 
     @staticmethod
     def _satir_net(miktar, fiyat, iskonto1=0, iskonto2=0, iskonto3=0):
-        """Üç kademeli (ardışık) iskonto ile net tutar."""
-        brut = miktar * fiyat
-        net = brut
-        for sira, oran in enumerate((iskonto1, iskonto2, iskonto3), start=1):
-            o = decimal(oran or 0, f"İskonto {sira}", Decimal("0"))
-            if o < 0 or o > 100:
-                raise ValueError(f"İskonto {sira} 0-100 arasında olmalıdır.")
-            net = net * (Decimal("1") - o / Decimal("100"))
-        return brut, brut - net, net
+        """Üç kademeli (ardışık) iskonto ile net tutar (ortak motor)."""
+        from database.iskonto_hesap_service import satir_net_brut_indirim
+
+        return satir_net_brut_indirim(miktar, fiyat, iskonto1, iskonto2, iskonto3)
 
     @staticmethod
     def urun_satis_hareketleri(urun_kodu: str, cari_id: int | None = None) -> list[dict[str, Any]]:
@@ -895,15 +963,30 @@ class SatisFaturasiService:
 
     @staticmethod
     def fatura_no():
-        """SF-00001 formatında artan satış fatura numarası."""
+        """SF-00001 formatında artan satış fatura numarası (tek sorgu)."""
+        from sqlalchemy import text
+
         onek = "SF-"
         with get_session() as session:
-            numaralar = session.scalars(
-                select(SatisFaturasi.fatura_no).where(SatisFaturasi.fatura_no.like(f"{onek}%"))
-            ).all()
-            max_sira = 0
-            for no in numaralar:
-                kuyruk = str(no)[len(onek):]
-                if kuyruk.isdigit():
-                    max_sira = max(max_sira, int(kuyruk))
+            try:
+                max_sira = session.execute(
+                    text(
+                        "SELECT MAX(CAST(SUBSTR(fatura_no, :bas) AS INTEGER)) "
+                        "FROM satis_faturalari WHERE fatura_no LIKE :patern "
+                        "AND SUBSTR(fatura_no, :bas) GLOB '[0-9]*'"
+                    ),
+                    {"bas": len(onek) + 1, "patern": f"{onek}%"},
+                ).scalar()
+                max_sira = int(max_sira or 0)
+            except Exception:
+                numaralar = session.scalars(
+                    select(SatisFaturasi.fatura_no).where(
+                        SatisFaturasi.fatura_no.like(f"{onek}%")
+                    )
+                ).all()
+                max_sira = 0
+                for no in numaralar:
+                    kuyruk = str(no)[len(onek) :]
+                    if kuyruk.isdigit():
+                        max_sira = max(max_sira, int(kuyruk))
             return f"{onek}{max_sira + 1:05d}"

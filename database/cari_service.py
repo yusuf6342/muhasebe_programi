@@ -170,11 +170,67 @@ class CariService:
                     "ortalama_gun": valor,
                     "agirlikli_ortalama_gun": valor,
                     "acik_hareket_sayisi": acik_sayisi,
+                    "ana_yetkili": "",
+                    "yetkili_telefon": "",
+                    "yaklasan_dogum": "",
                 }
             )
+        CariService._yetkili_ozetlerini_ekle(session, sonuclar, ids)
         for ozet in sonuclar:
             session.expunge(ozet["cari"])
         return sonuclar
+
+    @staticmethod
+    def _yetkili_ozetlerini_ekle(session, sonuclar: list[dict], ids: list[int]) -> None:
+        """Liste kolonları için ana yetkili / telefon / yaklaşan doğum (toplu)."""
+        if not ids or not sonuclar:
+            return
+        try:
+            from database.models.cari import CariYetkili
+            from database.cari_yetkili_service import _sonraki_dogum
+        except Exception:
+            return
+        try:
+            kayitlar = list(
+                session.scalars(
+                    select(CariYetkili).where(
+                        CariYetkili.cari_id.in_(ids),
+                        CariYetkili.aktif.is_(True),
+                        or_(CariYetkili.is_deleted.is_(False), CariYetkili.is_deleted.is_(None)),
+                    )
+                ).all()
+            )
+        except Exception:
+            return
+        by_cari: dict[int, list] = {i: [] for i in ids}
+        for y in kayitlar:
+            by_cari.setdefault(int(y.cari_id), []).append(y)
+        bugun = date.today()
+        for ozet in sonuclar:
+            cid = int(ozet["cari"].id)
+            adaylar = by_cari.get(cid) or []
+            if not adaylar:
+                continue
+            ana = next((y for y in adaylar if y.ana_yetkili), adaylar[0])
+            ozet["ana_yetkili"] = f"{ana.ad} {ana.soyad}".strip()
+            ozet["yetkili_telefon"] = ana.cep_telefonu or ana.is_telefonu or ""
+            en_yakin = None
+            for y in adaylar:
+                if not y.dogum_tarihi or not y.dogum_gunu_hatirlat:
+                    continue
+                sonraki = _sonraki_dogum(y.dogum_tarihi, bugun)
+                if sonraki is None:
+                    continue
+                kalan = (sonraki - bugun).days
+                if kalan > 30:
+                    continue
+                if en_yakin is None or kalan < en_yakin[0]:
+                    en_yakin = (kalan, sonraki)
+            if en_yakin is not None:
+                kalan, sonraki = en_yakin
+                ozet["yaklasan_dogum"] = (
+                    "Bugün" if kalan == 0 else f"{kalan} gün ({sonraki.strftime('%d.%m')})"
+                )
 
     @staticmethod
     def listele(
@@ -184,7 +240,36 @@ class CariService:
     ) -> list[dict[str, Any]]:
         from sqlalchemy.orm import selectinload
 
+        from database.search_service import SearchService, tokenize_query
+
         arama = CariService._arama_kontrol(arama)
+        # Çoklu blok / sıra bağımsız arama
+        if arama and tokenize_query(arama):
+            hits = SearchService.search_customers(
+                arama,
+                limit=200 if hizli else 500,
+                cari_turu=cari_turu,
+                sadece_aktif=False,
+            )
+            cariler = [h["cari"] for h in hits]
+            with get_session() as session:
+                if hizli:
+                    return CariService._toplu_liste_ozet(session, cariler)
+                # Session dışı nesneler için yeniden yükle (hareketler)
+                ids = [int(c.id) for c in cariler if getattr(c, "id", None)]
+                if not ids:
+                    return []
+                statement = (
+                    select(Cari)
+                    .where(Cari.id.in_(ids))
+                    .order_by(Cari.cari_kodu)
+                )
+                if not hizli:
+                    statement = statement.options(selectinload(Cari.satis_hareketleri))
+                yuklenen = {c.id: c for c in session.scalars(statement).all()}
+                sirali = [yuklenen[i] for i in ids if i in yuklenen]
+                return [CariService._ozet(cari, session=session) for cari in sirali]
+
         with get_session() as session:
             statement = select(Cari).order_by(Cari.cari_kodu)
             if not hizli:
@@ -193,15 +278,6 @@ class CariService:
                 or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None))
             )
             statement = CariService._cari_turu_filtresi(statement, cari_turu)
-            if arama:
-                ifade = f"%{arama}%"
-                statement = statement.where(
-                    or_(
-                        Cari.cari_kodu.ilike(ifade),
-                        Cari.unvan.ilike(ifade),
-                        Cari.telefon.ilike(ifade),
-                    )
-                )
             cariler = list(session.scalars(statement).all())
             if hizli:
                 return CariService._toplu_liste_ozet(session, cariler)
@@ -292,10 +368,17 @@ class CariService:
                 "hareket_kaynak": "satis_hareketi",
                 "hareket_id": int(h.id),
             })
+        karsi_idler = {
+            int(i.karsi_cari_id) for i in islemler if getattr(i, "karsi_cari_id", None)
+        }
+        karsi_map: dict[int, Cari] = {}
+        if karsi_idler:
+            for k in session.scalars(select(Cari).where(Cari.id.in_(karsi_idler))).all():
+                karsi_map[int(k.id)] = k
         for islem in islemler:
             aciklama = islem.aciklama or ""
             if islem.karsi_cari_id:
-                karsi = session.get(Cari, islem.karsi_cari_id)
+                karsi = karsi_map.get(int(islem.karsi_cari_id))
                 if karsi is not None:
                     if islem.alacak > 0:
                         ek = f"Karşı cariye borç: {karsi.cari_kodu}"
@@ -925,6 +1008,50 @@ class CariService:
         return CariService.aktif_cariler(cari_turu="Müşteri")
 
     @staticmethod
+    def musteri_ara_hizli(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
+        """Fatura müşteri araması — çoklu blok, sıra bağımsız (SearchService)."""
+        from database.search_service import SearchService, tokenize_query
+
+        ara = (arama or "").strip()
+        if not ara:
+            return []
+        if not tokenize_query(ara):
+            return []
+        return SearchService.search_customers(ara, limit=limit, cari_turu="Müşteri")
+
+    @staticmethod
+    def tedarikci_ara_hizli(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
+        """Satın alma tedarikçi araması — çoklu blok, sıra bağımsız."""
+        from database.search_service import SearchService, tokenize_query
+
+        ara = (arama or "").strip()
+        if not ara:
+            return []
+        if not tokenize_query(ara):
+            return []
+        return SearchService.search_suppliers(ara, limit=limit)
+
+    @staticmethod
+    def musteri_bakiyeleri_toplu(cari_idler: list[int]) -> dict[int, Decimal]:
+        """Seçilen cari id'leri için hızlı bakiye (yalnızca CariIslem toplamı)."""
+        ids = [int(i) for i in cari_idler if i is not None]
+        if not ids:
+            return {}
+        from sqlalchemy import func
+
+        with get_session() as session:
+            satirlar = session.execute(
+                select(
+                    CariIslem.cari_id,
+                    func.coalesce(func.sum(CariIslem.borc), 0)
+                    - func.coalesce(func.sum(CariIslem.alacak), 0),
+                )
+                .where(CariIslem.cari_id.in_(ids))
+                .group_by(CariIslem.cari_id)
+            ).all()
+            return {int(r[0]): Decimal(str(r[1] or 0)) for r in satirlar}
+
+    @staticmethod
     def satis_raporu() -> dict[str, Any]:
         from database.models.satis_faturasi import SatisFaturasi
         from database.satis_faturasi_service import SatisFaturasiService
@@ -1397,7 +1524,13 @@ class CariService:
         return CariService._agirlikli_gun_ortalama(acik)
 
     @staticmethod
-    def _ozet(cari: Cari, session=None) -> dict[str, Any]:
+    def _ozet(
+        cari: Cari,
+        session=None,
+        *,
+        defter: list[dict[str, Any]] | None = None,
+        fifo_sonuc: tuple | None = None,
+    ) -> dict[str, Any]:
         """Cari hesap özeti.
 
         Toplam borç/alacak: defter sütun toplamları (hareket genel toplam ile aynı).
@@ -1413,6 +1546,8 @@ class CariService:
         Bakiyenin ort. valörü:
           Açık kalan; gün = bugün − vade;
           Σ(kalan_açık × gün) / Σ(kalan_açık).
+
+        ``defter`` / ``fifo_sonuc`` verilirse tekrar hesaplanmaz (kart özeti performansı).
         """
         bugun = date.today()
         hareketler = list(cari.satis_hareketleri or [])
@@ -1425,13 +1560,17 @@ class CariService:
         odenen_valor_basit = 0.0
         bakiye_valor = 0.0
         if session is not None:
-            defter = CariService._defter(session, cari.id)
+            if defter is None:
+                defter = CariService._defter(session, cari.id)
             toplam_borc = sum((Decimal(str(k.get("borc") or 0)) for k in defter), Decimal("0"))
             toplam_alacak = sum((Decimal(str(k.get("alacak") or 0)) for k in defter), Decimal("0"))
             bakiye = toplam_borc - toplam_alacak
-            kapanan_tam, acik_dilimler, kapanan_dilimler = CariService._fifo_valor_dilimleri(
-                session, cari.id, cari_turu=cari.cari_turu, referans=bugun
-            )
+            if fifo_sonuc is None:
+                kapanan_tam, acik_dilimler, kapanan_dilimler = CariService._fifo_valor_dilimleri(
+                    session, cari.id, cari_turu=cari.cari_turu, referans=bugun
+                )
+            else:
+                kapanan_tam, acik_dilimler, kapanan_dilimler = fifo_sonuc
             kapanan_kaynak = kapanan_tam if kapanan_tam else kapanan_dilimler
             odenen_valor = CariService._agirlikli_gun_ortalama(kapanan_kaynak)
             odenen_valor_basit = CariService._basit_gun_ortalama(kapanan_kaynak)
@@ -1443,6 +1582,8 @@ class CariService:
             )
             toplam_alacak = Decimal("0")
             bakiye = sum((Decimal(str(h.kalan_acik_tutar or 0)) for h in hareketler), Decimal("0"))
+            acik_dilimler = []
+            defter = []
 
         if bakiye > 0:
             bakiye_durumu = "Borçlu"
@@ -1505,6 +1646,8 @@ class CariService:
         - vadesi geçmiş → FIFO açık dilimlerde ``gun > 0`` tutar toplamı
         - kullanılabilir risk → ``acik_hesap_risk_degerlendir(...).kalan_limit``
         - son işlem → defterin en yeni satırı
+
+        Performans: defter + FIFO bir kez hesaplanır, ``_ozet`` ile paylaşılır.
         """
         from hizli_satis_musteri import acik_hesap_risk_degerlendir
 
@@ -1518,15 +1661,18 @@ class CariService:
             )
             if cari is None:
                 return None
-            ozet = CariService._ozet(cari, session=session)
-            _tam, acik_dilimler, _dilimler = CariService._fifo_valor_dilimleri(
+            defter = CariService._defter(session, cari.id)
+            fifo_sonuc = CariService._fifo_valor_dilimleri(
                 session, cari.id, cari_turu=cari.cari_turu
             )
+            ozet = CariService._ozet(
+                cari, session=session, defter=defter, fifo_sonuc=fifo_sonuc
+            )
+            acik_dilimler = fifo_sonuc[1]
             vadesi_gecmis = sum(
                 (Decimal(str(d.get("tutar") or 0)) for d in acik_dilimler if int(d.get("gun") or 0) > 0),
                 Decimal("0"),
             )
-            defter = CariService._defter(session, cari.id)
             son = defter[0] if defter else None
             bakiye = Decimal(str(ozet.get("bakiye") or 0))
             risk = acik_hesap_risk_degerlendir(

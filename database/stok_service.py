@@ -1594,7 +1594,21 @@ class StokService:
             }
 
     @staticmethod
-    def stoklari_ara(arama=""):
+    def stoklari_ara(arama="", limit: int | None = None):
+        """Stok ara. limit verilirse en fazla o kadar kayıt döner (fatura araması).
+
+        Dolu sorguda çoklu blok / sıra bağımsız SearchService kullanılır.
+        """
+        ham = (arama or "").strip()
+        if ham:
+            from database.search_service import SearchService, tokenize_query
+
+            if tokenize_query(ham):
+                lim = 100 if limit is None else max(1, min(int(limit), 200))
+                sonuc = SearchService.search_stocks(ham, limit=lim)
+                return list(sonuc.get("urunler") or [])
+            return []
+
         with get_session() as session:
             q = (
                 select(StokKarti)
@@ -1609,18 +1623,8 @@ class StokService:
                 )
                 .order_by(StokKarti.stok_adi)
             )
-            if arama:
-                ifade = f"%{arama}%"
-                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
-                kosullar = [
-                    StokKarti.stok_kodu.ilike(ifade),
-                    StokKarti.barkod.ilike(ifade),
-                    StokKarti.id.in_(barkod_alt),
-                ]
-                # Stok adı: en az 3 harf ile içeriden arama
-                if len(arama.strip()) >= 3:
-                    kosullar.append(StokKarti.stok_adi.ilike(ifade))
-                q = q.where(or_(*kosullar))
+            if limit is not None:
+                q = q.limit(max(1, min(int(limit), 200)))
             return list(session.scalars(q).all())
 
     @staticmethod
@@ -1669,6 +1673,21 @@ class StokService:
 
         hizli = (hizli_arama or "").strip()
 
+        # AND + dolu bloklar: ortak SearchService (çoklu alan, sıra bağımsız)
+        if yontem == "and" and (temiz or hizli):
+            from database.search_service import SearchService, tokenize_query
+
+            parcalar = []
+            if hizli:
+                parcalar.append(hizli)
+            parcalar.extend(temiz)
+            birlesik = " ".join(parcalar).strip()
+            if tokenize_query(birlesik):
+                return list(
+                    SearchService.search_stocks(birlesik, limit=250).get("urunler") or []
+                )
+            return []
+
         with get_session() as session:
             q = (
                 select(StokKarti)
@@ -1692,11 +1711,11 @@ class StokService:
                     StokKarti.barkod.ilike(ifade),
                     StokKarti.id.in_(barkod_alt),
                 ]
-                if len(hizli) >= 3:
+                if len(hizli) >= 2:
                     hizli_kosul.append(StokKarti.stok_adi.ilike(ifade))
                 q = q.where(or_(*hizli_kosul))
 
-            # Her kelime için ayrı LIKE — asla " ".join(kelimeler) ile birleşik arama yok
+            # OR yolu: her kelime ürün adında (eski davranış)
             kelime_kosullari = []
             for kelime in temiz:
                 patterns = arama_like_varyantlari(kelime, max_n=16)
@@ -1707,15 +1726,10 @@ class StokService:
                 )
 
             if kelime_kosullari:
-                if yontem == "or":
-                    q = q.where(or_(*kelime_kosullari))
-                else:
-                    # AND: hepsi ürün adında olsun; sıranın / bitişikliğin önemi yok
-                    q = q.where(and_(*kelime_kosullari))
+                q = q.where(or_(*kelime_kosullari))
 
             adaylar = list(session.scalars(q).all())
 
-        # Normalize ile kesinleştir: nk in n_ad → sıra ve bitişiklik bağımsız
         if not temiz:
             return adaylar
 
@@ -1726,10 +1740,7 @@ class StokService:
             if stok.id in gorulen_id:
                 continue
             n_ad = turkce_normalize(stok.stok_adi or "")
-            if yontem == "or":
-                eslesti = any(nk in n_ad for nk in n_kelimeler if nk)
-            else:
-                eslesti = all(nk in n_ad for nk in n_kelimeler if nk)
+            eslesti = any(nk in n_ad for nk in n_kelimeler if nk)
             if eslesti:
                 gorulen_id.add(stok.id)
                 sonuc.append(stok)
@@ -1902,24 +1913,45 @@ class StokService:
             elif aktiflik == "pasif":
                 q = q.where(StokKarti.aktif.is_(False))
 
-            if hizli:
-                ifade = f"%{hizli}%"
-                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
-                hizli_kosul = [
-                    StokKarti.stok_kodu.ilike(ifade),
-                    StokKarti.barkod.ilike(ifade),
-                    StokKarti.id.in_(barkod_alt),
-                ]
-                if len(hizli) >= 3:
-                    hizli_kosul.append(StokKarti.stok_adi.ilike(ifade))
-                q = q.where(or_(*hizli_kosul))
+            from database.search_service import SearchService, tokenize_query
 
-            kelime_kosullari = []
-            for kelime in temiz:
-                patterns = arama_like_varyantlari(kelime, max_n=16) or [f"%{kelime}%"]
-                kelime_kosullari.append(or_(*[StokKarti.stok_adi.ilike(p) for p in patterns]))
-            if kelime_kosullari:
-                q = q.where(or_(*kelime_kosullari) if yontem == "or" else and_(*kelime_kosullari))
+            # Hızlı + kelime kutuları: AND ise ortak SearchService
+            birlesik_parca = []
+            if hizli:
+                birlesik_parca.append(hizli)
+            if temiz and yontem == "and":
+                birlesik_parca.extend(temiz)
+            birlesik = " ".join(birlesik_parca).strip()
+            if birlesik and tokenize_query(birlesik):
+                hit_ids = [
+                    int(s.id)
+                    for s in (
+                        SearchService.search_stocks(
+                            birlesik,
+                            limit=400,
+                            sadece_aktif=(aktiflik == "aktif"),
+                        ).get("urunler")
+                        or []
+                    )
+                ]
+                if not hit_ids:
+                    q = q.where(StokKarti.id == -1)
+                else:
+                    q = q.where(StokKarti.id.in_(hit_ids))
+            elif birlesik:
+                q = q.where(StokKarti.id == -1)
+            elif temiz:
+                # OR yolu (veya AND olmadan kalan kelimeler)
+                kelime_kosullari = []
+                for kelime in temiz:
+                    patterns = arama_like_varyantlari(kelime, max_n=16) or [f"%{kelime}%"]
+                    kelime_kosullari.append(
+                        or_(*[StokKarti.stok_adi.ilike(p) for p in patterns])
+                    )
+                if kelime_kosullari:
+                    q = q.where(
+                        or_(*kelime_kosullari) if yontem == "or" else and_(*kelime_kosullari)
+                    )
 
             gruplar = [g for g in (filtre.get("gruplar") or []) if g]
             if gruplar:
@@ -2137,12 +2169,47 @@ class StokService:
         return {"satirlar": satirlar, "toplam": toplam, "gosterilen": len(satirlar)}
 
     @staticmethod
-    def stoklari_filtrele(kod="", ad="", limit=250, sadece_stokta=False, depo_ad=None):
+    def stoklari_filtrele(
+        kod="",
+        ad="",
+        limit=250,
+        sadece_stokta=False,
+        depo_ad=None,
+        *,
+        kelime_sirasiz=False,
+        min_ad_harf=1,
+    ):
         """Ürün kodu ve/veya adı ile AND filtre (fatura satırı seçimi).
-        sadece_stokta=True ise kalan miktarı > 0 olanlar (opsiyonel depo)."""
+
+        kelime_sirasiz=True: çoklu blok sıra bağımsız SearchService araması
+        (alanlar: ad, kod, barkod, marka, grup, birim, açıklama).
+        """
         kod = (kod or "").strip()
         ad = (ad or "").strip()
-        depo_ad = (depo_ad or "").strip()
+        depo_ad = (depo_ad or "").strip() or None
+        min_ad_harf = max(1, int(min_ad_harf or 1))
+        limit = max(1, min(int(limit or 250), 250))
+
+        # Ortak çoklu blok arama (kod + ad birleşik veya yalnızca ad)
+        if kelime_sirasiz:
+            from database.search_service import SearchService, tokenize_query
+
+            birlesik = " ".join(p for p in (kod, ad) if p).strip()
+            if ad and not kod and len(ad) < min_ad_harf:
+                return []
+            if not birlesik:
+                return []
+            # Tek karakter bloklar tokenize'da elenir; hiç blok kalmazsa boş
+            if not tokenize_query(birlesik):
+                return []
+            sonuc = SearchService.search_stocks(
+                birlesik,
+                limit=limit,
+                sadece_stokta=bool(sadece_stokta),
+                depo_ad=depo_ad,
+            )
+            return list(sonuc.get("urunler") or [])
+
         with get_session() as session:
             q = (
                 select(StokKarti)
@@ -2160,6 +2227,8 @@ class StokService:
             if kod:
                 q = q.where(StokKarti.stok_kodu.ilike(f"%{kod}%"))
             if ad:
+                if len(ad) < min_ad_harf:
+                    return []
                 q = q.where(StokKarti.stok_adi.ilike(f"%{ad}%"))
             if sadece_stokta:
                 stoklu = select(StokLotu.stok_id).where(StokLotu.kalan_miktar > 0)

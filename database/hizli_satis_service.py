@@ -567,6 +567,9 @@ class HizliSatisService:
             fatura.onaylandi = False
             fatura.durum = "TASLAK"
             stamp_create(fatura)
+            # Hızlı satışta satış personeli = işlem yapan kullanıcı
+            fatura.sales_person_id = actor.get("user_id")
+            fatura.sales_person_full_name = actor.get("full_name")
             fatura.tahsilat_alan_user_id = actor["user_id"]
             fatura.tahsilat_alan_full_name = actor["full_name"]
             fatura.kasa_terminal = (veriler.get("kasa_terminal") or "").strip() or None

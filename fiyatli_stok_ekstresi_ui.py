@@ -22,15 +22,15 @@ _KOLONLAR = (
     "depo",
     "etiket",
     "giren",
+    "net_giris",
     "cikan",
+    "net_cikis",
     "kalan",
-    "giris_bf",
-    "cikis_sf",
+    "fifo_kalan",
     "cikis_mf",
     "giris_t",
     "cikis_t",
     "cikis_mal",
-    "kalan_deger",
     "pb",
     "kur",
     "uyari",
@@ -46,16 +46,16 @@ _BASLIKLAR = (
     "Cari Kart Adı",
     "Depo",
     "Etiket",
-    "Giren",
-    "Çıkan",
-    "Kalan",
-    "Giriş B.F.",
-    "Çıkış Satış F.",
+    "Giriş Miktarı",
+    "Net Giriş Birim Fiyatı",
+    "Çıkış Miktarı",
+    "Net Çıkış Birim Fiyatı",
+    "Kalan Miktar",
+    "FIFO Kalan Değeri",
     "Çıkış Maliyet F.",
     "Giriş Tutarı",
     "Çıkış Tutarı",
     "Çıkış Maliyeti",
-    "Kalan Değer",
     "PB",
     "Kur",
     "Uyarı",
@@ -68,35 +68,35 @@ _GENISLIKLER = (
     100,
     100,
     80,
-    160,
+    150,
     90,
-    90,
-    70,
-    70,
-    70,
-    90,
+    80,
+    85,
+    120,
+    85,
+    120,
+    85,
+    110,
     95,
-    100,
     90,
     90,
-    95,
     95,
     45,
     55,
-    160,
+    140,
 )
 
 _SAYISAL = {
     "giren",
+    "net_giris",
     "cikan",
+    "net_cikis",
     "kalan",
-    "giris_bf",
-    "cikis_sf",
+    "fifo_kalan",
     "cikis_mf",
     "giris_t",
     "cikis_t",
     "cikis_mal",
-    "kalan_deger",
     "kur",
 }
 
@@ -553,7 +553,16 @@ class _FiyatliEkstrePanel(ttk.Frame):
             cikis_mf = _para(s.get("cikis_maliyet_fiyat")) if maliyet_ok else ""
             giris_t = _para(s.get("giris_tutari")) if maliyet_ok else ""
             cikis_mal = _para(s.get("cikis_maliyeti")) if maliyet_ok else ""
-            kalan_deger = _para(s.get("kalan_deger")) if maliyet_ok else ""
+            fifo_kalan = _para(s.get("kalan_deger")) if maliyet_ok else ""
+            net_g = s.get("net_giris_birim_fiyat", s.get("giris_birim_fiyat"))
+            net_c = s.get("net_cikis_birim_fiyat", s.get("cikis_satis_fiyat"))
+            fiyat_yok = bool(s.get("fiyat_yok"))
+            net_g_txt = _para(net_g) if net_g is not None else (
+                "Fiyat yok" if fiyat_yok and yon == "giris" else ""
+            )
+            net_c_txt = _para(net_c) if net_c is not None else (
+                "Fiyat yok" if fiyat_yok and yon == "cikis" else ""
+            )
             self.tablo.insert(
                 "",
                 "end",
@@ -569,18 +578,18 @@ class _FiyatliEkstrePanel(ttk.Frame):
                     s.get("depo") or "",
                     s.get("etiket") or "",
                     _mik(s.get("giren")),
+                    net_g_txt,
                     _mik(s.get("cikan")),
+                    net_c_txt,
                     _mik(s.get("kalan")),
-                    _para(s.get("giris_birim_fiyat")),
-                    _para(s.get("cikis_satis_fiyat")),
+                    fifo_kalan,
                     cikis_mf,
                     giris_t,
                     _para(s.get("cikis_tutari")),
                     cikis_mal,
-                    kalan_deger,
                     s.get("para_birimi") or "",
                     _para(s.get("kur")) if s.get("kur") is not None else "",
-                    s.get("uyari") or "",
+                    s.get("uyari") or s.get("fiyat_kaynak") or "",
                 ),
                 tags=(tag,),
             )

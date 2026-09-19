@@ -95,6 +95,7 @@ class InvoicePrintViewModel:
     onaylayan: str = ""
     duzenleme_tarihi: str = ""
     kaynak_siparis_olusturan: str = ""
+    satis_personeli: str = ""
     # Sayfalar
     sayfalar: list[list[InvoicePrintLine]] = field(default_factory=list)
     ayarlar: dict[str, Any] = field(default_factory=dict)

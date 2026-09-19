@@ -80,6 +80,9 @@ def _sqlite_baglanti_ayarlari(dbapi_connection, _connection_record) -> None:
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    # Okuma önbelleği (MB cinsinden negatif = KB*1024); dayanıklılığı değiştirmez
+    cursor.execute("PRAGMA cache_size=-65536")
     cursor.close()
 
 
@@ -132,6 +135,22 @@ def _aktif_engine_bagla(yeni_engine) -> None:
     )
 
 
+def firma_arama_indekslerini_hazirla() -> None:
+    """Cari/stok arama indeksleri — IF NOT EXISTS, tekrar güvenli."""
+    if engine is None:
+        return
+    sql_list = (
+        "CREATE INDEX IF NOT EXISTS ix_cari_kartlar_unvan ON cari_kartlar(unvan)",
+        "CREATE INDEX IF NOT EXISTS ix_cari_kartlar_aktif ON cari_kartlar(aktif)",
+    )
+    try:
+        with engine.begin() as conn:
+            for sql in sql_list:
+                conn.execute(text(sql))
+    except Exception:
+        pass
+
+
 def firma_db_ac(company_id: int, db_path: str | Path) -> None:
     """Aktif firma operasyon DB'sini açar (öncekini kapatır).
 
@@ -152,10 +171,12 @@ def firma_db_ac(company_id: int, db_path: str | Path) -> None:
         company_db._session_factory = SessionLocal
         company_db._company_id = company_id
         company_db._db_path = yol
+        firma_arama_indekslerini_hazirla()
         return
 
     yeni = company_db.open(company_id, yol)
     _aktif_engine_bagla(yeni)
+    firma_arama_indekslerini_hazirla()
 
 
 def firma_db_kapat() -> None:
@@ -486,6 +507,19 @@ def cari_kart_schemasini_guncelle() -> None:
                         )
                     )
 
+    alis_satir_tablo = "alis_faturasi_satirlari"
+    if inspect(engine).has_table(alis_satir_tablo):
+        alis_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(alis_satir_tablo)}
+        for alan in ("iskonto_orani_2", "iskonto_orani_3"):
+            if alan not in alis_sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "{alis_satir_tablo}" '
+                            f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
+                        )
+                    )
+
     finans_tablo = "finans_hesaplari"
     if inspect(engine).has_table(finans_tablo):
         finans_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(finans_tablo)}
@@ -577,6 +611,12 @@ def cari_kart_schemasini_guncelle() -> None:
     except Exception:
         pass
     try:
+        from database.barkod_okut_service import barkod_indeksleri_guncelle
+
+        barkod_indeksleri_guncelle()
+    except Exception:
+        pass
+    try:
         from database.teklif_service import QuoteService
 
         QuoteService.schema_hazirla()
@@ -588,6 +628,80 @@ def cari_kart_schemasini_guncelle() -> None:
         SatisIrsaliyesiService.schema_hazirla()
     except Exception:
         pass
+    try:
+        from database.cari_yetkili_service import CariYetkiliService
+
+        CariYetkiliService.schema_hazirla()
+    except Exception:
+        pass
+    performans_indekslerini_hazirla()
+
+
+def performans_indekslerini_hazirla() -> None:
+    """Listeleme/FIFO için eksik bileşik indeksler (IF NOT EXISTS; veri kaybı yok)."""
+    indeksler = (
+        (
+            "ix_cari_islem_cari_tarih",
+            "cari_islemleri",
+            'CREATE INDEX IF NOT EXISTS "ix_cari_islem_cari_tarih" '
+            'ON "cari_islemleri" ("cari_id", "tarih")',
+        ),
+        (
+            "ix_satis_hareket_cari_tarih",
+            "cari_satis_hareketleri",
+            'CREATE INDEX IF NOT EXISTS "ix_satis_hareket_cari_tarih" '
+            'ON "cari_satis_hareketleri" ("cari_id", "satis_tarihi")',
+        ),
+        (
+            "ix_stok_hareket_stok_tarih_id",
+            "stok_hareketleri",
+            'CREATE INDEX IF NOT EXISTS "ix_stok_hareket_stok_tarih_id" '
+            'ON "stok_hareketleri" ("stok_id", "tarih", "id")',
+        ),
+        (
+            "ix_cari_islem_karsi_cari",
+            "cari_islemleri",
+            'CREATE INDEX IF NOT EXISTS "ix_cari_islem_karsi_cari" '
+            'ON "cari_islemleri" ("karsi_cari_id")',
+        ),
+    )
+    try:
+        insp = inspect(engine)
+    except Exception:
+        return
+    for _ad, tablo, sql in indeksler:
+        try:
+            if not insp.has_table(tablo):
+                continue
+            with engine.begin() as connection:
+                connection.execute(text(sql))
+        except Exception:
+            # İndeks oluşturma başarısızsa program çalışmaya devam etsin
+            pass
+
+
+def db_konum_uyari_metni() -> str | None:
+    """DB OneDrive/ağ/HDD riskindeyse kullanıcıya gösterilecek kısa uyarı."""
+    try:
+        yol = Path(DB_PATH).resolve()
+    except Exception:
+        return None
+    metin = str(yol).lower()
+    riskler = []
+    if "onedrive" in metin or "dropbox" in metin or "google drive" in metin:
+        riskler.append("bulut senkron klasörü (OneDrive/Dropbox vb.)")
+    if metin.startswith("\\\\") or ":\\users\\public" in metin:
+        riskler.append("ağ paylaşımı")
+    if riskler:
+        return (
+            "Uyarı: Veritabanı dosyası "
+            + " / ".join(riskler)
+            + f" üzerinde görünüyor:\n{yol}\n\n"
+            "SQLite WAL kilidi ve veri bozulması riski vardır. "
+            "Tercihen yerel SSD'de %LOCALAPPDATA%\\MuhasebeProgrami\\data kullanın "
+            "veya MUHASEBE_DB_DIR ortam değişkenini ayarlayın."
+        )
+    return None
 
 
 def donem_schemasini_guncelle() -> None:
@@ -666,9 +780,12 @@ def doviz_schema_guncelle() -> None:
         "birim_fiyat_doviz": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
         "tl_birim_fiyat": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
         "tl_tutar": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "manuel_fiyat": "BOOLEAN DEFAULT 0 NOT NULL",
     }
     _ekle("satis_faturasi_satirlari", satir_doviz)
-    _ekle("alis_faturasi_satirlari", satir_doviz)
+    _ekle("alis_faturasi_satirlari", {
+        k: v for k, v in satir_doviz.items() if k != "manuel_fiyat"
+    })
 
     _ekle(
         "satis_faturasi_tahsilatlari",

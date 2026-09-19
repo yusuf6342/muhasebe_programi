@@ -169,7 +169,7 @@ def rapor_kar_zarar(app):
     filtre2 = ttk.Frame(app.icerik)
     filtre2.pack(fill="x", pady=4)
 
-    musteriler = CariService.listele(cari_turu="Müşteri")
+    musteriler = CariService.listele(cari_turu="Müşteri", hizli=True)
     cari_map = {"(Tümü)": None}
     cari_map.update({f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in musteriler})
     ttk.Label(filtre2, text="Cari:").pack(side="left")

@@ -11,7 +11,7 @@ from database.database import (
 # Modelleri sisteme tanıtıyoruz
 from database.models.firma import Firma
 from database.models.donem import Donem
-from database.models.cari import Cari, CariIslem, SatisHareketi
+from database.models.cari import Cari, CariIslem, CariYetkili, SatisHareketi  # noqa: F401
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
 from database.models.satis_teklifi import SatisTeklifi, SatisTeklifiSatiri  # noqa: F401
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
@@ -212,6 +212,19 @@ def main():
             pass
 
     threading.Thread(target=_arka_plan_bakim, daemon=True).start()
+
+    try:
+        from database.database import DB_PATH, db_konum_uyari_metni
+
+        uyari = db_konum_uyari_metni()
+        if uyari:
+            messagebox.showwarning(APP_NAME, uyari)
+        else:
+            # Bilgi amaçlı: konum LOCALAPPDATA ise sessiz; aksi halde log
+            print(f"Veritabanı konumu: {DB_PATH}")
+    except Exception:
+        pass
+
     app.mainloop()
 
 

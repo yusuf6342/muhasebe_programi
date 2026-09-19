@@ -321,7 +321,7 @@ def ust_toolbar(
 
 
 def alt_ozet_cubugu(parent) -> dict:
-    """Sabit alt özet kartı: sol not alanı, sağ toplamlar."""
+    """Sabit alt özet kartı: sol işlem düğmeleri + not, sağ toplamlar."""
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
     dis = tk.Frame(parent, bg=ACIK_BG, highlightthickness=0)
     dis.pack(side="bottom", fill="x")
@@ -334,6 +334,9 @@ def alt_ozet_cubugu(parent) -> dict:
 
     sol = tk.Frame(kart, bg=BEYAZ)
     sol.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+
+    islem = tk.Frame(sol, bg=BEYAZ)
+    islem.pack(fill="x", anchor="w")
     tk.Label(
         sol,
         text="Notlar / Açıklama",
@@ -341,8 +344,8 @@ def alt_ozet_cubugu(parent) -> dict:
         fg=LACIVERT,
         font=font(9, "bold", root),
         anchor="w",
-    ).pack(anchor="w")
-    not_alani = tk.Text(sol, height=3, width=40, wrap="word", font=font(9, root=root), relief="solid", bd=1)
+    ).pack(anchor="w", pady=(8, 0))
+    not_alani = tk.Text(sol, height=2, width=40, wrap="word", font=font(9, root=root), relief="solid", bd=1)
     not_alani.pack(fill="both", expand=True, pady=(4, 0))
 
     sag = tk.Frame(kart, bg=BEYAZ)
@@ -350,10 +353,13 @@ def alt_ozet_cubugu(parent) -> dict:
 
     degerler: dict[str, tk.Label | ttk.Entry] = {}
     satirlar = (
+        ("brut", "Brüt Toplam", False),
+        ("iskonto", "Toplam İskonto", False),
+        ("matrah", "KDV Matrahı", False),
+        ("kdv", "KDV Toplamı", False),
         ("ara_toplam", "Ara Toplam", False),
-        ("iskonto", "İskonto", False),
-        ("kdv", "KDV", False),
         ("genel", "GENEL TOPLAM", True),
+        ("doviz", "Döviz Karşılığı", False),
     )
     for i, (anahtar, baslik, vurgulu) in enumerate(satirlar):
         fg = LACIVERT if vurgulu else IKINCIL
@@ -374,7 +380,7 @@ def alt_ozet_cubugu(parent) -> dict:
         else:
             lbl = tk.Label(
                 sag,
-                text="0,00 TL",
+                text="0,00 TL" if anahtar != "doviz" else "—",
                 bg=BEYAZ,
                 fg=METIN,
                 font=font(10, "bold", root),
@@ -401,6 +407,7 @@ def alt_ozet_cubugu(parent) -> dict:
         "degerler": degerler,
         "sag": sag,
         "sol": sol,
+        "islem": islem,
     }
 
 

@@ -163,6 +163,7 @@ def _belge_meta(vm: InvoicePrintViewModel) -> str:
         _meta_satir("Kur Tarihi", vm.kur_tarihi),
         _meta_satir("Ödeme", vm.odeme_sekli),
         _meta_satir("Durum", vm.durum),
+        _meta_satir("Satış Personeli", getattr(vm, "satis_personeli", "") or ""),
     ]
     return "<div class='belge-meta'>" + "".join(p for p in parcalar if p) + "</div>"
 
@@ -225,7 +226,7 @@ def _not_banka_imza(vm: InvoicePrintViewModel) -> str:
             f"<div class='banka'><div class='alt-baslik'>Ödeme Bilgileri</div>{satir}</div>"
         )
     if a.get("imza_alani_goster", True):
-        haz = _e(vm.hazirlayan or "—")
+        # Hazırlayan = sistem kullanıcısı müşteri çıktısında yok
         ona = _e(vm.onaylayan or "—")
         duz = _e(vm.duzenleme_tarihi or "")
         kaynak = ""
@@ -238,9 +239,6 @@ def _not_banka_imza(vm: InvoicePrintViewModel) -> str:
             )
         bloklar.append(
             "<div class='imza'>"
-            f"<div><div class='alt-baslik'>Hazırlayan</div>"
-            f"<div>{haz}</div>"
-            f"<div class='cizgi'>İmza</div></div>"
             f"<div><div class='alt-baslik'>Kontrol Eden / Onaylayan</div>"
             f"<div>{ona}</div>"
             f"<div class='cizgi'>İmza</div></div>"

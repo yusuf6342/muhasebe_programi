@@ -195,6 +195,7 @@ def build_from_satirlar(
     onaylayan: str = "",
     duzenleme_tarihi: str = "",
     kaynak_siparis_olusturan: str = "",
+    satis_personeli: str = "",
 ) -> InvoicePrintViewModel:
     from database.satis_faturasi_service import SatisFaturasiService
 
@@ -307,13 +308,20 @@ def build_from_satirlar(
         kalan_goster=_para(kalan, pb),
         kdv_dokum=_kdv_dokum(satirlar_dict, pb) if ayarlar.get("kdv_dokum_goster", True) else [],
         yaziyla_toplam=amount_to_words(genel, pb) if ayarlar.get("yaziyla_toplam_goster", True) else "",
-        notlar=(aciklama or "").strip(),
+        # Dahili notlar müşteri çıktısına aktarılmaz
+        notlar="",
         banka_satirlari=banka,
         alt_bilgi=str(branding.get("alt_bilgi") or "") if ayarlar.get("alt_bilgi_goster", True) else "",
-        hazirlayan=hazirlayan or "",
+        # Sistem kullanıcısı müşteri çıktısında gösterilmez
+        hazirlayan="",
         onaylayan=onaylayan or "",
         duzenleme_tarihi=duzenleme_tarihi or "",
         kaynak_siparis_olusturan=kaynak_siparis_olusturan or "",
+        satis_personeli=(
+            (satis_personeli or "").strip()
+            if ayarlar.get("satis_personeli_goster", False)
+            else ""
+        ),
         ayarlar=ayarlar,
     )
     if pb not in ("TRY", "TL") and kur:
@@ -377,13 +385,15 @@ def build_invoice_print_model(
         irsaliye_no = getattr(f.irsaliye, "irsaliye_no", "") or ""
     from database.user_audit import display_user, format_dt
 
-    hazirlayan = display_user(f.created_by_full_name, f.created_by_user_id)
+    # Müşteri çıktısında sistem kullanıcısı gösterilmez; satış personeli ayara bağlı
+    hazirlayan = ""
     onaylayan = (
         display_user(f.approved_by_full_name, f.approved_by_user_id)
         if f.approved_by_user_id or f.approved_by_full_name
         else ""
     )
     duzenleme = format_dt(f.updated_at or f.olusturma_tarihi)
+    satis_personeli = (getattr(f, "sales_person_full_name", None) or "").strip()
     return build_from_satirlar(
         fatura_id=int(f.id),
         fatura_no=f.fatura_no,
@@ -410,6 +420,7 @@ def build_invoice_print_model(
         onaylayan=onaylayan,
         duzenleme_tarihi=duzenleme,
         kaynak_siparis_olusturan=kaynak_siparis_olusturan,
+        satis_personeli=satis_personeli,
     )
 
 
@@ -557,17 +568,27 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
         onaylayan=_kart_onaylayan(kart),
         duzenleme_tarihi=_kart_duzenleme(kart),
         kaynak_siparis_olusturan=_kart_siparis_olusturan(kart),
+        satis_personeli=_kart_satis_personeli(kart),
     )
 
 
 def _kart_hazirlayan(kart) -> str:
-    from database.user_audit import display_user
-    from belge_kullanici_ui import aktif_kullanici_adi
+    # Müşteri çıktısında sistem kullanıcısı gösterilmez
+    return ""
 
-    obj = getattr(kart, "fatura", None) or getattr(kart, "siparis", None)
-    if obj and (getattr(obj, "created_by_full_name", None) or getattr(obj, "created_by_user_id", None)):
-        return display_user(obj.created_by_full_name, obj.created_by_user_id)
-    return aktif_kullanici_adi()
+
+def _kart_satis_personeli(kart) -> str:
+    panel = getattr(kart, "_satis_personeli_panel", None)
+    if panel and callable(panel.get("secili_id")):
+        sid = panel["secili_id"]()
+        if sid and panel.get("personel_map"):
+            p = panel["personel_map"].get(int(sid))
+            if p:
+                return (p.get("ad_soyad") or "").strip()
+    obj = getattr(kart, "fatura", None)
+    if obj:
+        return (getattr(obj, "sales_person_full_name", None) or "").strip()
+    return ""
 
 
 def _kart_onaylayan(kart) -> str:

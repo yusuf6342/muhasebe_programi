@@ -278,7 +278,7 @@ def ozet_verileri_topla() -> dict[str, Any]:
         from database.cari_service import CariService
 
         alacak = Decimal("0")
-        for ozet in CariService.listele(cari_turu="Müşteri") or []:
+        for ozet in CariService.listele(cari_turu="Müşteri", hizli=True) or []:
             b = Decimal(str(ozet.get("bakiye") or 0))
             if b > 0:
                 alacak += b
@@ -437,7 +437,7 @@ class AnaPanelKabuk:
         dugmeler = tk.Frame(app.oturum_cubugu, bg=BEYAZ)
         dugmeler.pack(side="right", padx=(0, 4), pady=8)
         for metin, cmd in (
-            ("Bildirim", lambda: messagebox.showinfo("Bildirim", "Yeni bildirim yok.", parent=app)),
+            ("Bildirim", app.bildirimleri_ac),
             ("Firma", app.firma_degistir_ac),
             ("Dönem", app.donem_degistir_ac),
             ("Kullanıcı", app.aktif_kullanici_degistir_ac),

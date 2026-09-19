@@ -33,6 +33,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "alt_bilgi_goster": True,
     "taslak_filigran_goster": True,
     "ara_toplam_devri_goster": True,
+    "satis_personeli_goster": False,
     "varsayilan_yazici": "",
     "son_pdf_klasoru": "",
     "ilk_sayfa_satir": 12,

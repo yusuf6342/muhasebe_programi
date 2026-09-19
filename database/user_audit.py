@@ -161,6 +161,8 @@ HIZLI_EK_KOLONLAR: dict[str, str] = {
     "kasa_terminal": "VARCHAR(80)",
     "satis_baslangic": "DATETIME",
     "satis_bitis": "DATETIME",
+    "sales_person_id": "INTEGER",
+    "sales_person_full_name": "VARCHAR(120)",
 }
 
 
@@ -195,8 +197,9 @@ def belge_kullanici_schema_guncelle(engine=None) -> None:
             for idx, col in (
                 (f"ix_{tablo}_created_by", "created_by_user_id"),
                 (f"ix_{tablo}_updated_at", "updated_at"),
+                (f"ix_{tablo}_sales_person", "sales_person_id"),
             ):
-                if col not in mevcut and col in kolonlar:
+                if col in kolonlar:
                     try:
                         connection.execute(
                             text(

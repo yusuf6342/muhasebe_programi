@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -59,6 +59,67 @@ class Cari(Base):
         back_populates="cari",
         cascade="all, delete-orphan",
     )
+    yetkililer: Mapped[list["CariYetkili"]] = relationship(
+        "CariYetkili",
+        back_populates="cari",
+        cascade="all, delete-orphan",
+    )
+
+
+class CariYetkili(Base):
+    """Cari karta bağlı işletme yetkilisi (çoklu kayıt)."""
+
+    __tablename__ = "cari_yetkililer"
+    __table_args__ = (
+        Index("ix_cari_yetkili_cari_aktif", "cari_id", "aktif"),
+        Index("ix_cari_yetkili_dogum", "dogum_tarihi"),
+        Index("ix_cari_yetkili_ad_norm", "ad_soyad_norm"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+
+    ad: Mapped[str] = mapped_column(String(80), nullable=False)
+    soyad: Mapped[str] = mapped_column(String(80), nullable=False)
+    ad_soyad_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    unvan: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    departman: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gorev: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ana_yetkili: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    cep_telefonu: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    telefon2: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    whatsapp_telefonu: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    is_telefonu: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    dahili: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(150), nullable=True)
+
+    dogum_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    dogum_gunu_hatirlat: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    hitap: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    iletisim_kanali: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    adres: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    il: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ilce: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ozel_notlar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    gorusme_notu: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    pazarlama_izni: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    kvkk_onayi: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    onay_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by_username: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by_username: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    cari: Mapped["Cari"] = relationship("Cari", back_populates="yetkililer")
 
 
 class MusteriGrubu(Base):

@@ -306,7 +306,7 @@ class AlisSiparisiDialog(tk.Toplevel):
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "aciklama": satir.aciklama or "", "miktar": satir.miktar, "birim": satir.birim,
                 "birim_alis_fiyati": satir.birim_alis_fiyati,
-                "iskonto_orani": satir.iskonto_orani, "kdv_orani": satir.kdv_orani,
+                "iskonto_orani": satir.iskonto_orani, "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0, "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0, "kdv_orani": satir.kdv_orani,
                 "irsaliyelenen_miktar": satir.irsaliyelenen_miktar,
                 "faturalanan_miktar": satir.faturalanan_miktar,
             })
@@ -464,7 +464,7 @@ class AlisIrsaliyesiDialog(tk.Toplevel):
                     "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                     "aciklama": satir.aciklama or "", "miktar": acik, "birim": satir.birim,
                     "birim_fiyat": satir.birim_alis_fiyati,
-                    "iskonto_orani": satir.iskonto_orani, "kdv_orani": satir.kdv_orani,
+                    "iskonto_orani": satir.iskonto_orani, "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0, "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0, "kdv_orani": satir.kdv_orani,
                 })
         self._yenile()
 
@@ -504,6 +504,8 @@ class AlisIrsaliyesiDialog(tk.Toplevel):
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "aciklama": satir.aciklama or "", "miktar": satir.miktar, "birim": satir.birim,
                 "birim_fiyat": satir.birim_fiyat, "iskonto_orani": satir.iskonto_orani,
+                "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
                 "kdv_orani": satir.kdv_orani,
             })
         self._yenile()
@@ -818,17 +820,27 @@ class AlisFaturasiDialog(tk.Toplevel):
             if alan == "birim_fiyat":
                 widget.configure(state="normal")
                 widget.bind("<F10>", self.satir_fiyat_secimi_ac)
-            if alan in ("birim_fiyat", "iskonto_orani", "kdv_orani"):
+            if alan == "iskonto_orani":
+                widget.bind("<Double-1>", self._alis_iskonto_ac)
+                widget.bind("<F2>", self._alis_iskonto_ac)
+            if alan in ("birim_fiyat", "kdv_orani"):
                 widget.bind("<KeyRelease>", lambda _e: self.satir_tutar_guncelle())
         # F10: Treeview vb. odaktayken de çalışsın (Entry bindtags → Toplevel)
         self.bind("<F10>", self.satir_fiyat_secimi_ac)
         self.satir_girdileri["birim"].set("Adet")
         self.satir_girdileri["kdv_orani"].insert(0, "20")
-        self.satir_girdileri["iskonto_orani"].insert(0, "0")
+        self.satir_girdileri["iskonto_orani"].insert(0, "")
+        self._form_iskonto_2 = "0"
+        self._form_iskonto_3 = "0"
+        self._alis_form_enter_bagla()
 
         butonlar = ttk.Frame(giris)
         butonlar.grid(row=4, column=0, columnspan=5, sticky="w", pady=(5, 0))
         ttk.Button(butonlar, text="Satır Ekle", command=self.satir_kaydet).pack(side="left")
+        ttk.Button(butonlar, text="Çoklu İskonto", command=self._alis_iskonto_ac).pack(side="left", padx=6)
+        ttk.Button(butonlar, text="Kolon Ayarları", command=self._alis_kolon_ayarlari_ac).pack(
+            side="left", padx=6
+        )
         ttk.Button(butonlar, text="Temizle", command=self.satir_formunu_temizle).pack(side="left", padx=8)
         ttk.Button(butonlar, text="STOK LİSTESİ", command=self.stok_listesi_ac).pack(side="left", padx=6)
         ttk.Label(butonlar, text="Barkod:").pack(side="left", padx=(12, 2))
@@ -845,19 +857,58 @@ class AlisFaturasiDialog(tk.Toplevel):
 
         kolonlar = (
             "barkod", "kod", "ad", "aciklama", "miktar", "birim", "fiyat", "iskonto", "kdv",
-            "lot", "lot_girisi", "toplam", "siparis_miktar", "irsaliye_miktar", "fatura_miktar",
+            "net_birim", "lot", "lot_girisi", "toplam", "siparis_miktar", "irsaliye_miktar", "fatura_miktar",
         )
         self.satir_tablosu = ttk.Treeview(parent, columns=kolonlar, show="headings", height=10)
         basliklar = {
             "barkod": "Barkod", "kod": "Ürün Kodu", "ad": "Ürün Adı", "aciklama": "Açıklama",
             "miktar": "Miktar", "birim": "Birim", "fiyat": "Alış Fiyatı", "iskonto": "İskonto",
-            "kdv": "KDV", "lot": "Lot No", "lot_girisi": "Lot Girişi", "toplam": "Satır Toplamı",
+            "kdv": "KDV", "net_birim": "Net Birim Fiyat", "lot": "Lot No", "lot_girisi": "Lot Girişi",
+            "toplam": "Net Tutar",
             "siparis_miktar": "Sipariş Miktarı", "irsaliye_miktar": "İrsaliye Miktarı",
             "fatura_miktar": "Fatura Miktarı",
         }
         for kolon in kolonlar:
             self.satir_tablosu.heading(kolon, text=basliklar[kolon])
-            self.satir_tablosu.column(kolon, width=100 if kolon != "ad" else 220, anchor="w")
+            w = 110 if kolon in ("net_birim", "toplam", "ad") else 100
+            if kolon == "ad":
+                w = 220
+            if kolon == "iskonto":
+                w = 160
+            if kolon == "kdv":
+                w = 70
+            self.satir_tablosu.column(
+                kolon,
+                width=w,
+                minwidth=40 if kolon == "iskonto" else 20,
+                anchor="e" if kolon in ("net_birim", "toplam", "fiyat") else "w",
+            )
+        # Firma/kullanıcı kolon tercihleri (displaycolumns; values kesilmez)
+        try:
+            from fatura_satir_kolon_prefs import (
+                EKRAN_ALIS,
+                ayarlari_yukle,
+                resize_bagla,
+                tabloya_uygula,
+            )
+
+            self._alis_kolon_ayarlari = ayarlari_yukle(EKRAN_ALIS)
+            self._alis_kolon_ayarlari = tabloya_uygula(
+                self.satir_tablosu, EKRAN_ALIS, self._alis_kolon_ayarlari
+            )
+
+            def _alis_set_ayar(a):
+                self._alis_kolon_ayarlari = a
+
+            resize_bagla(
+                self.satir_tablosu,
+                EKRAN_ALIS,
+                ayar_getter=lambda: getattr(self, "_alis_kolon_ayarlari", {}),
+                ayar_setter=_alis_set_ayar,
+                parent=self,
+            )
+        except Exception:
+            self._alis_kolon_ayarlari = None
         dikey = ttk.Scrollbar(parent, orient="vertical", command=self.satir_tablosu.yview)
         yatay = ttk.Scrollbar(parent, orient="horizontal", command=self.satir_tablosu.xview)
         self.satir_tablosu.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
@@ -867,7 +918,9 @@ class AlisFaturasiDialog(tk.Toplevel):
         parent.rowconfigure(1, weight=1)
         parent.columnconfigure(0, weight=1)
         self.satir_tablosu.bind("<<TreeviewSelect>>", self.satir_secildi)
-        self.satir_tablosu.bind("<Double-1>", self.satir_secildi)
+        self.satir_tablosu.bind("<Double-1>", self._alis_satir_cift_tik)
+        self.satir_tablosu.bind("<F2>", self._alis_iskonto_ac)
+        self.satir_tablosu.bind("<Button-3>", self._alis_satir_sag_tik)
 
         toplamlar = ttk.LabelFrame(parent, text="TOPLAMLAR", padding=6)
         toplamlar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=6)
@@ -1036,6 +1089,42 @@ class AlisFaturasiDialog(tk.Toplevel):
             except tk.TclError:
                 pass
 
+    def _alis_form_enter_bagla(self):
+        """Enter ile form alanları arasında gezin; son alandan satırı kaydet / barkoda dön."""
+        sira = ("miktar", "birim", "birim_fiyat", "iskonto_orani", "kdv_orani")
+
+        def _ilerle(mevcut, geri=False):
+            try:
+                i = sira.index(mevcut)
+            except ValueError:
+                return "break"
+            j = i - 1 if geri else i + 1
+            if 0 <= j < len(sira):
+                self._satir_odakla(sira[j])
+                return "break"
+            if geri:
+                return "break"
+            # Son alan: satırı kaydet (varsa), barkoda odak
+            try:
+                self.satir_kaydet(formu_temizle=False)
+            except Exception:
+                pass
+            w = self.satir_girdileri.get("barkod")
+            if w is not None:
+                try:
+                    w.focus_set()
+                except tk.TclError:
+                    pass
+            return "break"
+
+        for alan in sira:
+            w = self.satir_girdileri.get(alan)
+            if w is None:
+                continue
+            w.bind("<Return>", lambda e, a=alan: _ilerle(a))
+            w.bind("<KP_Enter>", lambda e, a=alan: _ilerle(a))
+            w.bind("<Shift-Return>", lambda e, a=alan: _ilerle(a, geri=True))
+
     def _satir_odakla(self, odak="miktar"):
         widget = self.satir_girdileri.get(odak) or self.satir_girdileri.get("birim_fiyat")
         if widget is None:
@@ -1099,8 +1188,8 @@ class AlisFaturasiDialog(tk.Toplevel):
             self.satir_girdileri["barkod"].insert(0, stok.barkod)
         if not self.satir_girdileri["miktar"].get().strip():
             self.satir_girdileri["miktar"].insert(0, "1")
-        if not self.satir_girdileri["iskonto_orani"].get().strip():
-            self.satir_girdileri["iskonto_orani"].insert(0, "0")
+        if not getattr(self, "_form_iskonto_1", None) and not self.satir_girdileri["iskonto_orani"].get().strip():
+            self._form_iskonto_yaz("0", "0", "0")
         if not self.satir_girdileri["kdv_orani"].get().strip():
             self.satir_girdileri["kdv_orani"].insert(0, "20")
         self.lot_oner()
@@ -1162,13 +1251,169 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.satir_tutar_guncelle()
         self.after_idle(lambda: self._satir_odakla("birim_fiyat"))
 
+    def _alis_satir_cift_tik(self, event=None):
+        if event is not None and hasattr(self, "satir_tablosu"):
+            try:
+                tablo = self.satir_tablosu
+                if tablo.identify_region(event.x, event.y) == "cell":
+                    kolon_id = tablo.identify_column(event.x)
+                    kolon_sira = int(kolon_id.replace("#", "")) - 1
+                    kolonlar = tablo["columns"]
+                    if 0 <= kolon_sira < len(kolonlar) and kolonlar[kolon_sira] == "iskonto":
+                        row = tablo.identify_row(event.y)
+                        if row:
+                            tablo.selection_set(row)
+                            self._duzenlenen_satir = int(row)
+                            self._alis_iskonto_ac()
+                            return "break"
+            except (tk.TclError, TypeError, ValueError):
+                pass
+        self.satir_secildi(event)
+
+    def _alis_satir_sag_tik(self, event):
+        row = self.satir_tablosu.identify_row(event.y)
+        if row:
+            self.satir_tablosu.selection_set(row)
+            try:
+                self._duzenlenen_satir = int(row)
+            except (TypeError, ValueError):
+                pass
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Çoklu İskonto Düzenle", command=self._alis_iskonto_ac)
+        menu.add_command(label="İskontoları Temizle", command=self._alis_iskonto_temizle)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _alis_iskonto_temizle(self):
+        idx = self._duzenlenen_satir
+        secim = self.satir_tablosu.selection()
+        if secim:
+            try:
+                idx = int(secim[0])
+            except (TypeError, ValueError):
+                pass
+        if idx is None or not (0 <= idx < len(self.satirlar)):
+            self._form_iskonto_yaz("0", "0", "0")
+            self.satir_tutar_guncelle()
+            return
+        self.satirlar[idx]["iskonto_orani"] = "0"
+        self.satirlar[idx]["iskonto_orani_2"] = "0"
+        self.satirlar[idx]["iskonto_orani_3"] = "0"
+        self.satir_formunu_doldur(self.satirlar[idx])
+        self._satir_listesini_yenile()
+
+    def _form_iskonto_yaz(self, i1, i2, i3):
+        from database.iskonto_hesap_service import iskonto_goster_metin
+
+        self._form_iskonto_2 = str(i2 or "0")
+        self._form_iskonto_3 = str(i3 or "0")
+        w = self.satir_girdileri.get("iskonto_orani")
+        if w is None:
+            return
+        metin = iskonto_goster_metin(i1, i2, i3, bos_goster="")
+        w.configure(state="normal")
+        w.delete(0, "end")
+        w.insert(0, metin)
+        # İlk oranı da sakla (kaydet için)
+        self._form_iskonto_1 = str(i1 or "0")
+
+    def _alis_kolon_ayarlari_ac(self):
+        from fatura_satir_kolon_prefs import (
+            EKRAN_ALIS,
+            FaturaSatirKolonAyarDialog,
+            ayarlari_yukle,
+            tabloya_uygula,
+        )
+
+        mevcut = getattr(self, "_alis_kolon_ayarlari", None) or ayarlari_yukle(EKRAN_ALIS)
+
+        def _uygula(ayar):
+            self._alis_kolon_ayarlari = tabloya_uygula(self.satir_tablosu, EKRAN_ALIS, ayar)
+
+        FaturaSatirKolonAyarDialog(
+            self,
+            EKRAN_ALIS,
+            mevcut,
+            on_uygula=_uygula,
+            baslik="Alış Faturası — Kolon Ayarları",
+        )
+
+    def _alis_iskonto_ac(self, _event=None):
+        from fatura_iskonto_ui import satir_iskontolari_ac
+
+        idx = self._duzenlenen_satir
+        secim = self.satir_tablosu.selection() if hasattr(self, "satir_tablosu") else ()
+        if secim:
+            try:
+                idx = int(secim[0])
+            except (TypeError, ValueError):
+                pass
+
+        if idx is not None and 0 <= idx < len(self.satirlar):
+            satir = dict(self.satirlar[idx])
+        else:
+            # Form taslağı
+            satir = {
+                alan: widget.get().strip()
+                for alan, widget in self.satir_girdileri.items()
+            }
+            satir["iskonto_orani"] = getattr(self, "_form_iskonto_1", satir.get("iskonto_orani") or "0")
+            satir["iskonto_orani_2"] = getattr(self, "_form_iskonto_2", "0")
+            satir["iskonto_orani_3"] = getattr(self, "_form_iskonto_3", "0")
+            # Görünen metin yüzde değilse form değerlerini kullan
+            try:
+                decimal(satir["iskonto_orani"] or 0, "İskonto", Decimal("0"))
+            except ValueError:
+                satir["iskonto_orani"] = getattr(self, "_form_iskonto_1", "0")
+
+        def _uygula(oranlar):
+            if idx is not None and 0 <= idx < len(self.satirlar):
+                self.satirlar[idx].update(oranlar)
+                self.satir_formunu_doldur(self.satirlar[idx])
+                self._satir_listesini_yenile()
+            else:
+                self._form_iskonto_yaz(
+                    oranlar["iskonto_orani"],
+                    oranlar["iskonto_orani_2"],
+                    oranlar["iskonto_orani_3"],
+                )
+                self.satir_tutar_guncelle()
+
+        satir_iskontolari_ac(
+            self,
+            belge_turu="Alış",
+            satir=satir,
+            fiyat_alani="birim_fiyat",
+            on_uygula=_uygula,
+            satir_kimlik=idx,
+        )
+        return "break"
+
     def satir_tutar_guncelle(self):
         try:
+            from database.iskonto_hesap_service import satir_iskonto_hesapla
+
             miktar = decimal(self.satir_girdileri["miktar"].get() or 0, "Miktar")
             fiyat = decimal(self.satir_girdileri["birim_fiyat"].get() or 0, "Birim fiyat")
-            iskonto = decimal(self.satir_girdileri["iskonto_orani"].get() or 0, "İskonto")
-            net = miktar * fiyat * (Decimal(1) - iskonto / Decimal(100))
-            self.satir_tutar.configure(text=f"Tutar: {para_goster(net)}")
+            kdv = decimal(self.satir_girdileri["kdv_orani"].get() or 0, "KDV")
+            i1 = getattr(self, "_form_iskonto_1", None)
+            if i1 is None:
+                try:
+                    i1 = decimal(self.satir_girdileri["iskonto_orani"].get() or 0, "İskonto")
+                except ValueError:
+                    i1 = Decimal("0")
+            h = satir_iskonto_hesapla(
+                miktar=miktar,
+                brut_birim_fiyat=fiyat,
+                iskonto1=i1,
+                iskonto2=getattr(self, "_form_iskonto_2", 0),
+                iskonto3=getattr(self, "_form_iskonto_3", 0),
+                kdv_orani=kdv,
+            )
+            self.satir_tutar.configure(text=f"Tutar: {para_goster(h['net_tutar'])}")
         except ValueError:
             self.satir_tutar.configure(text="Tutar: 0,00 TL")
 
@@ -1180,7 +1425,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 widget.configure(state="normal")
                 widget.delete(0, "end")
         self.satir_girdileri["kdv_orani"].insert(0, "20")
-        self.satir_girdileri["iskonto_orani"].insert(0, "0")
+        self._form_iskonto_yaz("0", "0", "0")
         self._duzenlenen_satir = None
         self.satir_tutar_guncelle()
         self.satir_tablosu.selection_remove(self.satir_tablosu.selection())
@@ -1188,6 +1433,8 @@ class AlisFaturasiDialog(tk.Toplevel):
     def satir_formunu_doldur(self, veri):
         self._satir_alanlarini_aktif_et()
         for alan, widget in self.satir_girdileri.items():
+            if alan == "iskonto_orani":
+                continue
             deger = veri.get(alan, "")
             if alan == "birim_fiyat" and deger in ("", None):
                 deger = veri.get("birim_alis_fiyati", "")
@@ -1199,6 +1446,11 @@ class AlisFaturasiDialog(tk.Toplevel):
                 widget.configure(state="normal")
                 widget.delete(0, "end")
                 widget.insert(0, "" if deger is None else str(deger))
+        self._form_iskonto_yaz(
+            veri.get("iskonto_orani") or 0,
+            veri.get("iskonto_orani_2") or 0,
+            veri.get("iskonto_orani_3") or 0,
+        )
         self.satir_tutar_guncelle()
 
     def satir_secildi(self, _event=None):
@@ -1223,9 +1475,12 @@ class AlisFaturasiDialog(tk.Toplevel):
         if not veri["urun_kodu"] or not veri["urun_adi"]:
             messagebox.showwarning("Eksik bilgi", "Ürün kodu ve ürün adı zorunludur.", parent=self)
             return
+        veri["iskonto_orani"] = getattr(self, "_form_iskonto_1", "0")
+        veri["iskonto_orani_2"] = getattr(self, "_form_iskonto_2", "0")
+        veri["iskonto_orani_3"] = getattr(self, "_form_iskonto_3", "0")
         try:
-            for alan in ("miktar", "birim_fiyat", "iskonto_orani", "kdv_orani"):
-                decimal(veri[alan] or 0, alan, Decimal("0"))
+            for alan in ("miktar", "birim_fiyat", "iskonto_orani", "iskonto_orani_2", "iskonto_orani_3", "kdv_orani"):
+                decimal(veri.get(alan) or 0, alan, Decimal("0"))
         except ValueError as hata:
             messagebox.showerror("Geçersiz satır", str(hata), parent=self)
             return
@@ -1261,17 +1516,29 @@ class AlisFaturasiDialog(tk.Toplevel):
                 pass
 
     def _satir_listesini_yenile(self):
+        from database.iskonto_hesap_service import iskonto_goster_metin, satir_iskonto_hesapla
+
         for item in self.satir_tablosu.get_children():
             self.satir_tablosu.delete(item)
         for sira, veri in enumerate(self.satirlar):
             miktar = decimal(veri.get("miktar", 0), "Miktar")
             fiyat = decimal(veri.get("birim_fiyat", veri.get("birim_alis_fiyati", 0)), "Fiyat")
-            iskonto = decimal(veri.get("iskonto_orani", 0), "İskonto")
-            kdv_orani = decimal(veri.get("kdv_orani", 0), "KDV")
-            net = miktar * fiyat * (Decimal(1) - iskonto / Decimal(100))
-            kdv = net * kdv_orani / Decimal(100)
+            h = satir_iskonto_hesapla(
+                miktar=miktar,
+                brut_birim_fiyat=fiyat,
+                iskonto1=veri.get("iskonto_orani", 0),
+                iskonto2=veri.get("iskonto_orani_2", 0),
+                iskonto3=veri.get("iskonto_orani_3", 0),
+                kdv_orani=veri.get("kdv_orani", 0),
+            )
             lot = veri.get("lot_no") or ""
             lot_girisi = veri.get("lot_girisi") or lot
+            isk_metin = iskonto_goster_metin(
+                veri.get("iskonto_orani", 0),
+                veri.get("iskonto_orani_2", 0),
+                veri.get("iskonto_orani_3", 0),
+                bos_goster="",
+            )
             self.satir_tablosu.insert("", "end", iid=str(sira), values=(
                 veri.get("barkod", ""),
                 veri["urun_kodu"],
@@ -1280,11 +1547,12 @@ class AlisFaturasiDialog(tk.Toplevel):
                 miktar,
                 veri.get("birim", "Adet"),
                 para_goster(fiyat),
-                f"{veri.get('iskonto_orani', 0)}%",
+                isk_metin,
                 f"{veri.get('kdv_orani', 0)}%",
+                para_goster(h["net_birim_fiyat"]),
                 lot,
                 lot_girisi,
-                para_goster(net + kdv),
+                para_goster(h["net_tutar"]),
                 veri.get("siparis_miktar", 0),
                 veri.get("irsaliye_miktar", 0),
                 miktar,
@@ -1313,6 +1581,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "miktar": veri.get("miktar", 0),
                 "birim_fiyat": veri.get("birim_fiyat", veri.get("birim_alis_fiyati", 0)),
                 "iskonto_orani": veri.get("iskonto_orani", 0),
+                "iskonto_orani_2": veri.get("iskonto_orani_2", 0),
+                "iskonto_orani_3": veri.get("iskonto_orani_3", 0),
                 "kdv_orani": veri.get("kdv_orani", 0),
             })
         toplam = AlisFaturasiService.toplam(satirlar_hesap)
@@ -1416,6 +1686,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "birim_fiyat": satir.birim_alis_fiyati,
                 "birim_alis_fiyati": satir.birim_alis_fiyati,
                 "iskonto_orani": satir.iskonto_orani,
+                "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
                 "kdv_orani": satir.kdv_orani,
                 "lot_no": "",
                 "lot_girisi": "",
@@ -1453,6 +1725,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "birim": satir.birim,
                 "birim_fiyat": satir.birim_fiyat,
                 "iskonto_orani": satir.iskonto_orani,
+                "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
                 "kdv_orani": satir.kdv_orani,
                 "lot_no": "",
                 "lot_girisi": "",
@@ -1506,6 +1780,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "birim_alis_fiyati": bf,
                 "birim_fiyat_doviz": bf_doviz or None,
                 "iskonto_orani": satir.iskonto_orani,
+                "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
                 "kdv_orani": satir.kdv_orani,
                 "lot_no": satir.lot_no or "",
                 "lot_girisi": satir.lot_girisi or satir.lot_no or "",
@@ -1766,7 +2042,7 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
                 "kaynak_fatura_satiri_id": satir.id,
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "miktar": satir.miktar, "birim": satir.birim, "birim_fiyat": satir.birim_fiyat,
-                "iskonto_orani": satir.iskonto_orani, "kdv_orani": satir.kdv_orani,
+                "iskonto_orani": satir.iskonto_orani, "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0, "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0, "kdv_orani": satir.kdv_orani,
             })
         self._satirlari_yenile()
 
@@ -1790,7 +2066,7 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
                 "kaynak_fatura_satiri_id": satir.kaynak_fatura_satiri_id,
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "miktar": satir.miktar, "birim": satir.birim, "birim_fiyat": satir.birim_fiyat,
-                "iskonto_orani": satir.iskonto_orani, "kdv_orani": satir.kdv_orani,
+                "iskonto_orani": satir.iskonto_orani, "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0, "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0, "kdv_orani": satir.kdv_orani,
             })
         self._satirlari_yenile()
 

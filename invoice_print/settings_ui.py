@@ -48,6 +48,7 @@ class FaturaYazdirmaAyarlariDialog(tk.Toplevel):
             ("alt_bilgi_goster", "Alt bilgi göster"),
             ("taslak_filigran_goster", "Taslak filigranı göster"),
             ("ara_toplam_devri_goster", "Ara toplam devri göster"),
+            ("satis_personeli_goster", "Fatura çıktısında satış personelini göster"),
         ]
         for i, (anahtar, etiket) in enumerate(secenekler, start=1):
             var = tk.BooleanVar(value=bool(self.ayar.get(anahtar, True)))

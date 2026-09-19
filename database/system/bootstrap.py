@@ -55,9 +55,19 @@ IZINLER: list[tuple[str, str, str]] = [
     ("stok_grup_toplu_geri_al", "Toplu grup eşleştirmeyi geri alma", "stok"),
     ("satis_goruntuleme", "Satış görüntüleme", "satis"),
     ("satis_duzenleme", "Satış düzenleme", "satis"),
+    (
+        "satis_personeli_degistirme",
+        "Satış faturasında başka satış personeli seçme",
+        "satis",
+    ),
     ("teklif_manuel_urun", "Teklif manuel ürün ekleme/düzenleme", "satis"),
     ("teklif_manuel_stok_donustur", "Manuel ürünü stok kartına dönüştürme", "satis"),
     ("hizli_satis_fiyat_degistirme", "Hızlı satış fiyat değiştirme", "satis"),
+    (
+        "satis_fiyat_degistirme",
+        "Satış faturasında birim fiyatı manuel değiştirme",
+        "satis",
+    ),
     ("hizli_satis_yuksek_iskonto", "Hızlı satış yüksek iskonto", "satis"),
     ("hizli_satis_acik_hesap", "Hızlı satış açık hesap / risk aşımı", "satis"),
     ("hizli_satis_iptal", "Hızlı satış iptal / iade", "satis"),
@@ -91,6 +101,8 @@ IZINLER: list[tuple[str, str, str]] = [
     ("banka_kredi_excel", "Kredi Excel içe/dışa aktarma", "finans"),
     ("cari_goruntuleme", "Cari görüntüleme", "cari"),
     ("cari_duzenleme", "Cari düzenleme", "cari"),
+    ("cari_yetkili_goruntule", "Cari yetkili görüntüleme", "cari"),
+    ("cari_yetkili_duzenle", "Cari yetkili düzenleme", "cari"),
     ("muhasebe_goruntuleme", "Genel muhasebe görüntüleme", "muhasebe"),
     ("muhasebe_fis_olusturma", "Muhasebe fişi oluşturma", "muhasebe"),
     ("muhasebe_fis_duzenleme", "Fiş düzenleme", "muhasebe"),
@@ -140,8 +152,12 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "banka_kredi_excel",
         "cari_goruntuleme",
         "cari_duzenleme",
+        "cari_yetkili_goruntule",
+        "cari_yetkili_duzenle",
         "stok_goruntuleme",
         "satis_goruntuleme",
+        "satis_personeli_degistirme",
+        "satis_fiyat_degistirme",
         "alis_goruntuleme",
         "alis_duzenleme",
         "alis_siparis_goruntuleme",
@@ -178,6 +194,7 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "excel_aktarim",
         "satis_goruntuleme",
         "satis_duzenleme",
+        "satis_fiyat_degistirme",
         "teklif_manuel_urun",
         "teklif_manuel_stok_donustur",
         "hizli_satis_fiyat_degistirme",
@@ -186,6 +203,8 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "hizli_satis_iptal",
         "cari_goruntuleme",
         "cari_duzenleme",
+        "cari_yetkili_goruntule",
+        "cari_yetkili_duzenle",
         "stok_goruntuleme",
         "finans_goruntuleme",
         "maliyet_gorma",
@@ -194,6 +213,7 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "donem_degistirme",
         "silme",
         "silinen_kayit_goruntuleme",
+        # satis_personeli_degistirme yok → yalnızca kendini seçebilir
     ],
     "DEPO": [
         "goruntuleme",
@@ -434,6 +454,7 @@ def sistem_baslat(
             _ayar(session, "son_firma_id", str(firma.id))
             _ayar(session, "tek_firma_otomatik_giris", "1")
             _ayar(session, "kurulum_tamam", "1")
+            _ayar(session, "maliyet_alti_satis_yasak", "0")
 
             # AŞAMA 6: yedek + sayısal snapshot (idempotent)
             from database.system.gecis import gecis_calistir

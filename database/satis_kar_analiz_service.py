@@ -240,7 +240,12 @@ class SatisKarAnalizService:
             for fatura in faturalar:
                 if depo_f and depo_f not in (fatura.depo or "").casefold():
                     continue
-                personel = fatura.created_by_full_name or fatura.created_by_username or ""
+                personel = (
+                    getattr(fatura, "sales_person_full_name", None)
+                    or fatura.created_by_full_name
+                    or fatura.created_by_username
+                    or ""
+                )
                 if personel_f and personel_f not in personel.casefold():
                     continue
                 cari = fatura.cari
@@ -288,12 +293,23 @@ class SatisKarAnalizService:
                     .options(
                         selectinload(SatisIadeFaturasi.satirlar),
                         selectinload(SatisIadeFaturasi.cari),
+                        selectinload(SatisIadeFaturasi.kaynak_fatura),
                     )
                 )
                 if filtre.cari_id:
                     iq = iq.where(SatisIadeFaturasi.cari_id == int(filtre.cari_id))
                 for iade in session.scalars(iq).all():
                     if depo_f and depo_f not in (iade.depo or "").casefold():
+                        continue
+                    kaynak = getattr(iade, "kaynak_fatura", None)
+                    personel = ""
+                    if kaynak is not None:
+                        personel = (
+                            getattr(kaynak, "sales_person_full_name", None)
+                            or getattr(kaynak, "created_by_full_name", None)
+                            or ""
+                        )
+                    if personel_f and personel_f not in personel.casefold():
                         continue
                     cari = iade.cari
                     mgrup = (cari.musteri_grubu if cari else "") or ""
@@ -325,7 +341,7 @@ class SatisKarAnalizService:
                                 alan="fifo_birim_maliyeti",
                                 yontem=filtre.maliyet_yontemi,
                                 dusuk_esik=filtre.dusuk_marj_esigi,
-                                personel="",
+                                personel=personel,
                                 isaret=-1,
                             )
                         )

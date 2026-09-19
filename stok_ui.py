@@ -71,11 +71,113 @@ def _birim_carpan(kayit) -> str:
 
 
 def para_goster(tutar):
+    if tutar is None:
+        return ""
     return f"{float(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def miktar_goster_tr(miktar, bos_sifir=False):
+    """Türkçe ondalık miktar; bos_sifir=True ise 0 boş string döner."""
+    if miktar is None:
+        return ""
+    try:
+        d = Decimal(str(miktar))
+    except Exception:
+        return str(miktar)
+    if bos_sifir and d == 0:
+        return ""
+    s = f"{d:,.4f}".rstrip("0").rstrip(".")
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def tarih_goster(tarih):
     return tarih.strftime("%d.%m.%Y")
+
+
+def _hareket_kolon_ayar_yolu() -> Path:
+    firma = (getattr(oturum, "firma_kodu", None) or "genel").strip() or "genel"
+    kullanici = (
+        getattr(oturum, "kullanici_adi", None)
+        or getattr(oturum, "username", None)
+        or getattr(oturum, "user_id", None)
+        or "kullanici"
+    )
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in f"{firma}_{kullanici}")
+    d = Path.home() / ".cin_muhasebe"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"stok_hareket_kolonlar_{safe}.json"
+
+
+_HAREKET_KOLON_VARSAYILAN = {
+    "tarih_saat": {"baslik": "Tarih - Saat", "genislik": 130, "gorunur": True},
+    "belge_turu": {"baslik": "Belge Türü", "genislik": 110, "gorunur": True},
+    "belge_no": {"baslik": "Belge No", "genislik": 110, "gorunur": True},
+    "cari": {"baslik": "Cari Kart", "genislik": 150, "gorunur": True},
+    "depo": {"baslik": "Depo", "genislik": 90, "gorunur": True},
+    "birim": {"baslik": "Birim", "genislik": 60, "gorunur": True},
+    "giris": {"baslik": "Giriş Miktarı", "genislik": 95, "gorunur": True},
+    "net_giris_fiyat": {"baslik": "Net Giriş Birim Fiyatı", "genislik": 130, "gorunur": True},
+    "cikis": {"baslik": "Çıkış Miktarı", "genislik": 95, "gorunur": True},
+    "net_cikis_fiyat": {"baslik": "Net Çıkış Birim Fiyatı", "genislik": 130, "gorunur": True},
+    "kalan": {"baslik": "Kalan Miktar", "genislik": 95, "gorunur": True},
+    "fifo": {"baslik": "FIFO Kalan Değeri", "genislik": 120, "gorunur": True},
+    "aciklama": {"baslik": "Açıklama", "genislik": 160, "gorunur": True},
+}
+
+_HAREKET_SAYISAL_KOLONLAR = {
+    "giris",
+    "net_giris_fiyat",
+    "cikis",
+    "net_cikis_fiyat",
+    "kalan",
+    "fifo",
+}
+
+
+def _net_fiyat_goster(deger, *, fiyat_yok: bool = False) -> str:
+    """Net birim fiyat gösterimi: kaynak yoksa boş/'Fiyat yok'; gerçek 0 → 0,00."""
+    if deger is None:
+        return "Fiyat yok" if fiyat_yok else ""
+    return para_goster(deger)
+
+
+def hareket_kolon_ayarlari_yukle() -> dict:
+    varsayilan = {k: dict(v) for k, v in _HAREKET_KOLON_VARSAYILAN.items()}
+    yol = _hareket_kolon_ayar_yolu()
+    if not yol.exists():
+        return varsayilan
+    try:
+        kayit = json.loads(yol.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return varsayilan
+    for anahtar, varsay in varsayilan.items():
+        gelen = kayit.get(anahtar) or {}
+        try:
+            genislik = int(gelen.get("genislik", varsay["genislik"]))
+        except (TypeError, ValueError):
+            genislik = varsay["genislik"]
+        varsay["genislik"] = max(40, min(genislik, 600))
+        if "gorunur" in gelen:
+            varsay["gorunur"] = bool(gelen["gorunur"])
+    # Kalan gizliyse FIFO da gizlensin (anlam kaybı)
+    if not varsayilan["kalan"]["gorunur"]:
+        varsayilan["fifo"]["gorunur"] = False
+    return varsayilan
+
+
+def hareket_kolon_ayarlari_kaydet(ayarlar: dict) -> None:
+    temiz = {}
+    for anahtar in _HAREKET_KOLON_VARSAYILAN:
+        cfg = ayarlar.get(anahtar) or {}
+        temiz[anahtar] = {
+            "genislik": int(cfg.get("genislik", _HAREKET_KOLON_VARSAYILAN[anahtar]["genislik"])),
+            "gorunur": bool(cfg.get("gorunur", True)),
+        }
+    if not temiz.get("kalan", {}).get("gorunur", True):
+        temiz.setdefault("fifo", {})["gorunur"] = False
+    _hareket_kolon_ayar_yolu().write_text(
+        json.dumps(temiz, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 class StokAciklamaDialog(tk.Toplevel):
@@ -1466,58 +1568,112 @@ class StokFiyatAnalizDialog(tk.Toplevel):
 
 
 class StokHareketleriDialog(tk.Toplevel):
+    """Stok hareket ekstresi: Giriş / Çıkış / Kalan + satır FIFO kalan değeri."""
+
     def __init__(self, parent, stok):
         super().__init__(parent)
         self.stok = stok
+        self._sonuc = None
+        self._evrak_aciliyor = False
         self.title(f"Stok Hareketleri — {stok.stok_kodu} / {stok.stok_adi}")
-        self.geometry("980x560")
-        self.minsize(820, 420)
+        self.geometry("1280x620")
+        self.minsize(980, 480)
         self.transient(parent)
         self.grab_set()
+        try:
+            self.configure(bg=ACIK_BG)
+            stok_stil_uygula(root=self)
+        except Exception:
+            pass
 
-        ust = ttk.Frame(self, padding=10)
+        ust = tk.Frame(self, bg=BEYAZ, padx=10, pady=8)
         ust.pack(fill="x")
-        ttk.Label(ust, text="Başlangıç (gg.aa.yyyy)").pack(side="left")
+        tk.Label(ust, text="Başlangıç", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
         self.baslangic = ttk.Entry(ust, width=12)
-        self.baslangic.pack(side="left", padx=(6, 12))
+        self.baslangic.pack(side="left", padx=(4, 10))
         self.baslangic.insert(0, tarih_goster(date.today().replace(month=1, day=1)))
-        ttk.Label(ust, text="Bitiş").pack(side="left")
+        tk.Label(ust, text="Bitiş", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
         self.bitis = ttk.Entry(ust, width=12)
-        self.bitis.pack(side="left", padx=(6, 12))
+        self.bitis.pack(side="left", padx=(4, 10))
         self.bitis.insert(0, tarih_goster(date.today()))
-        ttk.Button(ust, text="Listele", command=self.yenile).pack(side="left")
-        ttk.Button(ust, text="Tümü", command=self.tumunu_goster).pack(side="left", padx=6)
+        tk.Label(ust, text="Depo", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
+        self.depo_var = tk.StringVar(value="(Tümü)")
+        depolar = ["(Tümü)"]
+        try:
+            depolar += [d.ad for d in StokService.depolar(aktif_only=True)]
+        except Exception:
+            pass
+        self.depo_cb = ttk.Combobox(
+            ust, textvariable=self.depo_var, values=depolar, width=16, state="readonly"
+        )
+        self.depo_cb.pack(side="left", padx=(4, 10))
+        tk.Label(ust, text="Ara", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
+        self.arama = ttk.Entry(ust, width=14)
+        self.arama.pack(side="left", padx=(4, 10))
+        stok_tk_buton(ust, "Listele", self.yenile, rol="ara").pack(side="left")
+        stok_tk_buton(ust, "Tümü", self.tumunu_goster, rol="ikincil").pack(side="left", padx=6)
+        stok_tk_buton(ust, "Excel", self._excel_aktar, rol="ikincil").pack(side="right")
+        stok_tk_buton(ust, "PDF", self._pdf_aktar, rol="ikincil").pack(side="right", padx=(0, 6))
 
-        cerceve = ttk.Frame(self, padding=(10, 0))
+        cerceve = tk.Frame(self, bg=BEYAZ, padx=10)
         cerceve.pack(fill="both", expand=True)
-        kolonlar = ("tarih", "tur", "belge", "depo", "lot", "miktar", "maliyet", "tutar")
-        self.tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings")
-        for kolon, baslik, genislik in (
-            ("tarih", "Tarih", 90),
-            ("tur", "Hareket", 120),
-            ("belge", "Belge No", 120),
-            ("depo", "Depo", 110),
-            ("lot", "Lot", 120),
-            ("miktar", "Miktar", 90),
-            ("maliyet", "Birim Maliyet", 110),
-            ("tutar", "Tutar", 110),
-        ):
-            self.tablo.heading(kolon, text=baslik)
-            self.tablo.column(kolon, width=genislik, anchor="w")
+        self._kolon_ayarlari = hareket_kolon_ayarlari_yukle()
+        self._kolon_idler = tuple(self._kolon_ayarlari.keys())
+        self.tablo = ttk.Treeview(
+            cerceve, columns=self._kolon_idler, show="headings", selectmode="browse"
+        )
+        self._kolonlari_uygula()
         self.tablo.pack(side="left", fill="both", expand=True)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.tablo.yview)
         self.tablo.configure(yscrollcommand=kaydirma.set)
         kaydirma.pack(side="right", fill="y")
-        self.tablo.bind("<ButtonRelease-1>", self.evrak_ac)
+        xscroll = ttk.Scrollbar(self, orient="horizontal", command=self.tablo.xview)
+        self.tablo.configure(xscrollcommand=xscroll.set)
+        xscroll.pack(fill="x", padx=10)
+        self.tablo.tag_configure("giris", foreground=_HAREKET_GIRIS_FG)
+        self.tablo.tag_configure("cikis", foreground=_HAREKET_CIKIS_FG)
+        self.tablo.tag_configure("devri", foreground=LACIVERT)
+        self.tablo.tag_configure("notr", foreground=_HAREKET_NOTR_FG)
+        self.tablo.tag_configure("negatif", background="#FFCDD2", foreground="#B71C1C")
+        self.tablo.tag_configure("zebra", background="#F7F9FC")
+        self.tablo.bind("<Double-1>", self.evrak_ac)
+        self.tablo.bind("<ButtonRelease-1>", self._kolon_genislik_kaydet)
         self.tablo.bind("<Return>", self.evrak_ac)
 
-        self.ozet = ttk.Label(self, text="")
-        self.ozet.pack(anchor="w", padx=12, pady=(6, 0))
-        alt = ttk.Frame(self)
+        self.ozet = tk.Label(self, text="", bg=ACIK_BG, fg=LACIVERT, anchor="w", justify="left")
+        self.ozet.pack(anchor="w", padx=12, pady=(6, 0), fill="x")
+        alt = tk.Frame(self, bg=ACIK_BG)
         alt.pack(fill="x", padx=12, pady=10)
-        ttk.Button(alt, text="Evrakı Aç", command=self.evrak_ac).pack(side="left")
-        ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        stok_tk_buton(alt, "Evrakı Aç", self.evrak_ac, rol="ara").pack(side="left")
+        stok_tk_buton(alt, "Kapat", self.destroy, rol="ikincil").pack(side="right")
         self.yenile()
+
+    def _kolonlari_uygula(self):
+        ayar = self._kolon_ayarlari
+        for kolon in self._kolon_idler:
+            cfg = ayar[kolon]
+            baslik = cfg["baslik"]
+            sayisal = kolon in _HAREKET_SAYISAL_KOLONLAR
+            self.tablo.heading(kolon, text=baslik, anchor="e" if sayisal else "w")
+            gorunur = cfg.get("gorunur", True)
+            self.tablo.column(
+                kolon,
+                width=cfg["genislik"] if gorunur else 0,
+                minwidth=0 if not gorunur else 40,
+                stretch=gorunur,
+                anchor="e" if sayisal else "w",
+            )
+
+    def _kolon_genislik_kaydet(self, _event=None):
+        for kolon in self._kolon_idler:
+            try:
+                self._kolon_ayarlari[kolon]["genislik"] = int(self.tablo.column(kolon, "width"))
+            except Exception:
+                pass
+        try:
+            hareket_kolon_ayarlari_kaydet(self._kolon_ayarlari)
+        except Exception:
+            pass
 
     def _tarih_oku(self, widget):
         metin = widget.get().strip()
@@ -1531,6 +1687,8 @@ class StokHareketleriDialog(tk.Toplevel):
         self.yenile()
 
     def yenile(self):
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+
         for item in self.tablo.get_children():
             self.tablo.delete(item)
         try:
@@ -1542,32 +1700,142 @@ class StokHareketleriDialog(tk.Toplevel):
         if baslangic and bitis and baslangic > bitis:
             messagebox.showwarning("Tarih", "Başlangıç tarihi bitişten sonra olamaz.", parent=self)
             return
-        hareketler = StokService.stok_hareketleri(self.stok.id, baslangic, bitis)
-        giris = Decimal("0")
-        cikis = Decimal("0")
-        for sira, h in enumerate(hareketler):
+        depo = self.depo_var.get()
+        if depo in ("(Tümü)", ""):
+            depo = None
+        arama = self.arama.get().strip() or None
+        tum = baslangic is None and bitis is None
+        try:
+            self._sonuc = FiyatliStokEkstreService.hareket_ekstresi(
+                self.stok.id,
+                baslangic=baslangic,
+                bitis=bitis,
+                depo_adi=depo,
+                belge_arama=arama,
+                tum_gecmis=tum,
+            )
+        except Exception as exc:
+            messagebox.showerror("Hareketler", str(exc), parent=self)
+            return
+
+        maliyet_ok = self._sonuc.get("maliyet_gorunur", True)
+        for sira, s in enumerate(self._sonuc.get("satirlar") or []):
+            tarih = s.get("tarih")
+            saat = s.get("saat") or ""
+            tarih_metin = ""
+            if tarih:
+                tarih_metin = tarih_goster(tarih)
+                if saat:
+                    tarih_metin = f"{tarih_metin} {saat[:5]}"
+            cari = " ".join(
+                x for x in ((s.get("cari_kodu") or "").strip(), (s.get("cari_adi") or "").strip()) if x
+            )
+            yon = s.get("yon") or "notr"
+            tags = [yon]
+            if sira % 2 == 1:
+                tags.append("zebra")
+            kalan = s.get("kalan")
+            try:
+                if Decimal(str(kalan or 0)) < 0:
+                    tags = ["negatif"]
+            except Exception:
+                pass
+            fifo_txt = ""
+            if maliyet_ok and s.get("kalan_deger") is not None:
+                fifo_txt = para_goster(s.get("kalan_deger"))
+            elif s.get("fifo_hesaplanamadi"):
+                fifo_txt = "—"
+            aciklama = s.get("aciklama") or s.get("uyari") or ""
+            kaynak = (s.get("fiyat_kaynak") or "").strip()
+            if kaynak and kaynak not in aciklama:
+                aciklama = f"{aciklama} | {kaynak}".strip(" |") if aciklama else kaynak
+            try:
+                if Decimal(str(kalan or 0)) < 0 and "⚠" not in aciklama:
+                    aciklama = f"⚠ Negatif stok | {aciklama}".strip(" |")
+            except Exception:
+                pass
+            net_g = s.get("net_giris_birim_fiyat", s.get("giris_birim_fiyat"))
+            net_c = s.get("net_cikis_birim_fiyat", s.get("cikis_satis_fiyat"))
+            fiyat_yok = bool(s.get("fiyat_yok"))
             self.tablo.insert(
                 "",
                 "end",
-                iid=f"{sira}:{h['belge_no']}:{h['hareket_turu']}",
+                iid=f"{sira}:{s.get('belge_no')}:{s.get('hareket_turu')}",
                 values=(
-                    tarih_goster(h["tarih"]),
-                    h["hareket_turu"],
-                    h["belge_no"],
-                    h["depo"],
-                    h["lot_no"],
-                    h["miktar"],
-                    para_goster(h["birim_maliyet"]),
-                    para_goster(h["tutar"]),
+                    tarih_metin,
+                    s.get("belge_turu") or s.get("hareket_turu") or "",
+                    s.get("belge_no") or "",
+                    cari,
+                    s.get("depo") or "",
+                    s.get("birim") or self._sonuc.get("ana_birim") or "",
+                    miktar_goster_tr(s.get("giren"), bos_sifir=True),
+                    _net_fiyat_goster(
+                        net_g, fiyat_yok=fiyat_yok and yon == "giris" and net_g is None
+                    ),
+                    miktar_goster_tr(s.get("cikan"), bos_sifir=True),
+                    _net_fiyat_goster(
+                        net_c, fiyat_yok=fiyat_yok and yon == "cikis" and net_c is None
+                    ),
+                    miktar_goster_tr(kalan),
+                    fifo_txt,
+                    aciklama,
                 ),
+                tags=tuple(tags),
             )
-            if h["hareket_turu"] in ("GİRİŞ", "FATURA GİRİŞ", "İADE GİRİŞ"):
-                giris += h["miktar"]
-            elif h["hareket_turu"] in ("FATURA ÇIKIŞ", "ÇIKIŞ", "TRANSFER ÇIKIŞ"):
-                cikis += h["miktar"]
+        o = self._sonuc.get("ozet") or {}
+        uyari_txt = ""
+        if self._sonuc.get("uyarilar"):
+            uyari_txt = f"  ·  Uyarı: {len(self._sonuc['uyarilar'])}"
         self.ozet.configure(
-            text=f"{len(hareketler)} hareket | Toplam giriş: {giris} | Toplam çıkış: {cikis} | Satıra tıklayınca ilgili evrak açılır"
+            text=(
+                f"Kayıt: {len(self._sonuc.get('satirlar') or [])}  ·  "
+                f"Toplam Giriş: {miktar_goster_tr(o.get('giren_miktar'))}  ·  "
+                f"Toplam Çıkış: {miktar_goster_tr(o.get('cikan_miktar'))}  ·  "
+                f"Son Kalan: {miktar_goster_tr(o.get('kalan_miktar'))}  ·  "
+                f"Son FIFO: {para_goster(o.get('fifo_kalan_degeri') or o.get('kalan_stok_degeri'))}"
+                f"{uyari_txt}"
+            )
         )
+
+    def _excel_aktar(self):
+        if not self._sonuc:
+            messagebox.showinfo("Excel", "Önce listeleyin.", parent=self)
+            return
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+
+        yol = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"stok_hareket_{self.stok.stok_kodu}.xlsx",
+        )
+        if not yol:
+            return
+        try:
+            FiyatliStokEkstreService.excel_aktar(self._sonuc, yol)
+            messagebox.showinfo("Excel", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Excel", str(exc), parent=self)
+
+    def _pdf_aktar(self):
+        if not self._sonuc:
+            messagebox.showinfo("PDF", "Önce listeleyin.", parent=self)
+            return
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+
+        yol = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"stok_hareket_{self.stok.stok_kodu}.pdf",
+        )
+        if not yol:
+            return
+        try:
+            FiyatliStokEkstreService.pdf_aktar(self._sonuc, yol)
+            messagebox.showinfo("PDF", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("PDF", str(exc), parent=self)
 
     def evrak_ac(self, _event=None):
         if getattr(self, "_evrak_aciliyor", False):
@@ -1578,8 +1846,12 @@ class StokHareketleriDialog(tk.Toplevel):
         degerler = self.tablo.item(secim[0], "values")
         if not degerler or len(degerler) < 3:
             return
-        hareket_turu = degerler[1]
         belge_no = degerler[2]
+        iid = secim[0]
+        parts = str(iid).split(":")
+        hareket_turu = parts[2] if len(parts) >= 3 else degerler[1]
+        if (hareket_turu or "").upper() in ("DEVRİ", "DEVRI", "DEVİR"):
+            return
         bulunan = StokService.belge_bul(belge_no, hareket_turu)
         if not bulunan:
             messagebox.showinfo(
@@ -2211,7 +2483,7 @@ class StokKartiDialog(tk.Toplevel):
         hrk.pack(fill="both", expand=True, padx=12, pady=12)
         tk.Label(
             hrk,
-            text="Seçili stoğa ait hareketler. Belge satırına çift tıklayınca ilgili evrak açılır.",
+            text="Giriş / Çıkış / Kalan ve satır bazlı FIFO kalan değeri. Belge satırına çift tıklayınca evrak açılır.",
             bg=BEYAZ,
             fg=sktema.IKINCIL,
             font=sktema.font(9, root=self),
@@ -2220,14 +2492,31 @@ class StokKartiDialog(tk.Toplevel):
         hrk_ust.pack(fill="x", pady=(0, 6))
         tk.Label(hrk_ust, text="Başlangıç", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
         self.hrk_baslangic = ttk.Entry(hrk_ust, width=12)
-        self.hrk_baslangic.pack(side="left", padx=(4, 10))
+        self.hrk_baslangic.pack(side="left", padx=(4, 8))
         self.hrk_baslangic.insert(0, tarih_goster(date.today().replace(month=1, day=1)))
         tk.Label(hrk_ust, text="Bitiş", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
         self.hrk_bitis = ttk.Entry(hrk_ust, width=12)
-        self.hrk_bitis.pack(side="left", padx=(4, 10))
+        self.hrk_bitis.pack(side="left", padx=(4, 8))
         self.hrk_bitis.insert(0, tarih_goster(date.today()))
+        tk.Label(hrk_ust, text="Depo", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
+        self.hrk_depo_var = tk.StringVar(value="(Tümü)")
+        _depolar = ["(Tümü)"]
+        try:
+            _depolar += [d.ad for d in StokService.depolar(aktif_only=True)]
+        except Exception:
+            pass
+        self.hrk_depo_cb = ttk.Combobox(
+            hrk_ust, textvariable=self.hrk_depo_var, values=_depolar, width=14, state="readonly"
+        )
+        self.hrk_depo_cb.pack(side="left", padx=(4, 8))
+        tk.Label(hrk_ust, text="Ara", bg=BEYAZ, fg=sktema.IKINCIL).pack(side="left")
+        self.hrk_arama = ttk.Entry(hrk_ust, width=12)
+        self.hrk_arama.pack(side="left", padx=(4, 8))
         stok_tk_buton(hrk_ust, "Listele", self._hareketler_yukle, rol="ara").pack(side="left")
         stok_tk_buton(hrk_ust, "Tümü", self._hareketler_tumunu_goster, rol="ikincil").pack(
+            side="left", padx=(6, 0)
+        )
+        stok_tk_buton(hrk_ust, "Excel", self._hareketler_excel, rol="ikincil").pack(
             side="left", padx=(6, 0)
         )
         stok_tk_buton(
@@ -2241,34 +2530,39 @@ class StokKartiDialog(tk.Toplevel):
         )
         hrk_tablo_cer = tk.Frame(hrk, bg=BEYAZ)
         hrk_tablo_cer.pack(fill="both", expand=True)
+        self._hrk_kolon_ayarlari = hareket_kolon_ayarlari_yukle()
+        self._hrk_kolon_idler = tuple(self._hrk_kolon_ayarlari.keys())
         self.hareket_tablo = ttk.Treeview(
             hrk_tablo_cer,
-            columns=("tarih", "tur", "belge", "depo", "lot", "miktar", "maliyet", "tutar"),
+            columns=self._hrk_kolon_idler,
             show="headings",
             style="StokKart.Treeview",
             selectmode="browse",
         )
-        for kolon, baslik, w in (
-            ("tarih", "Tarih", 90),
-            ("tur", "Hareket", 120),
-            ("belge", "Belge No", 120),
-            ("depo", "Depo", 110),
-            ("lot", "Lot", 100),
-            ("miktar", "Miktar", 90),
-            ("maliyet", "Birim Maliyet", 110),
-            ("tutar", "Tutar", 110),
-        ):
-            ank = "e" if kolon in ("miktar", "maliyet", "tutar") else "w"
-            self.hareket_tablo.heading(kolon, text=baslik, anchor=ank)
-            self.hareket_tablo.column(kolon, width=w, anchor=ank)
+        for kolon in self._hrk_kolon_idler:
+            cfg = self._hrk_kolon_ayarlari[kolon]
+            sayisal = kolon in _HAREKET_SAYISAL_KOLONLAR
+            self.hareket_tablo.heading(kolon, text=cfg["baslik"], anchor="e" if sayisal else "w")
+            gorunur = cfg.get("gorunur", True)
+            self.hareket_tablo.column(
+                kolon,
+                width=cfg["genislik"] if gorunur else 0,
+                minwidth=0 if not gorunur else 40,
+                stretch=gorunur,
+                anchor="e" if sayisal else "w",
+            )
         hrk_scroll = ttk.Scrollbar(hrk_tablo_cer, orient="vertical", command=self.hareket_tablo.yview)
         self.hareket_tablo.configure(yscrollcommand=hrk_scroll.set)
         self.hareket_tablo.pack(side="left", fill="both", expand=True)
         hrk_scroll.pack(side="right", fill="y")
         self.hareket_tablo.tag_configure("giris", foreground=_HAREKET_GIRIS_FG)
         self.hareket_tablo.tag_configure("cikis", foreground=_HAREKET_CIKIS_FG)
+        self.hareket_tablo.tag_configure("devri", foreground=LACIVERT)
         self.hareket_tablo.tag_configure("notr", foreground=_HAREKET_NOTR_FG)
+        self.hareket_tablo.tag_configure("negatif", background="#FFCDD2", foreground="#B71C1C")
+        self.hareket_tablo.tag_configure("zebra", background="#F7F9FC")
         self.hareket_tablo.bind("<Double-1>", self._hareket_evrak_ac)
+        self.hareket_tablo.bind("<ButtonRelease-1>", self._hareket_kolon_genislik_kaydet)
         self.hareket_ozet_lbl = tk.Label(
             hrk, text="", bg=BEYAZ, fg=LACIVERT, font=sktema.font(9, root=self)
         )
@@ -2278,6 +2572,7 @@ class StokKartiDialog(tk.Toplevel):
         )
         self.hareket_bos_lbl.pack(anchor="w")
         self._hareketler_yuklendi = False
+        self._hareket_sonuc = None
         self.sekmeler.bind("<<NotebookTabChanged>>", self._sekme_degisti)
 
         # --- Notlar ---
@@ -2643,9 +2938,48 @@ class StokKartiDialog(tk.Toplevel):
             self.hrk_bitis.delete(0, "end")
         self._hareketler_yukle()
 
+    def _hareket_kolon_genislik_kaydet(self, _event=None):
+        if not hasattr(self, "hareket_tablo"):
+            return
+        for kolon in getattr(self, "_hrk_kolon_idler", ()):
+            try:
+                self._hrk_kolon_ayarlari[kolon]["genislik"] = int(
+                    self.hareket_tablo.column(kolon, "width")
+                )
+            except Exception:
+                pass
+        try:
+            hareket_kolon_ayarlari_kaydet(self._hrk_kolon_ayarlari)
+        except Exception:
+            pass
+
+    def _hareketler_excel(self):
+        if not getattr(self, "_hareket_sonuc", None):
+            messagebox.showinfo("Excel", "Önce hareketleri listeleyin.", parent=self)
+            return
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+
+        kod = getattr(self.stok, "stok_kodu", "stok") if self.stok else "stok"
+        yol = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"stok_hareket_{kod}.xlsx",
+        )
+        if not yol:
+            return
+        try:
+            FiyatliStokEkstreService.excel_aktar(self._hareket_sonuc, yol)
+            messagebox.showinfo("Excel", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Excel", str(exc), parent=self)
+
     def _hareketler_yukle(self):
         if not hasattr(self, "hareket_tablo"):
             return
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+        from ui_bg import arka_planda
+
         for item in self.hareket_tablo.get_children():
             self.hareket_tablo.delete(item)
         if not self.stok:
@@ -2653,6 +2987,7 @@ class StokKartiDialog(tk.Toplevel):
                 text="Hareketleri görmek için önce stok kartını kaydedin."
             )
             self.hareket_ozet_lbl.configure(text="")
+            self._hareket_sonuc = None
             return
         try:
             bas = None
@@ -2664,46 +2999,138 @@ class StokKartiDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Tarih", "Tarihleri gg.aa.yyyy formatında girin.", parent=self)
             return
-        try:
-            hareketler = StokService.stok_hareketleri(self.stok.id, bas, bit)
-        except Exception as exc:
+        depo = None
+        if hasattr(self, "hrk_depo_var"):
+            d = self.hrk_depo_var.get()
+            if d and d not in ("(Tümü)",):
+                depo = d
+        arama = None
+        if hasattr(self, "hrk_arama"):
+            arama = self.hrk_arama.get().strip() or None
+        tum = bas is None and bit is None
+        stok_id = int(self.stok.id)
+        self.hareket_bos_lbl.configure(text="Hareketler yükleniyor…")
+        self.hareket_ozet_lbl.configure(text="")
+        if getattr(self, "_hareket_yukle_token", None) is None:
+            self._hareket_yukle_token = 0
+        self._hareket_yukle_token += 1
+        token = self._hareket_yukle_token
+
+        def _is():
+            return FiyatliStokEkstreService.hareket_ekstresi(
+                stok_id,
+                baslangic=bas,
+                bitis=bit,
+                depo_adi=depo,
+                belge_arama=arama,
+                tum_gecmis=tum,
+            )
+
+        def _ok(sonuc):
+            if token != getattr(self, "_hareket_yukle_token", 0):
+                return
+            self._hareket_sonuc = sonuc
+            self._hareketler_tabloyu_doldur()
+
+        def _err(exc):
+            if token != getattr(self, "_hareket_yukle_token", 0):
+                return
             self.hareket_bos_lbl.configure(text=f"Hareketler yüklenemedi: {exc}")
+            self._hareket_sonuc = None
+
+        arka_planda(self, _is, on_ok=_ok, on_err=_err)
+
+    def _hareketler_tabloyu_doldur(self):
+        if not hasattr(self, "hareket_tablo") or not self._hareket_sonuc:
             return
-        giris = Decimal("0")
-        cikis = Decimal("0")
-        for sira, h in enumerate(hareketler):
-            tur = h["hareket_turu"]
-            tag = hareket_yon_tag(tur)
-            if tag == "giris":
-                giris += h["miktar"]
-            elif tag == "cikis":
-                cikis += h["miktar"]
+        for item in self.hareket_tablo.get_children():
+            self.hareket_tablo.delete(item)
+        maliyet_ok = self._hareket_sonuc.get("maliyet_gorunur", True)
+        satirlar = self._hareket_sonuc.get("satirlar") or []
+        for sira, s in enumerate(satirlar):
+            tarih = s.get("tarih")
+            saat = s.get("saat") or ""
+            tarih_metin = ""
+            if tarih:
+                tarih_metin = tarih_goster(tarih)
+                if saat:
+                    tarih_metin = f"{tarih_metin} {saat[:5]}"
+            cari = " ".join(
+                x for x in ((s.get("cari_kodu") or "").strip(), (s.get("cari_adi") or "").strip()) if x
+            )
+            yon = s.get("yon") or "notr"
+            tags = [yon]
+            if sira % 2 == 1:
+                tags.append("zebra")
+            kalan = s.get("kalan")
+            try:
+                if Decimal(str(kalan or 0)) < 0:
+                    tags = ["negatif"]
+            except Exception:
+                pass
+            fifo_txt = ""
+            if maliyet_ok and s.get("kalan_deger") is not None:
+                fifo_txt = para_goster(s.get("kalan_deger"))
+            elif s.get("fifo_hesaplanamadi"):
+                fifo_txt = "—"
+            aciklama = s.get("aciklama") or s.get("uyari") or ""
+            kaynak = (s.get("fiyat_kaynak") or "").strip()
+            if kaynak and kaynak not in aciklama:
+                aciklama = f"{aciklama} | {kaynak}".strip(" |") if aciklama else kaynak
+            try:
+                if Decimal(str(kalan or 0)) < 0 and "⚠" not in aciklama:
+                    aciklama = f"⚠ Negatif stok | {aciklama}".strip(" |")
+            except Exception:
+                pass
+            net_g = s.get("net_giris_birim_fiyat", s.get("giris_birim_fiyat"))
+            net_c = s.get("net_cikis_birim_fiyat", s.get("cikis_satis_fiyat"))
+            fiyat_yok = bool(s.get("fiyat_yok"))
             self.hareket_tablo.insert(
                 "",
                 "end",
-                iid=f"{sira}:{h['belge_no']}:{h['hareket_turu']}",
+                iid=f"{sira}:{s.get('belge_no')}:{s.get('hareket_turu')}",
                 values=(
-                    tarih_goster(h["tarih"]),
-                    h["hareket_turu"],
-                    h["belge_no"],
-                    h["depo"],
-                    h["lot_no"],
-                    h["miktar"],
-                    para_goster(h["birim_maliyet"]),
-                    para_goster(h["tutar"]),
+                    tarih_metin,
+                    s.get("belge_turu") or s.get("hareket_turu") or "",
+                    s.get("belge_no") or "",
+                    cari,
+                    s.get("depo") or "",
+                    s.get("birim") or self._hareket_sonuc.get("ana_birim") or "",
+                    miktar_goster_tr(s.get("giren"), bos_sifir=True),
+                    _net_fiyat_goster(
+                        net_g, fiyat_yok=fiyat_yok and yon == "giris" and net_g is None
+                    ),
+                    miktar_goster_tr(s.get("cikan"), bos_sifir=True),
+                    _net_fiyat_goster(
+                        net_c, fiyat_yok=fiyat_yok and yon == "cikis" and net_c is None
+                    ),
+                    miktar_goster_tr(kalan),
+                    fifo_txt,
+                    aciklama,
                 ),
-                tags=(tag,),
+                tags=tuple(tags),
             )
         self._hareketler_yuklendi = True
+        o = self._hareket_sonuc.get("ozet") or {}
         self.hareket_ozet_lbl.configure(
-            text=f"Kayıt: {len(hareketler)}  ·  Giriş: {giris}  ·  Çıkış: {cikis}"
+            text=(
+                f"Kayıt: {len(satirlar)}  ·  "
+                f"Toplam Giriş: {miktar_goster_tr(o.get('giren_miktar'))}  ·  "
+                f"Toplam Çıkış: {miktar_goster_tr(o.get('cikan_miktar'))}  ·  "
+                f"Son Kalan: {miktar_goster_tr(o.get('kalan_miktar'))}  ·  "
+                f"Son FIFO: {para_goster(o.get('fifo_kalan_degeri') or o.get('kalan_stok_degeri'))}"
+            )
         )
-        if hareketler:
+        if satirlar:
             self.hareket_bos_lbl.configure(text="")
         else:
             self.hareket_bos_lbl.configure(
                 text="Bu dönem için hareket yok. Tarih aralığını genişletin veya «Tümü»ne basın."
             )
+        uyarilar = self._hareket_sonuc.get("uyarilar") or []
+        kritik = [u for u in uyarilar if "uyuşmuyor" in u.lower() or "negatif" in u.lower()]
+        if kritik:
+            messagebox.showwarning("FIFO / mutabakat", "\n".join(kritik[:8]), parent=self)
         self._ozeti_yenile()
 
     def _hareket_evrak_ac(self, _event=None):
@@ -2717,7 +3144,11 @@ class StokKartiDialog(tk.Toplevel):
         degerler = self.hareket_tablo.item(secim[0], "values")
         if not degerler or len(degerler) < 3:
             return
-        hareket_turu, belge_no = degerler[1], degerler[2]
+        belge_no = degerler[2]
+        parts = str(secim[0]).split(":")
+        hareket_turu = parts[2] if len(parts) >= 3 else degerler[1]
+        if (hareket_turu or "").upper() in ("DEVRİ", "DEVRI", "DEVİR"):
+            return
         bulunan = StokService.belge_bul(belge_no, hareket_turu)
         if not bulunan:
             messagebox.showinfo(
@@ -3183,6 +3614,15 @@ class StokKartiDialog(tk.Toplevel):
             )
 
     def _stok_kodu_ara(self, _event=None):
+        if getattr(self, "_stok_kod_ara_after", None):
+            try:
+                self.after_cancel(self._stok_kod_ara_after)
+            except Exception:
+                pass
+        self._stok_kod_ara_after = self.after(300, self._stok_kodu_ara_calistir)
+
+    def _stok_kodu_ara_calistir(self):
+        self._stok_kod_ara_after = None
         metin = self.alanlar["stok_kodu"].get().strip()
         if not metin:
             self.alanlar["stok_kodu"]["values"] = ()
@@ -3193,6 +3633,15 @@ class StokKartiDialog(tk.Toplevel):
         self.alanlar["stok_kodu"]["values"] = tuple(self._stok_kod_eslesme.keys())
 
     def _stok_adi_ara(self, _event=None):
+        if getattr(self, "_stok_ad_ara_after", None):
+            try:
+                self.after_cancel(self._stok_ad_ara_after)
+            except Exception:
+                pass
+        self._stok_ad_ara_after = self.after(300, self._stok_adi_ara_calistir)
+
+    def _stok_adi_ara_calistir(self):
+        self._stok_ad_ara_after = None
         metin = self.alanlar["stok_adi"].get().strip()
         if len(metin) < 3:
             self.alanlar["stok_adi"]["values"] = ()

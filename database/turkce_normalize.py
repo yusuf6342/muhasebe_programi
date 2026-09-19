@@ -47,37 +47,79 @@ def turkce_normalize(metin: str | None) -> str:
 
 
 def arama_like_varyantlari(metin: str, max_n: int = 20) -> list[str]:
-    """Parametreli LIKE için %varyant% kalıpları (Türkçe harf alternatifleri)."""
+    """Parametreli LIKE için %varyant% kalıpları (Türkçe harf alternatifleri).
+
+    Kısa metinlerde birden fazla Türkçe harfi birlikte genişletir
+    (ör. 'cag' → 'çağ'), böylece aksansız yazım eşleşir.
+    """
+    from itertools import product
+
     q = (metin or "").strip()
     if not q:
         return []
-    adaylar: set[str] = {q, q.lower(), q.upper(), q.casefold(), turkce_normalize(q)}
-    # Her konumda tek harf genişletmesi
-    for i, ch in enumerate(q):
-        alts = _EXPAND.get(ch) or _EXPAND.get(ch.casefold())
-        if not alts:
-            continue
-        for a in alts:
-            adaylar.add(q[:i] + a + q[i + 1 :])
-    # Normalize edilmiş metinde de tek konum genişlet
-    nq = turkce_normalize(q)
-    for i, ch in enumerate(nq):
-        alts = _EXPAND.get(ch)
-        if not alts:
-            continue
-        for a in alts:
-            adaylar.add(nq[:i] + a + nq[i + 1 :])
-    out: list[str] = []
+    sirali: list[str] = []
     seen: set[str] = set()
-    for a in adaylar:
+
+    def _ekle(a: str) -> None:
         a = (a or "").strip()
         if not a or a in seen:
-            continue
+            return
         seen.add(a)
-        out.append(f"%{a}%")
-        if len(out) >= max_n:
-            break
-    return out
+        sirali.append(a)
+
+    _ekle(q)
+    _ekle(q.lower())
+    _ekle(q.upper())
+    _ekle(q.casefold())
+    nq = turkce_normalize(q)
+    _ekle(nq)
+
+    # Çoklu konum ürünü önce (aksansız → aksanlı eşleşme kritik)
+    if 1 < len(nq) <= 8:
+        secenekler: list[tuple[str, ...]] = []
+        genis_say = 0
+        for ch in nq:
+            alts = _EXPAND.get(ch)
+            if alts:
+                # Türkçe karakterleri öne al (SQL Unicode LIKE için)
+                tr_once = tuple(
+                    sorted(alts, key=lambda x: (x.casefold() == ch, x))
+                )
+                secenekler.append(tr_once)
+                genis_say += 1
+            else:
+                secenekler.append((ch,))
+        if 0 < genis_say <= 4:
+            for combo in product(*secenekler):
+                _ekle("".join(combo))
+                if len(sirali) >= max_n:
+                    break
+
+    # Tek konum genişletmeleri
+    if len(sirali) < max_n:
+        for i, ch in enumerate(q):
+            alts = _EXPAND.get(ch) or _EXPAND.get(ch.casefold())
+            if not alts:
+                continue
+            for a in alts:
+                _ekle(q[:i] + a + q[i + 1 :])
+                if len(sirali) >= max_n:
+                    break
+            if len(sirali) >= max_n:
+                break
+    if len(sirali) < max_n:
+        for i, ch in enumerate(nq):
+            alts = _EXPAND.get(ch)
+            if not alts:
+                continue
+            for a in alts:
+                _ekle(nq[:i] + a + nq[i + 1 :])
+                if len(sirali) >= max_n:
+                    break
+            if len(sirali) >= max_n:
+                break
+
+    return [f"%{a}%" for a in sirali[:max_n]]
 
 
 def kelime_basi_eslesme(alan: str, arama: str) -> bool:

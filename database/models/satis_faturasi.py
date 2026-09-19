@@ -67,6 +67,9 @@ class SatisFaturasi(Base):
     kasa_terminal: Mapped[str | None] = mapped_column(String(80), nullable=True)
     satis_baslangic: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     satis_bitis: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Satış personeli (sistem users.id — çapraz DB FK yok; ad anlık görüntüsü tutulur)
+    sales_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sales_person_full_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     cari = relationship("Cari")
     siparis = relationship("SatisSiparisi")
@@ -106,6 +109,8 @@ class SatisFaturasiSatiri(Base):
     birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Kullanıcı manuel birim fiyat girdiyse True — barkod tekrarında korunur
+    manuel_fiyat: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="satirlar")
 

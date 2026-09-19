@@ -49,8 +49,12 @@ class AlisFaturasiService:
             kayitlar = []
             for satir in satirlar:
                 fiyat = Decimal(str(satir.birim_fiyat or 0))
-                iskonto = Decimal(str(satir.iskonto_orani or 0))
-                net = fiyat - (fiyat * iskonto / Decimal("100"))
+                net = AlisFaturasiService._net_birim_maliyet(
+                    fiyat,
+                    Decimal(str(satir.iskonto_orani or 0)),
+                    getattr(satir, "iskonto_orani_2", 0) or 0,
+                    getattr(satir, "iskonto_orani_3", 0) or 0,
+                )
                 cari = satir.fatura.cari if satir.fatura else None
                 kayitlar.append({
                     "tarih": satir.fatura.fatura_tarihi if satir.fatura else None,
@@ -116,8 +120,13 @@ class AlisFaturasiService:
             )
 
     @staticmethod
-    def _net_birim_maliyet(birim_fiyat: Decimal, iskonto_orani: Decimal) -> Decimal:
-        return birim_fiyat - (birim_fiyat * iskonto_orani / Decimal("100"))
+    def _net_birim_maliyet(birim_fiyat: Decimal, iskonto_orani: Decimal, iskonto2=0, iskonto3=0) -> Decimal:
+        """İskonto sonrası (KDV öncesi) birim maliyet — üç kademeli."""
+        from database.iskonto_hesap_service import iskonto_carpani
+
+        return Decimal(str(birim_fiyat or 0)) * iskonto_carpani(
+            iskonto_orani, iskonto2, iskonto3
+        )
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None):
@@ -186,6 +195,8 @@ class AlisFaturasiService:
                     birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
                     birim_fiyat_doviz = Decimal("0")
                 iskonto_orani = decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0"))
+                iskonto_orani_2 = decimal(veri.get("iskonto_orani_2", 0), "İskonto 2", Decimal("0"))
+                iskonto_orani_3 = decimal(veri.get("iskonto_orani_3", 0), "İskonto 3", Decimal("0"))
                 irs_id, sip_id = veri.get("irsaliye_satiri_id"), veri.get("siparis_satiri_id")
                 if irs_id:
                     kaynak = session.get(AlisIrsaliyesiSatiri, int(irs_id))
@@ -208,7 +219,9 @@ class AlisFaturasiService:
                     kaynak.faturalanan_miktar += miktar
                     kaynak.fatura_belge_baglantisi = fatura.fatura_no
 
-                birim_maliyet = AlisFaturasiService._net_birim_maliyet(birim_fiyat, iskonto_orani)
+                birim_maliyet = AlisFaturasiService._net_birim_maliyet(
+                    birim_fiyat, iskonto_orani, iskonto_orani_2, iskonto_orani_3
+                )
                 # Stok kartı ALIŞ FİYATI: faturadaki net iskontolu fiyat (FIFO override'dan bağımsız)
                 net_alis_fiyati = birim_maliyet
                 if veri.get("fifo_birim_maliyeti") not in (None, "", 0, "0"):
@@ -244,6 +257,8 @@ class AlisFaturasiService:
                         birim=veri.get("birim") or "Adet",
                         birim_fiyat=birim_fiyat,
                         iskonto_orani=iskonto_orani,
+                        iskonto_orani_2=iskonto_orani_2,
+                        iskonto_orani_3=iskonto_orani_3,
                         kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0")),
                         fifo_birim_maliyeti=stok_girisi["birim_maliyet"],
                         birim_fiyat_doviz=birim_fiyat_doviz,
@@ -258,12 +273,17 @@ class AlisFaturasiService:
             fatura.tl_kdv = toplam_dict["kdv"]
             fatura.tl_genel_toplam = toplam
             if pb != "TRY":
+                from database.iskonto_hesap_service import iskonto_carpani
+
                 doviz_ara = Decimal("0")
                 for satir in fatura.satirlar:
                     if satir.birim_fiyat_doviz > 0:
-                        net = satir.birim_fiyat_doviz - (
-                            satir.birim_fiyat_doviz * satir.iskonto_orani / Decimal("100")
+                        carp = iskonto_carpani(
+                            satir.iskonto_orani,
+                            getattr(satir, "iskonto_orani_2", 0) or 0,
+                            getattr(satir, "iskonto_orani_3", 0) or 0,
                         )
+                        net = satir.birim_fiyat_doviz * carp
                         doviz_ara += satir.miktar * net
                 fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01"))
             if fatura.odeme_tutari > toplam:
@@ -377,16 +397,35 @@ class AlisFaturasiService:
 
     @staticmethod
     def toplam(satirlar):
+        from decimal import ROUND_HALF_UP
+
+        from database.iskonto_hesap_service import satir_net_brut_indirim
+
         ara = iskonto = kdv = Decimal("0")
+        kurus = Decimal("0.01")
         for satir in satirlar:
             get = satir.get if isinstance(satir, dict) else lambda a, d=0: getattr(satir, a, d)
-            miktar, fiyat = decimal(get("miktar"), "Miktar"), decimal(get("birim_fiyat"), "Birim fiyat")
-            indirim = miktar * fiyat * decimal(get("iskonto_orani", 0), "İskonto") / Decimal("100")
-            net = miktar * fiyat - indirim
-            ara += miktar * fiyat
-            iskonto += indirim
-            kdv += net * decimal(get("kdv_orani", 0), "KDV") / Decimal("100")
-        return {"ara_toplam": ara, "iskonto": iskonto, "kdv": kdv, "genel_toplam": ara - iskonto + kdv}
+            miktar = decimal(get("miktar"), "Miktar")
+            fiyat = decimal(get("birim_fiyat", get("birim_alis_fiyati", 0)), "Birim fiyat")
+            brut, indirim, net = satir_net_brut_indirim(
+                miktar,
+                fiyat,
+                get("iskonto_orani", 0),
+                get("iskonto_orani_2", 0),
+                get("iskonto_orani_3", 0),
+            )
+            net = net.quantize(kurus, rounding=ROUND_HALF_UP)
+            satir_kdv = (net * decimal(get("kdv_orani", 0), "KDV") / Decimal("100")).quantize(
+                kurus, rounding=ROUND_HALF_UP
+            )
+            ara += brut.quantize(kurus, rounding=ROUND_HALF_UP)
+            iskonto += indirim.quantize(kurus, rounding=ROUND_HALF_UP)
+            kdv += satir_kdv
+        ara = ara.quantize(kurus, rounding=ROUND_HALF_UP)
+        iskonto = iskonto.quantize(kurus, rounding=ROUND_HALF_UP)
+        kdv = kdv.quantize(kurus, rounding=ROUND_HALF_UP)
+        genel = (ara - iskonto + kdv).quantize(kurus, rounding=ROUND_HALF_UP)
+        return {"ara_toplam": ara, "iskonto": iskonto, "kdv": kdv, "genel_toplam": genel}
 
     @staticmethod
     def bakiye_ozeti(cari_id, eklenecek=Decimal("0"), vade=None, haric_fatura_no=None):

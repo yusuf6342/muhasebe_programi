@@ -15,6 +15,15 @@ import tkinter as tk
 
 from database.cari_service import CariService
 from database.stok_service import ALIŞ_FIYAT_ADLARI, SATIS_FIYAT_ADLARI
+from ui_tablo_siralama import (
+    dogal_belge_anahtar,
+    liste_sirala,
+    para_coz,
+    siralama_yonu_degistir,
+    tarih_coz,
+    treeview_basliklari_guncelle,
+    turkce_metin_anahtar,
+)
 from ui_takvim import takvim_butonu
 
 import cari_kart_tema as tema
@@ -307,6 +316,10 @@ class CariDialog(tk.Toplevel):
         self.ozet_kartlari = {}
         self.ozet_degerleri = {}
         self.hareket_tablosu = None
+        self._hareket_siralama_kolon: str | None = None
+        self._hareket_siralama_azalan: bool = False
+        self._hareket_kolon_basliklari: dict[str, str] = {}
+        self._hareket_kolon_hizalari: dict[str, str] = {}
         self._kirli = False
         self._snapshot = ""
         self._yukleniyor = False
@@ -541,8 +554,23 @@ class CariDialog(tk.Toplevel):
         ).pack(side="left", padx=(16, 0))
 
         self.musteri_grubu_secimini_hazirla()
+        self._yetkili_panelini_olustur(parent)
         self._adres_sekmelerini_olustur(parent)
         self._istihbarat_sekmelerini_olustur(parent)
+
+    def _yetkili_panelini_olustur(self, parent):
+        from cari_yetkili_ui import YetkiliPanel
+
+        self._yetkili_panel = YetkiliPanel(parent, dialog=self)
+        self._yetkili_panel.pack(fill="x", pady=(10, 4))
+
+    def yetkili_ozetini_guncelle(self):
+        panel = getattr(self, "_yetkili_panel", None)
+        if panel is not None:
+            if self.cari and getattr(self.cari, "id", None):
+                panel._cari_id = int(self.cari.id)
+            panel._yetki_durumu_ayarla()
+            panel.yenile()
 
     def _adres_sekmelerini_olustur(self, parent):
         from database.turkiye_il_ilce import iller
@@ -852,9 +880,10 @@ class CariDialog(tk.Toplevel):
             "bakiye": ("Kalan Bakiye", 115, "e", False),
             "gun": ("Gün", 55, "center", False),
         }
+        self._hareket_kolon_basliklari = {k: v[0] for k, v in kolon_ayar.items()}
+        self._hareket_kolon_hizalari = {k: v[2] for k, v in kolon_ayar.items()}
         for kolon in kolonlar:
             baslik, genislik, hiza, stretch = kolon_ayar[kolon]
-            tablo.heading(kolon, text=baslik, anchor=hiza)
             tablo.column(
                 kolon,
                 width=genislik,
@@ -862,6 +891,15 @@ class CariDialog(tk.Toplevel):
                 anchor=hiza,
                 stretch=stretch,
             )
+        treeview_basliklari_guncelle(
+            tablo,
+            kolonlar,
+            self._hareket_kolon_basliklari,
+            aktif_kolon=self._hareket_siralama_kolon,
+            azalan=self._hareket_siralama_azalan,
+            hizalar=self._hareket_kolon_hizalari,
+            komut_fn=self._hareket_sutun_sirala,
+        )
         tablo.tag_configure("tek", background=BEYAZ)
         tablo.tag_configure("cift", background=STRIPE)
         tablo.tag_configure(
@@ -913,6 +951,89 @@ class CariDialog(tk.Toplevel):
         self._hareket_iid_meta: dict = {}
         self._fatura_detay_cache: dict = {}
         self._hareket_yukleniyor = False
+
+    def _hareket_sutun_sirala(self, kolon: str) -> None:
+        """Sütun başlığı tıklanınca görünüm sırasını değiştirir (DB değişmez)."""
+        if kolon not in self._hareket_kolon_basliklari:
+            return
+        self._hareket_siralama_kolon, self._hareket_siralama_azalan = siralama_yonu_degistir(
+            self._hareket_siralama_kolon,
+            self._hareket_siralama_azalan,
+            kolon,
+        )
+        self._hareketleri_goster()
+
+    @staticmethod
+    def _hareket_siralama_anahtar(hareket: dict, kolon: str):
+        if kolon == "tarih":
+            return tarih_coz(hareket.get("tarih"))
+        if kolon == "tur":
+            return turkce_metin_anahtar(hareket.get("tur"))
+        if kolon == "belge":
+            return dogal_belge_anahtar(hareket.get("belge_no"))
+        if kolon == "aciklama":
+            return turkce_metin_anahtar(hareket.get("aciklama"))
+        if kolon == "pb":
+            return turkce_metin_anahtar(hareket.get("para_birimi"))
+        if kolon == "doviz":
+            return para_coz(hareket.get("doviz_tutari"))
+        if kolon == "kur":
+            return para_coz(hareket.get("kur"))
+        if kolon == "borc":
+            return para_coz(hareket.get("borc"))
+        if kolon == "alacak":
+            return para_coz(hareket.get("alacak"))
+        if kolon == "bakiye":
+            kalan = hareket.get("kalan")
+            if kalan is None:
+                return para_coz(
+                    Decimal(str(hareket.get("borc") or 0))
+                    - Decimal(str(hareket.get("alacak") or 0))
+                )
+            return para_coz(kalan)
+        if kolon == "gun":
+            t = tarih_coz(hareket.get("tarih"))
+            if t is None:
+                return None
+            return (date.today() - t).days
+        return None
+
+    @staticmethod
+    def _hareket_ikincil_anahtar(hareket: dict):
+        """Aynı değerde kararlı sıra: tarih, belge, hareket_id."""
+        t = hareket.get("tarih") or date.min
+        if isinstance(t, datetime):
+            t = t.date()
+        hid = hareket.get("hareket_id")
+        try:
+            hid_n = int(hid) if hid is not None else 0
+        except (TypeError, ValueError):
+            hid_n = 0
+        return (t, str(hareket.get("belge_no") or ""), hid_n)
+
+    def _hareket_listeyi_sirala(self, satirlar: list) -> list:
+        kolon = self._hareket_siralama_kolon
+        if not kolon or kolon not in self._hareket_kolon_basliklari:
+            return list(satirlar)
+        return liste_sirala(
+            satirlar,
+            anahtar_fn=lambda h: self._hareket_siralama_anahtar(h, kolon),
+            azalan=self._hareket_siralama_azalan,
+            ikincil_fn=self._hareket_ikincil_anahtar,
+        )
+
+    def _hareket_baslik_isaretlerini_guncelle(self) -> None:
+        if not self.hareket_tablosu or not self._hareket_kolon_basliklari:
+            return
+        treeview_basliklari_guncelle(
+            self.hareket_tablosu,
+            self._hareket_kolon_basliklari.keys(),
+            self._hareket_kolon_basliklari,
+            aktif_kolon=self._hareket_siralama_kolon,
+            azalan=self._hareket_siralama_azalan,
+            hizalar=self._hareket_kolon_hizalari,
+            komut_fn=self._hareket_sutun_sirala,
+        )
 
     # ─── Doldurma / dirty ─────────────────────────────────────────
     def _alanlari_doldur(self):
@@ -1463,9 +1584,12 @@ class CariDialog(tk.Toplevel):
             self.hareket_genel_toplam.configure(text="Genel: Borç: —  |  Alacak: —  |  Net: —")
             self.hareket_alt_toplam.configure(text="")
             return
+        # Toplamlar sıralamadan önce (filtre kümesi); sıralama yalnızca görünüm sırası
+        g_borc, g_alacak, g_net = self._hareket_tutar_toplamlari(genel_set)
+        gosterilecek = self._hareket_listeyi_sirala(gosterilecek)
+        self._hareket_baslik_isaretlerini_guncelle()
         for sira, hareket in enumerate(gosterilecek):
             self._hareket_satirini_ekle(hareket, tag="tek" if sira % 2 == 0 else "cift")
-        g_borc, g_alacak, g_net = self._hareket_tutar_toplamlari(genel_set)
         self.hareket_genel_toplam.configure(
             text=(
                 f"Genel: Borç: {para_goster(g_borc)}  |  "
@@ -1821,44 +1945,64 @@ class CariDialog(tk.Toplevel):
     def yenile(self):
         if not self.cari:
             return
+        if getattr(self, "_yenile_devam", False):
+            return
+        self._yenile_devam = True
         self._yukleniyor = True
         self._fatura_detay_cache = {}
         if hasattr(self, "_yukleniyor_lbl"):
             self._yukleniyor_lbl.configure(text="Yükleniyor…")
             self.update_idletasks()
-        try:
-            metrik = CariService.kart_ozet_metrikleri(self.cari.id)
-            hareketler = (metrik or {}).get("hareketler") or []
-            self._ozet_kartlarini_guncelle(metrik)
-            self._uyari_bandini_guncelle(metrik)
-            self._hareketler_cache = hareketler
-            turler = sorted(
-                {
-                    (h.get("tur") or "").strip()
-                    for h in hareketler
-                    if (h.get("tur") or "").strip()
-                }
-            )
-            ozel = (
-                "Tümü",
-                "Sadece Faturalar",
-                "Sadece Tahsilat/Ödeme",
-                "Sadece Stoklu Faturalar",
-            )
-            degerler = list(ozel) + [t for t in turler if t not in ozel]
-            mevcut = (
-                self.hareket_tur_filtre.get() if hasattr(self, "hareket_tur_filtre") else "Tümü"
-            )
-            self.hareket_tur_filtre.configure(values=degerler)
-            self.hareket_tur_filtre.set(mevcut if mevcut in degerler else "Tümü")
-            self._hareketleri_goster()
-            self._baslik_rozetlerini_guncelle()
-        except Exception as hata:
-            messagebox.showerror("Yenileme", f"Özet yüklenemedi:\n{hata}", parent=self)
-        finally:
+        cari_id = int(self.cari.id)
+
+        def _is():
+            return CariService.kart_ozet_metrikleri(cari_id)
+
+        def _ok(metrik):
+            try:
+                hareketler = (metrik or {}).get("hareketler") or []
+                self._ozet_kartlarini_guncelle(metrik)
+                self._uyari_bandini_guncelle(metrik)
+                self._hareketler_cache = hareketler
+                turler = sorted(
+                    {
+                        (h.get("tur") or "").strip()
+                        for h in hareketler
+                        if (h.get("tur") or "").strip()
+                    }
+                )
+                ozel = (
+                    "Tümü",
+                    "Sadece Faturalar",
+                    "Sadece Tahsilat/Ödeme",
+                    "Sadece Stoklu Faturalar",
+                )
+                degerler = list(ozel) + [t for t in turler if t not in ozel]
+                mevcut = (
+                    self.hareket_tur_filtre.get() if hasattr(self, "hareket_tur_filtre") else "Tümü"
+                )
+                self.hareket_tur_filtre.configure(values=degerler)
+                self.hareket_tur_filtre.set(mevcut if mevcut in degerler else "Tümü")
+                self._hareketleri_goster()
+                self._baslik_rozetlerini_guncelle()
+            except Exception as hata:
+                messagebox.showerror("Yenileme", f"Özet yüklenemedi:\n{hata}", parent=self)
+            finally:
+                self._yukleniyor = False
+                self._yenile_devam = False
+                if hasattr(self, "_yukleniyor_lbl"):
+                    self._yukleniyor_lbl.configure(text="")
+
+        def _err(hata):
             self._yukleniyor = False
+            self._yenile_devam = False
             if hasattr(self, "_yukleniyor_lbl"):
                 self._yukleniyor_lbl.configure(text="")
+            messagebox.showerror("Yenileme", f"Özet yüklenemedi:\n{hata}", parent=self)
+
+        from ui_bg import arka_planda
+
+        arka_planda(self, _is, on_ok=_ok, on_err=_err)
 
     # ─── Hızlı işlem açıcıları ────────────────────────────────────
     def stok_detayli_ekstre_ac(self):
@@ -2046,6 +2190,7 @@ class CariDialog(tk.Toplevel):
             messagebox.showerror("Kayıt yapılamadı", str(hata), parent=self)
             return False
         self.cari = self.result
+        self.yetkili_ozetini_guncelle()
         if self.cari is not None:
             kod_w = self.degerler.get("cari_kodu")
             if isinstance(kod_w, ttk.Entry):
