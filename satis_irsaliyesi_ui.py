@@ -71,12 +71,16 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.siparis = siparis
         self.result = None
         self.title("SATIŞ İRSALİYESİ")
-        self.geometry("1280x820")
-        self.minsize(980, 640)
-        try:
-            self.state("zoomed")
-        except tk.TclError:
-            pass
+        from ui_pencere import belge_penceresini_hazirla
+
+        belge_penceresini_hazirla(
+            self,
+            min_genislik=900,
+            min_yukseklik=520,
+            varsayilan_genislik=1280,
+            varsayilan_yukseklik=720,
+            maximize=True,
+        )
         self.transient(parent)
         self.grab_set()
 
@@ -522,7 +526,9 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
             self.satir_girdileri["birim_fiyat"].insert(0, tutar)
         if kdv is not None:
             self.satir_girdileri["kdv_orani"].delete(0, "end")
-            kdv_m = f"{Decimal(str(kdv)):f}".rstrip("0").rstrip(".") or "20"
+            from database.fatura_kdv_service import satir_kdv_metin_sayisal
+
+            kdv_m = satir_kdv_metin_sayisal(kdv)
             self.satir_girdileri["kdv_orani"].insert(0, kdv_m)
         if miktar is not None:
             self.satir_girdileri["miktar"].delete(0, "end")

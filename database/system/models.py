@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -96,6 +97,10 @@ class Company(SystemBase):
         String(3), default="TRY", nullable=False
     )
     fatura_seri: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Firma varsayılan KDV % (satış fatura yeni satır); soft ALTER ile de eklenir
+    varsayilan_kdv_orani: Mapped[Optional[float]] = mapped_column(
+        Numeric(7, 2), nullable=True, default=20
+    )
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     db_path: Mapped[str] = mapped_column(String(500), nullable=False)
     olusturma_tarihi: Mapped[datetime] = mapped_column(

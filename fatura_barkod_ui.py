@@ -295,22 +295,34 @@ def fatura_barkod_isle(dialog, ham_barkod: str | None = None) -> str:
         if durum == "gecersiz":
             _ses_hata()
             _durum_yaz(dialog, sonuc["mesaj"], hata=True)
-            messagebox.showwarning("Barkod", sonuc["mesaj"], parent=dialog)
+            _panel_bildirim(
+                dialog,
+                barcode=kod,
+                teknik=sonuc.get("mesaj") or "Geçersiz barkod.",
+            )
             return "break"
         if durum == "bulunamadi":
             _ses_hata()
             _durum_yaz(dialog, sonuc["mesaj"], hata=True)
-            _bulunamadi_dialog(dialog, kod)
+            _bulunamadi_panel(dialog, kod)
             return "break"
         if durum == "pasif":
             _ses_hata()
             _durum_yaz(dialog, sonuc["mesaj"], hata=True)
-            messagebox.showwarning("Pasif stok", sonuc["mesaj"], parent=dialog)
+            _panel_bildirim(
+                dialog,
+                barcode=kod,
+                teknik=sonuc.get("mesaj") or "Pasif stok.",
+            )
             return "break"
         if durum == "satis_kapali":
             _ses_hata()
             _durum_yaz(dialog, sonuc["mesaj"], hata=True)
-            messagebox.showwarning("Satışa kapalı", sonuc["mesaj"], parent=dialog)
+            _panel_bildirim(
+                dialog,
+                barcode=kod,
+                teknik=sonuc.get("mesaj") or "Satışa kapalı.",
+            )
             return "break"
         if durum == "coklu":
             kayit = _coklu_sec(dialog, sonuc.get("liste") or [])
@@ -329,10 +341,10 @@ def fatura_barkod_isle(dialog, ham_barkod: str | None = None) -> str:
     except ValueError as hata:
         _ses_hata()
         _durum_yaz(dialog, str(hata), hata=True)
-        messagebox.showwarning("Barkod", str(hata), parent=dialog)
+        _panel_bildirim(dialog, barcode=kod, teknik=str(hata))
     except Exception as hata:
         _ses_hata()
-        messagebox.showerror("Barkod", str(hata), parent=dialog)
+        _panel_bildirim(dialog, barcode=kod, teknik=f"Barkod işlenemedi: {hata}")
     finally:
         dialog._barkod_isleniyor = False
         _barkod_odak(dialog)
@@ -362,22 +374,55 @@ def _durum_yaz(dialog, metin: str, *, hata: bool = False) -> None:
         pass
 
 
-def _bulunamadi_dialog(dialog, barkod: str) -> None:
-    from database.access import yetki_var
+def _bulunamadi_panel(dialog, barkod: str) -> None:
+    """Modal yok — kalıcı Mesajlar paneline yaz; odak barkotta kalsın."""
+    from fatura_mesaj_paneli import (
+        _fatura_kimlik,
+        _session_key_al,
+        panel_mesaj_ekle,
+    )
+    from database.invoice_scan_message_service import barkod_bulunamadi_kaydet
 
-    mesaj = f"«{barkod}» barkoduna bağlı ürün bulunamadı."
-    if yetki_var("stok_duzenleme", "yeni_kayit"):
-        if messagebox.askyesno(
-            "Barkod bulunamadı",
-            mesaj + "\n\nStok listesini açmak ister misiniz?",
-            parent=dialog,
-        ):
-            try:
-                dialog.stok_listesi_ac()
-            except Exception:
-                pass
+    fid, fno = _fatura_kimlik(dialog)
+    session_key = _session_key_al(dialog)
+    kayit = barkod_bulunamadi_kaydet(
+        barcode=barkod,
+        session_key=session_key,
+        invoice_id=fid,
+        invoice_no=fno or None,
+    )
+    if kayit:
+        panel_mesaj_ekle(dialog, kayit)
     else:
-        messagebox.showwarning("Barkod bulunamadı", mesaj, parent=dialog)
+        panel_mesaj_ekle(
+            dialog,
+            None,
+            teknik_uyari=f"{barkod} nolu barkod bulunamadı. (kayıt yazılamadı)",
+        )
+
+
+def _panel_bildirim(dialog, *, barcode: str = "", teknik: str = "") -> None:
+    from fatura_mesaj_paneli import (
+        _fatura_kimlik,
+        _session_key_al,
+        panel_mesaj_ekle,
+    )
+    from database.invoice_scan_message_service import teknik_hata_kaydet
+
+    fid, fno = _fatura_kimlik(dialog)
+    kayit = teknik_hata_kaydet(
+        message_text=teknik,
+        barcode=barcode,
+        session_key=_session_key_al(dialog),
+        invoice_id=fid,
+        invoice_no=fno or None,
+    )
+    panel_mesaj_ekle(dialog, kayit, teknik_uyari=None if kayit else teknik)
+
+
+def _bulunamadi_dialog(dialog, barkod: str) -> None:
+    """Geriye uyum — artık panel kullanılır."""
+    _bulunamadi_panel(dialog, barkod)
 
 
 def _coklu_sec(dialog, liste: list[dict]) -> dict | None:
@@ -429,7 +474,8 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         depo = ""
 
     barkod_fiyat = _d(kayit.get("birim_fiyat"), Decimal("0"))
-    fiyat = _musteri_fiyat(dialog, kayit["stok_kodu"], barkod_fiyat)
+    stok_kodu = (kayit.get("stok_kodu") or "").strip()
+    fiyat = _musteri_fiyat(dialog, stok_kodu, barkod_fiyat)
     carpan = _d(kayit.get("carpan"), Decimal("1"))
     # Okutulan barkod birime bağlıysa satıra o birimle eklenir; miktar +1
     miktar_ekle = Decimal("1")
@@ -440,7 +486,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         # Paket fiyatı temel birim fiyatına çevrilmiş olabilir; paket birim fiyatı tercih
         paket = _d(kayit.get("paket_fiyat"), Decimal("0"))
         if paket > 0:
-            fiyat = _musteri_fiyat(dialog, kayit["stok_kodu"], paket)
+            fiyat = _musteri_fiyat(dialog, stok_kodu, paket)
 
     kdv = kayit.get("kdv_orani")
     if kdv is None:
@@ -449,11 +495,28 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         kdv = _d(kdv, Decimal("20"))
 
     iskonto1 = Decimal("0")
+    product_id = kayit.get("stok_id") or kayit.get("product_id")
+    try:
+        from fatura_urun_aktar_service import (
+            urun_kartindan_tanimlayicilar,
+            urun_secim_seridini_doldur,
+        )
+
+        satir_barkod, satir_kod, satir_ad = urun_kartindan_tanimlayicilar(
+            product_id=product_id,
+            stok_kodu=stok_kodu,
+            okutulan_barkod=okutulan_barkod or "",
+        )
+    except Exception:
+        satir_barkod = (okutulan_barkod or kayit.get("barkod") or "").strip()
+        satir_kod = stok_kodu
+        satir_ad = (kayit.get("stok_adi") or "").strip()
+
     # Stok kartı varsayılan iskontoları (varsa)
     try:
-        stoklar = StokService.stoklari_ara(kayit["stok_kodu"])
+        stoklar = StokService.stoklari_ara(satir_kod or stok_kodu)
         stok = next(
-            (s for s in stoklar if s.stok_kodu == kayit["stok_kodu"]), None
+            (s for s in stoklar if s.stok_kodu == (satir_kod or stok_kodu)), None
         )
         if stok is not None:
             iskonto1 = _d(getattr(stok, "iskonto_1", 0), Decimal("0"))
@@ -467,9 +530,10 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
     except Exception:
         pb = "TRY"
 
+    # Karttan gelen kod/ad; satır barkodu = okutulan (ek barkod dahil)
     sablon = {
-        "urun_kodu": kayit["stok_kodu"],
-        "urun_adi": kayit["stok_adi"],
+        "urun_kodu": satir_kod or stok_kodu,
+        "urun_adi": satir_ad or kayit.get("stok_adi") or "",
         "aciklama": "",
         "miktar": str(miktar_ekle),
         "birim": birim,
@@ -478,7 +542,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         "iskonto_orani_2": "0",
         "iskonto_orani_3": "0",
         "kdv_orani": str(kdv),
-        "barkod": okutulan_barkod or kayit.get("barkod") or "",
+        "barkod": satir_barkod or (okutulan_barkod or kayit.get("barkod") or ""),
         "lot_no": "",
         "lot_cikisi": "",
         "depo": depo,
@@ -491,6 +555,17 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         "ortalama_birim_maliyeti": "0",
         "agirlikli_ortalama_birim_maliyeti": "0",
     }
+
+    # Şeritte kısa süre kart bilgisi; satır eklenince temizlenip barkoda odaklanır
+    try:
+        urun_secim_seridini_doldur(
+            dialog,
+            sablon["barkod"],
+            sablon["urun_kodu"],
+            sablon["urun_adi"],
+        )
+    except Exception:
+        pass
 
     from fatura_satir_birim_service import temel_miktar
 
@@ -514,12 +589,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
         yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
-        talep = _urun_talep_toplami(
-            dialog, sablon["urun_kodu"], haric_idx=hedef_idx
-        ) + temel_miktar(yeni_miktar, mevcut.get("birim") or birim_satir, sablon["urun_kodu"])
-        _eksi_stok_kontrol(
-            dialog, kayit, depo, urun_kodu=sablon["urun_kodu"], proje_miktar_toplam=talep
-        )
+        # Stok yeterlilik kontrolü yalnızca fatura onayında yapılır
         mevcut["miktar"] = str(yeni_miktar)
         mevcut["temel_miktar"] = str(
             temel_miktar(yeni_miktar, mevcut.get("birim") or birim_satir, sablon["urun_kodu"])
@@ -529,10 +599,6 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         idx = hedef_idx
         artis = True
     else:
-        talep = _urun_talep_toplami(dialog, sablon["urun_kodu"]) + ek_temel
-        _eksi_stok_kontrol(
-            dialog, kayit, depo, urun_kodu=sablon["urun_kodu"], proje_miktar_toplam=talep
-        )
         sablon["temel_miktar"] = str(ek_temel)
         try:
             maliyetler = StokService.maliyetler(sablon["urun_kodu"], depo) if depo else {}
@@ -562,34 +628,29 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
     dialog._satir_listesini_yenile()
     dialog._toplamlari_guncelle()
     _satiri_vurgula(dialog, idx)
-    ad = kayit.get("stok_adi") or kayit.get("stok_kodu")
+    ad = sablon.get("urun_adi") or kayit.get("stok_adi") or kayit.get("stok_kodu")
     if artis:
         _durum_yaz(dialog, f"{ad} → miktar {dialog.satirlar[idx].get('miktar')}")
     else:
         _durum_yaz(dialog, f"Eklendi: {ad}")
-    # Arama alanlarını temizle; odak miktar hücresine (sürekli barkod için Enter zinciri sonunda barkoda döner)
-    if hasattr(dialog, "_urun_secim_alanlarini_temizle_ve_odakla"):
-        try:
-            for ad_alan in ("barkod", "urun_kodu", "urun_adi"):
-                w = (getattr(dialog, "satir_girdileri", None) or {}).get(ad_alan)
-                if w is not None:
-                    try:
-                        w.delete(0, "end")
-                    except tk.TclError:
-                        pass
-        except Exception:
-            pass
-    elif hasattr(dialog, "barkod_okut_entry"):
+    # Barkod kutusu temiz + odak barkotta kalsın (miktar hücresine gitme —
+    # aksi halde sonraki okutma miktar editörüne yazılır)
+    if hasattr(dialog, "barkod_okut_entry"):
         try:
             dialog.barkod_okut_entry.delete(0, "end")
         except Exception:
             pass
     try:
-        from fatura_satir_hucre_edit import satir_ilk_alana_odakla
-
-        satir_ilk_alana_odakla(dialog, idx)
+        for ad_alan in ("barkod", "urun_kodu", "urun_adi"):
+            w = (getattr(dialog, "satir_girdileri", None) or {}).get(ad_alan)
+            if w is not None:
+                try:
+                    w.delete(0, "end")
+                except tk.TclError:
+                    pass
     except Exception:
         pass
+    _barkod_odak(dialog)
 
 
 def _eksi_stok_kontrol(

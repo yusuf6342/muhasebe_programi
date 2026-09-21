@@ -39,6 +39,7 @@ def _tablo_baslik(vm: InvoicePrintViewModel) -> str:
             "<th class='c'>Miktar</th>",
             "<th class='c'>Birim</th>",
             "<th class='r'>B.Fiyat</th>",
+            "<th class='r'>Net B.F.</th>",
             "<th class='c'>İsk.</th>",
             "<th class='c'>KDV</th>",
             "<th class='r'>Net</th>",
@@ -61,13 +62,20 @@ def _tablo_satir(vm: InvoicePrintViewModel, s: InvoicePrintLine) -> str:
     h.append(f"<td class='ad'>{ad}</td>")
     if a.get("aciklama_goster", True):
         h.append(f"<td class='acik'>{_e(s.aciklama)}</td>")
+    isk_hucre = _e(s.iskonto_goster)
+    if getattr(s, "iskonto_tutar_goster", None) and s.iskonto_tutar_goster not in ("", "—"):
+        isk_hucre += f"<div class='kucuk'>{_e(s.iskonto_tutar_goster)}</div>"
+    kdv_hucre = _e(s.kdv_goster)
+    if getattr(s, "kdv_tutar_goster", None):
+        kdv_hucre += f"<div class='kucuk'>{_e(s.kdv_tutar_goster)}</div>"
     h.extend(
         [
             f"<td class='c'>{_e(s.miktar_goster)}</td>",
             f"<td class='c'>{_e(s.birim)}</td>",
             f"<td class='r'>{_e(s.birim_fiyat_goster)}</td>",
-            f"<td class='c'>{_e(s.iskonto_goster)}</td>",
-            f"<td class='c'>{_e(s.kdv_goster)}</td>",
+            f"<td class='r'>{_e(getattr(s, 'net_birim_fiyat_goster', '') or '')}</td>",
+            f"<td class='c'>{isk_hucre}</td>",
+            f"<td class='c'>{kdv_hucre}</td>",
             f"<td class='r'>{_e(s.net_goster)}</td>",
             f"<td class='r'>{_e(s.satir_toplam_goster)}</td>",
         ]
@@ -171,9 +179,9 @@ def _belge_meta(vm: InvoicePrintViewModel) -> str:
 def _toplamlar(vm: InvoicePrintViewModel) -> str:
     a = vm.ayarlar
     satirlar = [
-        f"<tr><td>Brüt Toplam</td><td class='r'>{_e(vm.brut_goster)}</td></tr>",
-        f"<tr><td>Satır İskontoları</td><td class='r'>{_e(vm.iskonto_goster)}</td></tr>",
-        f"<tr><td>Ara Toplam (Matrah)</td><td class='r'>{_e(vm.ara_goster)}</td></tr>",
+        f"<tr><td>Ara Toplam</td><td class='r'>{_e(vm.brut_goster)}</td></tr>",
+        f"<tr><td>Toplam İskonto</td><td class='r'>{_e(vm.iskonto_goster)}</td></tr>",
+        f"<tr><td>KDV Matrahı</td><td class='r'>{_e(vm.ara_goster)}</td></tr>",
     ]
     if a.get("kdv_dokum_goster", True):
         for k in vm.kdv_dokum:
@@ -184,9 +192,20 @@ def _toplamlar(vm: InvoicePrintViewModel) -> str:
             satirlar.append(
                 f"<tr><td>{oran} KDV Tutarı</td><td class='r'>{_e(k.kdv_goster)}</td></tr>"
             )
-    satirlar.append(f"<tr><td>Toplam KDV</td><td class='r'>{_e(vm.kdv_goster)}</td></tr>")
+    satirlar.append(f"<tr><td>KDV Toplamı</td><td class='r'>{_e(vm.kdv_goster)}</td></tr>")
+    fatura_brut = getattr(vm, "fatura_brut_goster", "") or ""
+    if fatura_brut:
+        satirlar.append(
+            f"<tr><td>Brüt Toplam</td><td class='r'>{_e(fatura_brut)}</td></tr>"
+        )
+    # İndirim/Masraf tutarı (yüzde yok); sıfırsa satır yok
+    if getattr(vm, "genel_islem_etiket", "") and getattr(vm, "genel_islem_goster", ""):
+        satirlar.append(
+            f"<tr><td>{_e(vm.genel_islem_etiket)}</td>"
+            f"<td class='r'>{_e(vm.genel_islem_goster)}</td></tr>"
+        )
     satirlar.append(
-        f"<tr class='genel'><td>Genel Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
+        f"<tr class='genel'><td>Net Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
     )
     if a.get("tahsil_kalan_goster", True):
         satirlar.append(

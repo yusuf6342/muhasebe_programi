@@ -140,9 +140,27 @@ class StokKartiImporter(BaseImporter):
             fiyatlar.append(("Alış Fiyatı", alis))
 
         barkod = veriler.get("barkod")
-        barkodlar = [{"barkod": barkod}] if barkod else None
+        barkodlar = [{"barkod": str(barkod)}] if barkod else []
+        try:
+            from database.stok_kodu_barkod_service import sync_primary_barcode_from_stock_code
 
-        stok = StokService.stok_kaydi(veriler, fiyatlar, barkodlar=barkodlar)
+            rapor = sync_primary_barcode_from_stock_code(
+                barkodlar,
+                veriler.get("stok_kodu"),
+                birim=veriler.get("birim") or "Adet",
+                exclude_stock_id=veriler.get("stok_id"),
+                ask_add=False,
+                check_duplicate=True,
+            )
+            # Mükerrerde otomatik ekleme yok; satır yine kaydedilir
+            barkodlar = rapor.get("barkodlar") or barkodlar
+            veriler["_barkod_mukerrer_atla"] = True
+        except Exception:
+            pass
+
+        stok = StokService.stok_kaydi(
+            veriler, fiyatlar, barkodlar=barkodlar or None
+        )
         return {
             "hedef_tablo": "stok_kartlari",
             "hedef_id": getattr(stok, "id", None) or sonuc.hedef_id,

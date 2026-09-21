@@ -55,6 +55,24 @@ def yuvarla_kurus(tutar, yon: str = "normal") -> Decimal:
     return d.quantize(_KURUS, rounding=ROUND_HALF_UP)
 
 
+def round_line_total(value) -> Decimal:
+    """Satır matrahını (KDV hariç) tam TL'ye ROUND_HALF_UP ile yuvarla.
+
+    0,50 ve üzeri yukarı, 0,49 ve altı aşağı. Negatif tutarlarda mutlak
+    değer üzerinden simetrik uygulanır (−324,50 → −325).
+    Float verilirse string üzerinden Decimal'e çevrilir (ikili hata yok).
+    """
+    if value is None or value == "":
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        v = value
+    else:
+        v = Decimal(str(value))
+    if v < 0:
+        return -((-v).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return v.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
 def satir_net_brut_indirim(miktar, brut_birim_fiyat, iskonto1=0, iskonto2=0, iskonto3=0):
     """Satır brüt, toplam iskonto tutarı, iskonto sonrası (KDV öncesi) satır tutarı."""
     miktar_d = decimal(miktar or 0, "Miktar", Decimal("0"))

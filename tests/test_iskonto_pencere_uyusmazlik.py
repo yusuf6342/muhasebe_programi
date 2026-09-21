@@ -118,15 +118,16 @@ class SenaryoMatrisiTest(unittest.TestCase):
 
 class SatisAlisOrtakMotorTest(unittest.TestCase):
     def test_ayni_sonuc(self):
+        # Ham ortak motor 3303,72; satış satır matrahı tam TL → 3304
         s_brut, s_ind, s_net = SatisFaturasiService._satir_net(70, 60, 10, 8, 5)
         a_net = AlisFaturasiService._net_birim_maliyet(
             Decimal("60"), Decimal("10"), 8, 5
         )
-        self.assertEqual(s_net.quantize(Decimal("0.01")), Decimal("3303.72"))
+        self.assertEqual(s_net, Decimal("3304"))
         self.assertEqual(
             (a_net * 70).quantize(Decimal("0.01")), Decimal("3303.72")
         )
-        self.assertEqual(s_ind.quantize(Decimal("0.01")), Decimal("896.28"))
+        self.assertEqual(s_ind.quantize(Decimal("0.01")), Decimal("896.00"))
 
 
 class DialogOranYukleTest(unittest.TestCase):

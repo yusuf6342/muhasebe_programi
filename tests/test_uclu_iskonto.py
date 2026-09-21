@@ -66,8 +66,10 @@ class UcluIskontoHesapTest(unittest.TestCase):
         self.assertEqual(iskonto_goster_metin(0, 0, 0, bos_goster=""), "")
 
     def test_satis_servis_uyum(self):
+        # Satış: ham 837,90 → satır matrahı tam TL (ROUND_HALF_UP) → 838
         brut, ind, net = SatisFaturasiService._satir_net(1, 1000, 10, 5, 2)
-        self.assertEqual(net.quantize(Decimal("0.01")), Decimal("837.90"))
+        self.assertEqual(net, Decimal("838"))
+        self.assertEqual(ind.quantize(Decimal("0.01")), Decimal("162.00"))
 
     def test_alis_toplam_uclu(self):
         toplam = AlisFaturasiService.toplam(
@@ -101,7 +103,8 @@ class UcluIskontoHesapTest(unittest.TestCase):
                 }
             ]
         )
-        self.assertEqual(toplam["genel_toplam"], Decimal("1005.48"))
+        # Matrah 838 TL; KDV %20 = 167,60; genel = 1005,60
+        self.assertEqual(toplam["genel_toplam"], Decimal("1005.60"))
 
     def test_alis_net_birim_maliyet(self):
         net = AlisFaturasiService._net_birim_maliyet(

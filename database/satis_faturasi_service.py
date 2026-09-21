@@ -23,6 +23,93 @@ TAHSILAT_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLA
 
 class SatisFaturasiService:
     @staticmethod
+    def _miktar_metin(deger: Decimal) -> str:
+        d = Decimal(str(deger or 0))
+        if d == d.to_integral_value():
+            return str(int(d))
+        return f"{d:f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _onay_oncesi_stok_yeterlilik(session, fatura) -> None:
+        """Onay öncesi depo stokunu ürün bazında toplu kontrol et (çıkış yok)."""
+        from sqlalchemy import func
+
+        from database.models.stok import Depo, StokKarti, StokLotu
+        from fatura_satir_birim_service import temel_miktar
+
+        depo_adi = (fatura.depo or "").strip()
+        if not depo_adi:
+            raise ValueError("Fatura onaylanamadı. Depo seçilmemiş.")
+
+        depo = session.scalar(select(Depo).where(Depo.ad == depo_adi))
+        if not depo:
+            raise ValueError(f"Fatura onaylanamadı. {depo_adi} deposu bulunamadı.")
+
+        # urun_kodu -> {talep, ad}
+        talepler: dict[str, dict[str, Any]] = {}
+        for satir in fatura.satirlar:
+            skip_stok = False
+            if fatura.irsaliye_id and getattr(satir, "irsaliye_satiri_id", None):
+                from database.models.satis_irsaliyesi import SatisIrsaliyesi
+                from database.satis_irsaliyesi_service import stok_cikis_gerekli
+
+                ir = session.get(SatisIrsaliyesi, fatura.irsaliye_id)
+                if ir is not None and not stok_cikis_gerekli(ir):
+                    skip_stok = True
+            if skip_stok:
+                continue
+            kod = (satir.urun_kodu or "").strip()
+            if not kod:
+                continue
+            tm = temel_miktar(
+                satir.miktar,
+                getattr(satir, "birim", None) or "Adet",
+                kod,
+            )
+            if kod not in talepler:
+                talepler[kod] = {
+                    "talep": Decimal("0"),
+                    "ad": (satir.urun_adi or kod).strip() or kod,
+                }
+            talepler[kod]["talep"] += Decimal(str(tm))
+
+        if not talepler:
+            return
+
+        hatalar: list[str] = []
+        for kod, bil in sorted(talepler.items(), key=lambda x: x[1]["ad"].casefold()):
+            stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+            if not stok:
+                hatalar.append(
+                    f"{bil['ad']}\n"
+                    f"Stok kartı bulunamadı ({kod})."
+                )
+                continue
+            birim = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
+            mevcut = session.scalar(
+                select(func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).where(
+                    StokLotu.stok_id == stok.id,
+                    StokLotu.depo_id == depo.id,
+                    StokLotu.kalan_miktar > 0,
+                )
+            )
+            mevcut = Decimal(str(mevcut or 0))
+            talep = bil["talep"]
+            if mevcut < talep:
+                eksik = talep - mevcut
+                hatalar.append(
+                    f"{bil['ad']}\n"
+                    f"Mevcut: {SatisFaturasiService._miktar_metin(mevcut)} {birim}\n"
+                    f"Faturadaki toplam miktar: {SatisFaturasiService._miktar_metin(talep)} {birim}\n"
+                    f"Eksik: {SatisFaturasiService._miktar_metin(eksik)} {birim}"
+                )
+        if hatalar:
+            raise ValueError(
+                "Fatura onaylanamadı. Aşağıdaki ürünlerde stok yetersiz:\n\n"
+                + "\n\n".join(hatalar)
+            )
+
+    @staticmethod
     def _doviz_alanlarini_yaz(fatura, veriler: dict, toplam: dict) -> None:
         pb = (veriler.get("para_birimi") or "TRY").upper()
         fatura.para_birimi = pb
@@ -35,7 +122,48 @@ class SatisFaturasiService:
         fatura.doviz_ara_toplam = decimal(veriler.get("doviz_ara_toplam", 0), "Döviz ara toplam", Decimal("0"))
         fatura.tl_matrah = toplam["ara_toplam"] - toplam["iskonto"]
         fatura.tl_kdv = toplam["kdv"]
-        fatura.tl_genel_toplam = toplam["genel_toplam"]
+        # Satır toplamı = muhasebe Net (dağıtım sonrası fiyatlar satırlarda)
+        from database.fatura_genel_toplam_service import islem_turunu_normalize, netten_islem, kurus
+
+        satir_net = kurus(toplam["genel_toplam"])
+        brut_iz = (
+            decimal(veriler.get("tl_brut_toplam"), "Brüt toplam", Decimal("0"))
+            if veriler.get("tl_brut_toplam") is not None
+            else satir_net
+        )
+        hedef_net = (
+            decimal(veriler.get("tl_genel_toplam"), "Net toplam", Decimal("0"))
+            if veriler.get("tl_genel_toplam") is not None
+            else satir_net
+        )
+        # Dağıtım yapılmışsa satır toplamı Net'tir; brüt/işlem hesap izi
+        if abs(kurus(brut_iz) - satir_net) > Decimal("0.009"):
+            try:
+                iz = netten_islem(brut_iz, satir_net)
+            except ValueError:
+                iz = {
+                    "brut_toplam": brut_iz,
+                    "islem_turu": islem_turunu_normalize(veriler.get("genel_islem_turu")),
+                    "islem_orani": decimal(veriler.get("genel_islem_orani", 0), "oran", Decimal("0")),
+                    "islem_tutari": decimal(veriler.get("genel_islem_tutari", 0), "tutar", Decimal("0")),
+                    "net_toplam": satir_net,
+                }
+            fatura.tl_brut_toplam = iz["brut_toplam"]
+            fatura.genel_islem_turu = iz["islem_turu"] or None
+            fatura.genel_islem_orani = iz["islem_orani"]
+            fatura.genel_islem_tutari = iz["islem_tutari"]
+            fatura.tl_genel_toplam = satir_net
+        else:
+            fatura.tl_brut_toplam = satir_net
+            fatura.genel_islem_turu = None
+            fatura.genel_islem_orani = Decimal("0")
+            fatura.genel_islem_tutari = Decimal("0")
+            fatura.tl_genel_toplam = satir_net
+        # İstemci hedefi ile satır neti sapmasın
+        if abs(kurus(hedef_net) - satir_net) > Decimal("0.01"):
+            raise ValueError(
+                f"Fatura sağlaması: satır toplamı ({satir_net}) hedef Net ({hedef_net}) ile uyuşmuyor."
+            )
 
     @staticmethod
     def _satir_doviz_alanlari(veri: dict, kur: Decimal, para_birimi: str) -> dict:
@@ -146,12 +274,18 @@ class SatisFaturasiService:
                     "islem_saati": f.islem_saati or "",
                     "vade_tarihi": f.vade_tarihi,
                     "musteri": f.cari.unvan if f.cari else "",
+                    "cari_kodu": (f.cari.cari_kodu if f.cari else "") or "",
+                    "cari_ad": f.cari.unvan if f.cari else "",
+                    "vergi_no": (getattr(f.cari, "vergi_no", None) or "") if f.cari else "",
                     "siparis_no": f.siparis.siparis_no if f.siparis else "",
                     "irsaliye_no": f.irsaliye.irsaliye_no if f.irsaliye else "",
                     "depo": f.depo or "",
                     "genel_toplam": genel,
+                    "matrah": Decimal(str(getattr(f, "tl_matrah", 0) or 0)),
+                    "kdv": Decimal(str(getattr(f, "tl_kdv", 0) or 0)),
                     "tahsilat_tutari": tahsilat,
                     "durum": f.durum or "",
+                    "para_birimi": (getattr(f, "para_birimi", None) or "TRY"),
                     "onaylandi": bool(getattr(f, "onaylandi", False)),
                     "created_by_full_name": getattr(f, "created_by_full_name", None),
                     "created_by_user_id": getattr(f, "created_by_user_id", None),
@@ -163,6 +297,8 @@ class SatisFaturasiService:
                     "tahsilat_sekli": getattr(f, "tahsilat_sekli", None),
                     "sales_person_id": getattr(f, "sales_person_id", None),
                     "sales_person_full_name": getattr(f, "sales_person_full_name", None),
+                    "olusturma_tarihi": getattr(f, "olusturma_tarihi", None),
+                    "document_type": "SALES_INVOICE",
                 })
             return sonuc
 
@@ -250,7 +386,17 @@ class SatisFaturasiService:
             raise ValueError("En az bir fatura satırı ekleyin.")
         from database.satis_personeli import secimi_dogrula
 
-        sp_id, sp_ad = secimi_dogrula(veriler.get("sales_person_id"))
+        # UI satış personeli alanını kaldırdı; yeni faturalarda boş bırakılabilir.
+        # Mevcut faturalardaki değer (pasif personel dahil) korunur.
+        sp_raw = veriler.get("sales_person_id")
+        if not sp_raw:
+            sp_id, sp_ad = None, None
+        else:
+            try:
+                sp_id, sp_ad = secimi_dogrula(sp_raw, zorunlu=False)
+            except ValueError:
+                sp_id = int(sp_raw)
+                sp_ad = (veriler.get("sales_person_full_name") or "").strip() or None
         tahsilat_verileri = list(tahsilat_verileri or [])
         with get_session() as session:
             yeni = False
@@ -349,6 +495,11 @@ class SatisFaturasiService:
                         tl_birim_fiyat=doviz_satir["tl_birim_fiyat"],
                         tl_tutar=doviz_satir["tl_tutar"],
                         manuel_fiyat=bool(veri.get("manuel_fiyat")),
+                        dagitima_kapali=bool(
+                            veri.get("dagitima_kapali")
+                            or veri.get("fiyat_kilitli")
+                            or veri.get("distribution_locked")
+                        ),
                     )
                 )
 
@@ -393,8 +544,9 @@ class SatisFaturasiService:
                     )
 
             toplam_dict = SatisFaturasiService.toplam(fatura.satirlar)
-            toplam = toplam_dict["genel_toplam"]
             SatisFaturasiService._doviz_alanlarini_yaz(fatura, veriler, toplam_dict)
+            # Muhasebe tutarı = Net (tl_genel_toplam)
+            toplam = Decimal(str(fatura.tl_genel_toplam or 0))
             if pb != "TRY" and fatura.doviz_ara_toplam <= 0:
                 doviz_ara = Decimal("0")
                 for satir in fatura.satirlar:
@@ -533,6 +685,9 @@ class SatisFaturasiService:
             tarih = fatura.fatura_tarihi
             if tarih > date.today():
                 raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
+
+            # Tüm satırlar için stok yeterlilik (ürün bazında toplu) — çıkıştan önce
+            SatisFaturasiService._onay_oncesi_stok_yeterlilik(session, fatura)
 
             for satir in fatura.satirlar:
                 # İrsaliyeden stok çıkışı yapılmışsa fatura satırında tekrar çıkış yapma
@@ -820,10 +975,24 @@ class SatisFaturasiService:
 
     @staticmethod
     def _satir_net(miktar, fiyat, iskonto1=0, iskonto2=0, iskonto3=0):
-        """Üç kademeli (ardışık) iskonto ile net tutar (ortak motor)."""
-        from database.iskonto_hesap_service import satir_net_brut_indirim
+        """Üç kademeli iskonto sonrası KDV matrahı; satır tutarı tam TL (ROUND_HALF_UP).
 
-        return satir_net_brut_indirim(miktar, fiyat, iskonto1, iskonto2, iskonto3)
+        Birim fiyat / miktar hassasiyeti korunur; yuvarlama yalnızca satır
+        matrahına uygulanır. İskonto yoksa brüt de aynı tam TL değerine çekilir
+        (ara toplam = matrah). İskonto varsa brüt ham kalır, fark indirimde.
+        """
+        from database.iskonto_hesap_service import round_line_total, satir_net_brut_indirim
+
+        brut, indirim, net = satir_net_brut_indirim(
+            miktar, fiyat, iskonto1, iskonto2, iskonto3
+        )
+        net = round_line_total(net)
+        if indirim == 0:
+            brut = net
+            indirim = Decimal("0")
+        else:
+            indirim = brut - net
+        return brut, indirim, net
 
     @staticmethod
     def urun_satis_hareketleri(urun_kodu: str, cari_id: int | None = None) -> list[dict[str, Any]]:
@@ -899,12 +1068,22 @@ class SatisFaturasiService:
 
     @staticmethod
     def bakiye_ozeti(cari_id, eklenecek=Decimal("0"), vade=None, haric_fatura_no=None):
-        """Cari açık bakiyesi + isteğe bağlı bu fatura açığı.
+        """Cari net bakiye + isteğe bağlı bu fatura açığı (müşteri listesi ile aynı kaynak).
 
-        haric_fatura_no verilirse o fatura bakiyeden düşülür (düzenleme ekranı için).
-        eklenecek: bu faturanın (yeniden hesaplanan) açık tutarı → yeni bakiye.
+        haric_fatura_no: düzenlenen fatura belge no (Eski Bakiye'de çift sayım yok).
+        eklenecek: bu faturanın açık tutarı → Yeni Bakiye = Eski + eklenecek.
         """
+        from database.cari_bakiye_service import fatura_eski_yeni_bakiye
+
         eklenecek = Decimal(str(eklenecek or 0))
+        ozet = fatura_eski_yeni_bakiye(
+            int(cari_id),
+            exclude_belge_no=haric_fatura_no,
+            belge_etkisi=eklenecek,
+            tani_log=False,
+        )
+        # Ağırlıklı ortalama vade (UI): açık SatisHareketi + eklenecek
+        ortalama = None
         with get_session() as session:
             hs = session.scalars(
                 select(SatisHareketi).where(
@@ -912,49 +1091,24 @@ class SatisFaturasiService:
                     SatisHareketi.kalan_acik_tutar != 0,
                 )
             ).all()
-            faturalar = session.scalars(
-                select(SatisFaturasi)
-                .where(
-                    SatisFaturasi.cari_id == int(cari_id),
-                    SatisFaturasi.durum != "İPTAL",
-                )
-                .options(selectinload(SatisFaturasi.satirlar))
-            ).all()
-            fatura_nolari = {f.fatura_no for f in faturalar}
-            bakiye = Decimal("0")
             agirlik = Decimal("0")
             agirlik_pay = Decimal("0")
-            for fatura in faturalar:
-                if fatura.fatura_no == haric_fatura_no:
-                    continue
-                # Taslak / onaysız faturalar cari bakiyeye yansımaz
-                if not getattr(fatura, "onaylandi", False) or fatura.durum in ("TASLAK", "İPTAL"):
-                    continue
-                acik = (
-                    SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
-                    - Decimal(str(fatura.tahsilat_tutari or 0))
-                )
-                bakiye += acik
-                if acik > 0:
-                    agirlik += Decimal(fatura.vade_tarihi.toordinal()) * acik
-                    agirlik_pay += acik
+            haric = (haric_fatura_no or "").strip()
             for h in hs:
-                if h.belge_no in fatura_nolari or h.belge_no == haric_fatura_no:
+                if haric and (h.belge_no or "") == haric:
                     continue
                 kalan = Decimal(str(h.kalan_acik_tutar or 0))
-                bakiye += kalan
-                if kalan > 0:
-                    tarih = h.satis_tarihi or date.today()
-                    agirlik += Decimal(tarih.toordinal()) * kalan
-                    agirlik_pay += kalan
-            bakiye += eklenecek
+                if kalan <= 0:
+                    continue
+                tarih = h.satis_tarihi or date.today()
+                agirlik += Decimal(tarih.toordinal()) * kalan
+                agirlik_pay += kalan
             if eklenecek > 0:
                 agirlik += Decimal((vade or date.today()).toordinal()) * eklenecek
                 agirlik_pay += eklenecek
-            ortalama = None
             if agirlik_pay > 0:
                 ortalama = date.fromordinal(int(agirlik / agirlik_pay))
-            return {"bakiye": bakiye, "ortalama_vade": ortalama}
+        return {"bakiye": ozet["yeni_bakiye"], "ortalama_vade": ortalama, "eski_bakiye": ozet["eski_bakiye"]}
 
     @staticmethod
     def otomatik_lot_no(firma_adi, tarih=None):

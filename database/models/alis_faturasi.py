@@ -36,6 +36,10 @@ class AlisFaturasi(Base):
     tl_matrah: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     tl_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     tl_genel_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_brut_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    genel_islem_turu: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    genel_islem_orani: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    genel_islem_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 

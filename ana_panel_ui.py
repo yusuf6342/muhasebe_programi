@@ -1017,9 +1017,11 @@ def ayarlar_goster(app) -> None:
     alt.pack(fill="x", padx=20, pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=420)
     from sistem_ui import hakkinda_goster
+    from satis_ayarlari_ui import satis_ayarlari_goster
 
     for i, (baslik, komut) in enumerate(
         (
+            ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
             ("DÖNEM DEĞİŞTİR", app.donem_degistir_ac),
             ("KULLANICI DEĞİŞTİR", app.aktif_kullanici_degistir_ac),

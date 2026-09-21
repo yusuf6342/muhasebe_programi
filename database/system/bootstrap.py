@@ -432,6 +432,12 @@ def sistem_baslat(
         users_pin_schema_guncelle(eng)
     except Exception:
         pass
+    try:
+        from database.fatura_kdv_service import companies_kdv_schema_guncelle
+
+        companies_kdv_schema_guncelle(eng)
+    except Exception:
+        pass
     SessionLocal = sessionmaker(
         bind=eng, autoflush=False, autocommit=False, expire_on_commit=False
     )

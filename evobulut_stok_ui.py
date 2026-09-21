@@ -57,6 +57,15 @@ class EvobulutStokAktarDialog(tk.Toplevel):
             f"Çekilen: {sonuc.cekilen}  |  Eklenen: {sonuc.eklenen}  |  "
             f"Güncellenen: {sonuc.guncellenen}  |  Atlanan: {sonuc.atlanan}"
         )
+        auto = getattr(sonuc, "otomatik_olusturulan", 0) or 0
+        mevcut = getattr(sonuc, "zaten_mevcut", 0) or 0
+        mukerrer = getattr(sonuc, "mukerrer_atlanan", 0) or 0
+        ean = getattr(sonuc, "gecersiz_ean", 0) or 0
+        if auto or mevcut or mukerrer or ean:
+            msg += (
+                f"\nBarkod (stok kodu): otomatik {auto}  |  zaten var {mevcut}  |  "
+                f"mükerrer atlanan {mukerrer}  |  geçersiz EAN {ean}"
+            )
         if sonuc.hatalar:
             msg += "\nİlk hatalar:\n" + "\n".join(sonuc.hatalar[:5])
         self.durum.configure(text=msg)

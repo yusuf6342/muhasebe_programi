@@ -45,6 +45,28 @@ DURUM_RENKLERI = {
 FONT_ADAYLARI = ("Segoe UI", "Aptos", "Calibri", "Arial")
 _font_aile: str | None = None
 
+# Satır yüksekliği — orijinal taban × 1.50 (font puntosu büyütülmez)
+SATIR_YUKSEKLIK_KATSAYI = 1.50
+FORM_SATIR_TABAN_PX = 22
+TABLO_SATIR_TABAN_PX = 28
+TABLO_BASLIK_PAD_TABAN = 4
+HUCRE_EDITOR_TABAN_PX = 24
+
+
+def scale_height(eski: float | int, katsayi: float = SATIR_YUKSEKLIK_KATSAYI) -> int:
+    """yeni = round(mevcut × 1.50) — çift padding ile aşırı büyütme yok."""
+    return max(1, int(round(float(eski) * float(katsayi))))
+
+
+def form_ipady(taban: int = FORM_SATIR_TABAN_PX) -> int:
+    """Entry/düğme dikey iç boşluk; nihai yükseklik ≈ taban × 1.50."""
+    return max(0, (scale_height(taban) - int(taban)) // 2)
+
+
+def form_pady(taban: int = 2) -> int:
+    """Grid satır arası — hafif ölçek (yalnız pady ile %125 şişirmemek için sınırlı)."""
+    return max(1, scale_height(taban) - int(taban) // 2)
+
 
 def resolve_ui_font(root: tk.Misc | None = None) -> str:
     global _font_aile
@@ -125,11 +147,32 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
     )
     stil.configure("Fatura.TEntry", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
     stil.configure("Fatura.TCombobox", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
+    # Üst form satırları — padding ile ~×1.50 satır yüksekliği
+    _ip = form_ipady(FORM_SATIR_TABAN_PX)
+    stil.configure(
+        "FaturaUst.TEntry",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=font(9, root=root),
+        padding=(4, _ip),
+    )
+    stil.configure(
+        "FaturaUst.TCombobox",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=font(9, root=root),
+        padding=(4, _ip),
+    )
+    stil.configure(
+        "FaturaUst.TButton",
+        font=font(9, "bold", root),
+        padding=(8, _ip),
+    )
 
     stil.configure(
         "FaturaSatir.Treeview",
         font=f_alt,
-        rowheight=24,
+        rowheight=scale_height(TABLO_SATIR_TABAN_PX),
         fieldbackground=BEYAZ,
         background=BEYAZ,
         foreground=METIN,
@@ -142,6 +185,7 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         background=LACIVERT,
         foreground=BEYAZ,
         relief="flat",
+        padding=(6, scale_height(TABLO_BASLIK_PAD_TABAN)),
     )
     stil.map(
         "FaturaSatir.Treeview",
@@ -320,20 +364,24 @@ def ust_toolbar(
     }
 
 
-def alt_ozet_cubugu(parent) -> dict:
-    """Sabit alt özet kartı: sol işlem düğmeleri + not, sağ toplamlar."""
+def alt_ozet_cubugu(parent, *, pack: bool = True) -> dict:
+    """Sabit alt özet kartı: sol işlem düğmeleri + not, sağ toplamlar.
+
+    pack=False ise çağıran sticky_footer_layout ile grid'e yerleştirir.
+    """
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
     dis = tk.Frame(parent, bg=ACIK_BG, highlightthickness=0)
-    dis.pack(side="bottom", fill="x")
+    if pack:
+        dis.pack(side="bottom", fill="x")
 
-    kart_dis, kart = beyaz_kart(dis, padx=12, pady=8)
-    kart_dis.pack(fill="x", padx=8, pady=(4, 8))
+    kart_dis, kart = beyaz_kart(dis, padx=8, pady=4)
+    kart_dis.pack(fill="x", padx=6, pady=(2, 4))
 
     kart.columnconfigure(0, weight=1)
     kart.columnconfigure(1, weight=0)
 
     sol = tk.Frame(kart, bg=BEYAZ)
-    sol.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    sol.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 
     islem = tk.Frame(sol, bg=BEYAZ)
     islem.pack(fill="x", anchor="w")
@@ -342,63 +390,80 @@ def alt_ozet_cubugu(parent) -> dict:
         text="Notlar / Açıklama",
         bg=BEYAZ,
         fg=LACIVERT,
-        font=font(9, "bold", root),
+        font=font(8, "bold", root),
         anchor="w",
-    ).pack(anchor="w", pady=(8, 0))
-    not_alani = tk.Text(sol, height=2, width=40, wrap="word", font=font(9, root=root), relief="solid", bd=1)
-    not_alani.pack(fill="both", expand=True, pady=(4, 0))
+    ).pack(anchor="w", pady=(4, 0))
+    not_alani = tk.Text(sol, height=2, width=36, wrap="word", font=font(8, root=root), relief="solid", bd=1)
+    not_alani.pack(fill="both", expand=True, pady=(2, 0))
 
     sag = tk.Frame(kart, bg=BEYAZ)
     sag.grid(row=0, column=1, sticky="ne")
 
-    degerler: dict[str, tk.Label | ttk.Entry] = {}
+    degerler: dict[str, tk.Widget] = {}
+    # Ara özet → Brüt → İndirim/Masraf → Net (muhasebe tutarı)
     satirlar = (
-        ("brut", "Brüt Toplam", False),
+        ("ara_toplam", "Ara Toplam", False),
         ("iskonto", "Toplam İskonto", False),
         ("matrah", "KDV Matrahı", False),
         ("kdv", "KDV Toplamı", False),
-        ("ara_toplam", "Ara Toplam", False),
-        ("genel", "GENEL TOPLAM", True),
+        ("brut", "Brüt Toplam", False),
+        ("islem_turu", "İşlem Türü", False),
+        ("islem_oran", "İşlem %", False),
+        ("islem_tutar", "İşlem Tutarı", False),
+        ("genel", "Net Toplam", True),
         ("doviz", "Döviz Karşılığı", False),
     )
     for i, (anahtar, baslik, vurgulu) in enumerate(satirlar):
         fg = LACIVERT if vurgulu else IKINCIL
-        fnt = font(13 if vurgulu else 10, "bold" if vurgulu else "normal", root)
+        fnt = font(12 if vurgulu else 9, "bold" if vurgulu else "normal", root)
+        pad_y = 2 if vurgulu else 0
         tk.Label(sag, text=baslik, bg=BEYAZ, fg=fg, font=fnt, anchor="e").grid(
-            row=i, column=0, sticky="e", padx=(0, 12), pady=(1 if not vurgulu else 4)
+            row=i, column=0, sticky="e", padx=(0, 8), pady=pad_y
         )
         if anahtar == "genel":
-            genel_cerceve = tk.Frame(sag, bg=BEYAZ)
-            genel_cerceve.grid(row=i, column=1, sticky="e", pady=4)
-            entry = ttk.Entry(genel_cerceve, font=font(13, "bold", root), width=12, justify="right")
+            entry = ttk.Entry(sag, font=font(12, "bold", root), width=12, justify="right")
             entry.insert(0, "0,00")
-            entry.pack(side="left")
+            entry.grid(row=i, column=1, sticky="e", pady=2)
             degerler[anahtar] = entry
-            yansit_btn = tk_buton(genel_cerceve, "Fiyatlara Yansıt", rol="ikincil")
-            yansit_btn.pack(side="left", padx=(6, 0))
-            degerler["yansit_btn"] = yansit_btn  # type: ignore[assignment]
+        elif anahtar == "islem_turu":
+            cmb = ttk.Combobox(
+                sag,
+                values=("—", "İndirim", "Masraf"),
+                state="readonly",
+                width=10,
+                font=font(9, root=root),
+                justify="right",
+            )
+            cmb.set("—")
+            cmb.grid(row=i, column=1, sticky="e", pady=0)
+            degerler[anahtar] = cmb
+        elif anahtar in ("islem_oran", "islem_tutar"):
+            entry = ttk.Entry(sag, font=font(9, root=root), width=12, justify="right")
+            entry.insert(0, "0" if anahtar == "islem_oran" else "0,00")
+            entry.grid(row=i, column=1, sticky="e", pady=0)
+            degerler[anahtar] = entry
         else:
             lbl = tk.Label(
                 sag,
                 text="0,00 TL" if anahtar != "doviz" else "—",
                 bg=BEYAZ,
                 fg=METIN,
-                font=font(10, "bold", root),
+                font=font(9, "bold", root),
                 anchor="e",
-                width=14,
+                width=12,
             )
-            lbl.grid(row=i, column=1, sticky="e", pady=1)
+            lbl.grid(row=i, column=1, sticky="e", pady=0)
             degerler[anahtar] = lbl
 
     ipucu = tk.Label(
         sag,
-        text="GENEL TOPLAM → Enter / Fiyatlara Yansıt ile birim fiyatlara dağıtılır",
+        text="Net = Brüt ± İndirim/Masraf · baskıda Brüt/% yok",
         bg=BEYAZ,
         fg=IKINCIL,
-        font=font(8, root=root),
+        font=font(7, root=root),
         anchor="e",
     )
-    ipucu.grid(row=len(satirlar), column=0, columnspan=2, sticky="e", pady=(2, 0))
+    ipucu.grid(row=len(satirlar), column=0, columnspan=2, sticky="e", pady=(1, 0))
 
     return {
         "dis": dis,

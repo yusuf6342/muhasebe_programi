@@ -76,6 +76,25 @@ class InvoicePrintService:
         return print_invoice(vm, printer_name=printer_name)
 
     @staticmethod
+    def open_pdf_preview(
+        invoice_id: int | None = None,
+        template_id: str | None = None,
+        *,
+        kart=None,
+    ) -> Path:
+        """Geçici PDF önizleme — DB kaydı zorunlu değil; kart değişiklikleri yansır."""
+        from invoice_print.pdf_service import render_preview_pdf_and_open
+
+        vm = InvoicePrintService.preview_invoice(
+            invoice_id, template_id, kart=kart
+        )
+        # Önizlemede satış personeli her zaman görünsün (ayar kapalı olsa bile doluysa)
+        if getattr(vm, "satis_personeli", None):
+            vm.ayarlar = dict(vm.ayarlar or {})
+            vm.ayarlar["satis_personeli_goster"] = True
+        return render_preview_pdf_and_open(vm)
+
+    @staticmethod
     def open_html_preview(vm: InvoicePrintViewModel) -> Path:
         return html_dosyasi_yaz(vm)
 

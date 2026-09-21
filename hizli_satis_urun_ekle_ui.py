@@ -329,7 +329,9 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         for i, u in enumerate(self._urunler):
             kdv = u.get("kdv_orani")
             try:
-                kdv_metin = f"{Decimal(str(kdv if kdv is not None else 20)):f}".rstrip("0").rstrip(".") or "0"
+                from database.fatura_kdv_service import satir_kdv_metin_sayisal
+
+                kdv_metin = satir_kdv_metin_sayisal(kdv if kdv is not None else 20)
             except Exception:
                 kdv_metin = "20"
             self.tablo.insert(

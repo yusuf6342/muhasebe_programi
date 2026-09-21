@@ -7,6 +7,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
+from database.fatura_kdv_service import kdv_oran_metni
 from invoice_print.amount_to_words import amount_to_words
 from invoice_print.branding import load_company_branding, logo_data_uri
 from invoice_print.settings import load_print_settings
@@ -117,10 +118,17 @@ def _satirlari_satir_model(
             s.get("iskonto_orani_2", 0),
             s.get("iskonto_orani_3", 0),
         )
+        brut = brut.quantize(_KURUS, rounding=ROUND_HALF_UP)
+        indirim = indirim.quantize(_KURUS, rounding=ROUND_HALF_UP)
         net = net.quantize(_KURUS, rounding=ROUND_HALF_UP)
         kdv_o = _d(s.get("kdv_orani", 0))
         kdv = (net * kdv_o / Decimal("100")).quantize(_KURUS, rounding=ROUND_HALF_UP)
         toplam = (net + kdv).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        net_birim = (
+            (net / miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
+            if miktar
+            else Decimal("0")
+        )
         acik = (s.get("aciklama") or "") if ayarlar.get("aciklama_goster", True) else ""
         lot = ""
         if ayarlar.get("lot_goster"):
@@ -137,13 +145,19 @@ def _satirlari_satir_model(
                 birim=str(s.get("birim") or ""),
                 birim_fiyat=fiyat,
                 birim_fiyat_goster=_para(fiyat, pb),
+                net_birim_fiyat=net_birim,
+                net_birim_fiyat_goster=_para(net_birim, pb),
                 iskonto_goster=_iskonto_goster(
                     s.get("iskonto_orani", 0),
                     s.get("iskonto_orani_2", 0),
                     s.get("iskonto_orani_3", 0),
                 ),
+                iskonto_tutar=indirim,
+                iskonto_tutar_goster=_para(indirim, pb) if indirim else "—",
                 kdv_orani=kdv_o,
-                kdv_goster=f"%{float(kdv_o):g}",
+                kdv_goster=kdv_oran_metni(kdv_o),
+                kdv_tutar=kdv,
+                kdv_tutar_goster=_para(kdv, pb),
                 net_tutar=net,
                 net_goster=_para(net, pb),
                 satir_toplam=toplam,
@@ -189,6 +203,10 @@ def build_from_satirlar(
     odeme_sekli: str = "",
     tahsilat_tutari=0,
     tl_genel_db: Decimal | None = None,
+    tl_brut_db: Decimal | None = None,
+    genel_islem_turu: str | None = None,
+    genel_islem_orani=None,
+    genel_islem_tutari=None,
     sablon_id: str | None = None,
     belge_turu: str = "SATIŞ FATURASI",
     hazirlayan: str = "",
@@ -197,6 +215,7 @@ def build_from_satirlar(
     kaynak_siparis_olusturan: str = "",
     satis_personeli: str = "",
 ) -> InvoicePrintViewModel:
+    from database.fatura_genel_toplam_service import islem_uygula, islem_turunu_normalize, netten_islem
     from database.satis_faturasi_service import SatisFaturasiService
 
     ayarlar = load_print_settings()
@@ -208,33 +227,62 @@ def build_from_satirlar(
     if not satirlar_dict:
         raise ValueError("Faturada en az bir ürün satırı olmalıdır.")
     if not (fatura_no or "").strip() and fatura_id is None:
-        # taslak yeni — numara sonra
         pass
     if not musteri.get("unvan") and not musteri.get("cari_kodu"):
-        raise ValueError("Müşteri seçilmeden fatura önizlenemez.")
+        raise ValueError("Cari (müşteri/tedarikçi) seçilmeden fatura önizlenemez.")
 
     toplam = SatisFaturasiService.toplam(satirlar_dict)
-    # Merkezi servis sonuçları — baskı kendi hesabını yapmaz
     ara = toplam["ara_toplam"]
     isk = toplam["iskonto"]
     kdv = toplam["kdv"]
-    genel = toplam["genel_toplam"]
+    satir_genel = toplam["genel_toplam"]  # Brüt (satırlardan)
     matrah = (ara - isk).quantize(_KURUS, rounding=ROUND_HALF_UP)
 
-    if tl_genel_db is not None and onaylandi:
-        fark = abs(_d(tl_genel_db) - genel)
-        if fark > Decimal("0.05"):
-            raise ValueError(
-                "Fatura satırları ile genel toplam arasında fark bulundu. "
-                "Lütfen faturayı kontrol edin."
-            )
+    brut = _d(tl_brut_db) if tl_brut_db is not None else satir_genel
+    tur = islem_turunu_normalize(genel_islem_turu)
+    oran = _d(genel_islem_orani or 0)
+    tutar = _d(genel_islem_tutari or 0)
+    if tl_genel_db is not None:
+        net = _d(tl_genel_db)
+        if tur or tutar or oran:
+            try:
+                sonuc = islem_uygula(
+                    brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
+                )
+                if abs(sonuc["net_toplam"] - net) > Decimal("0.05"):
+                    sonuc = netten_islem(brut, net)
+            except ValueError:
+                sonuc = netten_islem(brut, net)
+        elif abs(net - brut) > Decimal("0.009"):
+            sonuc = netten_islem(brut, net)
+        else:
+            sonuc = {
+                "brut_toplam": brut,
+                "islem_turu": "",
+                "islem_orani": Decimal("0"),
+                "islem_tutari": Decimal("0"),
+                "net_toplam": net,
+            }
+    else:
+        sonuc = islem_uygula(
+            brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
+        )
+    genel = sonuc["net_toplam"]  # Baskıda Genel Toplam = Net
+    islem_tur = sonuc["islem_turu"]
+    islem_tutar = sonuc["islem_tutari"]
+    fatura_brut = sonuc.get("brut_toplam", brut)
+    islem_etiket = ""
+    if islem_tur == "INDIRIM" and islem_tutar > 0:
+        islem_etiket = "İndirim"
+    elif islem_tur == "MASRAF" and islem_tutar > 0:
+        islem_etiket = "Masraf"
 
+    # Satır toplamları brüt ile tutarlı olmalı; net farkı işlem satırında
     satir_modelleri = _satirlari_satir_model(satirlar_dict, pb, ayarlar)
-    # Satır toplamları ile genel tutarlılık (KDV dahil satır toplamı ≈ genel)
-    satir_genel = sum((s.satir_toplam for s in satir_modelleri), Decimal("0")).quantize(
+    satir_genel_sum = sum((s.satir_toplam for s in satir_modelleri), Decimal("0")).quantize(
         _KURUS, rounding=ROUND_HALF_UP
     )
-    if abs(satir_genel - genel) > Decimal("0.05"):
+    if abs(satir_genel_sum - satir_genel) > Decimal("0.05"):
         raise ValueError(
             "Fatura satırları ile genel toplam arasında fark bulundu. "
             "Lütfen faturayı kontrol edin."
@@ -299,6 +347,12 @@ def build_from_satirlar(
         genel_toplam=genel,
         tahsil_edilen=tahsil,
         kalan_bakiye=kalan,
+        fatura_brut_toplam=fatura_brut,
+        fatura_brut_goster=_para(fatura_brut, pb),
+        genel_islem_turu=islem_tur,
+        genel_islem_tutari=islem_tutar,
+        genel_islem_etiket=islem_etiket,
+        genel_islem_goster=_para(islem_tutar, pb) if islem_etiket else "",
         brut_goster=_para(ara, pb),
         iskonto_goster=_para(isk, pb),
         ara_goster=_para(matrah, pb),
@@ -308,20 +362,14 @@ def build_from_satirlar(
         kalan_goster=_para(kalan, pb),
         kdv_dokum=_kdv_dokum(satirlar_dict, pb) if ayarlar.get("kdv_dokum_goster", True) else [],
         yaziyla_toplam=amount_to_words(genel, pb) if ayarlar.get("yaziyla_toplam_goster", True) else "",
-        # Dahili notlar müşteri çıktısına aktarılmaz
-        notlar="",
+        notlar=(aciklama or "").strip(),
         banka_satirlari=banka,
         alt_bilgi=str(branding.get("alt_bilgi") or "") if ayarlar.get("alt_bilgi_goster", True) else "",
-        # Sistem kullanıcısı müşteri çıktısında gösterilmez
         hazirlayan="",
         onaylayan=onaylayan or "",
         duzenleme_tarihi=duzenleme_tarihi or "",
         kaynak_siparis_olusturan=kaynak_siparis_olusturan or "",
-        satis_personeli=(
-            (satis_personeli or "").strip()
-            if ayarlar.get("satis_personeli_goster", False)
-            else ""
-        ),
+        satis_personeli=(satis_personeli or "").strip(),
         ayarlar=ayarlar,
     )
     if pb not in ("TRY", "TL") and kur:
@@ -415,6 +463,12 @@ def build_invoice_print_model(
         odeme_sekli=f.tahsilat_sekli or "",
         tahsilat_tutari=f.tahsilat_tutari or 0,
         tl_genel_db=_d(f.tl_genel_toplam) if f.tl_genel_toplam is not None else None,
+        tl_brut_db=_d(getattr(f, "tl_brut_toplam", None))
+        if getattr(f, "tl_brut_toplam", None) is not None
+        else None,
+        genel_islem_turu=getattr(f, "genel_islem_turu", None),
+        genel_islem_orani=getattr(f, "genel_islem_orani", None),
+        genel_islem_tutari=getattr(f, "genel_islem_tutari", None),
         sablon_id=template_id,
         hazirlayan=hazirlayan,
         onaylayan=onaylayan,
@@ -425,12 +479,21 @@ def build_invoice_print_model(
 
 
 def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintViewModel:
-    """Açık SatisFaturasiDialog kartından (kayıtsız taslak dahil)."""
+    """Açık SatisFaturasiDialog / AlisFaturasiDialog kartından (kayıtsız taslak dahil)."""
     from datetime import datetime
+
+    alis = kart.__class__.__name__.startswith("Alis")
+    belge_turu = (
+        getattr(kart, "_print_belge_turu", None)
+        or ("ALIŞ FATURASI" if alis else "SATIŞ FATURASI")
+    )
 
     cari = None
     try:
-        cari = kart._secili_musteri() if hasattr(kart, "_secili_musteri") else None
+        if hasattr(kart, "_secili_musteri"):
+            cari = kart._secili_musteri()
+        elif hasattr(kart, "tedarikci_map") and hasattr(kart, "tedarikci"):
+            cari = kart.tedarikci_map.get(kart.tedarikci.get())
     except Exception:
         cari = None
     musteri = {
@@ -468,6 +531,8 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
     try:
         if hasattr(kart, "fatura_no_alani"):
             fatura_no = kart.fatura_no_alani.get().strip()
+        elif hasattr(kart, "girdiler") and kart.girdiler.get("fatura_no"):
+            fatura_no = kart.girdiler["fatura_no"].get().strip()
     except Exception:
         pass
     if not fatura_no and getattr(kart, "fatura", None):
@@ -476,12 +541,14 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
     tarih = None
     vade = None
     try:
-        t = kart.girdiler.get("siparis_tarihi").get().strip()
+        t_alan = "fatura_tarihi" if alis else "siparis_tarihi"
+        t = kart.girdiler.get(t_alan).get().strip()
         tarih = datetime.strptime(t, "%d.%m.%Y").date() if t else None
     except Exception:
         pass
     try:
-        v = kart.girdiler.get("termin_tarihi").get().strip()
+        v_alan = "vade_tarihi" if alis else "termin_tarihi"
+        v = kart.girdiler.get(v_alan).get().strip()
         vade = datetime.strptime(v, "%d.%m.%Y").date() if v else None
     except Exception:
         pass
@@ -503,16 +570,16 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
         f = kart.fatura
         fatura_id = getattr(f, "id", None)
         durum = f.durum or durum
-        onaylandi = bool(f.onaylandi)
-        tahsil = f.tahsilat_tutari or 0
+        onaylandi = bool(getattr(f, "onaylandi", False))
+        tahsil = getattr(f, "tahsilat_tutari", None) or getattr(f, "odeme_tutari", None) or 0
         tl_genel = f.tl_genel_toplam
         islem_saati = f.islem_saati or ""
-        vade_gunu = f.vade_gunu
+        vade_gunu = getattr(f, "vade_gunu", "") or ""
         depo = f.depo or ""
         pb = f.para_birimi or "TRY"
         kur = f.kur
-        kur_tarihi = f.kur_tarihi
-        odeme = f.tahsilat_sekli or ""
+        kur_tarihi = getattr(f, "kur_tarihi", None)
+        odeme = getattr(f, "tahsilat_sekli", None) or getattr(f, "odeme_sekli", None) or ""
         aciklama = f.aciklama or ""
         if not tarih:
             tarih = f.fatura_tarihi
@@ -528,20 +595,76 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
             aciklama = kart.girdiler["aciklama"].get().strip() or aciklama
     except Exception:
         pass
+    try:
+        if hasattr(kart, "ayrintili_notlar"):
+            not_ek = kart.ayrintili_notlar.get("1.0", "end").strip()
+            if not_ek:
+                aciklama = f"{aciklama}\n{not_ek}".strip() if aciklama else not_ek
+    except Exception:
+        pass
     if hasattr(kart, "_doviz_para_birimi"):
         try:
             pb = (kart._doviz_para_birimi.get() or pb).upper()
         except Exception:
             pass
+    try:
+        if hasattr(kart, "girdiler") and kart.girdiler.get("islem_saati"):
+            islem_saati = kart.girdiler["islem_saati"].get().strip() or islem_saati
+    except Exception:
+        pass
 
     satirlar = list(getattr(kart, "satirlar", None) or [])
-    # Kart satırlarında birim_satis_fiyati olabilir
     norm = []
     for s in satirlar:
         d = dict(s)
         if "birim_fiyat" not in d or d.get("birim_fiyat") in (None, ""):
-            d["birim_fiyat"] = d.get("birim_satis_fiyati", 0)
+            d["birim_fiyat"] = d.get(
+                "birim_satis_fiyati", d.get("birim_alis_fiyati", 0)
+            )
         norm.append(d)
+
+    # Brüt her zaman satırlardan hesaplanır (ekrandaki eski Brüt PDF'ye gitmesin)
+    tl_brut = None
+    net_kart = getattr(kart, "_hesaplanan_genel", None)
+    if net_kart is None:
+        net_kart = getattr(kart, "_alis_net_toplam", None)
+    if getattr(kart, "_hedef_net_toplam", None) is not None and getattr(
+        kart, "_dagitim_uygulandi", False
+    ):
+        net_kart = kart._hedef_net_toplam
+    if getattr(kart, "_alis_net_hedef", None) is not None and getattr(
+        kart, "_alis_dagitim_uygulandi", False
+    ):
+        net_kart = kart._alis_net_hedef
+    if net_kart is not None:
+        tl_genel = net_kart
+    islem_tur = getattr(kart, "_genel_islem_turu", None)
+    if islem_tur is None:
+        islem_tur = getattr(kart, "_alis_genel_islem_turu", None)
+    islem_oran = getattr(kart, "_genel_islem_orani", None)
+    if islem_oran is None:
+        islem_oran = getattr(kart, "_alis_genel_islem_orani", None)
+    islem_tutar = getattr(kart, "_genel_islem_tutari", None)
+    if islem_tutar is None:
+        islem_tutar = getattr(kart, "_alis_genel_islem_tutari", None)
+    if islem_tur is None and getattr(kart, "fatura", None):
+        fobj = kart.fatura
+        islem_tur = getattr(fobj, "genel_islem_turu", None)
+        islem_oran = getattr(fobj, "genel_islem_orani", None)
+        islem_tutar = getattr(fobj, "genel_islem_tutari", None)
+
+    siparis_no = ""
+    irsaliye_no = ""
+    try:
+        if hasattr(kart, "siparis_no"):
+            siparis_no = (kart.siparis_no.get() if hasattr(kart.siparis_no, "get") else str(kart.siparis_no or "")).strip()
+    except Exception:
+        pass
+    try:
+        if hasattr(kart, "irsaliye_no"):
+            irsaliye_no = (kart.irsaliye_no.get() if hasattr(kart.irsaliye_no, "get") else str(kart.irsaliye_no or "")).strip()
+    except Exception:
+        pass
 
     return build_from_satirlar(
         fatura_id=int(fatura_id) if fatura_id else None,
@@ -559,11 +682,17 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
         aciklama=aciklama,
         satirlar_dict=norm,
         musteri=musteri,
+        siparis_no=siparis_no,
+        irsaliye_no=irsaliye_no,
         odeme_sekli=odeme,
         tahsilat_tutari=tahsil,
         tl_genel_db=_d(tl_genel) if tl_genel is not None else None,
+        tl_brut_db=_d(tl_brut) if tl_brut is not None else None,
+        genel_islem_turu=islem_tur,
+        genel_islem_orani=islem_oran,
+        genel_islem_tutari=islem_tutar,
         sablon_id=template_id,
-        belge_turu=getattr(kart, "_print_belge_turu", None) or "SATIŞ FATURASI",
+        belge_turu=belge_turu,
         hazirlayan=_kart_hazirlayan(kart),
         onaylayan=_kart_onaylayan(kart),
         duzenleme_tarihi=_kart_duzenleme(kart),

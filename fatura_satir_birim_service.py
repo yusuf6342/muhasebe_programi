@@ -13,10 +13,25 @@ from database.stok_service import StokService
 
 
 def miktar_metnini_coz(metin: str) -> Decimal:
-    """TR/EN ondalık: 1,5 / 1.5 / 10,25. Sıfır ve negatif reddedilir."""
+    """TR/EN ondalık: 1,5 / 1.5 / 10,25. Sıfır ve negatif reddedilir.
+
+    Uzun ondalıksız rakam dizileri (barkod benzeri) reddedilir — barkod
+    miktar hücresine yazılmasın.
+    """
     ham = (metin or "").strip()
     if not ham:
         raise ValueError("Miktar boş olamaz.")
+    # Barkod benzeri: ondalıksız ≥8 hane rakam (örn. 1031109304)
+    temiz_kontrol = ham.replace(" ", "")
+    if (
+        "," not in temiz_kontrol
+        and "." not in temiz_kontrol
+        and temiz_kontrol.isdigit()
+        and len(temiz_kontrol) >= 8
+    ):
+        raise ValueError(
+            "Miktar alanına barkod yazılamaz. Geçerli bir miktar girin."
+        )
     if "," in ham and "." in ham:
         if ham.rfind(",") > ham.rfind("."):
             ham = ham.replace(".", "").replace(",", ".")

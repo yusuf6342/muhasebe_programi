@@ -225,6 +225,29 @@ def satir_alta_tasi(dialog) -> None:
     _yenile(dialog, secim=[idx + 1])
 
 
+def dagitima_kilitle_ac_kapa(dialog) -> None:
+    """Seçili satır(lar) için açık dağıtım kilidini aç/kapa."""
+    if getattr(dialog, "_fatura_kilitli", False):
+        return
+    idxs = _secili_indeksler(dialog)
+    if not idxs:
+        messagebox.showinfo("Dağıtım", "Önce satır seçin.", parent=dialog)
+        return
+    # Çoğunluğa göre: herhangi biri açık değilse kilitle, hepsi kilitliyse aç
+    hepsi_kilitli = all(
+        bool(dialog.satirlar[i].get("dagitima_kapali")) for i in idxs
+    )
+    yeni = not hepsi_kilitli
+    for i in idxs:
+        dialog.satirlar[i]["dagitima_kapali"] = yeni
+    _yenile(dialog, secim=idxs)
+    messagebox.showinfo(
+        "Dağıtım",
+        ("Seçili satırlar dağıtıma kilitlendi." if yeni else "Dağıtım kilidi kaldırıldı."),
+        parent=dialog,
+    )
+
+
 def fiyati_yenile(dialog) -> None:
     if getattr(dialog, "_fatura_kilitli", False):
         return
@@ -456,6 +479,7 @@ def arac_cubugu_kur(dialog) -> None:
     _btn("Üste Taşı", lambda: satir_uste_tasi(dialog))
     _btn("Alta Taşı", lambda: satir_alta_tasi(dialog))
     _btn("Fiyatı Yenile", lambda: fiyati_yenile(dialog))
+    _btn("Dağıtıma Kilitle", lambda: dagitima_kilitle_ac_kapa(dialog))
     _btn("Çoklu İskonto", lambda: _coklu_iskonto_duzenle(dialog))
     _btn("İskontoyu Temizle", lambda: iskontoyu_temizle(dialog))
     _btn("Satır Açıklaması", lambda: satir_aciklama_gir(dialog))
@@ -500,6 +524,10 @@ def baglam_menu_kur(dialog) -> None:
     menu.add_separator()
     menu.add_command(
         label="Fiyatı Stok Kartından Yenile", command=lambda: fiyati_yenile(dialog)
+    )
+    menu.add_command(
+        label="Fiyatı Kilitle / Dağıtıma Kapalı",
+        command=lambda: dagitima_kilitle_ac_kapa(dialog),
     )
     menu.add_command(
         label="Çoklu İskonto Düzenle",

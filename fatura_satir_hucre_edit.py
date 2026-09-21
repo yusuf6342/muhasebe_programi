@@ -9,6 +9,7 @@ from typing import Callable
 
 from database.models.doviz import PARA_BIRIMLERI
 from database.models.stok import KDV_ORANLARI
+from fatura_tema import HUCRE_EDITOR_TABAN_PX, scale_height
 from fatura_satir_birim_service import (
     birim_degistir,
     birim_satis_fiyati,
@@ -288,31 +289,8 @@ def _yenile_koru(dialog, tablo, iid: str):
 
 
 def _stok_kontrol(dialog, idx: int, yeni_temel: Decimal, kod: str) -> bool:
-    try:
-        from fatura_barkod_ui import depo_mevcut_miktar
-        from fatura_satir_birim_service import satir_temel_talep
-
-        depo = dialog.depo.get().strip() if hasattr(dialog, "depo") else ""
-        if not kod or not depo:
-            return True
-        diger = Decimal("0")
-        for i, s in enumerate(dialog.satirlar):
-            if i == idx:
-                continue
-            if (s.get("urun_kodu") or "").strip() == kod:
-                diger += satir_temel_talep(s)
-        mevcut_stok = depo_mevcut_miktar(kod, depo)
-        if mevcut_stok < diger + yeni_temel:
-            messagebox.showwarning(
-                "Stok",
-                f"Stok yetersiz — eksi stoka izin yok.\n"
-                f"Mevcut (temel birim): {mevcut_stok}\n"
-                f"İstenen: {diger + yeni_temel}",
-                parent=dialog,
-            )
-            return False
-    except Exception:
-        pass
+    """Miktar/birim düzenlemede stok engeli yok — kontrol yalnızca onayda."""
+    _ = (dialog, idx, yeni_temel, kod)
     return True
 
 
@@ -382,7 +360,7 @@ def _overlay_entry(dialog, tablo, iid, kolon, metin, *, justify="right"):
     bx, by, bw, bh = box
     var = tk.StringVar(value=metin)
     editor = ttk.Entry(tablo, textvariable=var, justify=justify, font=("Segoe UI", 10))
-    editor.place(x=bx, y=by, width=max(bw, 50), height=max(bh, 24))
+    editor.place(x=bx, y=by, width=max(bw, 50), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
     editor.focus_set()
     editor.selection_range(0, "end")
     dialog._satir_hucre_editor = editor
@@ -472,7 +450,7 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         font=("Segoe UI", 10),
         justify="center",
     )
-    editor.place(x=bx, y=by, width=max(bw, 70), height=max(bh, 24))
+    editor.place(x=bx, y=by, width=max(bw, 70), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
 
@@ -632,7 +610,7 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         justify="center",
         font=("Segoe UI", 10),
     )
-    editor.place(x=bx, y=by, width=max(bw, 60), height=max(bh, 24))
+    editor.place(x=bx, y=by, width=max(bw, 60), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
 
@@ -881,7 +859,7 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         justify="center",
         font=("Segoe UI", 10),
     )
-    editor.place(x=bx, y=by, width=max(bw, 50), height=max(bh, 24))
+    editor.place(x=bx, y=by, width=max(bw, 72), height=max(bh, scale_height(26)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
 
@@ -892,11 +870,18 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     def _uygula(_e=None, tab=False, geri=False):
         if getattr(dialog, "_kdv_uygulaniyor", False):
             return "break"
+        # Editor yoksa (önceki ComboboxSelected sonrası FocusOut) tekrar işleme
+        if getattr(dialog, "_satir_hucre_editor", None) is None and _e is not None:
+            return "break"
         dialog._kdv_uygulaniyor = True
         try:
-            yeni = _d(var.get())
-            if yeni < 0 or yeni > 100:
-                messagebox.showerror("KDV", "KDV oranı 0–100 arasında olmalıdır.", parent=dialog)
+            from database.fatura_kdv_service import kdv_orani_dogrula
+
+            try:
+                yeni = kdv_orani_dogrula(var.get())
+            except ValueError as hata:
+                messagebox.showerror("KDV", str(hata), parent=dialog)
+                var.set(mevcut)
                 return "break"
             satir["kdv_orani"] = str(yeni)
             try:
@@ -920,7 +905,7 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _uygula(tab=True, geri=True))
-    # FocusOut ile kaydet ama gezinme (çift tetikleme önlemi)
+    # FocusOut: seçim sonrası çift tetiklemeyi _satir_hucre_editor kontrolü keser
     editor.bind("<FocusOut>", lambda e: _uygula(tab=False))
     try:
         editor.event_generate("<Down>")

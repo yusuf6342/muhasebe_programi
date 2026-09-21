@@ -60,6 +60,7 @@ class CompanyMgmtService:
                     "logo_yolu": f.logo_yolu,
                     "varsayilan_para_birimi": f.varsayilan_para_birimi,
                     "fatura_seri": f.fatura_seri,
+                    "varsayilan_kdv_orani": getattr(f, "varsayilan_kdv_orani", None),
                     "aktif": f.aktif,
                     "db_path": f.db_path,
                     "olusturma_tarihi": f.olusturma_tarihi,
@@ -91,6 +92,7 @@ class CompanyMgmtService:
                 "logo_yolu": f.logo_yolu,
                 "varsayilan_para_birimi": f.varsayilan_para_birimi,
                 "fatura_seri": f.fatura_seri,
+                "varsayilan_kdv_orani": getattr(f, "varsayilan_kdv_orani", None),
                 "aktif": f.aktif,
                 "db_path": f.db_path,
                 "olusturma_tarihi": f.olusturma_tarihi,
@@ -186,6 +188,7 @@ class CompanyMgmtService:
                     logo_yolu=(veriler.get("logo_yolu") or "").strip() or None,
                     varsayilan_para_birimi=veriler.get("varsayilan_para_birimi") or "TRY",
                     fatura_seri=(veriler.get("fatura_seri") or "").strip() or None,
+                    varsayilan_kdv_orani=veriler.get("varsayilan_kdv_orani", 20),
                     aktif=bool(veriler.get("aktif", True)),
                     db_path=str(db_path.resolve()),
                 )
@@ -248,6 +251,10 @@ class CompanyMgmtService:
                 f.logo_yolu = (veriler.get("logo_yolu") or "").strip() or None
             f.varsayilan_para_birimi = veriler.get("varsayilan_para_birimi") or "TRY"
             f.fatura_seri = (veriler.get("fatura_seri") or "").strip() or None
+            if "varsayilan_kdv_orani" in veriler and veriler.get("varsayilan_kdv_orani") is not None:
+                from database.fatura_kdv_service import kdv_orani_dogrula
+
+                f.varsayilan_kdv_orani = kdv_orani_dogrula(veriler["varsayilan_kdv_orani"])
             f.aktif = bool(veriler.get("aktif", True))
             try:
                 session.flush()

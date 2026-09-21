@@ -109,10 +109,17 @@ def secimi_dogrula(
     sales_person_id: int | None,
     *,
     izin_diger: bool | None = None,
-) -> tuple[int, str]:
-    """Geçerli aktif personel id + görünen ad döner; aksi halde ValueError."""
+    zorunlu: bool = True,
+) -> tuple[int | None, str | None]:
+    """Geçerli aktif personel id + görünen ad döner; aksi halde ValueError.
+
+    zorunlu=False iken boş seçim (None, None) döner — fatura UI satış personeli
+    alanını kaldırdıktan sonra yeni kayıtlarda boş bırakılabilir.
+    """
     if not sales_person_id:
-        raise ValueError("Satış personeli seçimi zorunludur.")
+        if zorunlu:
+            raise ValueError("Satış personeli seçimi zorunludur.")
+        return None, None
     sid = int(sales_person_id)
     if izin_diger is None:
         izin_diger = satis_personeli_degistirme_yetkisi()

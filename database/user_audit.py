@@ -123,8 +123,9 @@ def audit_document(
             )
             if eski is not None:
                 payload_eski = json.dumps(eski, ensure_ascii=False, default=str)
+
         with get_system_session() as session:
-            AuthService.audit(
+            AuthService.audit_log(
                 session,
                 islem_turu,
                 modul=modul,
@@ -132,13 +133,11 @@ def audit_document(
                 eski_deger=payload_eski,
                 yeni_deger=payload_yeni,
             )
-            session.commit()
     except Exception as exc:
-        _LOG.warning("Audit yazılamadı (%s): %s", islem_turu, exc)
+        _LOG.warning("audit_document başarısız: %s", exc)
 
 
-# Soft ALTER kolon tanımları (firma DB)
-BELGE_KULLANICI_KOLONLARI: dict[str, str] = {
+BELGE_KULLANICI_KOLONLAR: dict[str, str] = {
     "created_by_user_id": "INTEGER",
     "created_by_username": "VARCHAR(80)",
     "created_by_full_name": "VARCHAR(120)",
@@ -163,6 +162,13 @@ HIZLI_EK_KOLONLAR: dict[str, str] = {
     "satis_bitis": "DATETIME",
     "sales_person_id": "INTEGER",
     "sales_person_full_name": "VARCHAR(120)",
+}
+
+FATURA_GENEL_TOPLAM_KOLONLAR: dict[str, str] = {
+    "tl_brut_toplam": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+    "genel_islem_turu": "VARCHAR(20)",
+    "genel_islem_orani": "NUMERIC(12, 6) DEFAULT 0 NOT NULL",
+    "genel_islem_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
 }
 
 
@@ -199,15 +205,37 @@ def belge_kullanici_schema_guncelle(engine=None) -> None:
                 (f"ix_{tablo}_updated_at", "updated_at"),
                 (f"ix_{tablo}_sales_person", "sales_person_id"),
             ):
-                if col in kolonlar:
-                    try:
-                        connection.execute(
-                            text(
-                                f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{tablo}" ("{col}")'
-                            )
-                        )
-                    except Exception:
-                        pass
+                if col not in kolonlar and col not in HIZLI_EK_KOLONLAR:
+                    continue
+                if col not in {s["name"] for s in insp.get_columns(tablo)} and col not in eksik:
+                    continue
+                try:
+                    connection.execute(
+                        text(f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{tablo}" ("{col}")')
+                    )
+                except Exception:
+                    pass
 
-    _ekle("satis_siparisleri", BELGE_KULLANICI_KOLONLARI)
-    _ekle("satis_faturalari", {**BELGE_KULLANICI_KOLONLARI, **HIZLI_EK_KOLONLAR})
+    _ekle("satis_siparisleri", BELGE_KULLANICI_KOLONLAR)
+    _ekle("satis_faturalari", {**BELGE_KULLANICI_KOLONLAR, **HIZLI_EK_KOLONLAR})
+    # Brüt / Net / İndirim-Masraf (satış + alış)
+    for tablo in ("satis_faturalari", "alis_faturalari"):
+        _ekle(tablo, FATURA_GENEL_TOPLAM_KOLONLAR)
+        if not insp.has_table(tablo):
+            continue
+        mevcut = {s["name"] for s in insp.get_columns(tablo)}
+        if "tl_brut_toplam" not in mevcut and "tl_brut_toplam" not in FATURA_GENEL_TOPLAM_KOLONLAR:
+            continue
+        # Soft ALTER sonrası inspect eski; kolon yeni eklendiyse de UPDATE dene
+        try:
+            with eng.begin() as connection:
+                connection.execute(
+                    text(
+                        f'UPDATE "{tablo}" SET tl_brut_toplam = COALESCE(tl_genel_toplam, 0) '
+                        f"WHERE (tl_brut_toplam IS NULL OR tl_brut_toplam = 0) "
+                        f"AND (genel_islem_turu IS NULL OR genel_islem_turu = '') "
+                        f"AND COALESCE(tl_genel_toplam, 0) <> 0"
+                    )
+                )
+        except Exception:
+            pass

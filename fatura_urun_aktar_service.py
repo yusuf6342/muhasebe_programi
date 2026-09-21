@@ -11,10 +11,8 @@ from typing import Any
 
 from database.stok_service import StokService, decimal
 from fatura_barkod_ui import (
-    _eksi_stok_kontrol,
     _musteri_fiyat,
     _satir_birlestirilebilir,
-    _urun_talep_toplami,
 )
 from fatura_satir_birim_service import birim_satis_fiyati, temel_miktar
 
@@ -24,6 +22,127 @@ def _d(deger, varsayilan: Decimal = Decimal("0")) -> Decimal:
         return decimal(deger if deger is not None else varsayilan, "değer", varsayilan)
     except Exception:
         return varsayilan
+
+
+def birincil_barkod_al(stok) -> str:
+    """Stok kartının varsayılan / birinci barkodu (stok.barkod veya ilk ek barkod)."""
+    if stok is None:
+        return ""
+    try:
+        kod = StokService._hizli_satis_birincil_barkod(stok)
+    except Exception:
+        kod = None
+    if kod:
+        return str(kod).strip()
+    ana = (getattr(stok, "barkod", None) or "").strip()
+    if ana:
+        return ana
+    for kayit in getattr(stok, "barkodlar", None) or []:
+        b = (getattr(kayit, "barkod", None) or "").strip()
+        if b:
+            return b
+    return ""
+
+
+def stok_kartini_coz(
+    *,
+    product_id: int | None = None,
+    stok_kodu: str = "",
+) -> Any | None:
+    """Stok kartını id veya tam stok_kodu ile yükle (barkodlar dahil)."""
+    pid = product_id
+    if pid is not None:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            pid = None
+    if pid:
+        try:
+            stok = StokService.stok_getir(pid)
+            if stok is not None:
+                return stok
+        except Exception:
+            pass
+    kod = (stok_kodu or "").strip()
+    if not kod:
+        return None
+    try:
+        from database.database import get_session
+
+        with get_session() as session:
+            stok = StokService._stok_yukle(session, stok_kodu=kod)
+            if stok is not None:
+                return stok
+    except Exception:
+        pass
+    try:
+        bulunan = StokService.stoklari_ara(kod)
+        return next((s for s in bulunan if (s.stok_kodu or "").strip() == kod), None)
+    except Exception:
+        return None
+
+
+def urun_kartindan_tanimlayicilar(
+    *,
+    product_id: int | None = None,
+    stok_kodu: str = "",
+    okutulan_barkod: str = "",
+    stok=None,
+) -> tuple[str, str, str]:
+    """Ürün kartından (barkod, stok_kodu, stok_adi) döner.
+
+    Eşitleme: barkodu stok koduna kopyalamaz. Taranan barkod kartta ek barkodsa
+    satırda tarananı korur; aksi halde birincil barkodu kullanır.
+    """
+    kart = stok
+    if kart is None:
+        kart = stok_kartini_coz(product_id=product_id, stok_kodu=stok_kodu)
+    if kart is None:
+        kod = (stok_kodu or "").strip()
+        return ("", kod, "")
+
+    kod = (getattr(kart, "stok_kodu", None) or stok_kodu or "").strip()
+    ad = (getattr(kart, "stok_adi", None) or "").strip()
+    birincil = birincil_barkod_al(kart)
+    tarama = (okutulan_barkod or "").strip()
+
+    if tarama:
+        # Taranan barkod bu karta aitse (ana veya ek) satırda onu tut
+        kart_barkodlari = {birincil} if birincil else set()
+        ana = (getattr(kart, "barkod", None) or "").strip()
+        if ana:
+            kart_barkodlari.add(ana)
+        for kayit in getattr(kart, "barkodlar", None) or []:
+            b = (getattr(kayit, "barkod", None) or "").strip()
+            if b:
+                kart_barkodlari.add(b)
+        if tarama in kart_barkodlari or not birincil:
+            barkod = tarama
+        else:
+            barkod = birincil
+    else:
+        barkod = birincil
+
+    return (barkod, kod, ad)
+
+
+def urun_secim_seridini_doldur(dialog, barkod: str, stok_kodu: str, stok_adi: str) -> None:
+    """Ürün seçim şeridine (barkod / kod / ad) kart değerlerini yazar."""
+    girdiler = getattr(dialog, "satir_girdileri", None) or {}
+    for anahtar, deger in (
+        ("barkod", barkod),
+        ("urun_kodu", stok_kodu),
+        ("urun_adi", stok_adi),
+    ):
+        w = girdiler.get(anahtar)
+        if w is None:
+            continue
+        try:
+            w.delete(0, "end")
+            if deger:
+                w.insert(0, deger)
+        except Exception:
+            pass
 
 
 def fatura_pb_ve_kur(dialog) -> tuple[str, Decimal]:
@@ -58,6 +177,7 @@ def stoktan_satir_sablonu(
     miktar: Decimal | None = None,
     birim_fiyat: Decimal | None = None,
     kdv_orani: Decimal | None = None,
+    product_id: int | None = None,
 ) -> dict[str, Any]:
     """Seçilen stoktan fatura satırı sözlüğü (miktar=1 varsayılan)."""
     kod = (urun_kodu or "").strip()
@@ -67,15 +187,19 @@ def stoktan_satir_sablonu(
     except Exception:
         depo = ""
 
-    stok = None
-    try:
-        bulunan = StokService.stoklari_ara(kod)
-        stok = next((s for s in bulunan if (s.stok_kodu or "").strip() == kod), None)
-    except Exception:
-        stok = None
+    stok = stok_kartini_coz(product_id=product_id, stok_kodu=kod)
+    barkod_metin, kod, ad_kart = urun_kartindan_tanimlayicilar(
+        product_id=product_id,
+        stok_kodu=kod,
+        okutulan_barkod=(barkod or "").strip(),
+        stok=stok,
+    )
+    if (barkod or "").strip() and not barkod_metin:
+        # Kart çözülemediyse tarananı satırda tut (kod alanına yazma)
+        barkod_metin = (barkod or "").strip()
 
     ana_birim = (birim or (getattr(stok, "birim", None) if stok else None) or "Adet").strip() or "Adet"
-    ad = (urun_adi or "").strip() or (getattr(stok, "stok_adi", None) if stok else "") or kod
+    ad = (urun_adi or "").strip() or ad_kart or kod
 
     musteri = None
     if hasattr(dialog, "_secili_musteri"):
@@ -92,18 +216,18 @@ def stoktan_satir_sablonu(
         fiyat = _d(birim_fiyat)
 
     if kdv_orani is None:
+        from database.fatura_kdv_service import satir_kdv_belirle
+
         kdv_ham = getattr(stok, "kdv_orani", None) if stok else None
-        kdv = _d(kdv_ham if kdv_ham is not None else 20, Decimal("20"))
+        kdv = satir_kdv_belirle(stok_kdv=kdv_ham)
     else:
-        kdv = _d(kdv_orani, Decimal("20"))
+        from database.fatura_kdv_service import satir_kdv_belirle
+
+        kdv = satir_kdv_belirle(kaynak_kdv=kdv_orani)
 
     iskonto1 = Decimal("0")
     if stok is not None:
         iskonto1 = _d(getattr(stok, "iskonto_1", 0), Decimal("0"))
-
-    barkod_metin = (barkod or "").strip()
-    if not barkod_metin and stok is not None:
-        barkod_metin = (getattr(stok, "barkod", None) or "") or ""
 
     miktar_ekle = miktar if miktar is not None else Decimal("1")
     pb, kur = fatura_pb_ve_kur(dialog)
@@ -190,16 +314,7 @@ def urunu_faturaya_aktar(
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
         yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
-        talep = _urun_talep_toplami(
-            dialog, kod, haric_idx=hedef_idx
-        ) + temel_miktar(yeni_miktar, mevcut.get("birim") or birim, kod)
-        _eksi_stok_kontrol(
-            dialog,
-            {"stok_adi": sablon.get("urun_adi"), "stok_kodu": kod},
-            depo,
-            urun_kodu=kod,
-            proje_miktar_toplam=talep,
-        )
+        # Stok kontrolü yalnızca Kaydet ve Onayla sırasında
         mevcut["miktar"] = str(yeni_miktar)
         mevcut["temel_miktar"] = str(
             temel_miktar(yeni_miktar, mevcut.get("birim") or birim, kod)
@@ -208,14 +323,6 @@ def urunu_faturaya_aktar(
             mevcut["barkod"] = sablon["barkod"]
         idx = hedef_idx
     else:
-        talep = _urun_talep_toplami(dialog, kod) + ek_temel
-        _eksi_stok_kontrol(
-            dialog,
-            {"stok_adi": sablon.get("urun_adi"), "stok_kodu": kod},
-            depo,
-            urun_kodu=kod,
-            proje_miktar_toplam=talep,
-        )
         if hasattr(dialog, "_doviz_para_birimi"):
             try:
                 from doviz_fatura_panel import doviz_satir_kaydet_oncesi
@@ -243,7 +350,7 @@ def urunu_faturaya_aktar(
 def urun_seciminden_aktar(dialog, degerler) -> int:
     """ProductSelectionDialog / stok listesi tuple → satıra aktar.
 
-    degerler: (kod, ad, birim, stok_miktar, fiyat, kaynak?, kdv?)
+    degerler: (kod, ad, birim, stok_miktar, fiyat, kaynak?, kdv?[, product_id?])
     """
     kod = (degerler[0] or "").strip()
     if not kod:
@@ -262,12 +369,28 @@ def urun_seciminden_aktar(dialog, degerler) -> int:
             kdv = _d(degerler[6])
         except Exception:
             kdv = None
+    product_id = None
+    if len(degerler) > 7 and degerler[7] is not None and str(degerler[7]).strip() != "":
+        try:
+            product_id = int(degerler[7])
+        except (TypeError, ValueError):
+            product_id = None
+
+    barkod, kod_kart, ad_kart = urun_kartindan_tanimlayicilar(
+        product_id=product_id,
+        stok_kodu=kod,
+    )
+    # Şeritte kısa süre doğru kart bilgilerini göster (sonra temizlenir)
+    urun_secim_seridini_doldur(dialog, barkod, kod_kart or kod, ad_kart or (ad or ""))
+
     sablon = stoktan_satir_sablonu(
         dialog,
-        urun_kodu=kod,
-        urun_adi=ad or "",
+        urun_kodu=kod_kart or kod,
+        urun_adi=ad_kart or (ad or ""),
         birim=birim,
+        barkod=barkod,
         birim_fiyat=fiyat if fiyat and fiyat > 0 else None,
         kdv_orani=kdv,
+        product_id=product_id,
     )
     return urunu_faturaya_aktar(dialog, sablon, miktar_ekle=Decimal("1"), birlestir=True)

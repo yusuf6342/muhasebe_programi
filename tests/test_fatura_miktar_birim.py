@@ -529,7 +529,11 @@ class FaturaStokEntegrasyonTest(unittest.TestCase):
         self.assertEqual(self._hareket_sayisi(), 0)  # taslak
         with self.assertRaises(ValueError) as ctx:
             SatisFaturasiService.onayla(fatura.id)
-        self.assertIn("eksi stoka", str(ctx.exception).casefold())
+        mesaj = str(ctx.exception).casefold()
+        self.assertTrue(
+            "stok yetersiz" in mesaj or "eksi stoka" in mesaj,
+            mesaj,
+        )
 
     def test_14_onayda_tek_dusum_temel(self):
         from database.satis_faturasi_service import SatisFaturasiService

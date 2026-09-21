@@ -7,7 +7,6 @@ from decimal import Decimal
 from tkinter import ttk
 
 from database.stok_service import StokService
-from stok_ui import StokKartiDialog
 
 # Cin Muhasebe fatura renkleri (yalnız bu diyaloğun Treeview stili)
 _LACIVERT = "#0B2A4A"
@@ -17,7 +16,7 @@ _BEYAZ = "#FFFFFF"
 _STIL_ADI = "UrunSecKurumsal.Treeview"
 _STIL_HEAD = "UrunSecKurumsal.Treeview.Heading"
 
-# Callback sözleşmesi (eski): (kod, ad, birim, stok, fiyat, kaynak[, kdv])
+# Callback sözleşmesi: (kod, ad, birim, stok, fiyat, kaynak[, kdv[, product_id]])
 # Görünen kolonlar farklı olabilir; sec() bu sırayı korur.
 
 
@@ -115,6 +114,17 @@ class UrunSecDialog(tk.Toplevel):
         self.minsize(720, 280)
         self.transient(parent)
         self.grab_set()
+        try:
+            from ui_pencere import popup_ortala
+
+            popup_ortala(
+                self,
+                parent,
+                genislik=1040 if ayrintili else 980,
+                yukseklik=520 if ayrintili else 420,
+            )
+        except Exception:
+            pass
         self.on_select = on_select
         self._urunler = []
         self._arama_after = None
@@ -213,13 +223,18 @@ class UrunSecDialog(tk.Toplevel):
             self.ayrinti_yontem = None
 
         bos_metin = (
-            "Stokta ürün bulunamadı. Tüm kartlar için STOK LİSTESİ'ni kullanın."
-            if self.sadece_stokta
-            else "Ürün bulunamadı. İsterseniz yeni ürün ekleyebilirsiniz."
+            "Aradığınız ürün bulunamadı. Yeni stok kartı oluşturabilirsiniz."
+            if not self.sadece_stokta
+            else "Stokta ürün bulunamadı. Yeni stok kartı oluşturabilir veya STOK LİSTESİ'ni kullanabilirsiniz."
         )
         self.bos_lbl = ttk.Label(self, text=bos_metin, foreground="#a33")
         self._bilgi_cerceve = ttk.Frame(self)
         self._bilgi_cerceve.pack(fill="x", padx=12)
+        self._bos_yeni_btn = ttk.Button(
+            self._bilgi_cerceve,
+            text="Yeni Stok Kartı Oluştur",
+            command=self.yeni_urun,
+        )
         if self.sadece_stokta:
             ttk.Label(
                 self._bilgi_cerceve,
@@ -285,9 +300,8 @@ class UrunSecDialog(tk.Toplevel):
 
         alt = ttk.Frame(self, padding=12)
         alt.pack(fill="x")
-        self.yeni_btn = ttk.Button(alt, text="Yeni Ürün Ekle", command=self.yeni_urun)
-        if not self.sadece_stokta:
-            self.yeni_btn.pack(side="left")
+        self.yeni_btn = ttk.Button(alt, text="Yeni Stok Kartı", command=self.yeni_urun)
+        self.yeni_btn.pack(side="left")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Seç", command=self.sec).pack(side="right", padx=8)
 
@@ -470,23 +484,43 @@ class UrunSecDialog(tk.Toplevel):
             self.tablo.selection_set(ilk)
             self.tablo.focus(ilk)
             self.tablo.see(ilk)
-            if hasattr(self, "yeni_btn") and not self.sadece_stokta:
-                self.yeni_btn.configure(text="Yeni Ürün Ekle")
+            if hasattr(self, "yeni_btn"):
+                self.yeni_btn.configure(text="Yeni Stok Kartı")
+            try:
+                self._bos_yeni_btn.pack_forget()
+            except tk.TclError:
+                pass
         else:
             self.bos_lbl.pack(in_=self._bilgi_cerceve, anchor="w", pady=(0, 4))
-            if hasattr(self, "yeni_btn") and not self.sadece_stokta:
-                self.yeni_btn.configure(text="Yeni Ürün Ekle (bulunamadı)")
+            # En az 3 karakter aramada oluşturma düğmesi
+            sorgu_uzun = 0
+            try:
+                if self.ayrintili:
+                    sorgu_uzun = sum(len(k) for k in self._ayrinti_kelimeler() if k)
+                else:
+                    sorgu_uzun = max(
+                        len(self.kod_filtre.get().strip()),
+                        len(self.ad_filtre.get().strip()),
+                    )
+            except Exception:
+                sorgu_uzun = 0
+            if sorgu_uzun >= 3 and hasattr(self, "_bos_yeni_btn"):
+                self._bos_yeni_btn.pack(anchor="w", pady=(0, 4))
+            if hasattr(self, "yeni_btn"):
+                self.yeni_btn.configure(text="Yeni Stok Kartı Oluştur")
 
     def _callback_degerleri(self, stok) -> tuple:
-        """Eski sözleşme: kod, ad, birim, stok, fiyat, kaynak[, kdv]."""
+        """Sözleşme: kod, ad, birim, stok, fiyat, kaynak, kdv[, product_id]."""
         fiyat = _satis_fiyati_nesneden(stok)
         mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
         kdv = getattr(stok, "kdv_orani", None)
-        kdv_metin = (
-            f"{Decimal(kdv):f}".rstrip("0").rstrip(".")
-            if kdv is not None
-            else "20"
-        ) or "0"
+        from database.fatura_kdv_service import satir_kdv_metin_sayisal
+
+        kdv_metin = satir_kdv_metin_sayisal(kdv if kdv is not None else 20)
+        try:
+            product_id = int(getattr(stok, "id", 0) or 0) or None
+        except (TypeError, ValueError):
+            product_id = None
         return (
             stok.stok_kodu,
             stok.stok_adi,
@@ -495,6 +529,7 @@ class UrunSecDialog(tk.Toplevel):
             f"{fiyat:f}".rstrip("0").rstrip(".") or "0",
             "Stok Kartı",
             kdv_metin,
+            product_id,
         )
 
     def _tek_tik(self, event):
@@ -622,6 +657,8 @@ class UrunSecDialog(tk.Toplevel):
         callback(degerler)
 
     def yeni_urun(self):
+        from hizli_stok_karti_ui import HizliStokKartiDialog
+
         if self.ayrintili:
             kelimeler = [k for k in self._ayrinti_kelimeler() if k]
             baslangic_ad = " ".join(kelimeler)
@@ -629,20 +666,29 @@ class UrunSecDialog(tk.Toplevel):
         else:
             baslangic_kod = self.kod_filtre.get().strip()
             baslangic_ad = self.ad_filtre.get().strip()
-        dialog = StokKartiDialog(
+        # Parent fatura dialog'u bul
+        fatura = self.master
+        dialog = HizliStokKartiDialog(
             self,
+            fatura_dialog=fatura,
             baslangic={
-                "stok_kodu": baslangic_kod,
+                "stok_kodu": "",  # otomatik önerilecek
                 "stok_adi": baslangic_ad,
             },
         )
+        # Manuel kod önerisi varsa kullanıcı değiştirebilir; boş bırakıldı ean otomatik
+        if baslangic_kod and len(baslangic_kod) >= 3:
+            try:
+                dialog.kod.delete(0, "end")
+                dialog.kod.insert(0, baslangic_kod[:50])
+            except Exception:
+                pass
         self.wait_window(dialog)
         if not dialog.result:
             return
         stok = dialog.result
         stok = StokService.stok_getir(stok.id) or stok
         degerler = self._callback_degerleri(stok)
-        # fiyat 0 ise servisten dene
         if degerler[4] in ("0", "0.0", ""):
             fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
             degerler = (
@@ -653,6 +699,7 @@ class UrunSecDialog(tk.Toplevel):
                 f"{fiyat:f}".rstrip("0").rstrip(".") or "0",
                 degerler[5],
                 degerler[6] if len(degerler) > 6 else "20",
+                degerler[7] if len(degerler) > 7 else None,
             )
         callback = self.on_select
         self.on_select = None

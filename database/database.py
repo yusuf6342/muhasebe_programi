@@ -634,6 +634,12 @@ def cari_kart_schemasini_guncelle() -> None:
         CariYetkiliService.schema_hazirla()
     except Exception:
         pass
+    try:
+        from database.invoice_scan_message_service import schema_hazirla as _scan_msg_schema
+
+        _scan_msg_schema()
+    except Exception:
+        pass
     performans_indekslerini_hazirla()
 
 
@@ -781,11 +787,14 @@ def doviz_schema_guncelle() -> None:
         "tl_birim_fiyat": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
         "tl_tutar": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
         "manuel_fiyat": "BOOLEAN DEFAULT 0 NOT NULL",
+        "dagitima_kapali": "BOOLEAN DEFAULT 0 NOT NULL",
     }
     _ekle("satis_faturasi_satirlari", satir_doviz)
     _ekle("alis_faturasi_satirlari", {
-        k: v for k, v in satir_doviz.items() if k != "manuel_fiyat"
+        k: v for k, v in satir_doviz.items() if k not in ("manuel_fiyat", "dagitima_kapali")
     })
+    # Alış satırında da dağıtım kilidi (varsa tablo)
+    _ekle("alis_faturasi_satirlari", {"dagitima_kapali": "BOOLEAN DEFAULT 0 NOT NULL"})
 
     _ekle(
         "satis_faturasi_tahsilatlari",

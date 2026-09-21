@@ -42,6 +42,11 @@ class SatisFaturasi(Base):
     tl_matrah: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     tl_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     tl_genel_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Fatura geneli Brüt / İndirim-Masraf / Net (tl_genel_toplam = Net muhasebe tutarı)
+    tl_brut_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    genel_islem_turu: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    genel_islem_orani: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    genel_islem_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -109,8 +114,10 @@ class SatisFaturasiSatiri(Base):
     birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
-    # Kullanıcı manuel birim fiyat girdiyse True — barkod tekrarında korunur
+    # Kullanıcı manuel birim fiyat girdiyse True — barkod tekrarında korunur (dağıtımı engellemez)
     manuel_fiyat: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Açık dağıtım kilidi — yalnızca bu bayrak Fiyatlara Dağıt dışı bırakır
+    dagitima_kapali: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="satirlar")
 

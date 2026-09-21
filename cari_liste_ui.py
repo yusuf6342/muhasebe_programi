@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tkinter as tk
 from copy import deepcopy
@@ -14,6 +15,33 @@ from database.session_manager import oturum
 from satis_tema import BEYAZ, LACIVERT, METIN, font
 
 EKRAN_KODU = "cari_kartlari_listesi"
+
+
+def gecen_gun_sayi(deger) -> float:
+    """Geçen gün ham değeri (sıralama / hesap). Boş veya hatalı → 0.0."""
+    if deger is None or deger == "":
+        return 0.0
+    try:
+        if isinstance(deger, str):
+            s = deger.strip().replace(" ", "").replace(",", ".")
+            if not s:
+                return 0.0
+            return float(s)
+        return float(deger)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def gecen_gun_goster(deger) -> str:
+    """Liste görüntüsü: küsuratsız tam gün.
+
+    0,50 ve üzeri yukarı, altı aşağı. Python round() kullanılmaz
+    (banker's rounding yok); pozitif değerlerde floor(x + 0.5).
+    """
+    x = gecen_gun_sayi(deger)
+    if x < 0:
+        x = 0.0
+    return str(int(math.floor(x + 0.5)))
 
 # anahtar, baslik, varsayilan_genislik, varsayilan_gorunur
 CARI_LISTE_KOLONLARI = (

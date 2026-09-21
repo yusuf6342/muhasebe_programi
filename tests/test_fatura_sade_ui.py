@@ -80,28 +80,23 @@ class AktarimTest(unittest.TestCase):
         d._toplamlari_guncelle = MagicMock()
         return d
 
-    @patch("fatura_urun_aktar_service.StokService")
     @patch("fatura_urun_aktar_service.birim_satis_fiyati", return_value=Decimal("10"))
     @patch("fatura_urun_aktar_service.temel_miktar", return_value=Decimal("1"))
-    @patch("fatura_urun_aktar_service._eksi_stok_kontrol")
-    @patch("fatura_urun_aktar_service._urun_talep_toplami", return_value=Decimal("0"))
     @patch("fatura_barkod_ui._satiri_vurgula")
     def test_yeni_satir_ekle(self, *_mocks):
-        from fatura_urun_aktar_service import StokService as _
-
         dialog = self._dialog()
+        stok = SimpleNamespace(
+            stok_kodu="U1",
+            stok_adi="Ürün 1",
+            birim="Adet",
+            barkod="123",
+            barkodlar=[],
+            kdv_orani=Decimal("20"),
+            iskonto_1=0,
+        )
         with patch(
-            "fatura_urun_aktar_service.StokService.stoklari_ara",
-            return_value=[
-                SimpleNamespace(
-                    stok_kodu="U1",
-                    stok_adi="Ürün 1",
-                    birim="Adet",
-                    barkod="123",
-                    kdv_orani=Decimal("20"),
-                    iskonto_1=0,
-                )
-            ],
+            "fatura_urun_aktar_service.stok_kartini_coz",
+            return_value=stok,
         ), patch(
             "fatura_urun_aktar_service.StokService.maliyetler",
             return_value={"fifo": 0, "son_alis": 0, "ortalama": 0, "agirlikli": 0},
@@ -111,10 +106,9 @@ class AktarimTest(unittest.TestCase):
         self.assertEqual(idx, 0)
         self.assertEqual(len(dialog.satirlar), 1)
         self.assertEqual(dialog.satirlar[0]["urun_kodu"], "U1")
+        self.assertEqual(dialog.satirlar[0]["barkod"], "123")
         self.assertEqual(dialog.satirlar[0]["miktar"], "1")
 
-    @patch("fatura_urun_aktar_service._eksi_stok_kontrol")
-    @patch("fatura_urun_aktar_service._urun_talep_toplami", return_value=Decimal("0"))
     @patch("fatura_urun_aktar_service.temel_miktar", side_effect=lambda m, b, k: Decimal(str(m)))
     @patch("fatura_barkod_ui._satiri_vurgula")
     def test_ayni_urun_miktar_artis(self, *_mocks):
@@ -140,8 +134,6 @@ class AktarimTest(unittest.TestCase):
         self.assertEqual(len(dialog.satirlar), 1)
         self.assertEqual(dialog.satirlar[0]["miktar"], "2")
 
-    @patch("fatura_urun_aktar_service._eksi_stok_kontrol")
-    @patch("fatura_urun_aktar_service._urun_talep_toplami", return_value=Decimal("0"))
     @patch("fatura_urun_aktar_service.temel_miktar", side_effect=lambda m, b, k: Decimal(str(m)))
     @patch("fatura_barkod_ui._satiri_vurgula")
     def test_farkli_birim_ayri_satir(self, *_mocks):
@@ -174,6 +166,63 @@ class AktarimTest(unittest.TestCase):
         pb, kur = fatura_pb_ve_kur(d)
         self.assertEqual(pb, "TRY")
         self.assertEqual(kur, Decimal("1"))
+
+
+class UrunKartTanimlayiciTest(unittest.TestCase):
+    def test_genislik_katsayilari(self):
+        barkod_eski = 18
+        barkod_yeni = max(1, int(round(barkod_eski * 1.50)))
+        kod_yeni = barkod_yeni
+        ad_yeni = 67
+        self.assertEqual(barkod_yeni, 27)
+        self.assertEqual(kod_yeni, 27)
+        self.assertEqual(ad_yeni, 67)
+
+    def test_birincil_barkod_ana_alan(self):
+        from fatura_urun_aktar_service import birincil_barkod_al, urun_kartindan_tanimlayicilar
+
+        stok = SimpleNamespace(
+            stok_kodu="SK1",
+            stok_adi="Ürün A",
+            barkod="8691111111111",
+            barkodlar=[],
+        )
+        self.assertEqual(birincil_barkod_al(stok), "8691111111111")
+        barkod, kod, ad = urun_kartindan_tanimlayicilar(stok=stok)
+        self.assertEqual(barkod, "8691111111111")
+        self.assertEqual(kod, "SK1")
+        self.assertEqual(ad, "Ürün A")
+
+    def test_ek_barkod_tarama_korunur(self):
+        from fatura_urun_aktar_service import urun_kartindan_tanimlayicilar
+
+        ekstra = SimpleNamespace(barkod="8692222222222")
+        stok = SimpleNamespace(
+            stok_kodu="SK2",
+            stok_adi="Ürün B",
+            barkod="8691111111111",
+            barkodlar=[ekstra],
+        )
+        barkod, kod, ad = urun_kartindan_tanimlayicilar(
+            stok=stok, okutulan_barkod="8692222222222"
+        )
+        self.assertEqual(barkod, "8692222222222")
+        self.assertEqual(kod, "SK2")
+        self.assertNotEqual(kod, "8692222222222")
+
+    def test_kod_seciminde_birincil_barkod(self):
+        from fatura_urun_aktar_service import urun_kartindan_tanimlayicilar
+
+        stok = SimpleNamespace(
+            stok_kodu="SK3",
+            stok_adi="Ürün C",
+            barkod="8693333333333",
+            barkodlar=[],
+        )
+        barkod, kod, ad = urun_kartindan_tanimlayicilar(stok=stok, stok_kodu="SK3")
+        self.assertEqual(barkod, "8693333333333")
+        self.assertEqual(kod, "SK3")
+        self.assertEqual(ad, "Ürün C")
 
 
 class IskontoDonguTest(unittest.TestCase):

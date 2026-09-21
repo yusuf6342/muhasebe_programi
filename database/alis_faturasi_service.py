@@ -82,6 +82,51 @@ class AlisFaturasiService:
             return [{"fatura": f, **AlisFaturasiService.toplam(f.satirlar)} for f in faturalar]
 
     @staticmethod
+    def listele_ozet(tarih_bas=None, tarih_bit=None) -> list[dict[str, Any]]:
+        """Liste penceresi için hızlı özet (satır yüklemez)."""
+        from sqlalchemy.orm import joinedload
+
+        with get_session() as session:
+            statement = (
+                select(AlisFaturasi)
+                .options(joinedload(AlisFaturasi.cari))
+                .order_by(AlisFaturasi.fatura_tarihi.desc(), AlisFaturasi.id.desc())
+            )
+            # Soft-delete varsa hariç tut
+            if hasattr(AlisFaturasi, "is_deleted"):
+                from sqlalchemy import or_
+
+                statement = statement.where(
+                    or_(AlisFaturasi.is_deleted.is_(False), AlisFaturasi.is_deleted.is_(None))
+                )
+            if tarih_bas is not None:
+                statement = statement.where(AlisFaturasi.fatura_tarihi >= tarih_bas)
+            if tarih_bit is not None:
+                statement = statement.where(AlisFaturasi.fatura_tarihi <= tarih_bit)
+            faturalar = list(session.scalars(statement).unique().all())
+            sonuc = []
+            for f in faturalar:
+                genel = Decimal(str(getattr(f, "tl_genel_toplam", 0) or 0))
+                cari = f.cari
+                sonuc.append({
+                    "id": f.id,
+                    "fatura_no": f.fatura_no or "",
+                    "fatura_tarihi": f.fatura_tarihi,
+                    "cari_kodu": (cari.cari_kodu if cari else "") or "",
+                    "cari_ad": (cari.unvan if cari else "") or "",
+                    "vergi_no": (getattr(cari, "vergi_no", None) or "") if cari else "",
+                    "durum": f.durum or "",
+                    "genel_toplam": genel,
+                    "matrah": Decimal(str(getattr(f, "tl_matrah", 0) or 0)),
+                    "kdv": Decimal(str(getattr(f, "tl_kdv", 0) or 0)),
+                    "para_birimi": (getattr(f, "para_birimi", None) or "TRY"),
+                    "olusturma_tarihi": getattr(f, "olusturma_tarihi", None),
+                    "created_by_full_name": getattr(f, "created_by_full_name", None),
+                    "document_type": "PURCHASE_INVOICE",
+                })
+            return sonuc
+
+    @staticmethod
     def getir(fatura_id):
         with get_session() as session:
             return session.scalar(
@@ -268,10 +313,44 @@ class AlisFaturasiService:
                 )
 
             toplam_dict = AlisFaturasiService.toplam(fatura.satirlar)
-            toplam = toplam_dict["genel_toplam"]
+            satir_brut = toplam_dict["genel_toplam"]
+            from database.fatura_genel_toplam_service import islem_uygula, islem_turunu_normalize, netten_islem
+
+            tur = islem_turunu_normalize(veriler.get("genel_islem_turu"))
+            oran = decimal(veriler.get("genel_islem_orani", 0), "İşlem oranı", Decimal("0"))
+            tutar = decimal(veriler.get("genel_islem_tutari", 0), "İşlem tutarı", Decimal("0"))
+            if veriler.get("tl_brut_toplam") is not None:
+                satir_brut = decimal(veriler.get("tl_brut_toplam"), "Brüt toplam", Decimal("0"))
+            if veriler.get("tl_genel_toplam") is not None:
+                net = decimal(veriler.get("tl_genel_toplam"), "Net toplam", Decimal("0"))
+                if tur or tutar or oran:
+                    sonuc = islem_uygula(
+                        satir_brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
+                    )
+                    if abs(sonuc["net_toplam"] - net) > Decimal("0.009"):
+                        sonuc = netten_islem(satir_brut, net)
+                elif abs(net - satir_brut) > Decimal("0.009"):
+                    sonuc = netten_islem(satir_brut, net)
+                else:
+                    sonuc = {
+                        "brut_toplam": satir_brut,
+                        "islem_turu": "",
+                        "islem_orani": Decimal("0"),
+                        "islem_tutari": Decimal("0"),
+                        "net_toplam": net,
+                    }
+            else:
+                sonuc = islem_uygula(
+                    satir_brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
+                )
             fatura.tl_matrah = toplam_dict["ara_toplam"] - toplam_dict["iskonto"]
             fatura.tl_kdv = toplam_dict["kdv"]
-            fatura.tl_genel_toplam = toplam
+            fatura.tl_brut_toplam = sonuc["brut_toplam"]
+            fatura.genel_islem_turu = sonuc["islem_turu"] or None
+            fatura.genel_islem_orani = sonuc["islem_orani"]
+            fatura.genel_islem_tutari = sonuc["islem_tutari"]
+            fatura.tl_genel_toplam = sonuc["net_toplam"]
+            toplam = sonuc["net_toplam"]
             if pb != "TRY":
                 from database.iskonto_hesap_service import iskonto_carpani
 

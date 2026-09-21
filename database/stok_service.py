@@ -1055,7 +1055,9 @@ class StokService:
             mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
             kdv = getattr(stok, "kdv_orani", None)
             if kdv is None:
-                kdv = VARSAYILAN_KDV_ORANI
+                from database.fatura_kdv_service import firma_varsayilan_kdv_orani
+
+                kdv = firma_varsayilan_kdv_orani()
             return {
                 "stok_id": stok.id,
                 "stok_kodu": stok.stok_kodu,
@@ -1197,7 +1199,12 @@ class StokService:
         mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
         kdv = getattr(stok, "kdv_orani", None)
         if kdv is None:
-            kdv = VARSAYILAN_KDV_ORANI
+            try:
+                from database.fatura_kdv_service import firma_varsayilan_kdv_orani
+
+                kdv = firma_varsayilan_kdv_orani()
+            except Exception:
+                kdv = VARSAYILAN_KDV_ORANI
         return {
             "stok_id": int(stok.id),
             "stok_kodu": stok.stok_kodu,
@@ -2104,9 +2111,9 @@ class StokService:
                 s1 = None
 
             kdv = getattr(stok, "kdv_orani", None)
-            kdv_metin = (
-                f"{Decimal(kdv):f}".rstrip("0").rstrip(".") if kdv is not None else "20"
-            ) or "0"
+            from database.fatura_kdv_service import satir_kdv_metin_sayisal
+
+            kdv_metin = satir_kdv_metin_sayisal(kdv if kdv is not None else 20)
             barkod = stok.barkod or ""
             if not barkod and stok.barkodlar:
                 barkod = stok.barkodlar[0].barkod or ""
@@ -2816,11 +2823,61 @@ class StokService:
                     if b.varsayilan_satis and not stok.varsayilan_satis_birim:
                         stok.varsayilan_satis_birim = b.birim_adi
 
-            if barkodlar is not None:
+            # 13 haneli stok kodu → birincil barkod (metin; baştaki sıfır korunur)
+            barkod_yaz = barkodlar is not None
+            senkron_rapor = None
+            try:
+                from database.stok_kodu_barkod_service import sync_for_save
+
+                kaynak_barkodlar = barkodlar
+                if kaynak_barkodlar is None:
+                    kaynak_barkodlar = [
+                        {
+                            "barkod": str(getattr(b, "barkod", "") or ""),
+                            "birim": getattr(b, "birim", None) or stok.birim or "Adet",
+                            "fiyat_adi": getattr(b, "fiyat_adi", None) or "",
+                            "fiyat": str(getattr(b, "fiyat", 0) or 0),
+                            "aciklama": getattr(b, "aciklama", None) or "",
+                        }
+                        for b in list(getattr(stok, "barkodlar", None) or [])
+                    ]
+                    if not kaynak_barkodlar and getattr(stok, "barkod", None):
+                        kaynak_barkodlar = [
+                            {
+                                "barkod": str(stok.barkod),
+                                "birim": stok.birim or "Adet",
+                                "fiyat_adi": "SATIŞ FİYATI 1",
+                                "fiyat": "0",
+                                "aciklama": "",
+                            }
+                        ]
+                mukerrer_atla = bool(veriler.get("_barkod_mukerrer_atla"))
+                barkodlar, senkron_rapor = sync_for_save(
+                    kaynak_barkodlar,
+                    yeni_kod,  # metin
+                    birim=stok.birim or "Adet",
+                    exclude_stock_id=int(stok.id) if stok.id else None,
+                    raise_on_duplicate=not mukerrer_atla,
+                )
+                if (
+                    barkod_yaz
+                    or (senkron_rapor or {}).get("eklendi")
+                    or (senkron_rapor or {}).get("guncellendi")
+                    or (senkron_rapor or {}).get("kaldirildi")
+                ):
+                    barkod_yaz = True
+            except ValueError:
+                raise
+            except Exception:
+                # Senkron hatası kayıt yolunu kırmasın (eski davranış)
+                if barkodlar is None:
+                    barkod_yaz = False
+
+            if barkod_yaz and barkodlar is not None:
                 temiz_barkodlar = []
                 gorulen = set()
                 for kayit in barkodlar:
-                    kod = (kayit.get("barkod") or "").strip()
+                    kod = str(kayit.get("barkod") or "").strip()  # metin; int'e çevirme
                     if not kod:
                         continue
                     if kod in gorulen:
@@ -2835,7 +2892,7 @@ class StokService:
                 stok.barkod = None
                 session.flush()
                 for kayit in temiz_barkodlar:
-                    kod = (kayit.get("barkod") or "").strip()
+                    kod = str(kayit.get("barkod") or "").strip()
                     stok.barkodlar.append(
                         StokBarkod(
                             barkod=kod,
@@ -2846,8 +2903,29 @@ class StokService:
                         )
                     )
                 stok.barkod = stok.barkodlar[0].barkod if stok.barkodlar else None
+                if senkron_rapor and (
+                    senkron_rapor.get("eklendi") or senkron_rapor.get("guncellendi")
+                ):
+                    try:
+                        from database.user_audit import audit_document
+
+                        audit_document(
+                            "stok_kodu_barkod_otomatik",
+                            modul="stok",
+                            kayit_id=str(stok.id),
+                            belge_no=yeni_kod,
+                            yeni={
+                                "stok_kodu": yeni_kod,
+                                "aksiyon": senkron_rapor.get("aksiyon"),
+                                "ean_ok": bool(senkron_rapor.get("ean_ok")),
+                            },
+                        )
+                    except Exception:
+                        pass
             elif veriler.get("barkod") is not None:
-                stok.barkod = veriler.get("barkod") or None
+                # Ana barkod alanı da metin olarak saklanır
+                ham = veriler.get("barkod")
+                stok.barkod = str(ham).strip() if ham not in (None, "") else None
 
             if resimler is not None:
                 stok.resimler.clear()

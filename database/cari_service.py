@@ -86,20 +86,16 @@ class CariService:
     @staticmethod
     def _toplu_liste_ozet(session, cariler: list[Cari]) -> list[dict[str, Any]]:
         """Liste ekranı: tek seferde bakiye + yaklaşık valör (FIFO yok)."""
+        from database.cari_bakiye_service import net_bakiye
+
         if not cariler:
             return []
         ids = [c.id for c in cariler]
-        islemler = list(
-            session.scalars(select(CariIslem).where(CariIslem.cari_id.in_(ids))).all()
-        )
         hareketler = list(
             session.scalars(
                 select(SatisHareketi).where(SatisHareketi.cari_id.in_(ids))
             ).all()
         )
-        islem_by: dict[int, list[CariIslem]] = {i: [] for i in ids}
-        for islem in islemler:
-            islem_by.setdefault(islem.cari_id, []).append(islem)
         hareket_by: dict[int, list[SatisHareketi]] = {i: [] for i in ids}
         for h in hareketler:
             hareket_by.setdefault(h.cari_id, []).append(h)
@@ -108,29 +104,11 @@ class CariService:
         sonuclar: list[dict[str, Any]] = []
         for cari in cariler:
             cid = cari.id
-            cari_islemler = islem_by.get(cid, [])
-            islem_belgeleri = {i.belge_no for i in cari_islemler}
-            kayitlar: list[tuple] = []
-            for h in hareket_by.get(cid, []):
-                bn = h.belge_no or ""
-                if bn in islem_belgeleri or bn.startswith(CariService._DEFTER_ATLA_ONEK):
-                    continue
-                kayitlar.append(
-                    (h.satis_tarihi, bn, Decimal(str(h.satis_tutari or 0)), Decimal("0"))
-                )
-            for islem in cari_islemler:
-                kayitlar.append(
-                    (
-                        islem.tarih,
-                        islem.belge_no,
-                        Decimal(str(islem.borc or 0)),
-                        Decimal(str(islem.alacak or 0)),
-                    )
-                )
-            kayitlar.sort(key=lambda x: (x[0] or date.min, x[1] or "", str(x[2]), str(x[3])))
-            toplam_borc = sum((k[2] for k in kayitlar), Decimal("0"))
-            toplam_alacak = sum((k[3] for k in kayitlar), Decimal("0"))
-            bakiye = toplam_borc - toplam_alacak
+            # Net bakiye — fatura Eski Bakiye ile aynı merkezî servis
+            nb = net_bakiye(cid, session=session)
+            bakiye = nb["bakiye"]
+            toplam_borc = nb["toplam_borc"]
+            toplam_alacak = nb["toplam_alacak"]
 
             agirlik = 0.0
             tutar_toplam = Decimal("0")
@@ -1005,10 +983,19 @@ class CariService:
 
     @staticmethod
     def aktif_musteriler() -> list[Cari]:
-        return CariService.aktif_cariler(cari_turu="Müşteri")
+        with get_session() as session:
+            statement = select(Cari).where(
+                Cari.aktif.is_(True),
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)),
+            )
+            statement = CariService._cari_turu_filtresi(statement, "Müşteri")
+            statement = statement.order_by(Cari.unvan, Cari.cari_kodu)
+            return list(session.scalars(statement).all())
 
     @staticmethod
-    def musteri_ara_hizli(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
+    def musteri_ara_hizli(
+        arama: str = "", *, limit: int = 50, sadece_aktif: bool = True
+    ) -> list[dict[str, Any]]:
         """Fatura müşteri araması — çoklu blok, sıra bağımsız (SearchService)."""
         from database.search_service import SearchService, tokenize_query
 
@@ -1017,7 +1004,9 @@ class CariService:
             return []
         if not tokenize_query(ara):
             return []
-        return SearchService.search_customers(ara, limit=limit, cari_turu="Müşteri")
+        return SearchService.search_customers(
+            ara, limit=limit, cari_turu="Müşteri", sadece_aktif=sadece_aktif
+        )
 
     @staticmethod
     def tedarikci_ara_hizli(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
@@ -1033,23 +1022,10 @@ class CariService:
 
     @staticmethod
     def musteri_bakiyeleri_toplu(cari_idler: list[int]) -> dict[int, Decimal]:
-        """Seçilen cari id'leri için hızlı bakiye (yalnızca CariIslem toplamı)."""
-        ids = [int(i) for i in cari_idler if i is not None]
-        if not ids:
-            return {}
-        from sqlalchemy import func
+        """Seçilen cari id'leri için liste ile aynı net bakiye."""
+        from database.cari_bakiye_service import liste_bakiyeleri
 
-        with get_session() as session:
-            satirlar = session.execute(
-                select(
-                    CariIslem.cari_id,
-                    func.coalesce(func.sum(CariIslem.borc), 0)
-                    - func.coalesce(func.sum(CariIslem.alacak), 0),
-                )
-                .where(CariIslem.cari_id.in_(ids))
-                .group_by(CariIslem.cari_id)
-            ).all()
-            return {int(r[0]): Decimal(str(r[1] or 0)) for r in satirlar}
+        return liste_bakiyeleri(cari_idler)
 
     @staticmethod
     def satis_raporu() -> dict[str, Any]:

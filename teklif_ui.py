@@ -295,15 +295,19 @@ class TeklifDialog(tk.Toplevel):
         self.musteriler = QuoteService.aktif_musterileri()
         self.musteri_map = {f"{m.cari_kodu} - {m.unvan}": m for m in self.musteriler}
         self.title("Teklif Formu")
-        self.geometry("1180x760")
-        self.minsize(980, 620)
+        from ui_pencere import belge_penceresini_hazirla
+
+        belge_penceresini_hazirla(
+            self,
+            min_genislik=900,
+            min_yukseklik=520,
+            varsayilan_genislik=1180,
+            varsayilan_yukseklik=720,
+            maximize=True,
+        )
         self.configure(bg=ACIK_GRI)
         self.transient(parent)
         self.grab_set()
-        try:
-            self.state("zoomed")
-        except tk.TclError:
-            pass
         self._toolbar_kur()
         self._govde_kur()
         if self.teklif:

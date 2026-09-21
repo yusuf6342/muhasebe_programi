@@ -2095,7 +2095,7 @@ class StokKartiDialog(tk.Toplevel):
                 stok_tk_buton(form, "Yeni", lambda: self.stok_alan_yeni("stok_kodu"), rol="yeni").grid(
                     row=satir, column=sutun + 2, padx=(0, 6), pady=(0, 4)
                 )
-                widget.bind("<KeyRelease>", self._stok_kodu_ara)
+                widget.bind("<KeyRelease>", self._stok_kodu_keyrelease)
                 widget.bind("<<ComboboxSelected>>", self._stok_kodu_secildi)
                 self._stok_kodu_sag_tik_bagla(widget)
             elif alan == "stok_adi":
@@ -2115,7 +2115,9 @@ class StokKartiDialog(tk.Toplevel):
                 if mevcut_kdv is None:
                     widget.set(str(int(VARSAYILAN_KDV_ORANI)))
                 else:
-                    metin = f"{Decimal(mevcut_kdv):f}".rstrip("0").rstrip(".") or "0"
+                    from database.fatura_kdv_service import satir_kdv_metin_sayisal
+
+                    metin = satir_kdv_metin_sayisal(mevcut_kdv)
                     if metin not in KDV_ORANLARI:
                         widget.configure(values=KDV_ORANLARI + (metin,), state="normal")
                     widget.set(metin)
@@ -2630,12 +2632,150 @@ class StokKartiDialog(tk.Toplevel):
 
         self._ozeti_yenile()
         self._depo_tablosu_yenile()
+        self._ean_uyari_gosterildi = False
+        self._stok_kodu_barkod_live_after = None
         self.alanlar["stok_kodu"].focus_set()
         self.bind("<Control-s>", lambda _e: self.kaydet())
         self.bind("<Escape>", lambda _e: self._kapat_istegi())
         self.bind("<F8>", lambda _e: self._hareketler_sekmesine_gec())
         self.bind("<F6>", lambda _e: self.barkodlar_ac())
         self.bind("<F10>", lambda _e: self.fiyat_analiz_ac())
+        # Mevcut kart: 13 haneli stok kodu → barkod öner / sor
+        if self.stok:
+            self.after(80, self._mevcut_kart_stok_kodu_barkod_kontrol)
+        elif self.baslangic.get("stok_kodu"):
+            self.after(80, lambda: self._stok_kodu_barkod_senkron(live=True))
+
+    def _stok_kodu_keyrelease(self, event=None):
+        self._stok_kodu_ara(event)
+        if self.stok:
+            return
+        if getattr(self, "_stok_kodu_barkod_live_after", None):
+            try:
+                self.after_cancel(self._stok_kodu_barkod_live_after)
+            except Exception:
+                pass
+        self._stok_kodu_barkod_live_after = self.after(
+            250, lambda: self._stok_kodu_barkod_senkron(live=True)
+        )
+
+    def _stok_kodu_barkod_sor(self, kod: str) -> str | None:
+        """Dönüş: 'ekle' | 'atla' | None (vazgeç)."""
+        win = tk.Toplevel(self)
+        win.title("Stok kodu barkod")
+        win.transient(self)
+        win.grab_set()
+        ttk.Label(
+            win,
+            text=(
+                "Stok kodu geçerli 13 haneli barkod biçimindedir. "
+                "Barkodlar listesine eklemek ister misiniz?\n\n"
+                f"Kod: {kod}"
+            ),
+            wraplength=420,
+            justify="left",
+        ).pack(padx=14, pady=12)
+        secim = {"v": None}
+
+        def _sec(v):
+            secim["v"] = v
+            win.destroy()
+
+        alt = ttk.Frame(win)
+        alt.pack(fill="x", pady=8, padx=12)
+        ttk.Button(alt, text="Barkod Olarak Ekle", command=lambda: _sec("ekle")).pack(
+            fill="x", pady=2
+        )
+        ttk.Button(alt, text="Ekleme", command=lambda: _sec("atla")).pack(fill="x", pady=2)
+        ttk.Button(alt, text="Vazgeç", command=lambda: _sec(None)).pack(fill="x", pady=2)
+        self.wait_window(win)
+        return secim["v"]
+
+    def _mukerrer_barkod_dialog(self, dup: dict) -> None:
+        kod = (dup or {}).get("stok_kodu") or "—"
+        ad = (dup or {}).get("stok_adi") or "—"
+        stok_id = (dup or {}).get("stok_id")
+        msg = (
+            f"Bu barkod başka bir stok kartında kayıtlı.\n\n"
+            f"Stok kodu: {kod}\nÜrün adı: {ad}"
+        )
+        if stok_id and messagebox.askyesno(
+            "Mükerrer barkod",
+            msg + "\n\nMevcut stok kartını açmak ister misiniz?",
+            parent=self,
+        ):
+            try:
+                mevcut = StokService.stok_getir(int(stok_id))
+                if mevcut is not None:
+                    StokKartiDialog(self.master, stok=mevcut)
+            except Exception as exc:
+                messagebox.showerror("Stok", str(exc), parent=self)
+        else:
+            messagebox.showwarning("Mükerrer barkod", msg, parent=self)
+
+    def _stok_kodu_barkod_senkron(self, *, live: bool = False, ask_if_needed: bool = False):
+        """Stok kodundan otomatik barkod; yalnızca AUTO_MARKER satırlarını günceller."""
+        from database.stok_kodu_barkod_service import sync_primary_barcode_from_stock_code
+
+        kod = (self.alanlar["stok_kodu"].get() or "").strip()
+        birim = (self.alanlar["birim"].get() or "").strip() or "Adet"
+        exclude = int(self.stok.id) if self.stok else None
+        ask_cb = self._stok_kodu_barkod_sor if ask_if_needed else None
+        try:
+            rapor = sync_primary_barcode_from_stock_code(
+                self.barkodlar,
+                kod,
+                birim=birim,
+                exclude_stock_id=exclude,
+                ask_add=ask_if_needed,
+                ask_callback=ask_cb,
+                check_duplicate=True,
+            )
+        except Exception:
+            return
+
+        uyari = rapor.get("uyari_ean")
+        if uyari and not getattr(self, "_ean_uyari_gosterildi", False):
+            self._ean_uyari_gosterildi = True
+            messagebox.showwarning("EAN-13", uyari, parent=self)
+
+        if rapor.get("aksiyon") == "duplicate" and rapor.get("duplicate"):
+            if live or ask_if_needed:
+                self._mukerrer_barkod_dialog(rapor["duplicate"])
+            return
+
+        if rapor.get("aksiyon") in ("set", "update", "remove") or rapor.get("eklendi") or rapor.get(
+            "guncellendi"
+        ) or rapor.get("kaldirildi"):
+            self.barkodlar = rapor.get("barkodlar") or []
+            self._barkod_birim_tablolari_yenile()
+
+    def _mevcut_kart_stok_kodu_barkod_kontrol(self):
+        from database.stok_kodu_barkod_service import (
+            is_13_digit_barcode,
+            normalize_stock_code_as_text,
+        )
+
+        kod = normalize_stock_code_as_text(self.alanlar["stok_kodu"].get())
+        if not is_13_digit_barcode(kod):
+            return
+        mevcut = {
+            normalize_stock_code_as_text(b.get("barkod"))
+            for b in (self.barkodlar or [])
+            if normalize_stock_code_as_text(b.get("barkod"))
+        }
+        if kod in mevcut:
+            # Yalnızca EAN uyarısı (geçersiz kontrol basamağı)
+            self._stok_kodu_barkod_senkron(live=False, ask_if_needed=False)
+            return
+        birinci = (self.barkodlar or [None])[0] if self.barkodlar else None
+        birinci_dolu = bool(
+            birinci and normalize_stock_code_as_text(birinci.get("barkod"))
+        )
+        if not birinci_dolu:
+            self._stok_kodu_barkod_senkron(live=False, ask_if_needed=False)
+        else:
+            self._stok_kodu_barkod_senkron(live=False, ask_if_needed=True)
 
     def _barkod_birim_tablolari_yenile(self):
         if hasattr(self, "barkod_tablo"):
@@ -4145,6 +4285,21 @@ class StokKartiDialog(tk.Toplevel):
         else:
             veriler["raf_omru"] = None
         fiyatlar = [(ad, giris.get().strip()) for ad, giris in self.fiyat_alanlari.items()]
+        try:
+            from database.stok_kodu_barkod_service import sync_for_save
+
+            birim = veriler["birim"] or "Adet"
+            exclude = int(self.stok.id) if self.stok else None
+            self.barkodlar, _rapor = sync_for_save(
+                self.barkodlar,
+                veriler["stok_kodu"],
+                birim=birim,
+                exclude_stock_id=exclude,
+            )
+            self._barkod_birim_tablolari_yenile()
+        except ValueError as hata:
+            messagebox.showerror("Barkod", str(hata), parent=self)
+            return
         try:
             self.result = StokService.stok_kaydi(
                 veriler,

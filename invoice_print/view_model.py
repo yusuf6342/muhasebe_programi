@@ -18,9 +18,15 @@ class InvoicePrintLine:
     birim: str = ""
     birim_fiyat: Decimal = Decimal("0")
     birim_fiyat_goster: str = ""
+    net_birim_fiyat: Decimal = Decimal("0")
+    net_birim_fiyat_goster: str = ""
     iskonto_goster: str = ""
+    iskonto_tutar: Decimal = Decimal("0")
+    iskonto_tutar_goster: str = ""
     kdv_orani: Decimal = Decimal("0")
     kdv_goster: str = ""
+    kdv_tutar: Decimal = Decimal("0")
+    kdv_tutar_goster: str = ""
     net_tutar: Decimal = Decimal("0")
     net_goster: str = ""
     satir_toplam: Decimal = Decimal("0")
@@ -76,6 +82,14 @@ class InvoicePrintViewModel:
     tahsil_edilen: Decimal = Decimal("0")
     kalan_bakiye: Decimal = Decimal("0")
     tl_karsilik: Decimal | None = None
+    # Fatura geneli Brüt (KDV dahil, indirim/masraf öncesi)
+    fatura_brut_toplam: Decimal = Decimal("0")
+    fatura_brut_goster: str = ""
+    # Fatura geneli İndirim/Masraf (baskıda % yok; tutar varsa satır)
+    genel_islem_turu: str = ""
+    genel_islem_tutari: Decimal = Decimal("0")
+    genel_islem_etiket: str = ""
+    genel_islem_goster: str = ""
     brut_goster: str = ""
     iskonto_goster: str = ""
     ara_goster: str = ""
