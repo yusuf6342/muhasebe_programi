@@ -138,7 +138,7 @@ class SatisFaturaKartSmokeTest(unittest.TestCase):
             # Durum rozeti TASLAK
             rozet = dlg._fatura_toolbar.get("rozet")
             self.assertEqual(rozet.cget("text"), "TASLAK")
-            # Alt özet GENEL TOPLAM entry
+            # Alt özet GENEL TOPLAM (salt okunur etiket)
             genel = dlg.fatura_toplam_degerleri.get("genel")
             self.assertIsNotNone(genel)
             # Kısayol bağları

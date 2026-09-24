@@ -134,12 +134,12 @@ def takvim_ac(parent, entry, on_select=None):
     TakvimPopup(parent, entry, on_select=on_select)
 
 
-def takvim_butonu(parent, entry, on_select=None):
+def takvim_butonu(parent, entry, on_select=None, *, text="Takvim", width=8):
     """Entry yanına takvim butonu ekler."""
     btn = ttk.Button(
         parent,
-        text="Takvim",
-        width=8,
+        text=text,
+        width=width,
         command=lambda: takvim_ac(parent.winfo_toplevel(), entry, on_select),
     )
     btn.pack(side="left", padx=(4, 0))

@@ -123,16 +123,28 @@ class ManuelUrunDialog(tk.Toplevel):
         r = self._entry(form, r, "miktar", "Miktar *", width=14, zorunlu=True, default="1")
         r = self._combo(form, r, "birim", "Birim *", manuel_birim_listesi(), zorunlu=True, default="Adet")
 
-        maliyet_cerceve = ttk.LabelFrame(form, text="Alış / Maliyet (iç hesaplama)", padding=6)
+        maliyet_cerceve = ttk.LabelFrame(form, text="Maliyet Fiyatı (iç hesaplama)", padding=6)
         maliyet_cerceve.grid(row=r, column=0, columnspan=2, sticky="ew", pady=6)
         r += 1
         if maliyet_izinli():
-            self._entry(maliyet_cerceve, 0, "alis_birim", "Alış Birim Fiyatı", width=14)
-            self._combo(
-                maliyet_cerceve, 1, "alis_pb", "Alış Para Birimi", ["TRY", "USD", "EUR"], default="TRY"
+            ttk.Label(maliyet_cerceve, text="Maliyet Fiyatı *").grid(row=0, column=0, sticky="w", pady=2)
+            maliyet_dis = tk.Frame(
+                maliyet_cerceve,
+                bg="#FFFFFF",
+                highlightthickness=3,
+                highlightbackground="#DC2626",
+                highlightcolor="#DC2626",
+                bd=0,
             )
-            self._entry(maliyet_cerceve, 2, "alis_kur", "Alış Kuru", width=12, default="1")
-            ttk.Label(maliyet_cerceve, text="Tahmini Alış Maliyeti").grid(row=3, column=0, sticky="w", pady=2)
+            maliyet_dis.grid(row=0, column=1, sticky="w", padx=4, pady=2)
+            e_maliyet = ttk.Entry(maliyet_dis, width=14, justify="right")
+            e_maliyet.pack(fill="both", expand=True, padx=1, pady=1)
+            self._alanlar["alis_birim"] = e_maliyet
+            self._combo(
+                maliyet_cerceve, 1, "alis_pb", "Para Birimi", ["TRY", "USD", "EUR"], default="TRY"
+            )
+            self._entry(maliyet_cerceve, 2, "alis_kur", "Kur", width=12, default="1")
+            ttk.Label(maliyet_cerceve, text="Tahmini Toplam Maliyet").grid(row=3, column=0, sticky="w", pady=2)
             self.lbl_tahmini = ttk.Label(maliyet_cerceve, text="—")
             self.lbl_tahmini.grid(row=3, column=1, sticky="w", padx=4)
             for w in (self._alanlar.get("alis_birim"), self._alanlar.get("alis_kur"), self._alanlar.get("miktar")):
@@ -146,7 +158,13 @@ class ManuelUrunDialog(tk.Toplevel):
             ).grid(row=0, column=0, sticky="w")
             self.lbl_tahmini = None
 
-        r = self._entry(form, r, "teklif_fiyat", "Teklif Birim Fiyatı", width=14)
+        r = self._entry(
+            form,
+            r,
+            "teklif_fiyat",
+            "Teklif Birim Fiyatı (opsiyonel — boş bırakın, Fiyatları Hesapla)",
+            width=14,
+        )
         r = self._combo(
             form,
             r,

@@ -47,6 +47,15 @@ class SatisFaturasi(Base):
     genel_islem_turu: Mapped[str | None] = mapped_column(String(20), nullable=True)
     genel_islem_orani: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
     genel_islem_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Kayıt sonrası yuvarlama (durum makinesi: rounding_applied + onaylandi)
+    rounding_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rounding_target_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    rounding_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Temsil edilemeyen kuruş farkı (satır toplamı + bu alan = Net / tl_genel_toplam)
+    invoice_rounding_adjustment: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=0
+    )
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -164,11 +164,24 @@ HIZLI_EK_KOLONLAR: dict[str, str] = {
     "sales_person_full_name": "VARCHAR(120)",
 }
 
+# Legacy: manuel Net/yuvarlama/dağıtım UI kaldırıldı. Kolonlar eski kayıt okuma
+# uyumluluğu için şemada kalır; yeni kayıtlarda 0/null yazılır (DROP yok).
 FATURA_GENEL_TOPLAM_KOLONLAR: dict[str, str] = {
     "tl_brut_toplam": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
     "genel_islem_turu": "VARCHAR(20)",
     "genel_islem_orani": "NUMERIC(12, 6) DEFAULT 0 NOT NULL",
     "genel_islem_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+}
+
+FATURA_YUVARLAMA_KOLONLAR: dict[str, str] = {
+    "rounding_applied": "BOOLEAN DEFAULT 0 NOT NULL",
+    "rounding_target_total": "NUMERIC(18, 2)",
+    "rounding_version": "INTEGER DEFAULT 0 NOT NULL",
+    "invoice_rounding_adjustment": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+}
+
+SATIS_FATURA_ROW_VERSION: dict[str, str] = {
+    "row_version": "INTEGER DEFAULT 1 NOT NULL",
 }
 
 
@@ -221,6 +234,7 @@ def belge_kullanici_schema_guncelle(engine=None) -> None:
     # Brüt / Net / İndirim-Masraf (satış + alış)
     for tablo in ("satis_faturalari", "alis_faturalari"):
         _ekle(tablo, FATURA_GENEL_TOPLAM_KOLONLAR)
+        _ekle(tablo, FATURA_YUVARLAMA_KOLONLAR)
         if not insp.has_table(tablo):
             continue
         mevcut = {s["name"] for s in insp.get_columns(tablo)}
@@ -239,3 +253,5 @@ def belge_kullanici_schema_guncelle(engine=None) -> None:
                 )
         except Exception:
             pass
+    # Satış faturalarına row_version (alışta zaten var)
+    _ekle("satis_faturalari", SATIS_FATURA_ROW_VERSION)

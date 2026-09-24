@@ -33,6 +33,34 @@ SIPARIS_DURUMLARI = (
 )
 ODEME_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
 
+# Fatura dönüşüm kaynağı (tek kural):
+# - Doğrudan siparişten: fatura kalanı = sipariş miktarı − faturalanan_miktar (sevk zorunlu değil).
+# - İrsaliyeden: fatura kalanı = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
+#   satırının faturalanan_miktar'ı da aynı tutarla artar.
+# Sevk kalanı her zaman sipariş miktarı − irsaliyelenen_miktar; fatura kalanından bağımsızdır.
+FATURA_KAYNAK_KURALI = "SIPARIS_VEYA_IRSALIYE_BAGIMSIZ"
+
+
+def bos_metin(deger: object) -> str:
+    """None / 'None' / boş → boş string (UI ve kayıt tutarlılığı)."""
+    if deger is None:
+        return ""
+    metin = str(deger).strip()
+    if not metin or metin.lower() in ("none", "null"):
+        return ""
+    return metin
+
+
+def satir_kalanlari(miktar, irsaliyelenen=0, faturalanan=0) -> dict[str, Decimal]:
+    """Satır bazında sevk ve fatura kalanları (FATURA_KAYNAK_KURALI)."""
+    m = decimal(miktar or 0, "Miktar", Decimal("0"))
+    sevk = decimal(irsaliyelenen or 0, "Sevk", Decimal("0"))
+    fat = decimal(faturalanan or 0, "Fatura", Decimal("0"))
+    return {
+        "sevk_kalani": m - sevk,
+        "fatura_kalani": m - fat,
+    }
+
 
 def decimal(deger: object, alan: str, minimum: Decimal | None = None) -> Decimal:
     try:
@@ -166,9 +194,6 @@ class SatisSiparisiService:
             raise ValueError("Sipariş tarihi gelecek bir tarih olamaz.")
         if termin_tarihi < siparis_tarihi:
             raise ValueError("Termin tarihi sipariş tarihinden önce olamaz.")
-        hedef = decimal(veriler.get("hedef_kar_marji", 0), "Hedef kâr marjı")
-        if not 0 <= hedef < Decimal("100"):
-            raise ValueError("Hedef kâr marjı 0 ile 99,99 arasında olmalıdır.")
         with get_session() as session:
             yeni = False
             if siparis_id:
@@ -186,19 +211,32 @@ class SatisSiparisiService:
                     durum=baslangic_durum,
                 )
                 session.add(siparis)
+            # Maliyet / hedef kâr sipariş UI'da yok; eski kayıt değerini koru, yoksa varsayılan.
+            maliyet_yontemi = (
+                bos_metin(veriler.get("maliyet_yontemi"))
+                or (getattr(siparis, "maliyet_yontemi", None) if not yeni else None)
+                or "FIFO"
+            )
+            hedef_ham = veriler.get("hedef_kar_marji", None)
+            if hedef_ham in (None, ""):
+                hedef_ham = getattr(siparis, "hedef_kar_marji", 0) if not yeni else 0
+            hedef = decimal(hedef_ham or 0, "Hedef kâr marjı", Decimal("0"))
+            if not 0 <= hedef < Decimal("100"):
+                raise ValueError("Hedef kâr marjı 0 ile 99,99 arasında olmalıdır.")
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
             siparis.cari_id = int(veriler["cari_id"])
-            siparis.maliyet_yontemi = veriler["maliyet_yontemi"]
+            siparis.maliyet_yontemi = maliyet_yontemi
             siparis.hedef_kar_marji = hedef
-            siparis.aciklama = veriler.get("aciklama")
+            siparis.aciklama = bos_metin(veriler.get("aciklama")) or None
             if veriler.get("onayla") and siparis.durum == "TASLAK":
                 siparis.durum = "AÇIK"
             if siparis.durum == "İPTAL" and not siparis_id:
                 siparis.durum = "AÇIK"
             for veri in satir_verileri:
                 satir = SatisSiparisiSatiri(
-                    urun_kodu=veri["urun_kodu"], urun_adi=veri["urun_adi"], aciklama=veri.get("aciklama"),
+                    urun_kodu=veri["urun_kodu"], urun_adi=veri["urun_adi"],
+                    aciklama=bos_metin(veri.get("aciklama")) or None,
                     miktar=decimal(veri["miktar"], "Miktar", Decimal("0.0001")), birim=veri["birim"],
                     birim_satis_fiyati=decimal(veri["birim_satis_fiyati"], "Birim satış fiyatı", Decimal("0")),
                     iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto oranı", Decimal("0")),
@@ -296,7 +334,7 @@ class SatisSiparisiService:
 
     @staticmethod
     def calculate_order_progress(satirlar) -> dict[str, Decimal]:
-        """Sipariş / sevk / fatura / kalan miktar özeti (tek kaynak)."""
+        """Sipariş / sevk / fatura / kalan miktar özeti (FATURA_KAYNAK_KURALI)."""
         siparis = sevk = fatura = Decimal("0")
         for s in satirlar or []:
             get = s.get if isinstance(s, dict) else lambda a, d=0: getattr(s, a, d)
@@ -306,12 +344,17 @@ class SatisSiparisiService:
             siparis += m
             sevk += ir
             fatura += fa
+        sevk_kalani = siparis - sevk
+        fatura_kalani = siparis - fatura
         return {
             "siparis_miktar": siparis,
             "sevk_miktar": sevk,
             "fatura_miktar": fatura,
-            "kalan_miktar": siparis - sevk,
-            "kalan_faturalanacak": siparis - fatura,
+            "sevk_kalani": sevk_kalani,
+            "fatura_kalani": fatura_kalani,
+            # Eski anahtarlar (geri uyumluluk)
+            "kalan_miktar": sevk_kalani,
+            "kalan_faturalanacak": fatura_kalani,
         }
 
     @staticmethod

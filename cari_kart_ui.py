@@ -680,9 +680,11 @@ class CariDialog(tk.Toplevel):
         performans = (
             ("Toplam borç", False),
             ("Toplam alacak", False),
-            ("Bakiye durumu", True),
+            ("Bakiye yönü", True),
             ("Ortalama borç kapatma süresi", False),
-            ("Bakiyenin ortalama valörü", False),
+            ("Ortalama Valör", False),
+            ("Ortalama Valör Tarihi", False),
+            ("Ortalama Valör Gün Sayısı", False),
         )
         for baslik, _renkli in performans:
             satir = tk.Frame(parent, bg=BEYAZ)
@@ -696,6 +698,12 @@ class CariDialog(tk.Toplevel):
                     lbl,
                     "Teknik: Kapanan borcun tutar-ağırlıklı ortalama valörü (gün). "
                     "FIFO eşleştirme; tamamen kapanan faturalar öncelikli.",
+                )
+            elif baslik == "Ortalama Valör":
+                ToolTip(
+                    lbl,
+                    "Bakiyeye göre Borç Valörü veya Alacak Valörü. "
+                    "Açık kalan tutarların ağırlıklı ortalama valörü.",
                 )
             deger = tk.Label(
                 satir, text="—", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", self), anchor="e"
@@ -1333,6 +1341,21 @@ class CariDialog(tk.Toplevel):
 
         odenen = float(metrik.get("odenen_ortalama_valor_gun") or 0)
         bvalor = float(metrik.get("bakiye_ortalama_valor_gun") or 0)
+        valor_etiket = metrik.get("valor_turu_etiket") or "Valör Yok"
+        valor_tarih = metrik.get("ortalama_valor_tarihi")
+        yon = metrik.get("bakiye_yonu")
+        if yon == "BORCLU":
+            yon_yazi = "Borçlu"
+        elif yon == "ALACAKLI":
+            yon_yazi = "Alacaklı"
+        elif yon == "KAPALI":
+            yon_yazi = "Kapalı"
+        else:
+            yon_yazi = durum if durum and durum != "Bakiye yok" else (
+                "Borçlu" if bakiye > 0 else ("Alacaklı" if bakiye < 0 else "Kapalı")
+            )
+        sebep = metrik.get("ortalama_valor_sebep")
+        uyari = metrik.get("ortalama_valor_uyari")
         if "Toplam borç" in self.ozet_degerleri:
             self.ozet_degerleri["Toplam borç"].configure(
                 text=para_goster(metrik.get("toplam_borc") or 0)
@@ -1340,9 +1363,38 @@ class CariDialog(tk.Toplevel):
             self.ozet_degerleri["Toplam alacak"].configure(
                 text=para_goster(metrik.get("toplam_alacak") or 0)
             )
-            self.ozet_degerleri["Bakiye durumu"].configure(text=durum, fg=renk)
+            if "Bakiye yönü" in self.ozet_degerleri:
+                self.ozet_degerleri["Bakiye yönü"].configure(text=yon_yazi, fg=renk)
+            elif "Bakiye durumu" in self.ozet_degerleri:
+                self.ozet_degerleri["Bakiye durumu"].configure(text=yon_yazi, fg=renk)
             self.ozet_degerleri["Ortalama borç kapatma süresi"].configure(text=f"{odenen:.1f} gün")
-            self.ozet_degerleri["Bakiyenin ortalama valörü"].configure(text=f"{bvalor:.1f} gün")
+            if "Ortalama Valör" in self.ozet_degerleri:
+                self.ozet_degerleri["Ortalama Valör"].configure(text=valor_etiket)
+            if "Ortalama Valör Tarihi" in self.ozet_degerleri:
+                if valor_tarih is not None:
+                    self.ozet_degerleri["Ortalama Valör Tarihi"].configure(
+                        text=tarih_goster(valor_tarih)
+                    )
+                else:
+                    self.ozet_degerleri["Ortalama Valör Tarihi"].configure(
+                        text=sebep or "—"
+                    )
+            if "Ortalama Valör Gün Sayısı" in self.ozet_degerleri:
+                if valor_tarih is not None or (bvalor and metrik.get("valor_turu") != "YOK"):
+                    self.ozet_degerleri["Ortalama Valör Gün Sayısı"].configure(
+                        text=f"{bvalor:.1f} gün"
+                    )
+                else:
+                    self.ozet_degerleri["Ortalama Valör Gün Sayısı"].configure(
+                        text=sebep or "0 gün"
+                    )
+            if uyari and "Ortalama Valör" in self.ozet_degerleri:
+                ToolTip(self.ozet_degerleri["Ortalama Valör"], uyari)
+            # Eski etiket uyumu
+            if "Bakiyenin ortalama valörü" in self.ozet_degerleri:
+                self.ozet_degerleri["Bakiyenin ortalama valörü"].configure(
+                    text=f"{valor_etiket}: {bvalor:.1f} gün"
+                )
 
     # ─── Hareketler (orijinal mantık) ─────────────────────────────
     def _hareket_tarih_araligi(self):

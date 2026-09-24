@@ -313,44 +313,22 @@ class AlisFaturasiService:
                 )
 
             toplam_dict = AlisFaturasiService.toplam(fatura.satirlar)
-            satir_brut = toplam_dict["genel_toplam"]
-            from database.fatura_genel_toplam_service import islem_uygula, islem_turunu_normalize, netten_islem
-
-            tur = islem_turunu_normalize(veriler.get("genel_islem_turu"))
-            oran = decimal(veriler.get("genel_islem_orani", 0), "İşlem oranı", Decimal("0"))
-            tutar = decimal(veriler.get("genel_islem_tutari", 0), "İşlem tutarı", Decimal("0"))
-            if veriler.get("tl_brut_toplam") is not None:
-                satir_brut = decimal(veriler.get("tl_brut_toplam"), "Brüt toplam", Decimal("0"))
-            if veriler.get("tl_genel_toplam") is not None:
-                net = decimal(veriler.get("tl_genel_toplam"), "Net toplam", Decimal("0"))
-                if tur or tutar or oran:
-                    sonuc = islem_uygula(
-                        satir_brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
-                    )
-                    if abs(sonuc["net_toplam"] - net) > Decimal("0.009"):
-                        sonuc = netten_islem(satir_brut, net)
-                elif abs(net - satir_brut) > Decimal("0.009"):
-                    sonuc = netten_islem(satir_brut, net)
-                else:
-                    sonuc = {
-                        "brut_toplam": satir_brut,
-                        "islem_turu": "",
-                        "islem_orani": Decimal("0"),
-                        "islem_tutari": Decimal("0"),
-                        "net_toplam": net,
-                    }
-            else:
-                sonuc = islem_uygula(
-                    satir_brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
-                )
+            satir_genel = toplam_dict["genel_toplam"]
             fatura.tl_matrah = toplam_dict["ara_toplam"] - toplam_dict["iskonto"]
             fatura.tl_kdv = toplam_dict["kdv"]
-            fatura.tl_brut_toplam = sonuc["brut_toplam"]
-            fatura.genel_islem_turu = sonuc["islem_turu"] or None
-            fatura.genel_islem_orani = sonuc["islem_orani"]
-            fatura.genel_islem_tutari = sonuc["islem_tutari"]
-            fatura.tl_genel_toplam = sonuc["net_toplam"]
-            toplam = sonuc["net_toplam"]
+            fatura.tl_brut_toplam = satir_genel
+            fatura.tl_genel_toplam = satir_genel
+            if hasattr(fatura, "genel_islem_turu"):
+                fatura.genel_islem_turu = None
+                fatura.genel_islem_orani = Decimal("0")
+                fatura.genel_islem_tutari = Decimal("0")
+            if hasattr(fatura, "invoice_rounding_adjustment"):
+                fatura.invoice_rounding_adjustment = Decimal("0.00")
+            if hasattr(fatura, "rounding_applied"):
+                fatura.rounding_applied = False
+                fatura.rounding_target_total = None
+                fatura.rounding_version = int(veriler.get("rounding_version") or 0)
+            toplam = fatura.tl_genel_toplam
             if pb != "TRY":
                 from database.iskonto_hesap_service import iskonto_carpani
 

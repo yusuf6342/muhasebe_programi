@@ -605,8 +605,20 @@ def cari_kart_schemasini_guncelle() -> None:
     donem_schemasini_guncelle()
     hizli_satis_schema_hazirla()
     try:
-        from database.user_audit import belge_kullanici_schema_guncelle
+        from sqlalchemy import inspect as sa_inspect
 
+        from database.user_audit import belge_kullanici_schema_guncelle
+        from database.yuvarlama_db_yedek import yuvarlama_oncesi_db_yedekle
+
+        # Yalnız yuvarlama kolonları eksikse migration öncesi yedek al
+        try:
+            eng = engine
+            if eng is not None and sa_inspect(eng).has_table("satis_faturalari"):
+                sutunlar = {s["name"] for s in sa_inspect(eng).get_columns("satis_faturalari")}
+                if "rounding_applied" not in sutunlar or "row_version" not in sutunlar:
+                    yuvarlama_oncesi_db_yedekle()
+        except Exception:
+            pass
         belge_kullanici_schema_guncelle()
     except Exception:
         pass
@@ -842,6 +854,7 @@ def musteri_gruplarini_hazirla() -> None:
 
     baslangic_gruplari = (
         "PERAKENDE MÜŞTERİ",
+        "ADAY MÜŞTERİ",
         "MOBİLYA ATÖLYELERİ",
         "ÜRETİCİ FABRİKALAR",
         "NALBUR",

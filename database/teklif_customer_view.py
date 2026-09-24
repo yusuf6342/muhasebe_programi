@@ -131,9 +131,11 @@ DEFAULT_HITAP_METNI = (
 
 DEFAULT_SART_MADDELERI = (
     "Teklif, belirtilen geçerlilik tarihine kadar geçerlidir.",
-    "Stok durumu sipariş onayı tarihinde yeniden kontrol edilir.",
-    "Teslim süresi, sipariş onayı ve ödeme şartlarının tamamlanmasından sonra başlar.",
+    "Stok durumu sipariş onayı tarihinde yeniden kontrol edilir; rezervasyon sipariş onayı ile başlar.",
+    "Teslim / sevkiyat süresi, sipariş onayı ve ödeme şartlarının tamamlanmasından sonra başlar.",
     "Ürünlerin miktar, ölçü, renk ve model kontrolü sipariş onayından önce müşteriye aittir.",
+    "Teklif fiyatlarına yansıtılan masraf ve hizmet bedelleri birim fiyatlara dahildir; ayrıca tahsil edilmez.",
+    "İade ve garanti koşulları, ürün tipine ve üretici şartlarına tabidir.",
 )
 
 MUSTERI_ONAY_BEYANI = (
@@ -571,17 +573,8 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
             )
         )
 
-    # Müşteriye yansıyan nakliye/hizmet (iç masraf değil)
+    # Masraf/kâr dağıtımı fiyatlara gömülü — müşteri belgesinde ayrı masraf/nakliye satırı yok
     nakliye = Decimal("0")
-    fiyat_g = getattr(dialog, "fiyat_girdiler", {}) or {}
-    try:
-        w = fiyat_g.get("customer_expense_amount")
-        if w is not None:
-            nakliye = _d(w.get() or 0)
-    except Exception:
-        pass
-    if nakliye <= 0 and teklif:
-        nakliye = _d(getattr(teklif, "customer_expense_amount", 0) or 0)
 
     genel_isk_oran = _d(_g("genel_iskonto_orani") or 0)
     if genel_isk_oran <= 0 and teklif:
@@ -595,7 +588,7 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     # Genel iskonto sonrası KDV yeniden (basit oran: satır KDV toplamını orantıla)
     if genel_isk_tutar > 0 and ara > 0:
         kdv_toplam = (kdv_toplam * iskonto_sonrasi / ara).quantize(_KURUS, rounding=ROUND_HALF_UP)
-    genel = iskonto_sonrasi + kdv_toplam + nakliye
+    genel = iskonto_sonrasi + kdv_toplam
 
     termin_gun = _g("delivery_term_days")
     termin_metin = ""
@@ -640,6 +633,26 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
         pass
 
     odeme = _g("odeme_sekli") or (getattr(teklif, "odeme_sekli", None) or "")
+    # Yapılandırılmış ödeme alanlarından zengin özet
+    try:
+        from database.teklif_odeme import kayittan_odeme, odeme_ozet
+
+        if hasattr(dialog, "_odeme_alanlari_oku"):
+            od = dialog._odeme_alanlari_oku()
+            ozet = od.get("odeme_ozet") or odeme_ozet(
+                od.get("odeme_sekli"),
+                taksit=od.get("odeme_taksit"),
+                vade_gun=od.get("odeme_vade_gun"),
+                vade_tarihi=od.get("odeme_vade_tarihi"),
+            )
+            if ozet:
+                odeme = ozet
+        elif teklif is not None:
+            ozet = kayittan_odeme(teklif).get("ozet") or ""
+            if ozet:
+                odeme = ozet
+    except Exception:
+        pass
     teslimat_sekli = (
         _g("teslimat_sekli")
         or (getattr(teklif, "teslimat_sekli", None) or "")

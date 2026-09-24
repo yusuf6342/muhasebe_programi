@@ -1,4 +1,7 @@
-"""Müşteri teklif A4 HTML şablonu — CustomerQuoteViewModel (maliyet/kâr yok)."""
+"""Müşteri teklif A4 HTML şablonu — Genel Bilgiler · Stok Kalemleri · Özel Şartlar.
+
+Alış / maliyet / kâr / ayrı masraf satırı YOK (masraf fiyata gömülü).
+"""
 
 from __future__ import annotations
 
@@ -19,12 +22,10 @@ def _e(v) -> str:
 
 
 def _css_str(v) -> str:
-    """@page content için güvenli düz metin."""
     return re.sub(r'["\'\\]', "", "" if v is None else str(v))
 
 
 def _firma_iletisim_satirlari(f: dict) -> list[str]:
-    """Yalnızca dolu firma iletişim satırları."""
     satırlar: list[str] = []
     if f.get("telefon"):
         satırlar.append(f"Tel: {_e(f['telefon'])}")
@@ -41,36 +42,22 @@ def _firma_iletisim_satirlari(f: dict) -> list[str]:
     return satırlar
 
 
-def _musteri_alan_html(m: dict) -> str:
-    """Müşteri kutusu — boş alanları atla."""
-    alanlar = [
-        ("Unvan", m.get("unvan")),
-        ("Yetkili", m.get("yetkili")),
-        ("Vergi Dairesi", m.get("vergi_dairesi")),
-        ("Vergi / T.C. No", m.get("vergi_no")),
-        ("Telefon", m.get("telefon")),
-        ("E-posta", m.get("email")),
-        ("Fatura Adresi", m.get("fatura_adresi") or m.get("adres")),
-        ("Teslimat Adresi", m.get("teslimat_adresi")),
-    ]
-    satirlar = []
-    for etiket, deger in alanlar:
-        if not deger or not str(deger).strip() or str(deger).strip() == "—":
-            continue
-        bold = " class='alan-deger-kalin'" if etiket == "Unvan" else ""
-        satirlar.append(
-            f"<div class='alan-satir'><span class='alan-etiket'>{_e(etiket)}</span>"
-            f"<span{bold}>{_e(deger)}</span></div>"
-        )
-    return "".join(satirlar)
+def _alan_satir(etiket: str, deger, *, kalin: bool = False) -> str:
+    if deger is None or not str(deger).strip() or str(deger).strip() == "—":
+        return ""
+    cls = " class='deger-kalin'" if kalin else ""
+    return (
+        f"<div class='alan'><span class='etiket'>{_e(etiket)}</span>"
+        f"<span{cls}>{_e(deger)}</span></div>"
+    )
 
 
 def _toplam_html(vm: CustomerQuoteViewModel) -> str:
-    """Toplam satırları — sifir_kalemleri_gizle ise sıfırları gizle."""
+    """Ticari toplamlar — masraf/alış satırı yok."""
     pb = vm.para_birimi_etiket or vm.para_birimi
     gizle = vm.sifir_kalemleri_gizle
     satirlar: list[tuple[str, str, bool]] = [
-        ("Ara Toplam", para_birimli(vm.ara_goster, pb), False),
+        ("Ara Toplam (KDV Hariç)", para_birimli(vm.ara_goster, pb), False),
     ]
     if not gizle or (vm.iskonto_toplam and vm.iskonto_toplam > 0):
         satirlar.append(("Satır İskontoları", para_birimli(vm.iskonto_goster, pb), False))
@@ -80,10 +67,6 @@ def _toplam_html(vm: CustomerQuoteViewModel) -> str:
             ("İskonto Sonrası", para_birimli(vm.iskonto_sonrasi_goster, pb), False)
         )
     satirlar.append(("KDV Toplamı", para_birimli(vm.kdv_goster, pb), False))
-    if not gizle or (vm.nakliye and vm.nakliye > 0):
-        satirlar.append(("Nakliye / Hizmet", para_birimli(vm.nakliye_goster, pb), False))
-    if not gizle or (vm.yuvarlama and vm.yuvarlama != 0):
-        satirlar.append(("Yuvarlama", para_birimli(vm.yuvarlama_goster, pb), False))
     satirlar.append(("GENEL TOPLAM", para_birimli(vm.genel_goster, pb), True))
 
     rows = []
@@ -95,9 +78,18 @@ def _toplam_html(vm: CustomerQuoteViewModel) -> str:
     return "<table class='toplam'>" + "".join(rows) + "</table>"
 
 
-def render_customer_quote_html(vm: CustomerQuoteViewModel) -> str:
-    """customer_quote_template — A4 kurumsal müşteri teklifi (maliyet/kâr yok)."""
+def render_customer_quote_html(
+    vm: CustomerQuoteViewModel,
+    *,
+    preview: bool = False,
+    zoom_pct: int = 100,
+) -> str:
+    """A4 kurumsal müşteri teklifi — maliyet/kâr/ayrı masraf yok.
+
+    preview=True: ekranda gri zemin + A4 kağıt + yazdır araç çubuğu.
+    """
     assert_customer_model_safe(vm)
+    scale = max(50, min(200, int(zoom_pct))) / 100.0
 
     f = vm.firma or {}
     m = vm.musteri or {}
@@ -109,41 +101,64 @@ def render_customer_quote_html(vm: CustomerQuoteViewModel) -> str:
 
     unvan = (f.get("unvan") or "RAY MOBİLYA AKSESUARLARI").upper()
     slogan = vm.firma_slogan or ""
-    iletisim = _firma_iletisim_satirlari(f)
-    iletisim_html = "".join(f"<div>{s}</div>" for s in iletisim)
+    iletisim_html = "".join(f"<div>{s}</div>" for s in _firma_iletisim_satirlari(f))
 
-    meta_alanlar = [
-        ("Teklif No", vm.teklif_no),
-        ("Teklif Tarihi", vm.teklif_tarihi),
-        ("Geçerlilik", vm.gecerlilik_tarihi),
-        ("Para Birimi", pb),
-        ("Hazırlayan", vm.hazirlayan),
-        ("Müşteri Temsilcisi", vm.satis_temsilcisi),
-        ("Revizyon", vm.revizyon_goster),
-        ("Durum", vm.durum),
-    ]
-    meta_rows = "".join(
-        f"<tr><td class='meta-k'>{_e(k)}</td><td class='meta-v'>{_e(v)}</td></tr>"
-        for k, v in meta_alanlar
-        if v and str(v).strip()
+    # ——— 1) Genel Bilgiler ———
+    genel_sol = "".join(
+        [
+            _alan_satir("Teklif No", vm.teklif_no, kalin=True),
+            _alan_satir("Teklif Tarihi", vm.teklif_tarihi),
+            _alan_satir("Geçerlilik", vm.gecerlilik_tarihi),
+            _alan_satir("Geçerlilik Süresi", vm.gecerlilik_suresi),
+            _alan_satir("Para Birimi", pb),
+            _alan_satir("Revizyon", vm.revizyon_goster),
+            _alan_satir("Referans No", vm.referans_no),
+            _alan_satir("Konu", vm.konu),
+            _alan_satir("Proje", vm.proje),
+        ]
     )
-    meta_box = (
-        f"<div class='meta-kutu'><table class='meta'>{meta_rows}</table></div>"
-        if meta_rows
-        else ""
+    genel_orta = "".join(
+        [
+            _alan_satir("Müşteri", m.get("unvan"), kalin=True),
+            _alan_satir("Yetkili", m.get("yetkili")),
+            _alan_satir("Telefon", m.get("telefon")),
+            _alan_satir("E-posta", m.get("email")),
+            _alan_satir("Vergi Dairesi", m.get("vergi_dairesi")),
+            _alan_satir("Vergi / T.C. No", m.get("vergi_no")),
+        ]
     )
-
-    musteri_html = _musteri_alan_html(m)
-    musteri_box = (
-        f"<div class='musteri-kutu'><h3>Sayın / Müşteri Bilgileri</h3>{musteri_html}</div>"
-        if musteri_html
-        else ""
+    genel_sag = "".join(
+        [
+            _alan_satir("Ödeme Şekli", vm.odeme_sekli, kalin=True),
+            _alan_satir(
+                "Vade",
+                vm.vade_bilgisi
+                if vm.vade_bilgisi and vm.vade_bilgisi != vm.odeme_sekli
+                else "",
+            ),
+            _alan_satir("Teslim Süresi", vm.termin_suresi),
+            _alan_satir("Tahmini Teslim", vm.tahmini_teslim_tarihi),
+            _alan_satir("Teslimat Şekli", vm.teslimat_sekli),
+            _alan_satir("Nakliye", vm.nakliye_durumu),
+            _alan_satir("Hazırlayan", vm.hazirlayan),
+            _alan_satir("Satış Temsilcisi", vm.satis_temsilcisi),
+        ]
     )
+    adres_blok = ""
+    fatura_adres = m.get("fatura_adresi") or m.get("adres")
+    if fatura_adres or m.get("teslimat_adresi"):
+        adres_blok = (
+            "<div class='adres-satir'>"
+            + _alan_satir("Fatura Adresi", fatura_adres)
+            + _alan_satir("Teslimat Adresi", m.get("teslimat_adresi"))
+            + "</div>"
+        )
 
     hitap = ""
     if vm.hitap_metni and str(vm.hitap_metni).strip():
         hitap = f"<div class='hitap'>{_e(vm.hitap_metni)}</div>"
 
+    # ——— 2) Stok / ürün kalemleri ———
     satir_html = []
     for s in vm.satirlar:
         acik = _e(s.urun_adi or "")
@@ -162,32 +177,57 @@ def render_customer_quote_html(vm: CustomerQuoteViewModel) -> str:
             f"<td class='r'>{_e(para_birimli(s.kdv_hariç_goster, pb))}</td>"
             "</tr>"
         )
+    if not satir_html:
+        satir_html.append(
+            "<tr><td colspan='9' class='c muted'>Ürün kalemi bulunmamaktadır.</td></tr>"
+        )
 
-    sartlar_html = ""
-    if vm.sart_satirlari or vm.sart_maddeleri:
-        parcalar = ["<div class='bolum'><h3>Teklif Şartları</h3>"]
-        for k, v in vm.sart_satirlari or []:
-            parcalar.append(
+    # ——— 3) Özel şartlar ———
+    # Alış / maliyet / kâr / masraf dağıtımı gizlenir; "masraf fiyata dahil" açıklaması kalır.
+    _yasak_sart = (
+        "alış fiyat",
+        "alis fiyat",
+        "birim maliyet",
+        "maliyet",
+        "kâr oran",
+        "kar oran",
+        "marj",
+        "masraf dağıt",
+        "masraf dagit",
+        "tedarikçi",
+        "tedarikci",
+    )
+    sart_parcalar: list[str] = []
+    for k, v in vm.sart_satirlari or []:
+        kt = f"{k} {v}".casefold()
+        if any(x in kt for x in _yasak_sart):
+            continue
+        if v and str(v).strip():
+            sart_parcalar.append(
                 f"<div class='sart-satir'><strong>{_e(k)}:</strong> {_e(v)}</div>"
             )
-        if vm.sart_maddeleri:
-            parcalar.append("<ul class='sart-liste'>")
-            for madde in vm.sart_maddeleri:
-                if madde and str(madde).strip():
-                    parcalar.append(f"<li>{_e(madde)}</li>")
-            parcalar.append("</ul>")
-        parcalar.append("</div>")
-        sartlar_html = "".join(parcalar)
+    madde_html = ""
+    if vm.sart_maddeleri:
+        maddeler = [
+            f"<li>{_e(madde)}</li>"
+            for madde in vm.sart_maddeleri
+            if madde and str(madde).strip()
+        ]
+        if maddeler:
+            madde_html = "<ul class='sart-liste'>" + "".join(maddeler) + "</ul>"
 
     banka = ""
     if vm.banka_satirlari:
-        banka = "<div class='bolum'><h3>Banka Bilgileri</h3><ul>" + "".join(
-            f"<li>{_e(b.get('banka', ''))} — {_e(b.get('iban', ''))}</li>"
-            for b in vm.banka_satirlari
-        ) + "</ul></div>"
+        banka = (
+            "<div class='banka'><h4>Banka Bilgileri</h4><ul>"
+            + "".join(
+                f"<li>{_e(b.get('banka', ''))} — {_e(b.get('iban', ''))}</li>"
+                for b in vm.banka_satirlari
+            )
+            + "</ul></div>"
+        )
 
     onay = f"<div class='onay-beyan'>{_e(vm.onay_beyani)}</div>" if vm.onay_beyani else ""
-
     alt_parcalar = [
         FIRMA_ALT_UNVAN,
         f.get("telefon"),
@@ -197,6 +237,63 @@ def render_customer_quote_html(vm: CustomerQuoteViewModel) -> str:
     ]
     alt = " · ".join(_e(x) for x in alt_parcalar if x)
 
+    toolbar_html = ""
+    preview_css = ""
+    body_cls = ""
+    sayfa_ac = ""
+    sayfa_kapa = ""
+    if preview:
+        body_cls = ' class="onizleme"'
+        sayfa_ac = '<div class="a4-sayfa">'
+        sayfa_kapa = "</div>"
+        toolbar_html = """
+<div class="toolbar no-print">
+  <span class="toolbar-baslik">Teklif Yazdırma Ön İzlemesi — A4</span>
+  <button type="button" onclick="window.print()">Yazdır</button>
+  <button type="button" class="ghost" onclick="window.close()">Kapat</button>
+</div>
+"""
+        preview_css = f"""
+body.onizleme {{
+  background: #6B7280;
+  padding: 0 0 24px;
+}}
+.toolbar {{
+  position: sticky; top: 0; z-index: 20;
+  background: #0B1F3A; color: #fff;
+  padding: 8px 14px;
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+}}
+.toolbar-baslik {{
+  font-weight: 700; color: #E8B923; margin-right: 8px; font-size: 10pt;
+}}
+.toolbar button {{
+  background: #E8B923; color: #0B1F3A; border: 0;
+  padding: 6px 14px; cursor: pointer; font-weight: 700;
+  border-radius: 4px; font-size: 9.5pt;
+}}
+.toolbar button.ghost {{ background: #374151; color: #fff; }}
+.a4-sayfa {{
+  width: 210mm;
+  min-height: 297mm;
+  margin: 14px auto;
+  padding: 10mm 12mm 16mm 12mm;
+  background: #fff;
+  box-shadow: 0 6px 28px rgba(0,0,0,.35);
+  transform: scale({scale});
+  transform-origin: top center;
+}}
+@media print {{
+  body.onizleme {{ background: #fff !important; padding: 0 !important; }}
+  .toolbar, .no-print {{ display: none !important; }}
+  .a4-sayfa {{
+    width: auto !important; min-height: auto !important;
+    margin: 0 !important; padding: 0 !important;
+    box-shadow: none !important; transform: none !important;
+  }}
+}}
+"""
+
     html_out = f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -205,115 +302,128 @@ def render_customer_quote_html(vm: CustomerQuoteViewModel) -> str:
 <style>
 @page {{
   size: A4 portrait;
-  margin: 12mm 12mm 18mm 12mm;
+  margin: 10mm 12mm 16mm 12mm;
   @bottom-left {{
     content: "{_css_str(FIRMA_ALT_UNVAN)} · {_css_str(vm.teklif_no)}";
-    font-size: 7.5pt;
-    color: #666;
+    font-size: 7pt;
+    color: #64748B;
   }}
   @bottom-right {{
     content: "Sayfa " counter(page) " / " counter(pages);
-    font-size: 7.5pt;
-    color: #666;
+    font-size: 7pt;
+    color: #64748B;
   }}
 }}
 * {{ box-sizing: border-box; }}
 body {{
-  font-family: Calibri, 'Segoe UI', Arial, sans-serif;
+  font-family: 'Segoe UI', Calibri, Arial, sans-serif;
   font-size: 9.5pt;
-  color: #333;
+  color: #1E293B;
   margin: 0;
   padding: 0;
+  background: #fff;
 }}
-.wrap {{ padding: 0 2px; }}
+{preview_css}
+.wrap {{ padding: 0; }}
 .ust {{
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px;
+  margin-bottom: 6px;
 }}
 .ust-sol {{ flex: 1; min-width: 0; }}
 .ust-sag {{
   text-align: right;
-  font-size: 8pt;
-  color: #555;
+  font-size: 7.5pt;
+  color: #475569;
   line-height: 1.45;
-  max-width: 42%;
+  max-width: 40%;
 }}
-.logo {{ max-height: 56px; max-width: 160px; display: block; margin-bottom: 4px; }}
+.logo {{ max-height: 52px; max-width: 150px; display: block; margin-bottom: 4px; }}
 .firma-unvan {{
-  font-size: 13pt;
+  font-size: 14pt;
   font-weight: 700;
-  color: #0b1f3a;
-  letter-spacing: 0.3px;
+  color: #0B2A4A;
+  letter-spacing: 0.4px;
   margin: 0;
 }}
-.firma-slogan {{ font-size: 8pt; color: #666; margin: 2px 0 0; }}
-.ayirici {{
-  border: 0;
-  border-top: 2.5px solid #0b1f3a;
-  margin: 8px 0 2px;
-}}
-.ayirici-sari {{
-  border: 0;
-  border-top: 2px solid #e8b923;
-  margin: 0 0 10px;
+.firma-slogan {{ font-size: 8pt; color: #64748B; margin: 2px 0 0; }}
+.serit {{
+  height: 3px;
+  background: linear-gradient(90deg, #0B2A4A 0%, #0B2A4A 72%, #E8B923 72%, #E8B923 100%);
+  margin: 6px 0 8px;
 }}
 .baslik {{
   text-align: center;
-  color: #0b1f3a;
-  font-size: 16pt;
+  color: #0B2A4A;
+  font-size: 15pt;
   font-weight: 700;
-  margin: 4px 0 12px;
-  letter-spacing: 1px;
+  margin: 0 0 10px;
+  letter-spacing: 1.5px;
 }}
-.meta-kutu {{
-  background: #eef1f5;
-  border: 1px solid #d5dae3;
-  padding: 6px 10px;
-  margin-bottom: 10px;
+.bolum {{
+  margin: 0 0 10px;
+  page-break-inside: avoid;
 }}
-.meta {{ width: 100%; border-collapse: collapse; }}
-.meta td {{ padding: 2px 8px 2px 0; vertical-align: top; }}
-.meta-k {{ width: 28%; color: #0b1f3a; font-weight: 700; font-size: 8pt; }}
-.meta-v {{ font-weight: 700; font-size: 9pt; color: #333; }}
-.musteri-kutu {{
-  border: 1px solid #d5dae3;
+.bolum-baslik {{
+  background: #0B2A4A;
+  color: #fff;
+  font-size: 8.5pt;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 5px 10px;
+  margin: 0 0 0;
+}}
+.bolum-govde {{
+  border: 1px solid #CBD5E1;
+  border-top: none;
   padding: 8px 10px;
-  margin-bottom: 10px;
+  background: #F8FAFC;
 }}
-.musteri-kutu h3 {{
-  margin: 0 0 6px;
-  color: #0b1f3a;
-  font-size: 10pt;
+.genel-grid {{
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px 14px;
 }}
-.alan-satir {{ margin: 2px 0; font-size: 9pt; }}
-.alan-etiket {{
+.alan {{
+  font-size: 8.5pt;
+  margin: 2px 0;
+  line-height: 1.35;
+}}
+.etiket {{
   display: inline-block;
-  min-width: 120px;
-  color: #666;
-  font-size: 8pt;
+  min-width: 92px;
+  color: #64748B;
+  font-size: 7.5pt;
+  font-weight: 600;
 }}
-.alan-deger-kalin {{ font-weight: 700; }}
+.deger-kalin {{ font-weight: 700; color: #0B2A4A; }}
+.adres-satir {{
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #CBD5E1;
+  grid-column: 1 / -1;
+}}
 .hitap {{
   font-style: italic;
-  color: #444;
-  background: #faf8f2;
-  border-left: 3px solid #e8b923;
-  padding: 8px 12px;
-  margin: 0 0 12px;
-  font-size: 9pt;
+  color: #334155;
+  background: #FFFBEB;
+  border-left: 3px solid #E8B923;
+  padding: 7px 10px;
+  margin: 0 0 10px;
+  font-size: 8.5pt;
   line-height: 1.4;
 }}
 table.urun {{
   width: 100%;
   border-collapse: collapse;
-  margin-top: 4px;
   table-layout: fixed;
+  background: #fff;
 }}
 table.urun thead {{ display: table-header-group; }}
 table.urun th {{
-  background: #0b1f3a;
+  background: #163E66;
   color: #fff;
   font-size: 7.5pt;
   padding: 5px 3px;
@@ -321,85 +431,99 @@ table.urun th {{
   font-weight: 700;
 }}
 table.urun td {{
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #E2E8F0;
   padding: 4px 3px;
   font-size: 8pt;
   vertical-align: top;
   word-wrap: break-word;
 }}
 table.urun tr {{ page-break-inside: avoid; }}
-table.urun td.aciklama {{ width: 32%; text-align: left; }}
+table.urun tbody tr:nth-child(even) {{ background: #F1F5F9; }}
+table.urun td.aciklama {{ text-align: left; }}
 .r {{ text-align: right; }}
 .c {{ text-align: center; }}
-.muted {{ color: #6b7280; font-size: 7.5pt; margin-top: 1px; }}
-.toplam-wrap {{ margin-top: 10px; display: flex; justify-content: flex-end; }}
+.muted {{ color: #64748B; font-size: 7.5pt; margin-top: 1px; }}
+.alt-ozet {{
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 8px;
+}}
+.kdv-not {{
+  font-size: 8pt;
+  color: #64748B;
+  max-width: 55%;
+  padding-top: 4px;
+}}
 table.toplam {{
-  width: 280px;
+  width: 260px;
   border-collapse: collapse;
+  flex-shrink: 0;
 }}
 table.toplam td {{
   padding: 3px 6px;
   font-size: 8.5pt;
-  color: #555;
+  color: #475569;
 }}
-table.toplam td.r {{ font-weight: 700; color: #333; }}
+table.toplam td.r {{ font-weight: 700; color: #0F172A; }}
 table.toplam tr.genel td {{
-  background: #0b1f3a;
+  background: #0B2A4A;
   color: #fff;
   font-weight: 700;
   font-size: 10pt;
   padding: 6px;
 }}
-table.toplam tr.genel td.r {{ color: #e8b923; }}
-.kdv-not {{
-  margin-top: 6px;
-  font-size: 8pt;
-  color: #666;
-  text-align: right;
-}}
-.bolum {{ margin-top: 14px; font-size: 8.5pt; }}
-.bolum h3 {{
-  margin: 0 0 6px;
-  color: #0b1f3a;
-  font-size: 10pt;
-}}
-.sart-satir {{ margin: 2px 0; }}
-.sart-liste {{ margin: 4px 0 0 18px; padding: 0; }}
-.sart-liste li {{ margin: 2px 0; }}
+table.toplam tr.genel td.r {{ color: #E8B923; }}
+.sart-satir {{ margin: 3px 0; font-size: 8.5pt; }}
+.sart-liste {{ margin: 6px 0 0 16px; padding: 0; font-size: 8.5pt; }}
+.sart-liste li {{ margin: 3px 0; }}
+.banka {{ margin-top: 8px; font-size: 8pt; }}
+.banka h4 {{ margin: 0 0 4px; color: #0B2A4A; font-size: 9pt; }}
+.banka ul {{ margin: 0; padding-left: 16px; }}
 .imza {{
   display: flex;
   justify-content: space-between;
-  gap: 24px;
-  margin-top: 28px;
+  gap: 28px;
+  margin-top: 22px;
   page-break-inside: avoid;
 }}
-.imza .alan {{
+.imza .alan-imza {{
   width: 46%;
-  border-top: 1px solid #9ca3af;
+  border-top: 1px solid #94A3B8;
   padding-top: 8px;
 }}
-.imza .alan h4 {{
+.imza .alan-imza h4 {{
   margin: 0 0 6px;
-  color: #0b1f3a;
+  color: #0B2A4A;
   font-size: 9pt;
 }}
-.imza .alan div {{ font-size: 8pt; color: #666; margin: 2px 0; }}
+.imza .alan-imza div {{ font-size: 8pt; color: #64748B; margin: 2px 0; }}
 .onay-beyan {{
   margin-top: 8px;
   font-size: 7pt;
-  color: #666;
+  color: #64748B;
   font-style: italic;
 }}
 .alt-bilgi {{
-  margin-top: 16px;
+  margin-top: 14px;
   font-size: 7pt;
-  color: #888;
-  border-top: 1px solid #e5e7eb;
-  padding-top: 6px;
+  color: #94A3B8;
+  border-top: 1px solid #E2E8F0;
+  padding-top: 5px;
+}}
+@media print {{
+  body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  .bolum-baslik, table.urun th, table.toplam tr.genel td {{
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }}
 }}
 </style>
 </head>
-<body>
+<body{body_cls}>
+{toolbar_html}
+{sayfa_ac}
 <div class="wrap">
   <div class="ust">
     <div class="ust-sol">
@@ -409,41 +533,66 @@ table.toplam tr.genel td.r {{ color: #e8b923; }}
     </div>
     <div class="ust-sag">{iletisim_html}</div>
   </div>
-  <hr class="ayirici"/>
-  <hr class="ayirici-sari"/>
+  <div class="serit"></div>
   <h1 class="baslik">{_e(vm.belge_baslik or 'FİYAT TEKLİFİ')}</h1>
-  {meta_box}
-  {musteri_box}
   {hitap}
-  <table class="urun">
-    <colgroup>
-      <col style="width:5%"/><col style="width:11%"/><col style="width:32%"/>
-      <col style="width:8%"/><col style="width:7%"/><col style="width:12%"/>
-      <col style="width:7%"/><col style="width:7%"/><col style="width:11%"/>
-    </colgroup>
-    <thead>
-      <tr>
-        <th>Sıra</th><th>Ürün Kodu</th><th>Açıklama</th>
-        <th>Miktar</th><th>Birim</th><th>Birim Fiyat</th>
-        <th>İsk.%</th><th>KDV%</th><th>Toplam</th>
-      </tr>
-    </thead>
-    <tbody>
+
+  <div class="bolum">
+    <div class="bolum-baslik">1 · GENEL BİLGİLER</div>
+    <div class="bolum-govde">
+      <div class="genel-grid">
+        <div>{genel_sol}</div>
+        <div>{genel_orta}</div>
+        <div>{genel_sag}</div>
+        {adres_blok}
+      </div>
+    </div>
+  </div>
+
+  <div class="bolum">
+    <div class="bolum-baslik">2 · STOK / ÜRÜN KALEMLERİ</div>
+    <div class="bolum-govde" style="padding:0;background:#fff">
+      <table class="urun">
+        <colgroup>
+          <col style="width:5%"/><col style="width:11%"/><col style="width:32%"/>
+          <col style="width:8%"/><col style="width:7%"/><col style="width:12%"/>
+          <col style="width:7%"/><col style="width:7%"/><col style="width:11%"/>
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Sıra</th><th>Stok Kodu</th><th>Ürün / Açıklama</th>
+            <th>Miktar</th><th>Birim</th><th>Birim Fiyat</th>
+            <th>İsk.%</th><th>KDV%</th><th>Tutar</th>
+          </tr>
+        </thead>
+        <tbody>
 {''.join(satir_html)}
-    </tbody>
-  </table>
-  <div class="toplam-wrap">{_toplam_html(vm)}</div>
-  <div class="kdv-not">{_e(vm.kdv_aciklama)}</div>
-  {sartlar_html}
-  {banka}
+        </tbody>
+      </table>
+      <div class="alt-ozet" style="padding:8px 10px">
+        <div class="kdv-not">{_e(vm.kdv_aciklama)}</div>
+        {_toplam_html(vm)}
+      </div>
+    </div>
+  </div>
+
+  <div class="bolum">
+    <div class="bolum-baslik">3 · ÖZEL ŞARTLAR</div>
+    <div class="bolum-govde">
+      {''.join(sart_parcalar) if sart_parcalar else ''}
+      {madde_html}
+      {banka}
+    </div>
+  </div>
+
   <div class="imza">
-    <div class="alan">
+    <div class="alan-imza">
       <h4>Teklifi Hazırlayan</h4>
       {f'<div>{_e(vm.hazirlayan)}</div>' if vm.hazirlayan else ''}
       {f'<div>{_e(vm.hazirlayan_gorev)}</div>' if vm.hazirlayan_gorev else ''}
       <div>İmza / Kaşe</div>
     </div>
-    <div class="alan">
+    <div class="alan-imza">
       <h4>Müşteri Onayı</h4>
       {f'<div>{_e(m.get("unvan"))}</div>' if m.get("unvan") else ''}
       <div>Tarih: _______________</div>
@@ -453,6 +602,7 @@ table.toplam tr.genel td.r {{ color: #e8b923; }}
   </div>
   {f'<div class="alt-bilgi">{alt}</div>' if alt else ''}
 </div>
+{sayfa_kapa}
 </body>
 </html>"""
     assert_customer_output_safe(html_out)

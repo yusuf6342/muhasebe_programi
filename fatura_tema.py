@@ -179,12 +179,14 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         borderwidth=1,
         relief="solid",
     )
+    # Açık zemin + lacivert yazı: Windows/clam'da lacivert+beyaz bazen görünmez kalır
     stil.configure(
         "FaturaSatir.Treeview.Heading",
         font=f_bold,
-        background=LACIVERT,
-        foreground=BEYAZ,
-        relief="flat",
+        background="#E8EEF5",
+        foreground=LACIVERT,
+        relief="solid",
+        borderwidth=1,
         padding=(6, scale_height(TABLO_BASLIK_PAD_TABAN)),
     )
     stil.map(
@@ -194,8 +196,8 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
     )
     stil.map(
         "FaturaSatir.Treeview.Heading",
-        background=[("active", LACIVERT_ORTA)],
-        foreground=[("active", BEYAZ)],
+        background=[("active", SARI), ("pressed", SARI)],
+        foreground=[("active", LACIVERT), ("pressed", LACIVERT)],
     )
 
     stil.configure(
@@ -365,7 +367,7 @@ def ust_toolbar(
 
 
 def alt_ozet_cubugu(parent, *, pack: bool = True) -> dict:
-    """Sabit alt özet kartı: sol işlem düğmeleri + not, sağ toplamlar.
+    """Sabit alt özet: dar Notlar | Fiyat Analiz çalışma | sağ toplamlar.
 
     pack=False ise çağıran sticky_footer_layout ile grid'e yerleştirir.
     """
@@ -377,93 +379,146 @@ def alt_ozet_cubugu(parent, *, pack: bool = True) -> dict:
     kart_dis, kart = beyaz_kart(dis, padx=8, pady=4)
     kart_dis.pack(fill="x", padx=6, pady=(2, 4))
 
-    kart.columnconfigure(0, weight=1)
-    kart.columnconfigure(1, weight=0)
+    # Notlar dar (sol) · Analiz çalışma (orta) · Toplamlar (sağ)
+    kart.columnconfigure(0, weight=0, minsize=140)
+    kart.columnconfigure(1, weight=1, minsize=200)
+    kart.columnconfigure(2, weight=0)
 
     sol = tk.Frame(kart, bg=BEYAZ)
-    sol.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+    sol.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
 
-    islem = tk.Frame(sol, bg=BEYAZ)
-    islem.pack(fill="x", anchor="w")
     tk.Label(
         sol,
-        text="Notlar / Açıklama",
+        text="Notlar",
         bg=BEYAZ,
         fg=LACIVERT,
         font=font(8, "bold", root),
         anchor="w",
     ).pack(anchor="w", pady=(4, 0))
-    not_alani = tk.Text(sol, height=2, width=36, wrap="word", font=font(8, root=root), relief="solid", bd=1)
-    not_alani.pack(fill="both", expand=True, pady=(2, 0))
+    not_alani = tk.Text(
+        sol,
+        height=5,
+        width=18,
+        wrap="word",
+        font=font(8, root=root),
+        relief="solid",
+        bd=1,
+    )
+    not_alani.pack(fill="y", expand=False, pady=(2, 0), anchor="w")
 
-    sag = tk.Frame(kart, bg=BEYAZ)
-    sag.grid(row=0, column=1, sticky="ne")
+    # ——— Fiyat Analiz çalışma ekranı (İşlem Türü / % / Tutar) ———
+    analiz = tk.Frame(kart, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
+    analiz.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=2)
+    islem = tk.Frame(analiz, bg=BEYAZ)
+    islem.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 2))
+    tk.Label(
+        analiz,
+        text="Fiyat Analiz / Çalışma",
+        bg=BEYAZ,
+        fg=LACIVERT,
+        font=font(8, "bold", root),
+        anchor="w",
+    ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 2))
 
     degerler: dict[str, tk.Widget] = {}
-    # Ara özet → Brüt → İndirim/Masraf → Net (muhasebe tutarı)
-    satirlar = (
-        ("ara_toplam", "Ara Toplam", False),
-        ("iskonto", "Toplam İskonto", False),
-        ("matrah", "KDV Matrahı", False),
-        ("kdv", "KDV Toplamı", False),
-        ("brut", "Brüt Toplam", False),
-        ("islem_turu", "İşlem Türü", False),
-        ("islem_oran", "İşlem %", False),
-        ("islem_tutar", "İşlem Tutarı", False),
-        ("genel", "Net Toplam", True),
-        ("doviz", "Döviz Karşılığı", False),
+    ttk.Label(analiz, text="İşlem Türü").grid(row=2, column=0, sticky="w", padx=6, pady=2)
+    islem_turu = ttk.Combobox(
+        analiz,
+        values=("—", "İndirim", "Masraf"),
+        state="readonly",
+        width=12,
+        font=font(9, root=root),
     )
-    for i, (anahtar, baslik, vurgulu) in enumerate(satirlar):
+    islem_turu.set("—")
+    islem_turu.grid(row=2, column=1, sticky="w", padx=(0, 6), pady=2)
+    degerler["islem_turu"] = islem_turu
+
+    ttk.Label(analiz, text="İşlem % (yüzde)").grid(row=3, column=0, sticky="w", padx=6, pady=2)
+    islem_oran = ttk.Entry(analiz, width=12, justify="right", font=font(9, root=root))
+    islem_oran.insert(0, "0")
+    islem_oran.grid(row=3, column=1, sticky="w", padx=(0, 6), pady=2)
+    degerler["islem_oran"] = islem_oran
+
+    ttk.Label(analiz, text="İşlem Tutarı").grid(row=4, column=0, sticky="w", padx=6, pady=2)
+    islem_tutar = ttk.Entry(analiz, width=12, justify="right", font=font(9, root=root))
+    islem_tutar.insert(0, "0,00")
+    islem_tutar.grid(row=4, column=1, sticky="w", padx=(0, 6), pady=2)
+    degerler["islem_tutar"] = islem_tutar
+
+    tk.Label(
+        analiz,
+        text="İndirim veya Masraf seç → % veya tutar gir → Net/Uzlaşılan güncellenir",
+        bg=BEYAZ,
+        fg=IKINCIL,
+        font=font(7, root=root),
+        wraplength=280,
+        justify="left",
+        anchor="w",
+    ).grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 4))
+
+    sag = tk.Frame(kart, bg=BEYAZ)
+    sag.grid(row=0, column=2, sticky="ne")
+
+    # Ara → KDV → Brüt → İndirim/Masraf (%+tutar) → Net
+    satirlar = (
+        ("ara_toplam", "Ara Toplam", False, False),
+        ("iskonto", "Toplam İskonto", False, False),
+        ("matrah", "KDV Matrahı", False, False),
+        ("kdv", "KDV Toplamı", False, False),
+        ("brut", "Brüt Toplam", False, False),
+        ("indirim", "İndirim", False, True),
+        ("masraf", "Masraf", False, True),
+        ("genel", "Net Toplam", True, False),
+        ("doviz", "Döviz Karşılığı", False, False),
+    )
+    tk.Label(sag, text="%", bg=BEYAZ, fg=IKINCIL, font=font(7, root=root), anchor="e").grid(
+        row=0, column=1, sticky="e", padx=(0, 6)
+    )
+    tk.Label(sag, text="Tutar", bg=BEYAZ, fg=IKINCIL, font=font(7, root=root), anchor="e").grid(
+        row=0, column=2, sticky="e"
+    )
+    for i, (anahtar, baslik, vurgulu, yuzde_var) in enumerate(satirlar, start=1):
         fg = LACIVERT if vurgulu else IKINCIL
         fnt = font(12 if vurgulu else 9, "bold" if vurgulu else "normal", root)
         pad_y = 2 if vurgulu else 0
         tk.Label(sag, text=baslik, bg=BEYAZ, fg=fg, font=fnt, anchor="e").grid(
             row=i, column=0, sticky="e", padx=(0, 8), pady=pad_y
         )
-        if anahtar == "genel":
-            entry = ttk.Entry(sag, font=font(12, "bold", root), width=12, justify="right")
-            entry.insert(0, "0,00")
-            entry.grid(row=i, column=1, sticky="e", pady=2)
-            degerler[anahtar] = entry
-        elif anahtar == "islem_turu":
-            cmb = ttk.Combobox(
+        if yuzde_var:
+            oran_lbl = tk.Label(
                 sag,
-                values=("—", "İndirim", "Masraf"),
-                state="readonly",
-                width=10,
-                font=font(9, root=root),
-                justify="right",
-            )
-            cmb.set("—")
-            cmb.grid(row=i, column=1, sticky="e", pady=0)
-            degerler[anahtar] = cmb
-        elif anahtar in ("islem_oran", "islem_tutar"):
-            entry = ttk.Entry(sag, font=font(9, root=root), width=12, justify="right")
-            entry.insert(0, "0" if anahtar == "islem_oran" else "0,00")
-            entry.grid(row=i, column=1, sticky="e", pady=0)
-            degerler[anahtar] = entry
-        else:
-            lbl = tk.Label(
-                sag,
-                text="0,00 TL" if anahtar != "doviz" else "—",
+                text="%0,00",
                 bg=BEYAZ,
                 fg=METIN,
-                font=font(9, "bold", root),
+                font=font(9, root=root),
                 anchor="e",
-                width=12,
+                width=7,
             )
-            lbl.grid(row=i, column=1, sticky="e", pady=0)
-            degerler[anahtar] = lbl
+            oran_lbl.grid(row=i, column=1, sticky="e", padx=(0, 6), pady=pad_y)
+            degerler[f"{anahtar}_oran"] = oran_lbl
+        else:
+            tk.Label(sag, text="", bg=BEYAZ, width=7).grid(row=i, column=1, pady=pad_y)
+        lbl = tk.Label(
+            sag,
+            text="0,00 TL" if anahtar != "doviz" else "—",
+            bg=BEYAZ,
+            fg=LACIVERT if vurgulu else METIN,
+            font=font(12 if vurgulu else 9, "bold", root),
+            anchor="e",
+            width=12,
+        )
+        lbl.grid(row=i, column=2, sticky="e", pady=pad_y)
+        degerler[anahtar] = lbl
 
     ipucu = tk.Label(
         sag,
-        text="Net = Brüt ± İndirim/Masraf · baskıda Brüt/% yok",
+        text="Brüt sabit (ölçüm) · Net = Uzlaşılan · Fiyat uydur Brüt’ü bozmaz",
         bg=BEYAZ,
         fg=IKINCIL,
         font=font(7, root=root),
         anchor="e",
     )
-    ipucu.grid(row=len(satirlar), column=0, columnspan=2, sticky="e", pady=(1, 0))
+    ipucu.grid(row=len(satirlar) + 1, column=0, columnspan=3, sticky="e", pady=(1, 0))
 
     return {
         "dis": dis,
@@ -472,6 +527,7 @@ def alt_ozet_cubugu(parent, *, pack: bool = True) -> dict:
         "degerler": degerler,
         "sag": sag,
         "sol": sol,
+        "analiz": analiz,
         "islem": islem,
     }
 

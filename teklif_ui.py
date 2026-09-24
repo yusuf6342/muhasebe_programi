@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from database.access import maliyet_izinli, yetki_var
 from database.session_manager import oturum
+from database.models.stok import KDV_ORANLARI, VARSAYILAN_KDV_ORANI
 from database.stok_service import StokService
 from database.teklif_conversion_service import QuoteConversionService
 from database.teklif_pricing_service import (
@@ -24,12 +25,29 @@ from database.teklif_pricing_service import (
     maliyet_getir,
     tahmini_teslim_hesapla,
 )
+from database.teklif_odeme import (
+    KREDI_KARTI,
+    NAKIT,
+    NAKIT_ALT,
+    ODEME_SEKILLERI,
+    VADELI_SEKILLER,
+    kalem_hesapla,
+    kalemleri_serileştir,
+    kalemleri_yukle,
+    kayittan_odeme,
+    kk_taksit_etiket,
+    kk_taksit_sayisi,
+    kk_taksit_secenekleri,
+    odeme_ozet_listeden,
+    odeme_sekil_normalize,
+)
 from database.teklif_service import (
     RED_NEDENLERI,
     TEKLIF_DURUMLARI,
     QuoteService,
 )
 from database.user_audit import display_user, format_dt
+from ui_takvim import takvim_butonu
 from satis_tema import (
     ACIK_BG,
     HubKart,
@@ -78,6 +96,10 @@ def _para(v) -> str:
         return f"{float(v or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "0,00"
+
+
+def _para_tl(v) -> str:
+    return f"{_para(v)} TL"
 
 
 def _tarih(d) -> str:
@@ -286,14 +308,21 @@ class TeklifDialog(tk.Toplevel):
     def __init__(self, parent, teklif_id: int | None = None):
         super().__init__(parent)
         self.result = None
+        self.app = parent
         self.teklif = QuoteService.getir(teklif_id) if teklif_id else None
         self.satirlar: list[dict[str, Any]] = []
         self.masraflar: list[dict[str, Any]] = []
         self._fiyat_geri_al: list[dict[str, Any]] | None = None
         self._fiyat_ozet: dict[str, Any] = {}
         self._delivery_term_manual = False
+        self._uzlasilan_tutar = None
+        self._uzlasilan_ui_kilit = False
+        self._uzlasilan_fiyat_snapshot = None
+        self._uzlasilan_snapshot_brut = None
+        self._teklif_yukleniyor = False
         self.musteriler = QuoteService.aktif_musterileri()
         self.musteri_map = {f"{m.cari_kodu} - {m.unvan}": m for m in self.musteriler}
+        self.aday_musteri_map: dict[str, Any] = {}
         self.title("Teklif Formu")
         from ui_pencere import belge_penceresini_hazirla
 
@@ -306,21 +335,45 @@ class TeklifDialog(tk.Toplevel):
             maximize=True,
         )
         self.configure(bg=ACIK_GRI)
-        self.transient(parent)
+        # transient yarı ekranda büyüt/küçültü kapatır — OS + araç çubuğu kontrolleri için kaldır
+        try:
+            self.wm_transient("")
+        except tk.TclError:
+            try:
+                self.transient(None)
+            except Exception:
+                pass
+        try:
+            self.resizable(True, True)
+        except tk.TclError:
+            pass
         self.grab_set()
         self._toolbar_kur()
         self._govde_kur()
+        try:
+            self._teklif_alt_ozet_kur()
+        except Exception:
+            pass
         if self.teklif:
             self._doldur()
         else:
-            self._yeni_varsayilan()
+            try:
+                self._yeni_varsayilan()
+            except Exception:
+                # Kısmi hata olsa bile no/tarih garantisi
+                try:
+                    self._teklif_no_tarih_garanti()
+                except Exception:
+                    pass
         self._buton_durumlari()
         self.bind("<F1>", lambda _e: self.kaydet())
         self.bind("<Escape>", lambda _e: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def _toolbar_kur(self):
         ust = tk.Frame(self, bg=LACIVERT, height=56)
         ust.pack(fill="x")
+        self._teklif_toolbar = ust
         sol = tk.Frame(ust, bg=LACIVERT)
         sol.pack(side="left", padx=12, pady=8)
         tk.Label(sol, text="TEKLİF FORMU", bg=LACIVERT, fg=BEYAZ, font=("Segoe UI", 14, "bold")).pack(
@@ -335,33 +388,36 @@ class TeklifDialog(tk.Toplevel):
         )
         self.rozet.pack(side="left", padx=6)
         self.btn_kaydet = self._btn(sag, "Kaydet (F1)", self.kaydet, SARI, LACIVERT)
-        self.btn_onaya = self._btn(sag, "Onaya Gönder", lambda: self._durum("ONAY BEKLİYOR"), YESIL)
         self.btn_gonderildi = self._btn(
             sag, "Müşteriye Gönderildi", lambda: self._durum("MÜŞTERİYE GÖNDERİLDİ"), "#1565C0"
         )
-        self.btn_kabul = self._btn(sag, "Kabul Edildi", lambda: self._durum("KABUL EDİLDİ"), YESIL)
-        self.btn_siparis = self._btn(sag, "Sipariş Oluştur", self._siparise, LACIVERT)
+        self.btn_kabul = self._btn(sag, "Kabul Edildi", self._kabul_edildi, YESIL)
+        self.btn_siparisler = self._btn(sag, "Siparişler", self._siparis_listesi_ac, LACIVERT)
         self._btn(sag, "Ön İzleme", self._onizleme, "#455A64")
-        self._btn(sag, "PDF", self._pdf, "#455A64")
-        self._btn(sag, "Word", self._word, "#455A64")
-        if maliyet_izinli():
-            self._btn(sag, "İç Maliyet Analizi", self._ic_maliyet_analizi, TURUNCU)
+        self.btn_yazdir = self._btn(sag, "Yazdır", self._yazdir, "#1565C0")
         diger = tk.Menubutton(
             sag, text="Diğer ▾", bg="#374151", fg=BEYAZ, relief="flat", font=("Segoe UI", 9, "bold")
         )
         menu = tk.Menu(diger, tearoff=0)
-        menu.add_command(label="Yazdır", command=self._yazdir)
+        menu.add_command(label="PDF", command=self._pdf)
+        menu.add_command(label="Word", command=self._word)
+        menu.add_command(label="Yazdır / A4 Ön İzleme", command=self._yazdir)
         menu.add_command(label="E-posta İçin Hazırla", command=self._email_hazirla)
         menu.add_command(label="WhatsApp İçin PDF", command=self._whatsapp_pdf)
         menu.add_separator()
+        if maliyet_izinli():
+            self._btn(sag, "Karlılık Analizi", self._ic_maliyet_analizi, "#0F766E")
+            menu.add_command(label="İç Maliyet Analizi", command=self._ic_maliyet_analizi)
+            menu.add_separator()
         menu.add_command(label="Teklifi Revize Et", command=self._revizyon)
         menu.add_command(label="Siparişe Dönüştür", command=self._siparise)
+        menu.add_command(label="Sipariş Listesi", command=self._siparis_listesi_ac)
+        menu.add_command(label="Bağlı Siparişi Aç", command=self._bagli_siparis_ac)
         menu.add_separator()
         menu.add_command(label="Şablon / Hitap Ayarları", command=self._sablon_ayarlari)
         menu.add_command(label="Logo ve Antet Ayarları", command=self._logo_antet_ayarlari)
         menu.add_command(label="Kayıtlı Çıktıları Aç", command=self._kayitli_ciktilar)
         menu.add_separator()
-        menu.add_command(label="İç Onaylı", command=lambda: self._durum("İÇ ONAYLI"))
         menu.add_command(label="Reddet…", command=self._reddet)
         menu.add_command(label="İptal…", command=lambda: self._durum("İPTAL", gerekce_iste=True))
         menu.add_command(label="Geçerlilik Uzat…", command=self._uzat)
@@ -369,7 +425,54 @@ class TeklifDialog(tk.Toplevel):
         menu.add_command(label="Pasife Al", command=self._pasif)
         diger.configure(menu=menu)
         diger.pack(side="left", padx=3)
-        self._btn(sag, "Kapat", self.destroy, "#9E9E9E")
+        # Pencere: aşağı / büyüt-küçült / kapat (─ □ ✕)
+        self._btn(sag, "─", self._teklif_pencere_asagi, "#455A64")
+        self._btn_pencere_buyut = self._btn(
+            sag, "□", self._teklif_pencere_buyut_toggle, "#455A64"
+        )
+        try:
+            if str(self.state() or "") == "zoomed":
+                self._btn_pencere_buyut.configure(text="❐")
+        except tk.TclError:
+            pass
+        self._btn(sag, "✕", self.destroy, "#9E9E9E")
+
+    def _teklif_pencere_asagi(self, _event=None):
+        """Görev çubuğuna indir."""
+        try:
+            self.iconify()
+        except tk.TclError:
+            pass
+
+    def _teklif_pencere_buyut_toggle(self, _event=None):
+        """Tam ekran (zoomed) ↔ önceki boyut."""
+        try:
+            durum = str(self.state() or "")
+        except tk.TclError:
+            durum = ""
+        btn = getattr(self, "_btn_pencere_buyut", None)
+        try:
+            if durum == "zoomed":
+                self.state("normal")
+                geo = getattr(self, "_teklif_onceki_geometry", None)
+                if geo:
+                    try:
+                        self.geometry(geo)
+                    except tk.TclError:
+                        pass
+                if btn is not None:
+                    btn.configure(text="□")
+            else:
+                try:
+                    self._teklif_onceki_geometry = self.geometry()
+                except tk.TclError:
+                    self._teklif_onceki_geometry = None
+                self.state("zoomed")
+                if btn is not None:
+                    btn.configure(text="❐")
+        except tk.TclError:
+            pass
+        return "break"
 
     def _btn(self, parent, text, cmd, bg, fg=BEYAZ):
         b = tk.Button(
@@ -388,187 +491,505 @@ class TeklifDialog(tk.Toplevel):
         return b
 
     def _govde_kur(self):
-        self.canvas = tk.Canvas(self, bg=ACIK_GRI, highlightthickness=0)
-        scroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        import fatura_tema as ftema
+
+        # Orta kaydırma alanı (sticky footer için)
+        kaydirma = tk.Frame(self, bg=ACIK_GRI, highlightthickness=0)
+        kaydirma.pack(fill="both", expand=True)
+        self._kaydirma_alani = kaydirma
+
+        self.canvas = tk.Canvas(kaydirma, bg=ACIK_GRI, highlightthickness=0)
+        scroll = ttk.Scrollbar(kaydirma, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.icerik = ttk.Frame(self.canvas)
-        self.canvas.create_window((0, 0), window=self.icerik, anchor="nw")
+        self._canvas_win = self.canvas.create_window((0, 0), window=self.icerik, anchor="nw")
         self.icerik.bind(
             "<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
 
-        genel = ttk.LabelFrame(self.icerik, text="Genel Bilgiler", padding=8)
-        genel.pack(fill="x", padx=10, pady=6)
+        def _canvas_genislik(e):
+            try:
+                self.canvas.itemconfigure(self._canvas_win, width=max(1, int(e.width)))
+            except tk.TclError:
+                pass
+
+        self.canvas.bind("<Configure>", _canvas_genislik)
+
+        _ipady = ftema.form_ipady()
+        _py = ftema.form_pady(2)
+        gap = 10
         self.girdiler: dict[str, Any] = {}
-        self._alan(genel, 0, 0, "Teklif No", "teklif_no", width=28)
-        self._alan(genel, 0, 2, "Teklif Tarihi", "teklif_tarihi", width=14)
-        self._alan(genel, 1, 0, "Geçerlilik Tarihi", "gecerlilik_tarihi", width=14)
-        self._alan(genel, 1, 2, "Geçerlilik Günü", "gecerlilik_gunu", width=8)
-        self._alan(genel, 2, 0, "Konu", "konu", width=40)
-        self._alan(genel, 2, 2, "Referans No", "referans_no", width=20)
 
-        mus = ttk.LabelFrame(self.icerik, text="Müşteri", padding=8)
-        mus.pack(fill="x", padx=10, pady=6)
-        ttk.Label(mus, text="Müşteri").grid(row=0, column=0, sticky="w", padx=4)
-        self.musteri = ttk.Combobox(mus, values=list(self.musteri_map), width=48, state="readonly")
-        self.musteri.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
-        self._alan(mus, 1, 0, "Aday Müşteri", "aday_musteri_adi", width=40)
-        self._alan(mus, 2, 0, "Yetkili", "musteri_yetkilisi", width=28)
-        self._alan(mus, 2, 2, "Telefon", "musteri_telefon", width=18)
-        self._alan(mus, 3, 0, "E-posta", "musteri_email", width=28)
-        self._alan(mus, 3, 2, "Satış Temsilcisi", "satis_temsilcisi", width=22)
+        # ——— Üst: Genel | Müşteri | Ticari | Fiyat Analiz (dört eşit kolon) ———
+        ust = ttk.Frame(self.icerik)
+        ust.pack(fill="x", padx=10, pady=(6, 4))
+        for _c in range(4):
+            ust.columnconfigure(_c, weight=1, uniform="teklif_ust")
+        ust.rowconfigure(0, weight=1)
 
-        ticari = ttk.LabelFrame(self.icerik, text="Ticari Şartlar", padding=8)
-        ticari.pack(fill="x", padx=10, pady=6)
-        self._alan(ticari, 0, 0, "Para Birimi", "para_birimi", width=8)
-        self._alan(ticari, 0, 2, "Kur", "kur", width=12)
-        self._alan(ticari, 1, 0, "Ödeme Şekli", "odeme_sekli", width=28)
-        self._alan(ticari, 1, 2, "Teslim Süresi", "teslim_suresi", width=22)
-        self._alan(ticari, 2, 0, "Depo", "depo", width=20)
-        self._alan(ticari, 2, 2, "Proje", "proje", width=28)
-        ttk.Label(ticari, text="Termin Türü").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        genel = ttk.LabelFrame(ust, text="Genel Bilgiler", padding=8)
+        genel.grid(row=0, column=0, sticky="nsew", padx=(0, gap))
+        genel.columnconfigure(1, weight=1)
+        genel.columnconfigure(3, weight=1)
+        self._alan(genel, 0, 0, "Teklif No", "teklif_no", width=14)
+        self._tarih_alan(
+            genel, 0, 2, "Teklif Tarihi", "teklif_tarihi",
+            on_select=self._teklif_tarih_veya_kur_degisti, width=10,
+        )
+        self._tarih_alan(
+            genel, 1, 0, "Geçerlilik Tarihi", "gecerlilik_tarihi",
+            on_select=self._gecerlilik_tarih_degisti, width=10,
+        )
+        self._alan(genel, 1, 2, "Geçerlilik Günü", "gecerlilik_gunu", width=6)
+        self._alan(genel, 2, 0, "Konu", "konu", width=16)
+        self._alan(genel, 2, 2, "Referans No", "referans_no", width=10)
+        self._gecerlilik_senkron_kilit = False
+        self.girdiler["gecerlilik_gunu"].bind("<KeyRelease>", self._gecerlilik_gun_degisti)
+        self.girdiler["gecerlilik_gunu"].bind("<FocusOut>", self._gecerlilik_gun_degisti)
+        self.girdiler["gecerlilik_tarihi"].bind("<FocusOut>", self._gecerlilik_tarih_degisti)
+        self.girdiler["teklif_tarihi"].bind("<FocusOut>", self._teklif_tarih_veya_kur_degisti)
+
+        # Ödeme şekli — Genel Bilgiler altındaki boşluğa (dar, 2 satır)
+        odeme_panel = ttk.LabelFrame(genel, text="Ödeme Şekli", padding=4)
+        odeme_panel.grid(row=3, column=0, columnspan=4, sticky="nsew", padx=2, pady=(8, 2))
+        self._odeme_secim: dict[str, tk.BooleanVar] = {}
+        self._odeme_vade_manuel = False
+        self._odeme_secim_kilit = False
+        satir1 = ttk.Frame(odeme_panel)
+        satir1.pack(anchor="w", pady=(0, 2))
+        satir2 = ttk.Frame(odeme_panel)
+        satir2.pack(anchor="w")
+
+        def _odeme_cb(parent, sekil: str):
+            var = tk.BooleanVar(value=(sekil == NAKIT))
+            self._odeme_secim[sekil] = var
+            ttk.Checkbutton(
+                parent,
+                text=sekil,
+                variable=var,
+                command=lambda s=sekil: self._odeme_tek_sec(s),
+            ).pack(side="left", padx=(0, 4))
+
+        _odeme_cb(satir1, NAKIT)
+        self.odeme_nakit_turu = ttk.Combobox(
+            satir1, values=list(NAKIT_ALT), width=7, state="readonly"
+        )
+        self.odeme_nakit_turu.set("Havale")
+        self.odeme_nakit_turu.pack(side="left", padx=(0, 8))
+        self.girdiler["odeme_nakit_turu"] = self.odeme_nakit_turu
+        self.odeme_nakit_turu.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
+
+        _odeme_cb(satir1, KREDI_KARTI)
+        self.odeme_taksit = ttk.Combobox(
+            satir1, values=kk_taksit_secenekleri(), width=10, state="readonly"
+        )
+        self.odeme_taksit.set("Tek Çekim")
+        self.odeme_taksit.pack(side="left", padx=(0, 4))
+        self.girdiler["odeme_taksit"] = self.odeme_taksit
+        self.odeme_taksit.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
+
+        _odeme_cb(satir2, "Çek")
+        _odeme_cb(satir2, "Senet")
+        _odeme_cb(satir2, "Açık Hesap")
+        ttk.Label(satir2, text="Gün").pack(side="left", padx=(8, 2))
+        self.odeme_vade_gun = ttk.Entry(satir2, width=5)
+        self.odeme_vade_gun.pack(side="left", padx=(0, 6))
+        self.girdiler["odeme_vade_gun"] = self.odeme_vade_gun
+        ttk.Label(satir2, text="Vade").pack(side="left", padx=(0, 2))
+        vade_fr = ttk.Frame(satir2)
+        vade_fr.pack(side="left")
+        self.odeme_vade_tarihi = ttk.Entry(vade_fr, width=10)
+        self.odeme_vade_tarihi.pack(side="left")
+        takvim_butonu(
+            vade_fr,
+            self.odeme_vade_tarihi,
+            on_select=self._odeme_vade_tarih_yazildi,
+            text="📅",
+            width=3,
+        )
+        self.girdiler["odeme_vade_tarihi"] = self.odeme_vade_tarihi
+        self.odeme_vade_gun.bind("<KeyRelease>", self._odeme_vade_gun_degisti)
+        self.odeme_vade_gun.bind("<FocusOut>", self._odeme_vade_gun_degisti)
+        self.odeme_vade_tarihi.bind("<KeyRelease>", self._odeme_vade_tarih_yazildi)
+        self.odeme_vade_tarihi.bind("<FocusOut>", self._odeme_vade_tarih_yazildi)
+        self.girdiler["odeme_sekli"] = self.odeme_nakit_turu
+
+        mus = ttk.LabelFrame(ust, text="Müşteri", padding=8)
+        mus.grid(row=0, column=1, sticky="nsew", padx=(0, gap))
+        mus.columnconfigure(1, weight=1)
+        mus.columnconfigure(3, weight=1)
+        # Müşteri kodu + adı dikey; arama adı kutusunda (Ara butonu yok)
+        self._selected_customer_id = None
+        self._musteri_kod_map = {
+            (m.cari_kodu or "").strip(): m
+            for m in self.musteriler
+            if (m.cari_kodu or "").strip()
+        }
+        ttk.Label(mus, text="Müşteri Kodu").grid(row=0, column=0, sticky="w", padx=4, pady=_py)
+        kod_satir = ttk.Frame(mus)
+        kod_satir.grid(row=0, column=1, columnspan=3, sticky="ew", padx=4, pady=_py)
+        kod_satir.columnconfigure(0, weight=1)
+        self.musteri_kodu = ttk.Entry(kod_satir, width=14)
+        self.musteri_kodu.grid(row=0, column=0, sticky="ew", ipady=_ipady)
+        ttk.Button(kod_satir, text="Yeni", width=6, command=self._yeni_musteri_ekle).grid(
+            row=0, column=1, sticky="e", padx=(6, 0)
+        )
+        ttk.Label(mus, text="Müşteri Adı").grid(row=1, column=0, sticky="w", padx=4, pady=_py)
+        self.musteri_adi = ttk.Entry(mus, width=28)
+        self.musteri_adi.grid(
+            row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=_py, ipady=_ipady
+        )
+        self._musteri_arama_after = None
+        self._musteri_ara_sonuclar: list[str] = []
+        self.musteri_kodu.bind("<KeyRelease>", self._musteri_kod_degisti)
+        self.musteri_kodu.bind("<Return>", self._musteri_kod_enter)
+        self.musteri_kodu.bind("<KP_Enter>", self._musteri_kod_enter)
+        self.musteri_kodu.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
+        self.musteri_adi.bind("<KeyRelease>", self._musteri_ara_filtrele)
+        self.musteri_adi.bind("<Return>", self._musteri_ara_enter)
+        self.musteri_adi.bind("<KP_Enter>", self._musteri_ara_enter)
+        self.musteri_adi.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
+        # Geri uyumluluk: eski self.musteri.get() çağrıları kod alanına yönlensin
+        self.musteri = self.musteri_kodu
+        # Aday müşteri — seçenekli + Yeni
+        ttk.Label(mus, text="Aday Müşteri").grid(row=2, column=0, sticky="w", padx=4, pady=_py)
+        aday_satir = ttk.Frame(mus)
+        aday_satir.grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=_py)
+        aday_satir.columnconfigure(0, weight=1)
+        self.aday_musteri_map: dict[str, Any] = {}
+        self.girdiler["aday_musteri_adi"] = ttk.Combobox(
+            aday_satir, values=self._aday_musteri_secenekleri(), width=18
+        )
+        self.girdiler["aday_musteri_adi"].grid(row=0, column=0, sticky="ew", ipady=_ipady)
+        ttk.Button(
+            aday_satir, text="Yeni", width=6, command=self._yeni_aday_musteri_ekle
+        ).grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self._alan(mus, 3, 0, "Yetkili", "musteri_yetkilisi", width=14)
+        self._alan(mus, 3, 2, "Telefon", "musteri_telefon", width=12)
+        self._alan(mus, 4, 0, "E-posta", "musteri_email", width=14)
+        ttk.Label(mus, text="Satış Temsilcisi").grid(
+            row=4, column=2, sticky="w", padx=4, pady=_py
+        )
+        self.girdiler["satis_temsilcisi"] = ttk.Combobox(
+            mus,
+            values=self._satis_temsilcisi_secenekleri(),
+            width=12,
+            state="readonly",
+        )
+        self.girdiler["satis_temsilcisi"].grid(
+            row=4, column=3, sticky="ew", padx=4, pady=_py, ipady=_ipady
+        )
+
+        ticari = ttk.LabelFrame(ust, text="Ticari Şartlar", padding=8)
+        ticari.grid(row=0, column=2, sticky="nsew", padx=(0, gap))
+        ticari.columnconfigure(1, weight=1)
+        ticari.columnconfigure(3, weight=1)
+        # Para birimi + döviz karşılığı (TCMB efektif alış)
+        from database.models.doviz import PARA_BIRIMLERI
+
+        ttk.Label(ticari, text="Para Birimi").grid(row=0, column=0, sticky="w", padx=4, pady=_py)
+        self.para_birimi = ttk.Combobox(
+            ticari, values=list(PARA_BIRIMLERI), width=8, state="readonly"
+        )
+        self.para_birimi.set("TRY")
+        self.para_birimi.grid(row=0, column=1, sticky="w", padx=4, pady=_py)
+        self.girdiler["para_birimi"] = self.para_birimi
+        self.para_birimi.bind("<<ComboboxSelected>>", self._teklif_para_birimi_degisti)
+
+        ttk.Label(ticari, text="Belge Kuru").grid(row=0, column=2, sticky="w", padx=4, pady=_py)
+        kur_satir = ttk.Frame(ticari)
+        kur_satir.grid(row=0, column=3, sticky="ew", padx=4, pady=_py)
+        self.kur_giris = ttk.Entry(kur_satir, width=12, justify="right")
+        self.kur_giris.insert(0, "1")
+        self.kur_giris.pack(side="left")
+        self.girdiler["kur"] = self.kur_giris
+        self.kur_giris.bind("<FocusOut>", self._teklif_kur_manuel)
+        ttk.Button(kur_satir, text="TCMB", width=5, command=self._teklif_tcmb_kur_yenile).pack(
+            side="left", padx=(4, 0)
+        )
+        self._teklif_kur_turu = "effective_buying"
+        self._teklif_kur_kaynagi = "MANUEL"
+        self._teklif_kur_tarihi = date.today()
+        self.lbl_kur_kaynak = ttk.Label(ticari, text="Efektif Alış", foreground="#64748B")
+        self.lbl_kur_kaynak.grid(row=1, column=2, columnspan=2, sticky="w", padx=4, pady=(0, 2))
+
+        # Döviz karşılığı: kur seçimi + kur bilgisi (her zaman görünür alan)
+        ttk.Label(ticari, text="Kur Seçimi").grid(row=2, column=0, sticky="w", padx=4, pady=_py)
+        self.doviz_karsilik_pb = ttk.Combobox(
+            ticari, values=("—", "USD", "EUR"), width=8, state="readonly"
+        )
+        self.doviz_karsilik_pb.set("—")
+        self.doviz_karsilik_pb.grid(row=2, column=1, sticky="w", padx=4, pady=_py)
+        self.girdiler["doviz_karsilik_pb"] = self.doviz_karsilik_pb
+        self.doviz_karsilik_pb.bind("<<ComboboxSelected>>", self._teklif_doviz_karsilik_degisti)
+
+        ttk.Label(ticari, text="Kur Bilgisi").grid(row=2, column=2, sticky="w", padx=4, pady=_py)
+        karsilik_kur_satir = ttk.Frame(ticari)
+        karsilik_kur_satir.grid(row=2, column=3, sticky="ew", padx=4, pady=_py)
+        # disabled yerine normal/readonly — Windows'ta disabled Entry görünmez kalabiliyor
+        self.doviz_karsilik_kur = ttk.Entry(karsilik_kur_satir, width=12, justify="right")
+        self.doviz_karsilik_kur.insert(0, "")
+        self.doviz_karsilik_kur.pack(side="left", fill="x", expand=True)
+        self.doviz_karsilik_kur.configure(state="readonly")
+        self.girdiler["doviz_karsilik_kur"] = self.doviz_karsilik_kur
+        self.doviz_karsilik_kur.bind("<FocusOut>", self._teklif_doviz_karsilik_kur_manuel)
+        self.doviz_karsilik_kur.bind("<Return>", self._teklif_doviz_karsilik_kur_manuel)
+        self.btn_doviz_karsilik_tcmb = ttk.Button(
+            karsilik_kur_satir,
+            text="TCMB",
+            width=5,
+            command=self._teklif_doviz_karsilik_tcmb,
+            state="disabled",
+        )
+        self.btn_doviz_karsilik_tcmb.pack(side="left", padx=(4, 0))
+        self.lbl_doviz_karsilik_kaynak = ttk.Label(
+            ticari, text="TCMB Efektif Alış (USD/EUR seçin)", foreground="#64748B"
+        )
+        self.lbl_doviz_karsilik_kaynak.grid(
+            row=3, column=2, columnspan=2, sticky="w", padx=4, pady=(0, 4)
+        )
+
+        self._alan(ticari, 4, 0, "Teslim Süresi", "teslim_suresi", width=10)
+        self._alan(ticari, 4, 2, "Depo", "depo", width=10)
+        self._alan(ticari, 5, 0, "Proje", "proje", width=10)
+        ttk.Label(ticari, text="Termin Türü").grid(row=5, column=2, sticky="w", padx=4, pady=_py)
         self.termin_turu = ttk.Combobox(
-            ticari, values=list(TERMIN_TURLERI), width=26, state="readonly"
+            ticari, values=list(TERMIN_TURLERI), width=14, state="readonly"
         )
         self.termin_turu.set(TERMIN_TURLERI[0])
-        self.termin_turu.grid(row=3, column=1, sticky="ew", padx=4, pady=2)
-        self._alan(ticari, 3, 2, "Termin Süresi (Gün)", "delivery_term_days", width=8)
-        self._alan(ticari, 4, 0, "Tahmini Teslim Tarihi", "estimated_delivery_date", width=14)
-        self._alan(ticari, 4, 2, "Termin Açıklaması", "delivery_term_note", width=28)
+        self.termin_turu.grid(row=5, column=3, sticky="ew", padx=4, pady=_py)
+        self._alan(ticari, 6, 0, "Termin Süresi (Gün)", "delivery_term_days", width=6)
+        self._tarih_alan(
+            ticari, 6, 2, "Tahmini Teslim Tarihi", "estimated_delivery_date",
+            on_select=self._termin_manuel_isaretle, width=10,
+        )
+        self._alan(ticari, 7, 0, "Termin Açıklaması", "delivery_term_note", width=20)
         self.girdiler["delivery_term_days"].bind("<KeyRelease>", self._termin_gun_degisti)
         self.girdiler["delivery_term_days"].bind("<FocusOut>", self._termin_gun_degisti)
-        self.girdiler["teklif_tarihi"].bind("<FocusOut>", self._termin_gun_degisti)
         self.girdiler["estimated_delivery_date"].bind("<KeyRelease>", self._termin_manuel_isaretle)
 
-        orta = ttk.Frame(self.icerik)
-        orta.pack(fill="both", expand=True, padx=10, pady=6)
-        orta.columnconfigure(0, weight=3)
-        orta.columnconfigure(1, weight=1)
+        # Sağ üst: Fiyat Analiz / Çalışma — açık sarı zemin
+        ACIK_SARI = "#FEF9C3"
+        self.fiyat_panel = tk.LabelFrame(
+            ust,
+            text="Fiyat Analiz / Çalışma",
+            bg=ACIK_SARI,
+            fg=LACIVERT,
+            font=("Segoe UI", 9, "bold"),
+            padx=8,
+            pady=8,
+            labelanchor="nw",
+        )
+        self.fiyat_panel.grid(row=0, column=3, sticky="nsew")
+        self.fiyat_panel.columnconfigure(1, weight=1)
+        self.fiyat_girdiler: dict[str, Any] = {}
 
-        urun = ttk.LabelFrame(orta, text="Ürünler", padding=8)
-        urun.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        if maliyet_izinli():
-            kolonlar = (
-                "tur",
-                "kod",
-                "ad",
-                "miktar",
-                "birim",
-                "alis",
-                "kaynak",
-                "fiyat",
-                "om",
-                "isk",
-                "kdv",
-                "toplam",
-                "marj",
-            )
-            basliklar = {
-                "tur": "Tür",
-                "kod": "Kod",
-                "ad": "Ad",
-                "miktar": "Miktar",
-                "birim": "Birim",
-                "alis": "Alış",
-                "kaynak": "Kaynak",
-                "fiyat": "Fiyat",
-                "om": "O/M",
-                "isk": "İsk",
-                "kdv": "KDV",
-                "toplam": "Toplam",
-                "marj": "Marj",
-            }
-        else:
-            kolonlar = ("tur", "kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "net", "toplam")
-            basliklar = {
-                "tur": "Tür",
-                "kod": "Kod",
-                "ad": "Ad",
-                "miktar": "Miktar",
-                "birim": "Birim",
-                "fiyat": "Fiyat",
-                "isk": "İsk",
-                "kdv": "KDV",
-                "net": "Net",
-                "toplam": "Toplam",
-            }
-        self._satir_kolonlar = kolonlar
-        self.satir_tablo = ttk.Treeview(urun, columns=kolonlar, show="headings", height=10)
-        for c in kolonlar:
-            self.satir_tablo.heading(c, text=basliklar[c])
-            self.satir_tablo.column(
-                c,
-                width=48 if c == "tur" else (72 if c != "ad" else 160),
+        def _fa_lbl(text, row):
+            tk.Label(
+                self.fiyat_panel,
+                text=text,
+                bg=ACIK_SARI,
+                fg="#0F172A",
+                font=("Segoe UI", 9),
                 anchor="w",
+            ).grid(row=row, column=0, sticky="w", pady=1)
+
+        _fa_lbl("Kâr Marjı (%)", 0)
+        self.fiyat_girdiler["profit_rate"] = ttk.Entry(self.fiyat_panel, width=10)
+        self.fiyat_girdiler["profit_rate"].insert(0, "0")
+        self.fiyat_girdiler["profit_rate"].grid(row=0, column=1, sticky="ew", pady=1)
+        _fa_lbl("Maktu Kâr", 1)
+        self.fiyat_girdiler["fixed_profit_amount"] = ttk.Entry(self.fiyat_panel, width=10)
+        self.fiyat_girdiler["fixed_profit_amount"].insert(0, "0")
+        self.fiyat_girdiler["fixed_profit_amount"].grid(row=1, column=1, sticky="ew", pady=1)
+        _fa_lbl("Teklif Masrafı", 2)
+        self.fiyat_girdiler["customer_expense_amount"] = ttk.Entry(self.fiyat_panel, width=10)
+        self.fiyat_girdiler["customer_expense_amount"].insert(0, "0")
+        self.fiyat_girdiler["customer_expense_amount"].grid(row=2, column=1, sticky="ew", pady=1)
+        _fa_lbl("İç Masraf", 3)
+        self.fiyat_girdiler["internal_expense_amount"] = ttk.Entry(self.fiyat_panel, width=10)
+        self.fiyat_girdiler["internal_expense_amount"].insert(0, "0")
+        self.fiyat_girdiler["internal_expense_amount"].grid(row=3, column=1, sticky="ew", pady=1)
+        _fa_lbl("Yuvarlama", 4)
+        self.fiyat_girdiler["yuvarlama"] = ttk.Combobox(
+            self.fiyat_panel,
+            values=["kurus", "1", "5", "10", "psikolojik", "yok"],
+            width=10,
+            state="readonly",
+        )
+        self.fiyat_girdiler["yuvarlama"].set("kurus")
+        self.fiyat_girdiler["yuvarlama"].grid(row=4, column=1, sticky="ew", pady=1)
+        btn_f = tk.Frame(self.fiyat_panel, bg=ACIK_SARI)
+        btn_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        tk.Button(
+            btn_f,
+            text="Fiyatları Hesapla",
+            command=self._fiyatlari_hesapla,
+            bg=YESIL,
+            fg=BEYAZ,
+            relief="raised",
+            bd=2,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        ).pack(fill="x", pady=1)
+        ttk.Button(btn_f, text="Hesaplamayı Geri Al", command=self._fiyat_geri_al_uygula).pack(
+            fill="x", pady=1
+        )
+        ttk.Button(btn_f, text="Masraf Detayı", command=self._masraf_detay).pack(fill="x", pady=1)
+        if maliyet_izinli():
+            tk.Button(
+                btn_f,
+                text="Karlılık Analizi",
+                command=self._ic_maliyet_analizi,
+                bg=LACIVERT,
+                fg=BEYAZ,
+                relief="raised",
+                bd=2,
+                font=("Segoe UI", 9, "bold"),
+                cursor="hand2",
+            ).pack(fill="x", pady=(4, 1))
+        # Özet etiketi (gizli metin yok; geri uyumluluk için boş tut)
+        self.lbl_fiyat_ozet = tk.Label(self.fiyat_panel, text="", bg=ACIK_SARI)
+        self.lbl_fiyat_ozet.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.lbl_toplam = self.lbl_fiyat_ozet
+        if not maliyet_izinli():
+            for w in (
+                self.fiyat_girdiler["profit_rate"],
+                self.fiyat_girdiler["fixed_profit_amount"],
+                self.fiyat_girdiler["internal_expense_amount"],
+            ):
+                w.grid_remove()
+
+        self._odeme_secim_degisti()
+
+        # ——— Ürün giriş: kod / ad / miktar / birim kalın kırmızı; maliyet kırmızı ———
+        _KIRMIZI_CIZGI = "#DC2626"
+        aksiyon = tk.Frame(self.icerik, bg=ACIK_GRI, highlightthickness=0)
+        aksiyon.pack(fill="x", padx=10, pady=(2, 2))
+        aksiyon_ic = ttk.Frame(aksiyon)
+        aksiyon_ic.pack(fill="x", padx=2, pady=4)
+        aksiyon_ic.columnconfigure(3, weight=1)
+
+        def _kirmizi_cerceve(parent, col, padx=(0, 10)):
+            cer = tk.Frame(
+                parent,
+                bg=BEYAZ,
+                highlightthickness=3,
+                highlightbackground=_KIRMIZI_CIZGI,
+                highlightcolor=_KIRMIZI_CIZGI,
+                bd=0,
             )
-        self.satir_tablo.pack(fill="both", expand=True)
-        self.satir_tablo.bind("<Double-1>", self._satir_cift_tik)
-        self.satir_tablo.tag_configure("maliyet_yok", foreground=KIRMIZI)
-        self.satir_tablo.tag_configure("manuel_satir", foreground="#6D28D9")
-        self.satir_tablo.bind("<Button-3>", self._satir_sag_menu)
-        self._secili_urun: dict[str, Any] | None = None
-        self._urun_sec_pencere = None
+            cer.grid(row=0, column=col, sticky="ew" if col == 3 else "w", padx=padx, pady=0)
+            return cer
 
-        satir_alt = ttk.Frame(urun)
-        satir_alt.pack(fill="x", pady=4)
-        satir_alt.columnconfigure(3, weight=1)
-
-        ttk.Label(satir_alt, text="Ürün Kodu").grid(row=0, column=0, sticky="w", padx=(0, 2))
-        self.urun_kod = ttk.Entry(satir_alt, width=12)
-        self.urun_kod.grid(row=0, column=1, sticky="w", padx=2)
+        ttk.Label(aksiyon_ic, text="Ürün Kodu").grid(
+            row=0, column=0, sticky="w", padx=(0, 4), pady=0
+        )
+        kod_cer = _kirmizi_cerceve(aksiyon_ic, 1)
+        self.urun_kod = ttk.Entry(kod_cer, width=14)
+        self.urun_kod.pack(fill="both", expand=True, ipady=_ipady, padx=1, pady=1)
         self.urun_kod.bind("<Return>", self._urun_getir)
 
-        ttk.Label(satir_alt, text="Ürün Adı / Ara").grid(row=0, column=2, sticky="w", padx=(8, 2))
-        self.urun_ad_ara = ttk.Entry(satir_alt)
-        self.urun_ad_ara.grid(row=0, column=3, sticky="ew", padx=2, ipadx=4)
-        try:
-            self.urun_ad_ara.configure(width=36)
-        except tk.TclError:
-            pass
-        # Placeholder benzeri silik yardımcı metin
-        self._urun_ara_placeholder = "Ürün adından en az 3 harf yazın…"
+        ttk.Label(aksiyon_ic, text="Ürün Adı / Ara").grid(
+            row=0, column=2, sticky="w", padx=(0, 4), pady=0
+        )
+        ad_cer = _kirmizi_cerceve(aksiyon_ic, 3)
+        self.urun_ad_ara = ttk.Entry(ad_cer)
+        self.urun_ad_ara.pack(fill="both", expand=True, ipady=_ipady, padx=1, pady=1)
+        self._urun_ara_placeholder = "Ürün adında en az 3 harf yazın"
         self.urun_ad_ara.insert(0, self._urun_ara_placeholder)
         self.urun_ad_ara.configure(foreground="#94A3B8")
         self.urun_ad_ara.bind("<FocusIn>", self._urun_ara_focus_in)
         self.urun_ad_ara.bind("<FocusOut>", self._urun_ara_focus_out)
 
-        ttk.Label(satir_alt, text="Miktar").grid(row=0, column=4, sticky="w", padx=(8, 2))
-        self.urun_miktar = ttk.Entry(satir_alt, width=8)
+        ttk.Label(aksiyon_ic, text="Miktar").grid(row=0, column=4, sticky="w", padx=(0, 4))
+        miktar_cer = _kirmizi_cerceve(aksiyon_ic, 5, padx=(0, 8))
+        self.urun_miktar = ttk.Entry(miktar_cer, width=8)
         self.urun_miktar.insert(0, "1")
-        self.urun_miktar.grid(row=0, column=5, sticky="w", padx=2)
+        self.urun_miktar.pack(fill="both", expand=True, ipady=_ipady, padx=1, pady=1)
         self.urun_miktar.bind("<Return>", lambda _e: self._satir_ekle())
 
-        ttk.Label(satir_alt, text="Birim").grid(row=0, column=6, sticky="w", padx=(8, 2))
-        self.urun_birim = ttk.Combobox(satir_alt, width=8, values=manuel_birim_listesi())
+        ttk.Label(aksiyon_ic, text="Birim").grid(row=0, column=6, sticky="w", padx=(0, 4))
+        birim_cer = _kirmizi_cerceve(aksiyon_ic, 7, padx=(0, 8))
+        self.urun_birim = ttk.Combobox(birim_cer, width=8, values=manuel_birim_listesi())
         self.urun_birim.set("Adet")
-        self.urun_birim.grid(row=0, column=7, sticky="w", padx=2)
+        self.urun_birim.pack(fill="both", expand=True, ipady=_ipady, padx=1, pady=1)
 
-        ttk.Label(satir_alt, text="Depo").grid(row=0, column=8, sticky="w", padx=(8, 2))
+        ttk.Label(aksiyon_ic, text="KDV %").grid(row=0, column=8, sticky="w", padx=(0, 4))
+        self.urun_kdv = ttk.Combobox(
+            aksiyon_ic,
+            values=list(KDV_ORANLARI),
+            width=5,
+            state="readonly",
+        )
+        self.urun_kdv.set(str(int(VARSAYILAN_KDV_ORANI)))
+        self.urun_kdv.grid(row=0, column=9, sticky="w", padx=(0, 8), ipady=_ipady)
+        self.urun_kdv.bind("<<ComboboxSelected>>", self._urun_kdv_degisti)
+
+        ttk.Label(aksiyon_ic, text="Depo").grid(row=0, column=10, sticky="w", padx=(0, 4))
         try:
             depo_list = [d.ad for d in StokService.depolar()]
         except Exception:
             depo_list = ["ANA DEPO"]
         if not depo_list:
             depo_list = ["ANA DEPO"]
-        self.urun_depo = ttk.Combobox(satir_alt, width=12, values=depo_list)
+        self.urun_depo = ttk.Combobox(aksiyon_ic, width=12, values=depo_list)
         self.urun_depo.set(self.girdiler["depo"].get().strip() or depo_list[0])
-        self.urun_depo.grid(row=0, column=9, sticky="w", padx=2)
+        self.urun_depo.grid(row=0, column=11, sticky="w", padx=(0, 8), ipady=_ipady)
 
-        btn_satir = ttk.Frame(satir_alt)
-        btn_satir.grid(row=0, column=10, sticky="e", padx=(8, 0))
-        ttk.Button(btn_satir, text="Satır Ekle", command=self._satir_ekle).pack(side="left", padx=2)
-        ttk.Button(btn_satir, text="Satır Sil", command=self._satir_sil).pack(side="left", padx=2)
-        ttk.Button(btn_satir, text="Stok Listesi", command=self._stok_listesi_ac).pack(
+        self.lbl_urun_maliyet = ttk.Label(aksiyon_ic, text="Maliyet Fiyatı")
+        self.lbl_urun_maliyet.grid(row=0, column=12, sticky="w", padx=(8, 4))
+        maliyet_cer = _kirmizi_cerceve(aksiyon_ic, 13, padx=(0, 4))
+        self.urun_maliyet = ttk.Entry(maliyet_cer, width=10, justify="right")
+        self.urun_maliyet.pack(fill="both", expand=True, ipady=_ipady, padx=1, pady=1)
+        self.lbl_urun_maliyet_pb = ttk.Label(aksiyon_ic, text="TRY", foreground="#64748B")
+        self.lbl_urun_maliyet_pb.grid(row=0, column=14, sticky="w", padx=(0, 8))
+        if not maliyet_izinli():
+            self.lbl_urun_maliyet.grid_remove()
+            maliyet_cer.grid_remove()
+            self.lbl_urun_maliyet_pb.grid_remove()
+
+        def _btn3d(parent, text, cmd, bg, fg=BEYAZ):
+            return tk.Button(
+                parent,
+                text=text,
+                command=cmd,
+                bg=bg,
+                fg=fg,
+                activebackground=bg,
+                activeforeground=fg,
+                relief="raised",
+                bd=3,
+                font=("Segoe UI", 9, "bold"),
+                padx=10,
+                pady=4,
+                cursor="hand2",
+            )
+
+        btn_satir = ttk.Frame(aksiyon_ic)
+        btn_satir.grid(row=0, column=15, sticky="e", padx=(4, 0))
+        _btn3d(btn_satir, "Satır Ekle", self._satir_ekle, YESIL).pack(side="left", padx=2)
+        _btn3d(btn_satir, "Güncelle", self._satir_guncelle, LACIVERT).pack(side="left", padx=2)
+        _btn3d(btn_satir, "Satır Sil", self._satir_sil, KIRMIZI).pack(side="left", padx=2)
+        _btn3d(btn_satir, "Stok Listesi", self._stok_listesi_ac, YESIL).pack(side="left", padx=2)
+        _btn3d(btn_satir, "+ Manuel Ürün Ekle", self._manuel_urun_ekle, YESIL).pack(
             side="left", padx=2
         )
-        ttk.Button(btn_satir, text="+ Manuel Ürün Ekle", command=self._manuel_urun_ekle).pack(
-            side="left", padx=2
-        )
 
-        satir_alt2 = ttk.Frame(urun)
-        satir_alt2.pack(fill="x", pady=(0, 4))
+        uzlas_cer = ttk.Frame(aksiyon_ic)
+        uzlas_cer.grid(row=0, column=16, sticky="e", padx=(12, 0))
+        ttk.Label(uzlas_cer, text="Uzlaşılan Tutar").pack(side="left", padx=(0, 4))
+        self._uzlasilan_tutar_entry = ttk.Entry(uzlas_cer, width=12, justify="right")
+        self._uzlasilan_tutar_entry.pack(side="left", ipady=_ipady)
+        self._uzlasilan_tutar_entry.bind("<FocusOut>", self._uzlasilan_tutar_degisti)
+        self._uzlasilan_tutar_entry.bind("<Return>", self._uzlasilan_tutar_degisti)
+        self._uzlasilan_tutar_entry.bind("<KP_Enter>", self._uzlasilan_tutar_degisti)
+        self._uzlasilan_tutar_entry.bind("<KeyRelease>", self._uzlasilan_tutar_canli)
+
+        satir_alt2 = ttk.Frame(self.icerik)
+        satir_alt2.pack(fill="x", padx=10, pady=(0, 4))
         self._urun_arama = TeklifUrunAramaPaneli(
             satir_alt2,
             self.urun_ad_ara,
@@ -604,70 +1025,168 @@ class TeklifDialog(tk.Toplevel):
             satir_alt2, text="Güncel Alış Fiyatlarını Yenile", command=self._alis_fiyatlari_yenile
         ).pack(side="left", padx=6)
 
-        self.fiyat_panel = ttk.LabelFrame(orta, text="Teklif Fiyatlandırma", padding=8)
-        self.fiyat_panel.grid(row=0, column=1, sticky="nsew")
-        self.fiyat_girdiler: dict[str, Any] = {}
-        ttk.Label(self.fiyat_panel, text="Maliyet Üzeri Kâr (%)").grid(row=0, column=0, sticky="w")
-        self.fiyat_girdiler["profit_rate"] = ttk.Entry(self.fiyat_panel, width=12)
-        self.fiyat_girdiler["profit_rate"].insert(0, "0")
-        self.fiyat_girdiler["profit_rate"].grid(row=0, column=1, sticky="ew", pady=2)
-        ttk.Label(self.fiyat_panel, text="Maktu Kâr").grid(row=1, column=0, sticky="w")
-        self.fiyat_girdiler["fixed_profit_amount"] = ttk.Entry(self.fiyat_panel, width=12)
-        self.fiyat_girdiler["fixed_profit_amount"].insert(0, "0")
-        self.fiyat_girdiler["fixed_profit_amount"].grid(row=1, column=1, sticky="ew", pady=2)
-        ttk.Label(self.fiyat_panel, text="Teklif Masrafı").grid(row=2, column=0, sticky="w")
-        self.fiyat_girdiler["customer_expense_amount"] = ttk.Entry(self.fiyat_panel, width=12)
-        self.fiyat_girdiler["customer_expense_amount"].insert(0, "0")
-        self.fiyat_girdiler["customer_expense_amount"].grid(row=2, column=1, sticky="ew", pady=2)
-        ttk.Label(self.fiyat_panel, text="İç Masraf").grid(row=3, column=0, sticky="w")
-        self.fiyat_girdiler["internal_expense_amount"] = ttk.Entry(self.fiyat_panel, width=12)
-        self.fiyat_girdiler["internal_expense_amount"].insert(0, "0")
-        self.fiyat_girdiler["internal_expense_amount"].grid(row=3, column=1, sticky="ew", pady=2)
-        ttk.Label(self.fiyat_panel, text="Yuvarlama").grid(row=4, column=0, sticky="w")
-        self.fiyat_girdiler["yuvarlama"] = ttk.Combobox(
-            self.fiyat_panel,
-            values=["kurus", "1", "5", "10", "psikolojik", "yok"],
-            width=10,
-            state="readonly",
+        # ——— Ürünler (tam genişlik; Fiyat Analiz sağ üstte) ———
+        urun = ttk.LabelFrame(self.icerik, text="Ürünler", padding=8)
+        urun.pack(fill="both", expand=True, padx=10, pady=4)
+        if maliyet_izinli():
+            kolonlar = (
+                "tur",
+                "kod",
+                "ad",
+                "miktar",
+                "birim",
+                "alis",
+                "kaynak",
+                "fiyat",
+                "om",
+                "isk",
+                "kdv",
+                "toplam",
+                "marj",
+            )
+            basliklar = {
+                "tur": "Tür",
+                "kod": "Kod",
+                "ad": "Ad",
+                "miktar": "Miktar",
+                "birim": "Birim",
+                "alis": "Alış",
+                "kaynak": "Kaynak",
+                "fiyat": "Fiyat",
+                "om": "O/M",
+                "isk": "İsk",
+                "kdv": "KDV",
+                "toplam": "Toplam",
+                "marj": "Marj",
+            }
+            genislikler = {
+                "tur": 48,
+                "kod": 90,
+                "ad": 280,
+                "miktar": 80,
+                "birim": 70,
+                "alis": 90,
+                "kaynak": 90,
+                "fiyat": 90,
+                "om": 48,
+                "isk": 60,
+                "kdv": 60,
+                "toplam": 100,
+                "marj": 90,
+            }
+        else:
+            kolonlar = ("tur", "kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "net", "toplam")
+            basliklar = {
+                "tur": "Tür",
+                "kod": "Kod",
+                "ad": "Ad",
+                "miktar": "Miktar",
+                "birim": "Birim",
+                "fiyat": "Fiyat",
+                "isk": "İsk",
+                "kdv": "KDV",
+                "net": "Net",
+                "toplam": "Toplam",
+            }
+            genislikler = {
+                "tur": 48,
+                "kod": 100,
+                "ad": 320,
+                "miktar": 90,
+                "birim": 80,
+                "fiyat": 100,
+                "isk": 70,
+                "kdv": 70,
+                "net": 100,
+                "toplam": 110,
+            }
+        self._satir_kolonlar = kolonlar
+        satir_h = ftema.scale_height(ftema.TABLO_SATIR_TABAN_PX)  # 28 × 1.50
+        stil = ttk.Style(self)
+        stil.configure(
+            "TeklifSatir.Treeview",
+            font=("Segoe UI", 12, "bold"),
+            rowheight=satir_h,
+            borderwidth=1,
+            relief="solid",
+            fieldbackground=BEYAZ,
+            background=BEYAZ,
+            foreground="#0B1220",
         )
-        self.fiyat_girdiler["yuvarlama"].set("kurus")
-        self.fiyat_girdiler["yuvarlama"].grid(row=4, column=1, sticky="ew", pady=2)
-        btn_f = ttk.Frame(self.fiyat_panel)
-        btn_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=6)
-        ttk.Button(btn_f, text="Fiyatları Hesapla", command=self._fiyatlari_hesapla).pack(
-            fill="x", pady=2
+        stil.configure(
+            "TeklifSatir.Treeview.Heading",
+            font=("Segoe UI", 10, "bold"),
+            background="#E8EEF5",
+            foreground=LACIVERT,
+            relief="raised",
+            borderwidth=1,
+            padding=(6, ftema.scale_height(ftema.TABLO_BASLIK_PAD_TABAN)),
         )
-        ttk.Button(btn_f, text="Hesaplamayı Geri Al", command=self._fiyat_geri_al_uygula).pack(
-            fill="x", pady=2
+        stil.map(
+            "TeklifSatir.Treeview.Heading",
+            background=[("active", "#D5DEEA")],
+            foreground=[("active", LACIVERT)],
         )
-        ttk.Button(btn_f, text="Masraf Detayı", command=self._masraf_detay).pack(fill="x", pady=2)
-        self.lbl_fiyat_ozet = ttk.Label(self.fiyat_panel, text="", justify="left", wraplength=220)
-        self.lbl_fiyat_ozet.grid(row=6, column=0, columnspan=2, sticky="nw", pady=4)
-        if not maliyet_izinli():
-            for w in (
-                self.fiyat_girdiler["profit_rate"],
-                self.fiyat_girdiler["fixed_profit_amount"],
-                self.fiyat_girdiler["internal_expense_amount"],
-            ):
-                w.grid_remove()
-            self.lbl_fiyat_ozet.configure(text="Maliyet/kâr özeti yetki gerektirir.")
-
-        toplam = ttk.LabelFrame(self.icerik, text="Toplamlar", padding=8)
-        toplam.pack(fill="x", padx=10, pady=6)
-        self.lbl_toplam = ttk.Label(toplam, text="", font=("Segoe UI", 10, "bold"))
-        self.lbl_toplam.pack(anchor="w")
+        stil.map(
+            "TeklifSatir.Treeview",
+            background=[("selected", "#1A237E")],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        tablo_cer = ttk.Frame(urun)
+        tablo_cer.pack(fill="both", expand=True)
+        scroll_y = ttk.Scrollbar(tablo_cer, orient="vertical")
+        self.satir_tablo = ttk.Treeview(
+            tablo_cer,
+            columns=kolonlar,
+            show="headings",
+            height=14,
+            style="TeklifSatir.Treeview",
+            yscrollcommand=scroll_y.set,
+        )
+        scroll_y.configure(command=self.satir_tablo.yview)
+        scroll_y.pack(side="right", fill="y")
+        for c in kolonlar:
+            self.satir_tablo.heading(c, text=basliklar[c])
+            # Ad esnek; diğerleri de yayılabilsin ki satırlar tüm ekrana otursun
+            self.satir_tablo.column(
+                c,
+                width=genislikler.get(c, 80),
+                minwidth=36 if c == "tur" else 48,
+                stretch=True,
+                anchor="w" if c in ("kod", "ad", "kaynak") else "e" if c != "tur" else "center",
+            )
+        self.satir_tablo.pack(side="left", fill="both", expand=True)
+        self.satir_tablo.bind("<Double-1>", self._satir_cift_tik)
+        self.satir_tablo.bind("<<TreeviewSelect>>", self._satir_secildi)
+        self._duzenlenen_satir_idx: int | None = None
+        self.satir_tablo.tag_configure("tek", background=BEYAZ, foreground="#0B1220")
+        self.satir_tablo.tag_configure("cift", background="#F0F3F7", foreground="#0B1220")
+        self.satir_tablo.tag_configure("maliyet_yok", foreground=KIRMIZI)
+        self.satir_tablo.tag_configure("manuel_satir", foreground="#6D28D9")
+        self.satir_tablo.bind("<Button-3>", self._satir_sag_menu)
+        self._secili_urun: dict[str, Any] | None = None
+        self._urun_sec_pencere = None
+        self.after_idle(self._teklif_excel_cizgileri_kur)
 
         notlar = ttk.LabelFrame(self.icerik, text="Notlar", padding=8)
         notlar.pack(fill="x", padx=10, pady=6)
-        ttk.Label(notlar, text="Müşteri Notu").grid(row=0, column=0, sticky="nw")
-        self.musteri_notu = tk.Text(notlar, height=3, width=50)
-        self.musteri_notu.grid(row=0, column=1, padx=4, pady=2)
-        ttk.Label(notlar, text="İç Not").grid(row=1, column=0, sticky="nw")
-        self.ic_not = tk.Text(notlar, height=2, width=50)
-        self.ic_not.grid(row=1, column=1, padx=4, pady=2)
-        ttk.Label(notlar, text="Ticari Şartlar").grid(row=2, column=0, sticky="nw")
-        self.ticari_sartlar = tk.Text(notlar, height=3, width=50)
-        self.ticari_sartlar.grid(row=2, column=1, padx=4, pady=2)
+        # Genişlik: satır boyunca (toplam/fiyat sütununa kadar alan); yükseklik 6c × 1.25 = 7.5c
+        not_govde = ttk.Frame(notlar, height="7.5c")
+        not_govde.pack(fill="x", expand=True)
+        not_govde.pack_propagate(False)
+        ttk.Label(not_govde, text="Müşteri Notu").grid(row=0, column=0, sticky="nw")
+        self.musteri_notu = tk.Text(not_govde, height=5, width=1, wrap="word")
+        self.musteri_notu.grid(row=0, column=1, padx=4, pady=2, sticky="nsew")
+        ttk.Label(not_govde, text="İç Not").grid(row=1, column=0, sticky="nw")
+        self.ic_not = tk.Text(not_govde, height=4, width=1, wrap="word")
+        self.ic_not.grid(row=1, column=1, padx=4, pady=2, sticky="nsew")
+        ttk.Label(not_govde, text="Ticari Şartlar").grid(row=2, column=0, sticky="nw")
+        self.ticari_sartlar = tk.Text(not_govde, height=5, width=1, wrap="word")
+        self.ticari_sartlar.grid(row=2, column=1, padx=4, pady=2, sticky="nsew")
+        not_govde.columnconfigure(1, weight=1)
+        not_govde.rowconfigure(0, weight=2)
+        not_govde.rowconfigure(1, weight=1)
+        not_govde.rowconfigure(2, weight=2)
 
         gecmis = ttk.LabelFrame(self.icerik, text="İşlem Bilgisi", padding=8)
         gecmis.pack(fill="x", padx=10, pady=6)
@@ -675,11 +1194,963 @@ class TeklifDialog(tk.Toplevel):
         self.lbl_gecmis.pack(anchor="w")
 
     def _alan(self, parent, row, col, baslik, anahtar, width=20):
-        ttk.Label(parent, text=baslik).grid(row=row, column=col, sticky="w", padx=4, pady=2)
+        import fatura_tema as ftema
+
+        _py = ftema.form_pady(2)
+        _ipady = ftema.form_ipady()
+        ttk.Label(parent, text=baslik).grid(row=row, column=col, sticky="w", padx=4, pady=_py)
         e = ttk.Entry(parent, width=width)
-        e.grid(row=row, column=col + 1, sticky="ew", padx=4, pady=2)
+        e.grid(row=row, column=col + 1, sticky="ew", padx=4, pady=_py, ipady=_ipady)
         self.girdiler[anahtar] = e
         return e
+
+    def _tarih_alan(self, parent, row, col, baslik, anahtar, *, on_select=None, width=10):
+        """Tarih entry + takvim butonu (gg.aa.yyyy)."""
+        import fatura_tema as ftema
+
+        _py = ftema.form_pady(2)
+        _ipady = ftema.form_ipady()
+        ttk.Label(parent, text=baslik).grid(row=row, column=col, sticky="w", padx=4, pady=_py)
+        fr = ttk.Frame(parent)
+        fr.grid(row=row, column=col + 1, sticky="ew", padx=4, pady=_py)
+        e = ttk.Entry(fr, width=width)
+        e.pack(side="left", ipady=_ipady)
+        takvim_butonu(fr, e, on_select=on_select, text="📅", width=3)
+        self.girdiler[anahtar] = e
+        return e
+
+    def _gecerlilik_gun_degisti(self, _event=None):
+        """Geçerlilik günü → geçerlilik tarihi = teklif tarihi + gün."""
+        if getattr(self, "_gecerlilik_senkron_kilit", False):
+            return
+        try:
+            gun_metin = (self.girdiler["gecerlilik_gunu"].get() or "").strip()
+            if gun_metin == "":
+                return
+            gun = int(gun_metin)
+            if gun < 0:
+                gun = 0
+        except (ValueError, KeyError, tk.TclError):
+            return
+        try:
+            bas = _parse_tarih(self.girdiler["teklif_tarihi"].get())
+        except Exception:
+            return
+        self._gecerlilik_senkron_kilit = True
+        try:
+            self._giris_yaz("gecerlilik_tarihi", _tarih(bas + timedelta(days=gun)))
+        finally:
+            self._gecerlilik_senkron_kilit = False
+
+    def _gecerlilik_tarih_degisti(self, _event=None):
+        """Geçerlilik tarihi → gün = tarih − teklif tarihi."""
+        if getattr(self, "_gecerlilik_senkron_kilit", False):
+            return
+        try:
+            bas = _parse_tarih(self.girdiler["teklif_tarihi"].get())
+            bit = _parse_tarih(self.girdiler["gecerlilik_tarihi"].get())
+        except Exception:
+            return
+        gun = max(0, (bit - bas).days)
+        self._gecerlilik_senkron_kilit = True
+        try:
+            self._giris_yaz("gecerlilik_gunu", str(gun))
+        finally:
+            self._gecerlilik_senkron_kilit = False
+
+    def _aday_musteri_secenekleri(self) -> list[str]:
+        """ADAY MÜŞTERİ grubundaki cariler."""
+        isimler: list[str] = [""]
+        self.aday_musteri_map = {}
+        try:
+            from database.cari_service import CariService
+            from database.database import get_session
+            from database.models.cari import Cari
+            from sqlalchemy import or_, select
+
+            grup = CariService.ADAY_MUSTERI_GRUP
+            with get_session() as session:
+                rows = list(
+                    session.scalars(
+                        select(Cari)
+                        .where(
+                            Cari.aktif.is_(True),
+                            Cari.musteri_grubu == grup,
+                            or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)),
+                        )
+                        .order_by(Cari.unvan)
+                        .limit(500)
+                    ).all()
+                )
+            for c in rows:
+                unvan = (c.unvan or "").strip()
+                etiket = f"{c.cari_kodu} - {unvan}" if c.cari_kodu else unvan
+                if etiket and etiket not in isimler:
+                    isimler.append(etiket)
+                    self.aday_musteri_map[etiket] = c
+                if unvan and unvan not in isimler:
+                    isimler.append(unvan)
+                    self.aday_musteri_map[unvan] = c
+        except Exception:
+            pass
+        return isimler
+
+    def _yeni_aday_musteri_ekle(self):
+        """Yeni aday müşteri — Aday Müşteri grubu ile cari kartı."""
+        self._yeni_musteri_ekle()
+        w = self.girdiler.get("aday_musteri_adi")
+        if w is not None:
+            try:
+                w.configure(values=self._aday_musteri_secenekleri())
+            except tk.TclError:
+                pass
+
+    def _aday_musteri_yaz(self, deger: str | None) -> None:
+        w = self.girdiler.get("aday_musteri_adi")
+        if w is None:
+            return
+        metin = (deger or "").strip()
+        try:
+            degerler = list(w.cget("values") or ())
+            if metin and metin not in degerler:
+                degerler = list(degerler) + [metin]
+                w.configure(values=degerler)
+            w.set(metin)
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _satis_temsilcisi_secenekleri() -> list[str]:
+        """Aktif sistem kullanıcılarından satış temsilcisi adları (fatura ile aynı kaynak)."""
+        isimler: list[str] = [""]
+        try:
+            from database.satis_personeli import aktif_satis_personelleri
+
+            for p in aktif_satis_personelleri():
+                ad = (p.get("ad_soyad") or "").strip()
+                if ad and ad not in isimler:
+                    isimler.append(ad)
+        except Exception:
+            pass
+        return isimler
+
+    def _satis_temsilcisi_yaz(self, deger: str | None) -> None:
+        """Readonly Combobox'a değer yazar; listede yoksa geçici ekler."""
+        w = self.girdiler.get("satis_temsilcisi")
+        if w is None:
+            return
+        metin = (deger or "").strip()
+        degerler = list(w.cget("values") or ())
+        if metin and metin not in degerler:
+            degerler.append(metin)
+            w.configure(values=degerler)
+        w.set(metin)
+
+    def _teklif_kur_tarihi_al(self) -> date:
+        """Kur için teklif tarihi; yoksa bugün."""
+        try:
+            return _parse_tarih(self.girdiler["teklif_tarihi"].get())
+        except (ValueError, KeyError, tk.TclError):
+            return date.today()
+
+    def _teklif_kur_yaz(self, deger) -> None:
+        w = self.girdiler.get("kur")
+        if w is None:
+            return
+        try:
+            d = Decimal(str(deger).replace(",", "."))
+            metin = f"{d:f}".rstrip("0").rstrip(".") or "0"
+            st = str(w.cget("state"))
+            w.configure(state="normal")
+            w.delete(0, "end")
+            w.insert(0, metin)
+            # disabled görünmez kalabiliyor → readonly kullan
+            if st in ("disabled", "readonly"):
+                w.configure(state="readonly")
+        except (tk.TclError, InvalidOperation, ValueError):
+            try:
+                w.configure(state="normal")
+                w.delete(0, "end")
+                w.insert(0, "1")
+            except tk.TclError:
+                pass
+
+    def _teklif_para_birimi_degisti(self, _event=None):
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb == "TRY":
+            self._teklif_kur_yaz(1)
+            self._teklif_kur_kaynagi = "MANUEL"
+            self._teklif_kur_turu = "effective_buying"
+            try:
+                self.kur_giris.configure(state="readonly")
+                self.lbl_kur_kaynak.configure(text="TL · kur=1")
+            except tk.TclError:
+                pass
+            self._toplam_guncelle()
+            return
+        try:
+            self.kur_giris.configure(state="normal")
+        except tk.TclError:
+            pass
+        self._teklif_tcmb_kur_yenile(sessiz=True)
+        self._toplam_guncelle()
+
+    def _teklif_tarih_veya_kur_degisti(self, _event=None):
+        self._gecerlilik_gun_degisti(_event)
+        self._termin_gun_degisti(_event)
+        self._odeme_vade_manuel = False
+        self._odeme_hesap_guncelle(_event)
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb != "TRY":
+            self._teklif_tcmb_kur_yenile(sessiz=True)
+        if self._teklif_doviz_karsilik_pb_al():
+            self._teklif_doviz_karsilik_tcmb(sessiz=True)
+
+    def _teklif_kur_manuel(self, _event=None):
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb == "TRY":
+            return
+        try:
+            kur = _decimal(self.girdiler["kur"].get() or 0, "Kur")
+            if kur <= 0:
+                raise ValueError("Kur pozitif olmalıdır.")
+            self._teklif_kur_kaynagi = "MANUEL"
+            try:
+                self.lbl_kur_kaynak.configure(text="Manuel kur")
+            except tk.TclError:
+                pass
+            self._toplam_guncelle()
+        except ValueError as hata:
+            messagebox.showwarning("Kur", str(hata), parent=self)
+
+    def _teklif_tcmb_kur_yenile(self, sessiz: bool = False, _event=None):
+        """Günün (teklif tarihi) TCMB efektif alış kurunu alır (belge para birimi)."""
+        from database.doviz_service import DovizService
+
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb == "TRY":
+            self._teklif_kur_yaz(1)
+            self._teklif_kur_kaynagi = "MANUEL"
+            return
+        if pb not in ("USD", "EUR"):
+            if not sessiz:
+                messagebox.showwarning("Kur", "Yalnızca USD / EUR için TCMB kuru vardır.", parent=self)
+            return
+        kur_tarihi = self._teklif_kur_tarihi_al()
+        self._teklif_kur_tarihi = kur_tarihi
+        self._teklif_kur_turu = "effective_buying"
+        try:
+            kayitlar = DovizService.tcmb_kurlari_cek(kur_tarihi)
+            hedef = next((k for k in kayitlar if k.get("currency_code") == pb), None)
+            if not hedef:
+                kur = DovizService.kur_degeri(kur_tarihi, pb, "effective_buying")
+            else:
+                kur = Decimal(
+                    str(hedef.get("effective_buying") or hedef.get("forex_buying") or 0)
+                )
+                if kur <= 0:
+                    kur = Decimal(str(hedef.get("forex_buying") or 0))
+            if kur <= 0:
+                raise ValueError(f"{pb} efektif alış kuru bulunamadı.")
+            self._teklif_kur_yaz(kur)
+            self._teklif_kur_kaynagi = "TCMB"
+            tcmb_t = hedef.get("tcmb_tarih") if hedef else kur_tarihi
+            etiket = f"TCMB Efektif Alış · {_tarih(tcmb_t) if tcmb_t else _tarih(kur_tarihi)}"
+            try:
+                self.lbl_kur_kaynak.configure(text=etiket)
+            except tk.TclError:
+                pass
+            if not sessiz:
+                messagebox.showinfo(
+                    "TCMB Kur",
+                    f"{pb} efektif alış: {kur}\nTarih: {_tarih(tcmb_t or kur_tarihi)}",
+                    parent=self,
+                )
+            self._toplam_guncelle()
+        except Exception as hata:
+            try:
+                kur = DovizService.kur_degeri(kur_tarihi, pb, "effective_buying")
+                self._teklif_kur_yaz(kur)
+                self._teklif_kur_kaynagi = "TCMB"
+                try:
+                    self.lbl_kur_kaynak.configure(
+                        text=f"TCMB Efektif Alış · {_tarih(kur_tarihi)}"
+                    )
+                except tk.TclError:
+                    pass
+                self._toplam_guncelle()
+                return
+            except Exception:
+                pass
+            if not sessiz:
+                messagebox.showerror("TCMB", str(hata), parent=self)
+
+    def _teklif_doviz_karsilik_pb_al(self) -> str:
+        try:
+            pb = (self.doviz_karsilik_pb.get() or "").strip().upper()
+        except (tk.TclError, AttributeError):
+            return ""
+        return pb if pb in ("USD", "EUR") else ""
+
+    def _teklif_doviz_karsilik_kur_yaz(self, deger) -> None:
+        w = getattr(self, "doviz_karsilik_kur", None)
+        if w is None:
+            return
+        try:
+            d = Decimal(str(deger).replace(",", "."))
+            metin = f"{d:f}".rstrip("0").rstrip(".") or "0"
+            w.configure(state="normal")
+            w.delete(0, "end")
+            w.insert(0, metin)
+        except (tk.TclError, InvalidOperation, ValueError):
+            pass
+
+    def _teklif_doviz_karsilik_degisti(self, _event=None):
+        pb = self._teklif_doviz_karsilik_pb_al()
+        aktif = bool(pb)
+        try:
+            self.btn_doviz_karsilik_tcmb.configure(state="normal" if aktif else "disabled")
+        except tk.TclError:
+            pass
+        if not aktif:
+            try:
+                self.doviz_karsilik_kur.configure(state="normal")
+                self.doviz_karsilik_kur.delete(0, "end")
+                # Alan görünür kalsın (readonly boş kutu)
+                self.doviz_karsilik_kur.configure(state="readonly")
+                self.lbl_doviz_karsilik_kaynak.configure(
+                    text="TCMB Efektif Alış (USD/EUR seçin)"
+                )
+            except tk.TclError:
+                pass
+            self._toplam_guncelle()
+            return
+        try:
+            self.doviz_karsilik_kur.configure(state="normal")
+        except tk.TclError:
+            pass
+        self._teklif_doviz_karsilik_tcmb(sessiz=True)
+
+    def _teklif_doviz_karsilik_kur_manuel(self, _event=None):
+        if not self._teklif_doviz_karsilik_pb_al():
+            return
+        try:
+            kur = _decimal(self.doviz_karsilik_kur.get() or 0, "Kur bilgisi")
+            if kur <= 0:
+                raise ValueError("Kur pozitif olmalıdır.")
+            try:
+                self.lbl_doviz_karsilik_kaynak.configure(text="Manuel kur")
+            except tk.TclError:
+                pass
+            self._toplam_guncelle()
+        except ValueError as hata:
+            messagebox.showwarning("Kur Bilgisi", str(hata), parent=self)
+
+    def _teklif_doviz_karsilik_tcmb(self, sessiz: bool = False, _event=None):
+        """Döviz karşılığı için TCMB efektif alış kurunu getirir."""
+        from database.doviz_service import DovizService
+
+        pb = self._teklif_doviz_karsilik_pb_al()
+        if not pb:
+            if not sessiz:
+                messagebox.showwarning("Kur Seçimi", "Önce USD veya EUR seçin.", parent=self)
+            return
+        kur_tarihi = self._teklif_kur_tarihi_al()
+        try:
+            kayitlar = DovizService.tcmb_kurlari_cek(kur_tarihi)
+            hedef = next((k for k in kayitlar if k.get("currency_code") == pb), None)
+            if not hedef:
+                kur = DovizService.kur_degeri(kur_tarihi, pb, "effective_buying")
+                tcmb_t = kur_tarihi
+            else:
+                kur = Decimal(
+                    str(hedef.get("effective_buying") or hedef.get("forex_buying") or 0)
+                )
+                if kur <= 0:
+                    kur = Decimal(str(hedef.get("forex_buying") or 0))
+                tcmb_t = hedef.get("tcmb_tarih") or kur_tarihi
+            if kur <= 0:
+                raise ValueError(f"{pb} efektif alış kuru bulunamadı.")
+            try:
+                self.doviz_karsilik_kur.configure(state="normal")
+            except tk.TclError:
+                pass
+            self._teklif_doviz_karsilik_kur_yaz(kur)
+            try:
+                self.lbl_doviz_karsilik_kaynak.configure(
+                    text=f"TCMB Efektif Alış · {_tarih(tcmb_t)}"
+                )
+            except tk.TclError:
+                pass
+            if not sessiz:
+                messagebox.showinfo(
+                    "TCMB Kur",
+                    f"{pb} efektif alış: {kur}\nTarih: {_tarih(tcmb_t)}",
+                    parent=self,
+                )
+            self._toplam_guncelle()
+        except Exception as hata:
+            try:
+                kur = DovizService.kur_degeri(kur_tarihi, pb, "effective_buying")
+                try:
+                    self.doviz_karsilik_kur.configure(state="normal")
+                except tk.TclError:
+                    pass
+                self._teklif_doviz_karsilik_kur_yaz(kur)
+                try:
+                    self.lbl_doviz_karsilik_kaynak.configure(
+                        text=f"TCMB Efektif Alış · {_tarih(kur_tarihi)}"
+                    )
+                except tk.TclError:
+                    pass
+                self._toplam_guncelle()
+                return
+            except Exception:
+                pass
+            if not sessiz:
+                messagebox.showerror("TCMB", str(hata), parent=self)
+
+    def _teklif_alt_ozet_kur(self) -> None:
+        """Fatura ile aynı Brüt / İndirim / Masraf / Net sticky footer."""
+        if getattr(self, "_teklif_alt_ozet", None):
+            return
+        import fatura_tema as ftema
+        from ui_pencere import sticky_footer_layout
+
+        refs = ftema.alt_ozet_cubugu(self, pack=False)
+        self._teklif_alt_ozet = refs
+        # Notların yanındaki Fiyat Analiz / Çalışma tamamen kaldır (üstte zaten var)
+        # islem, analiz'in çocuğu olduğu için destroy öncesi buton çerçevesini yeniden kur
+        analiz = refs.get("analiz")
+        if analiz is not None:
+            try:
+                analiz.grid_forget()
+                analiz.destroy()
+            except tk.TclError:
+                pass
+        # Uzlaşılan fiyat butonları — toplamların (sağ) hemen solu
+        btn_cer = tk.Frame(refs["kart"], bg=getattr(ftema, "BEYAZ", "#FFFFFF"))
+        btn_cer.grid(row=0, column=1, sticky="ne", padx=(0, 12), pady=4)
+        ftema.tk_buton(
+            btn_cer, "Fiyatlara Yansıt", self._uzlasilan_fiyatlara_dagit_tikla, rol="onay"
+        ).pack(side="top", fill="x", pady=2)
+        ftema.tk_buton(
+            btn_cer, "Dağıtımı Geri Al", self._uzlasilan_dagitim_geri_al, rol="ikincil"
+        ).pack(side="top", fill="x", pady=2)
+        refs["islem"] = btn_cer
+        try:
+            # Notlar → fiyat (toplam) sütununun başına kadar genişlesin
+            refs["kart"].columnconfigure(0, weight=1, minsize=320)
+            refs["kart"].columnconfigure(1, weight=0, minsize=0)
+            refs["kart"].columnconfigure(2, weight=0)
+            refs["kart"].rowconfigure(0, weight=1)
+            refs["sol"].grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+            btn_cer.grid(row=0, column=1, sticky="ne", padx=(0, 12), pady=4)
+            refs["sag"].grid(row=0, column=2, sticky="ne")
+        except (tk.TclError, KeyError):
+            pass
+        # Footer not: genişlik doldur; yükseklik %25 artmış (5 → ~6 satır)
+        not_w = refs["not_alani"]
+        try:
+            for cocuk in list(refs["sol"].winfo_children()):
+                if isinstance(cocuk, tk.Text):
+                    cocuk.pack_forget()
+            not_w.configure(height=6, width=1, wrap="word")
+            not_w.pack(fill="both", expand=True, pady=(2, 0))
+        except tk.TclError:
+            pass
+        sticky_footer_layout(
+            self,
+            ust=getattr(self, "_teklif_toolbar", None),
+            orta=getattr(self, "_kaydirma_alani", None),
+            alt=refs["dis"],
+        )
+        degerler = refs["degerler"]
+        self.teklif_toplam_degerleri = {
+            "brut": degerler.get("brut"),
+            "ara_toplam": degerler.get("ara_toplam"),
+            "iskonto": degerler.get("iskonto"),
+            "matrah": degerler.get("matrah"),
+            "kdv": degerler.get("kdv"),
+            "islem_turu": degerler.get("islem_turu"),
+            "islem_oran": degerler.get("islem_oran"),
+            "islem_tutar": degerler.get("islem_tutar"),
+            "indirim": degerler.get("indirim"),
+            "indirim_oran": degerler.get("indirim_oran"),
+            "masraf": degerler.get("masraf"),
+            "masraf_oran": degerler.get("masraf_oran"),
+            "genel": degerler.get("genel"),
+            "doviz": degerler.get("doviz"),
+        }
+        self._teklif_genel_islem_ui_bagla()
+
+        # Footer not ↔ müşteri notu senkron
+        try:
+            not_w.insert("1.0", self.musteri_notu.get("1.0", "end-1c"))
+        except tk.TclError:
+            pass
+
+        def _not_senkron(_event=None):
+            try:
+                self.musteri_notu.delete("1.0", "end")
+                self.musteri_notu.insert("1.0", not_w.get("1.0", "end-1c"))
+            except tk.TclError:
+                pass
+
+        not_w.bind("<KeyRelease>", _not_senkron)
+        not_w.bind("<FocusOut>", _not_senkron)
+        self._toplam_guncelle()
+
+    def _teklif_genel_islem_ui_bagla(self) -> None:
+        degerler = getattr(self, "teklif_toplam_degerleri", {}) or {}
+        self._genel_ui_kilit = False
+        if not hasattr(self, "_genel_islem_turu"):
+            self._genel_islem_turu = ""
+        if not hasattr(self, "_genel_islem_orani"):
+            self._genel_islem_orani = Decimal("0")
+        if not hasattr(self, "_genel_islem_tutari"):
+            self._genel_islem_tutari = Decimal("0")
+        if not hasattr(self, "_genel_islem_kaynak"):
+            self._genel_islem_kaynak = "tutar"
+        tur = degerler.get("islem_turu")
+        if tur is not None:
+            try:
+                tur.bind("<<ComboboxSelected>>", self._teklif_islem_tur_degisti)
+            except tk.TclError:
+                pass
+        oran = degerler.get("islem_oran")
+        if isinstance(oran, ttk.Entry):
+            oran.bind("<FocusOut>", lambda e: self._teklif_islem_alandan("oran"))
+            oran.bind("<Return>", lambda e: self._teklif_islem_alandan("oran") or "break")
+        tutar = degerler.get("islem_tutar")
+        if isinstance(tutar, ttk.Entry):
+            tutar.bind("<FocusOut>", lambda e: self._teklif_islem_alandan("tutar"))
+            tutar.bind("<Return>", lambda e: self._teklif_islem_alandan("tutar") or "break")
+
+    def _teklif_islem_alanlarini_yaz(self) -> None:
+        if getattr(self, "_genel_ui_kilit", False):
+            return
+        self._genel_ui_kilit = True
+        try:
+            degerler = getattr(self, "teklif_toplam_degerleri", {}) or {}
+            tur_w = degerler.get("islem_turu")
+            tur = (getattr(self, "_genel_islem_turu", "") or "").upper()
+            etiket = "—"
+            if tur == "INDIRIM":
+                etiket = "İndirim"
+            elif tur == "MASRAF":
+                etiket = "Masraf"
+            if tur_w is not None:
+                try:
+                    tur_w.set(etiket)
+                except tk.TclError:
+                    pass
+            oran_w = degerler.get("islem_oran")
+            if isinstance(oran_w, ttk.Entry):
+                try:
+                    from database.fatura_genel_toplam_service import oran_yuvarla
+
+                    d = oran_yuvarla(getattr(self, "_genel_islem_orani", 0) or 0)
+                    metin = f"{d:f}".rstrip("0").rstrip(".").replace(".", ",") or "0"
+                    if oran_w.get().strip() != metin:
+                        oran_w.delete(0, "end")
+                        oran_w.insert(0, metin)
+                except tk.TclError:
+                    pass
+            tutar_w = degerler.get("islem_tutar")
+            if isinstance(tutar_w, ttk.Entry):
+                try:
+                    t = getattr(self, "_genel_islem_tutari", 0) or 0
+                    metin = f"{float(t):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    if tutar_w.get().strip() != metin:
+                        tutar_w.delete(0, "end")
+                        tutar_w.insert(0, metin)
+                except tk.TclError:
+                    pass
+        finally:
+            self._genel_ui_kilit = False
+
+    def _teklif_islem_tur_degisti(self, _event=None):
+        if getattr(self, "_genel_ui_kilit", False):
+            return
+        from database.fatura_genel_toplam_service import (
+            ISLEM_INDIRIM,
+            ISLEM_MASRAF,
+            ISLEM_YOK,
+            islem_uygula,
+            kurus,
+        )
+
+        degerler = getattr(self, "teklif_toplam_degerleri", {}) or {}
+        tur_w = degerler.get("islem_turu")
+        etiket = ""
+        try:
+            etiket = (tur_w.get() if tur_w is not None else "") or ""
+        except tk.TclError:
+            etiket = ""
+        if etiket.startswith("İnd"):
+            tur = ISLEM_INDIRIM
+        elif etiket.startswith("Mas"):
+            tur = ISLEM_MASRAF
+        else:
+            tur = ISLEM_YOK
+            self._genel_islem_orani = Decimal("0")
+            self._genel_islem_tutari = Decimal("0")
+        self._genel_islem_turu = tur
+        brut = self._uzlasilan_brut_referans(
+            getattr(self, "_fatura_satir_brut", None)
+            or sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0"))
+        )
+        try:
+            sonuc = islem_uygula(
+                brut,
+                islem_turu=tur,
+                islem_orani=getattr(self, "_genel_islem_orani", 0),
+                islem_tutari=getattr(self, "_genel_islem_tutari", 0),
+                kaynak=getattr(self, "_genel_islem_kaynak", "tutar") or "tutar",
+            )
+        except ValueError as hata:
+            messagebox.showerror("İşlem", str(hata), parent=self)
+            return
+        self._genel_islem_turu = sonuc["islem_turu"]
+        self._genel_islem_orani = sonuc["islem_orani"]
+        self._genel_islem_tutari = sonuc["islem_tutari"]
+        self._uzlasilan_tutar = sonuc["net_toplam"]
+        self._uzlasilan_ui_kilit = True
+        try:
+            self._uzlasilan_tutar_yaz(sonuc["net_toplam"])
+        finally:
+            self._uzlasilan_ui_kilit = False
+        self._teklif_islem_alanlarini_yaz()
+        self._toplam_guncelle()
+
+    def _teklif_islem_alandan(self, kaynak: str):
+        if getattr(self, "_genel_ui_kilit", False):
+            return
+        from database.fatura_genel_toplam_service import islem_uygula, islem_turunu_normalize, kurus
+
+        degerler = getattr(self, "teklif_toplam_degerleri", {}) or {}
+        tur = islem_turunu_normalize(getattr(self, "_genel_islem_turu", ""))
+        if not tur:
+            tur = "INDIRIM"
+        brut = self._uzlasilan_brut_referans(
+            getattr(self, "_fatura_satir_brut", None)
+            or sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0"))
+        )
+        try:
+            if kaynak == "oran":
+                ham = (degerler.get("islem_oran").get() if degerler.get("islem_oran") else "0") or "0"
+                oran = _decimal(ham, "İşlem oranı")
+                sonuc = islem_uygula(brut, islem_turu=tur, islem_orani=oran, kaynak="oran")
+            else:
+                ham = (degerler.get("islem_tutar").get() if degerler.get("islem_tutar") else "0") or "0"
+                tutar = kurus(_decimal(ham, "İşlem tutarı"))
+                sonuc = islem_uygula(brut, islem_turu=tur, islem_tutari=tutar, kaynak="tutar")
+        except ValueError as hata:
+            messagebox.showerror("İşlem", str(hata), parent=self)
+            self._teklif_islem_alanlarini_yaz()
+            return "break"
+        self._genel_islem_kaynak = kaynak
+        self._genel_islem_turu = sonuc["islem_turu"]
+        self._genel_islem_orani = sonuc["islem_orani"]
+        self._genel_islem_tutari = sonuc["islem_tutari"]
+        self._uzlasilan_tutar = sonuc["net_toplam"]
+        self._uzlasilan_ui_kilit = True
+        try:
+            self._uzlasilan_tutar_yaz(sonuc["net_toplam"])
+        finally:
+            self._uzlasilan_ui_kilit = False
+        self._teklif_islem_alanlarini_yaz()
+        self._toplam_guncelle()
+        return "break"
+
+    def _toplam_etiket_yaz(self, anahtar: str, tutar) -> None:
+        w = (getattr(self, "teklif_toplam_degerleri", {}) or {}).get(anahtar)
+        if w is None or not hasattr(w, "configure"):
+            return
+        try:
+            w.configure(text=_para_tl(tutar))
+        except tk.TclError:
+            pass
+
+    def _toplam_oran_yaz(self, anahtar: str, oran) -> None:
+        w = (getattr(self, "teklif_toplam_degerleri", {}) or {}).get(f"{anahtar}_oran")
+        if w is None:
+            return
+        try:
+            from database.fatura_genel_toplam_service import oran_yuvarla
+
+            o = oran_yuvarla(oran or 0)
+            metin = f"%{float(o):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            w.configure(text=metin)
+        except Exception:
+            try:
+                w.configure(text="%0,00")
+            except tk.TclError:
+                pass
+
+    def _uzlasilan_tutar_oku(self):
+        w = getattr(self, "_uzlasilan_tutar_entry", None)
+        if w is None:
+            return getattr(self, "_uzlasilan_tutar", None)
+        try:
+            ham = (w.get() or "").strip().replace("TL", "").replace("tl", "").strip()
+        except tk.TclError:
+            return getattr(self, "_uzlasilan_tutar", None)
+        if not ham:
+            return None
+        from database.fatura_genel_toplam_service import kurus
+
+        return kurus(_decimal(ham, "Uzlaşılan tutar"))
+
+    def _uzlasilan_tutar_yaz(self, tutar) -> None:
+        w = getattr(self, "_uzlasilan_tutar_entry", None)
+        if w is None:
+            return
+        try:
+            metin = "" if tutar is None else _para(tutar)
+            if w.get().strip() == metin:
+                return
+            w.delete(0, "end")
+            if metin:
+                w.insert(0, metin)
+        except tk.TclError:
+            pass
+
+    def _uzlasilan_tutar_degisti(self, _event=None):
+        if getattr(self, "_teklif_yukleniyor", False) or getattr(self, "_uzlasilan_ui_kilit", False):
+            return "break"
+        try:
+            self._uzlasilan_tutar = self._uzlasilan_tutar_oku()
+        except ValueError as hata:
+            messagebox.showerror("Uzlaşılan tutar", str(hata), parent=self)
+            return "break"
+        self._toplam_guncelle()
+        return "break"
+
+    def _uzlasilan_tutar_canli(self, _event=None):
+        if getattr(self, "_teklif_yukleniyor", False) or getattr(self, "_uzlasilan_ui_kilit", False):
+            return
+        try:
+            self._uzlasilan_tutar = self._uzlasilan_tutar_oku()
+        except ValueError:
+            return
+        try:
+            self._toplam_guncelle()
+        except Exception:
+            pass
+
+    def _uzlasilan_satir_genel(self, veri) -> Decimal:
+        from database.fatura_genel_toplam_service import kurus
+        from database.teklif_pricing_service import net_iskontolu
+
+        miktar = _decimal(veri.get("miktar", 0))
+        # Dağıtım sırasında birim_satis_fiyati güncellenir; yoksa teklif_fiyati
+        if veri.get("birim_satis_fiyati") is not None:
+            liste = _decimal(veri.get("birim_satis_fiyati", 0))
+        else:
+            liste = _decimal(veri.get("teklif_fiyati", 0))
+        net = _decimal(veri.get("net_birim_fiyat", 0))
+        # Liste değiştiyse net'i iskontodan yeniden hesapla (dağıtım döngüsü)
+        if veri.get("birim_satis_fiyati") is not None:
+            net = net_iskontolu(
+                liste,
+                veri.get("iskonto_orani", 0),
+                veri.get("iskonto_orani_2", 0),
+                veri.get("iskonto_orani_3", 0),
+            )
+        elif net <= 0:
+            net = net_iskontolu(
+                liste,
+                veri.get("iskonto_orani", 0),
+                veri.get("iskonto_orani_2", 0),
+                veri.get("iskonto_orani_3", 0),
+            )
+        kdv_o = _decimal(veri.get("kdv_orani", 20))
+        ara = kurus(net * miktar)
+        return kurus(ara + kurus(ara * kdv_o / Decimal("100")))
+
+    def _uzlasilan_brut_referans(self, satir_brut: Decimal) -> Decimal:
+        from database.fatura_genel_toplam_service import kurus
+
+        snap = getattr(self, "_uzlasilan_snapshot_brut", None)
+        if snap is not None:
+            return kurus(snap)
+        return kurus(satir_brut)
+
+    def _uzlasilan_indirim_masraf(self, brut: Decimal) -> dict:
+        from database.uzlasilan_tutar_service import uzlasilan_indirim_masraf as _fn
+
+        hedef = getattr(self, "_uzlasilan_tutar", None)
+        if hedef is None:
+            try:
+                hedef = self._uzlasilan_tutar_oku()
+            except ValueError:
+                hedef = None
+        return _fn(brut, hedef)
+
+    def _uzlasilan_fiyat_snapshot_al(self) -> None:
+        from database.fatura_genel_toplam_service import kurus
+
+        if getattr(self, "_uzlasilan_fiyat_snapshot", None):
+            return
+        self._uzlasilan_fiyat_snapshot = [
+            {
+                "teklif_fiyati": Decimal(str(v.get("teklif_fiyati") or 0)),
+                "net_birim_fiyat": Decimal(str(v.get("net_birim_fiyat") or 0)),
+                "satir_toplam": Decimal(str(v.get("satir_toplam") or 0)),
+                "is_manual_price": bool(v.get("is_manual_price")),
+            }
+            for v in self.satirlar
+        ]
+        self._uzlasilan_snapshot_brut = kurus(
+            sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0"))
+        )
+
+    def _uzlasilan_satir_fiyat_senkron(self, veri: dict) -> None:
+        """Dağıtım sonrası birim_satis_fiyati → teklif alanları."""
+        from database.fatura_genel_toplam_service import kurus
+        from database.teklif_pricing_service import kar_metrikleri, net_iskontolu
+
+        fiyat = Decimal(str(veri.get("birim_satis_fiyati") or veri.get("teklif_fiyati") or 0))
+        miktar = _decimal(veri.get("miktar", 1))
+        i1 = veri.get("iskonto_orani", 0)
+        i2 = veri.get("iskonto_orani_2", 0)
+        i3 = veri.get("iskonto_orani_3", 0)
+        net = net_iskontolu(fiyat, i1, i2, i3)
+        kdv_o = _decimal(veri.get("kdv_orani", 20))
+        ara = kurus(net * miktar)
+        veri["teklif_fiyati"] = fiyat
+        veri["birim_satis_fiyati"] = fiyat
+        veri["manual_offer_unit_price"] = fiyat
+        veri["final_offer_unit_price"] = fiyat
+        veri["net_birim_fiyat"] = net
+        veri["satir_toplam"] = kurus(ara + kurus(ara * kdv_o / Decimal("100")))
+        veri["is_manual_price"] = True
+        mal = _decimal(veri.get("birim_maliyet", 0))
+        oran, marj = kar_metrikleri(net, mal)
+        veri["kar_orani"] = oran
+        veri["gercek_marj"] = marj
+
+    def _uzlasilan_fiyatlara_dagit(self) -> None:
+        from database.fatura_genel_toplam_service import kurus
+        from database.uzlasilan_tutar_service import uzlasilan_fiyatlara_dagit
+
+        hedef = getattr(self, "_uzlasilan_tutar", None)
+        if hedef is None or not self.satirlar:
+            self._toplam_guncelle()
+            return
+        for v in self.satirlar:
+            v["birim_satis_fiyati"] = Decimal(str(v.get("teklif_fiyati") or 0))
+        onceki = kurus(sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0")))
+        hedef_k = kurus(hedef)
+        if onceki == hedef_k:
+            self._toplam_guncelle()
+            return
+        self._uzlasilan_fiyat_snapshot_al()
+        sonuc = uzlasilan_fiyatlara_dagit(
+            self.satirlar,
+            hedef_k,
+            satir_genel_fn=self._uzlasilan_satir_genel,
+        )
+        if sonuc.get("degisti"):
+            for v in self.satirlar:
+                self._uzlasilan_satir_fiyat_senkron(v)
+            self._satir_tablo_yenile()
+        self._toplam_guncelle()
+
+    def _uzlasilan_fiyatlara_dagit_tikla(self, _event=None):
+        try:
+            self._uzlasilan_tutar = self._uzlasilan_tutar_oku()
+        except ValueError as hata:
+            messagebox.showerror("Uzlaşılan tutar", str(hata), parent=self)
+            return "break"
+        from database.fatura_genel_toplam_service import kurus
+
+        hedef = self._uzlasilan_tutar
+        if hedef is None:
+            hedef = getattr(self, "_hesaplanan_genel", None)
+        if hedef is None:
+            messagebox.showinfo(
+                "Fiyatları Net'e uydur",
+                "Önce Uzlaşılan Tutar (Net hedef) girin.",
+                parent=self,
+            )
+            return "break"
+        if not self.satirlar:
+            messagebox.showwarning(
+                "Fiyatları Net'e uydur", "Önce teklif satırı ekleyin.", parent=self
+            )
+            return "break"
+        onceki = kurus(sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0")))
+        hedef_k = kurus(hedef)
+        if onceki == hedef_k:
+            messagebox.showinfo(
+                "Fiyatları Net'e uydur",
+                "Satır toplamı zaten Net Toplam ile aynı — fiyatlar tutarlı.",
+                parent=self,
+            )
+            return "break"
+        if not messagebox.askyesno(
+            "Fiyatları Net'e uydur",
+            f"Orijinal Brüt {_para_tl(onceki)} sabit kalır.\n"
+            f"Birim fiyatlar Net {_para_tl(hedef_k)} olacak şekilde orantılı yenilenir.\n\n"
+            "İndirim/Masraf, sabit Brüt ile Net farkından okunmaya devam eder.\n"
+            "(«Dağıtımı Geri Al» eski fiyatlara döner.)",
+            parent=self,
+        ):
+            return "break"
+        self._uzlasilan_tutar = hedef_k
+        try:
+            self._uzlasilan_fiyat_snapshot_al()
+            self._uzlasilan_fiyatlara_dagit()
+        except ValueError as hata:
+            messagebox.showerror("Fiyatlara dağıtılamadı", str(hata), parent=self)
+            return "break"
+        self._uzlasilan_ui_kilit = True
+        try:
+            self._uzlasilan_tutar_yaz(hedef_k)
+        finally:
+            self._uzlasilan_ui_kilit = False
+        brut_ref = getattr(self, "_uzlasilan_snapshot_brut", onceki)
+        messagebox.showinfo(
+            "Fiyatları Net'e uydur",
+            f"{len(self.satirlar)} satır güncellendi.\n"
+            f"Brüt (sabit): {_para_tl(brut_ref)}\n"
+            f"Net: {_para_tl(hedef_k)}\n"
+            f"Fark İndirim/Masraf satırında görünür.",
+            parent=self,
+        )
+        return "break"
+
+    def _uzlasilan_dagitim_geri_al(self, _event=None):
+        snap = getattr(self, "_uzlasilan_fiyat_snapshot", None)
+        if not snap:
+            messagebox.showinfo(
+                "Dağıtımı geri al", "Geri alınacak fiyat dağıtımı yok.", parent=self
+            )
+            return "break"
+        if not messagebox.askyesno(
+            "Dağıtımı geri al",
+            "Dağıtım öncesi birim fiyatlar geri yüklensin mi?\n"
+            "Brüt tekrar orijinal satır toplamına döner; Net Uzlaşılan’da kalır (İndirim/Masraf).",
+            parent=self,
+        ):
+            return "break"
+        for i, veri in enumerate(self.satirlar):
+            if i >= len(snap):
+                break
+            eski = snap[i]
+            veri["teklif_fiyati"] = eski["teklif_fiyati"]
+            veri["birim_satis_fiyati"] = eski["teklif_fiyati"]
+            veri["net_birim_fiyat"] = eski["net_birim_fiyat"]
+            veri["satir_toplam"] = eski["satir_toplam"]
+            veri["is_manual_price"] = eski.get("is_manual_price", False)
+        self._uzlasilan_fiyat_snapshot = None
+        self._uzlasilan_snapshot_brut = None
+        self._satir_tablo_yenile()
+        self._toplam_guncelle()
+        return "break"
 
     def _secili_maliyet_kaynagi(self) -> str:
         etiket = self.maliyet_kaynak.get()
@@ -691,6 +2162,271 @@ class TeklifDialog(tk.Toplevel):
     def _termin_manuel_isaretle(self, _e=None):
         self._delivery_term_manual = True
 
+    def _odeme_islem_tarihi(self) -> date:
+        try:
+            return _parse_tarih(self.girdiler["teklif_tarihi"].get())
+        except Exception:
+            return date.today()
+
+    def _odeme_secilen_sekil(self) -> str:
+        for s in ODEME_SEKILLERI:
+            var = self._odeme_secim.get(s)
+            if var is not None and var.get():
+                return s
+        return ""
+
+    def _odeme_secilen_sekiller(self) -> list[str]:
+        s = self._odeme_secilen_sekil()
+        return [s] if s else []
+
+    def _odeme_tek_sec(self, sekil: str) -> None:
+        """Tek seçim: işaretlenen dışındaki tüm tikleri kaldır."""
+        if getattr(self, "_odeme_secim_kilit", False):
+            return
+        self._odeme_secim_kilit = True
+        try:
+            secildi = bool(self._odeme_secim[sekil].get())
+            for s, var in self._odeme_secim.items():
+                var.set(s == sekil if secildi else False)
+            # Hiçbiri kalmasın istemiyorsak son tiki koru
+            if not secildi:
+                self._odeme_secim[sekil].set(True)
+        finally:
+            self._odeme_secim_kilit = False
+        self._odeme_vade_manuel = False
+        self._odeme_secim_degisti()
+
+    def _odeme_secim_degisti(self, _e=None):
+        sekil = self._odeme_secilen_sekil()
+        try:
+            self.odeme_nakit_turu.configure(state="readonly" if sekil == NAKIT else "disabled")
+        except tk.TclError:
+            pass
+        try:
+            self.odeme_taksit.configure(
+                state="readonly" if sekil == KREDI_KARTI else "disabled"
+            )
+        except tk.TclError:
+            pass
+        cek_senet = sekil in ("Çek", "Senet")
+        acik = sekil == "Açık Hesap"
+        try:
+            # Çek/Senet: vade elle, gün otomatik (readonly)
+            # Açık hesap: gün elle, vade otomatik
+            # Nakit/KK: ikisi de otomatik (readonly)
+            if cek_senet:
+                self.odeme_vade_gun.configure(state="readonly")
+                self.odeme_vade_tarihi.configure(state="normal")
+            elif acik:
+                self.odeme_vade_gun.configure(state="normal")
+                self.odeme_vade_tarihi.configure(state="readonly")
+            else:
+                self.odeme_vade_gun.configure(state="readonly")
+                self.odeme_vade_tarihi.configure(state="readonly")
+        except tk.TclError:
+            pass
+        self._odeme_hesap_guncelle()
+
+    def _odeme_hesap_guncelle(self, _e=None):
+        sekil = self._odeme_secilen_sekil()
+        if not sekil:
+            return
+        tarih = self._odeme_islem_tarihi()
+        if sekil in ("Çek", "Senet"):
+            # Vade yazılmışsa günden hesapla; yoksa günü boş bırakma (mevcut vade)
+            self._odeme_vade_tarih_yazildi()
+            return
+        if sekil == "Açık Hesap":
+            gun_metin = (self.odeme_vade_gun.get() or "").strip()
+            try:
+                gun = int(gun_metin) if gun_metin else 0
+            except ValueError:
+                gun = 0
+            kalem = kalem_hesapla(sekil, islem_tarihi=tarih, gun=gun)
+        elif sekil == KREDI_KARTI:
+            kalem = kalem_hesapla(
+                KREDI_KARTI,
+                islem_tarihi=tarih,
+                taksit=kk_taksit_sayisi(self.odeme_taksit.get()) or 1,
+            )
+        else:
+            kalem = kalem_hesapla(
+                NAKIT,
+                islem_tarihi=tarih,
+                alt=(self.odeme_nakit_turu.get() or "Havale"),
+            )
+        try:
+            once_gun = str(self.odeme_vade_gun.cget("state"))
+            once_vade = str(self.odeme_vade_tarihi.cget("state"))
+            self.odeme_vade_gun.configure(state="normal")
+            self.odeme_vade_tarihi.configure(state="normal")
+            self.odeme_vade_gun.delete(0, "end")
+            self.odeme_vade_gun.insert(0, str(int(kalem.get("gun") or 0)))
+            self.odeme_vade_tarihi.delete(0, "end")
+            self.odeme_vade_tarihi.insert(0, _tarih(kalem.get("vade")))
+            self.odeme_vade_gun.configure(state=once_gun if once_gun != "disabled" else "readonly")
+            self.odeme_vade_tarihi.configure(
+                state=once_vade if once_vade != "disabled" else "readonly"
+            )
+        except tk.TclError:
+            pass
+
+    def _odeme_vade_manuel_isaretle(self, _e=None):
+        self._odeme_vade_manuel = True
+
+    def _odeme_vade_gun_degisti(self, _e=None):
+        """Açık hesap: gün → vade."""
+        if self._odeme_secilen_sekil() != "Açık Hesap":
+            return
+        try:
+            tarih = self._odeme_islem_tarihi()
+            gun = int((self.odeme_vade_gun.get() or "0").strip() or 0)
+            vade = kalem_hesapla("Açık Hesap", islem_tarihi=tarih, gun=gun)["vade"]
+            st = str(self.odeme_vade_tarihi.cget("state"))
+            self.odeme_vade_tarihi.configure(state="normal")
+            self.odeme_vade_tarihi.delete(0, "end")
+            self.odeme_vade_tarihi.insert(0, _tarih(vade))
+            self.odeme_vade_tarihi.configure(state=st)
+        except Exception:
+            pass
+
+    def _odeme_vade_tarih_yazildi(self, _e=None):
+        """Çek/Senet: vade tarihinden gün = vade − teklif tarihi."""
+        if self._odeme_secilen_sekil() not in ("Çek", "Senet"):
+            return
+        try:
+            tarih = self._odeme_islem_tarihi()
+            vade = _parse_tarih(self.odeme_vade_tarihi.get())
+            gun = max(0, (vade - tarih).days)
+            self.odeme_vade_gun.configure(state="normal")
+            self.odeme_vade_gun.delete(0, "end")
+            self.odeme_vade_gun.insert(0, str(gun))
+            self.odeme_vade_gun.configure(state="readonly")
+            self._odeme_vade_manuel = True
+        except Exception:
+            pass
+
+    def _odeme_vade_tarih_degisti(self, _e=None):
+        self._odeme_vade_tarih_yazildi(_e)
+
+    def _odeme_kalemleri_uret(self) -> list[dict[str, Any]]:
+        tarih = self._odeme_islem_tarihi()
+        sekil = self._odeme_secilen_sekil()
+        if not sekil:
+            return []
+        gun_metin = (self.odeme_vade_gun.get() or "").strip()
+        try:
+            gun = int(gun_metin) if gun_metin else None
+        except ValueError as exc:
+            raise ValueError("Ödeme vade günü geçerli bir sayı olmalıdır.") from exc
+        vade = None
+        vade_metin = (self.odeme_vade_tarihi.get() or "").strip()
+        if vade_metin:
+            try:
+                vade = _parse_tarih(vade_metin)
+            except ValueError as exc:
+                raise ValueError("Ödeme vadesi geçerli bir tarih olmalıdır (gg.aa.yyyy).") from exc
+        if sekil == NAKIT:
+            return [
+                kalem_hesapla(
+                    NAKIT,
+                    islem_tarihi=tarih,
+                    alt=(self.odeme_nakit_turu.get() or "Havale"),
+                )
+            ]
+        if sekil == KREDI_KARTI:
+            return [
+                kalem_hesapla(
+                    KREDI_KARTI,
+                    islem_tarihi=tarih,
+                    taksit=kk_taksit_sayisi(self.odeme_taksit.get()) or 1,
+                )
+            ]
+        # Çek / Senet: vade zorunlu → günden hesap
+        if sekil in ("Çek", "Senet"):
+            if vade is None:
+                raise ValueError(f"{sekil} için ödeme vadesi (üzerindeki tarih) girilmelidir.")
+            return [
+                kalem_hesapla(
+                    sekil,
+                    islem_tarihi=tarih,
+                    vade=vade,
+                    vade_elle=True,
+                )
+            ]
+        return [
+            kalem_hesapla(
+                sekil,
+                islem_tarihi=tarih,
+                gun=gun,
+                vade=vade,
+            )
+        ]
+
+    def _odeme_alanlari_oku(self) -> dict[str, Any]:
+        kalemler = self._odeme_kalemleri_uret()
+        ozet = odeme_ozet_listeden(kalemler)
+        ilk = kalemler[0] if kalemler else {}
+        return {
+            "odeme_sekli": ozet or None,
+            "odeme_taksit": ilk.get("taksit"),
+            "odeme_vade_gun": ilk.get("gun"),
+            "odeme_vade_tarihi": ilk.get("vade") if isinstance(ilk.get("vade"), date) else None,
+            "odeme_nakit_turu": ilk.get("alt") if ilk.get("sekil") == NAKIT else None,
+            "odeme_json": kalemleri_serileştir(kalemler) if kalemler else None,
+            "odeme_ozet": ozet,
+        }
+
+    def _odeme_alanlari_yaz(self, teklif_veya_dict: Any) -> None:
+        if isinstance(teklif_veya_dict, dict):
+            veri = teklif_veya_dict
+            kalemler = veri.get("kalemler") or kalemleri_yukle(veri.get("odeme_json"))
+        else:
+            veri = kayittan_odeme(teklif_veya_dict)
+            kalemler = list(veri.get("kalemler") or [])
+        if not kalemler:
+            sekil = odeme_sekil_normalize(veri.get("odeme_sekli"))
+            if sekil:
+                kalemler = [
+                    {
+                        "sekil": sekil,
+                        "alt": veri.get("odeme_nakit_turu"),
+                        "taksit": veri.get("odeme_taksit"),
+                        "gun": veri.get("odeme_vade_gun"),
+                        "vade": veri.get("odeme_vade_tarihi"),
+                    }
+                ]
+        # Tek seçim — ilk kalem
+        hedef = (kalemler[0].get("sekil") or NAKIT) if kalemler else NAKIT
+        if hedef not in ODEME_SEKILLERI:
+            hedef = odeme_sekil_normalize(hedef) or NAKIT
+        self._odeme_secim_kilit = True
+        try:
+            for s, var in self._odeme_secim.items():
+                var.set(s == hedef)
+        finally:
+            self._odeme_secim_kilit = False
+        nakit = kalemler[0] if kalemler and kalemler[0].get("sekil") == NAKIT else None
+        if nakit and nakit.get("alt") in NAKIT_ALT:
+            self.odeme_nakit_turu.set(nakit["alt"])
+        elif hedef == NAKIT:
+            self.odeme_nakit_turu.set("Havale")
+        kk = kalemler[0] if kalemler and kalemler[0].get("sekil") == KREDI_KARTI else None
+        self.odeme_taksit.set(kk_taksit_etiket(kk.get("taksit") if kk else 1))
+        kaynak = kalemler[0] if kalemler else {}
+        self._odeme_vade_manuel = hedef in ("Çek", "Senet")
+        try:
+            self.odeme_vade_gun.configure(state="normal")
+            self.odeme_vade_tarihi.configure(state="normal")
+        except tk.TclError:
+            pass
+        self.odeme_vade_gun.delete(0, "end")
+        if kaynak.get("gun") not in (None, ""):
+            self.odeme_vade_gun.insert(0, str(int(kaynak["gun"])))
+        self.odeme_vade_tarihi.delete(0, "end")
+        if kaynak.get("vade"):
+            self.odeme_vade_tarihi.insert(0, _tarih(kaynak["vade"]))
+        self._odeme_secim_degisti()
     def _termin_gun_degisti(self, _e=None):
         if self._delivery_term_manual:
             return
@@ -757,28 +2493,143 @@ class TeklifDialog(tk.Toplevel):
                 parent=self,
             )
 
+    def _giris_yaz(self, anahtar: str, deger: str, *, readonly: bool = False) -> None:
+        """Entry'ye güvenli yaz (readonly alanlarda geçici normal)."""
+        w = self.girdiler.get(anahtar)
+        if w is None:
+            return
+        try:
+            w.configure(state="normal")
+            w.delete(0, "end")
+            if deger is not None and str(deger) != "":
+                w.insert(0, str(deger))
+            if readonly:
+                w.configure(state="readonly")
+        except tk.TclError:
+            pass
+
+    def _yeni_teklif_no_al(self) -> str:
+        try:
+            QuoteService.schema_hazirla()
+        except Exception:
+            pass
+        try:
+            no = (QuoteService.teklif_no() or "").strip()
+            if no:
+                return no
+        except Exception:
+            pass
+        return f"TKF-{date.today():%Y%m%d}-01"
+
     def _yeni_varsayilan(self):
         bugun = date.today()
-        self.girdiler["teklif_no"].insert(0, "Otomatik")
-        self.girdiler["teklif_no"].configure(state="readonly")
-        self.girdiler["teklif_tarihi"].insert(0, _tarih(bugun))
-        self.girdiler["gecerlilik_tarihi"].insert(0, _tarih(bugun + timedelta(days=30)))
-        self.girdiler["gecerlilik_gunu"].insert(0, "30")
-        self.girdiler["para_birimi"].insert(0, "TRY")
-        self.girdiler["kur"].insert(0, "1")
-        self.girdiler["depo"].insert(0, "ANA DEPO")
-        self.girdiler["delivery_term_days"].insert(0, "7")
-        self.girdiler["estimated_delivery_date"].insert(0, _tarih(bugun + timedelta(days=7)))
+        # Önce tarih/no — DB hatası olsa bile form boş kalmasın
+        self._giris_yaz("teklif_tarihi", _tarih(bugun))
+        self._giris_yaz("gecerlilik_tarihi", _tarih(bugun + timedelta(days=30)))
+        self._giris_yaz("gecerlilik_gunu", "30")
+        self._giris_yaz("teklif_no", self._yeni_teklif_no_al(), readonly=True)
+        try:
+            self.para_birimi.set("TRY")
+        except tk.TclError:
+            pass
+        self._teklif_kur_yaz(1)
+        try:
+            self.kur_giris.configure(state="readonly")
+            self.lbl_kur_kaynak.configure(text="TL · kur=1")
+        except tk.TclError:
+            pass
+        self._teklif_kur_kaynagi = "MANUEL"
+        self._teklif_kur_turu = "effective_buying"
+        self._teklif_kur_tarihi = bugun
+        try:
+            self.doviz_karsilik_pb.set("—")
+            self.doviz_karsilik_kur.configure(state="normal")
+            self.doviz_karsilik_kur.delete(0, "end")
+            self.doviz_karsilik_kur.configure(state="readonly")
+            self.btn_doviz_karsilik_tcmb.configure(state="disabled")
+            self.lbl_doviz_karsilik_kaynak.configure(
+                text="TCMB Efektif Alış (USD/EUR seçin)"
+            )
+        except (tk.TclError, AttributeError):
+            pass
+        self._giris_yaz("depo", "ANA DEPO")
+        self._giris_yaz("delivery_term_days", "7")
+        self._giris_yaz("estimated_delivery_date", _tarih(bugun + timedelta(days=7)))
+        # Varsayılan maliyet: Son Alış Faturası
+        try:
+            self.maliyet_kaynak.set(MALIYET_KAYNAK_ETIKET.get("SON_ALIS", "Son Alış Faturası"))
+        except (tk.TclError, AttributeError):
+            pass
         if oturum.ad_soyad:
-            self.girdiler["satis_temsilcisi"].insert(0, oturum.ad_soyad)
+            try:
+                self._satis_temsilcisi_yaz(oturum.ad_soyad)
+            except Exception:
+                pass
         self._rozet("TASLAK")
-        self._meta_guncelle()
-        self._toplam_guncelle()
-        self._fiyat_ozet_guncelle()
+        try:
+            self._meta_guncelle()
+        except Exception:
+            pass
+        try:
+            self._toplam_guncelle()
+        except Exception:
+            pass
+        try:
+            self._fiyat_ozet_guncelle()
+        except Exception:
+            pass
+        # Eksik kaldıysa bir kez daha dene (UI settle)
+        self.after(50, self._teklif_no_tarih_garanti)
+
+    def _teklif_no_tarih_garanti(self) -> None:
+        """Yeni teklifte no ve tarih boşsa doldur."""
+        if getattr(self, "teklif", None) is not None:
+            return
+        bugun = date.today()
+        try:
+            no = (self.girdiler["teklif_no"].get() or "").strip()
+        except (tk.TclError, KeyError):
+            no = ""
+        if not no:
+            self._giris_yaz("teklif_no", self._yeni_teklif_no_al(), readonly=True)
+        else:
+            try:
+                self.girdiler["teklif_no"].configure(state="readonly")
+            except tk.TclError:
+                pass
+        try:
+            tarih = (self.girdiler["teklif_tarihi"].get() or "").strip()
+        except (tk.TclError, KeyError):
+            tarih = ""
+        if not tarih:
+            self._giris_yaz("teklif_tarihi", _tarih(bugun))
+        try:
+            gecer = (self.girdiler["gecerlilik_tarihi"].get() or "").strip()
+        except (tk.TclError, KeyError):
+            gecer = ""
+        if not gecer:
+            self._giris_yaz("gecerlilik_tarihi", _tarih(bugun + timedelta(days=30)))
+        try:
+            gun = (self.girdiler["gecerlilik_gunu"].get() or "").strip()
+        except (tk.TclError, KeyError):
+            gun = ""
+        if not gun:
+            self._giris_yaz("gecerlilik_gunu", "30")
+        try:
+            self._meta_guncelle()
+        except Exception:
+            pass
 
     def _doldur(self):
         t = self.teklif
         assert t
+        self._teklif_yukleniyor = True
+        try:
+            self._doldur_govde(t)
+        finally:
+            self._teklif_yukleniyor = False
+
+    def _doldur_govde(self, t):
         for alan, deger in (
             ("teklif_no", QuoteService.gosterim_no(t)),
             ("teklif_tarihi", _tarih(t.teklif_tarihi)),
@@ -786,14 +2637,9 @@ class TeklifDialog(tk.Toplevel):
             ("gecerlilik_gunu", str(t.gecerlilik_gunu or "")),
             ("konu", t.konu or ""),
             ("referans_no", t.referans_no or ""),
-            ("aday_musteri_adi", t.aday_musteri_adi or ""),
             ("musteri_yetkilisi", t.musteri_yetkilisi or ""),
             ("musteri_telefon", t.musteri_telefon or ""),
             ("musteri_email", t.musteri_email or ""),
-            ("satis_temsilcisi", t.satis_temsilcisi or ""),
-            ("para_birimi", t.para_birimi or "TRY"),
-            ("kur", str(t.kur or 1)),
-            ("odeme_sekli", t.odeme_sekli or ""),
             ("teslim_suresi", t.teslim_suresi or ""),
             ("depo", t.depo or "ANA DEPO"),
             ("proje", t.proje or ""),
@@ -807,9 +2653,38 @@ class TeklifDialog(tk.Toplevel):
             ),
             ("delivery_term_note", t.delivery_term_note or ""),
         ):
-            self.girdiler[alan].delete(0, "end")
-            self.girdiler[alan].insert(0, deger)
-        self.girdiler["teklif_no"].configure(state="readonly")
+            self._giris_yaz(alan, deger, readonly=(alan == "teklif_no"))
+        self._odeme_alanlari_yaz(t)
+        self._aday_musteri_yaz(t.aday_musteri_adi or "")
+        self._satis_temsilcisi_yaz(t.satis_temsilcisi or "")
+        try:
+            self.girdiler["teklif_no"].configure(state="readonly")
+        except tk.TclError:
+            pass
+        pb = (t.para_birimi or "TRY").upper()
+        self.para_birimi.set(pb if pb in ("TRY", "USD", "EUR") else "TRY")
+        self._teklif_kur_turu = getattr(t, "kur_turu", None) or "effective_buying"
+        self._teklif_kur_tarihi = getattr(t, "kur_tarihi", None) or t.teklif_tarihi or date.today()
+        self._teklif_kur_yaz(t.kur or 1)
+        if pb == "TRY":
+            try:
+                self.kur_giris.configure(state="readonly")
+                self.lbl_kur_kaynak.configure(text="TL · kur=1")
+            except tk.TclError:
+                pass
+            self._teklif_kur_kaynagi = "MANUEL"
+        else:
+            try:
+                self.kur_giris.configure(state="normal")
+                self.lbl_kur_kaynak.configure(
+                    text=f"Kayıtlı · {self._teklif_kur_turu} · {_tarih(self._teklif_kur_tarihi)}"
+                )
+            except tk.TclError:
+                pass
+            kt = getattr(self, "_teklif_kur_turu", "") or ""
+            self._teklif_kur_kaynagi = (
+                "TCMB" if str(kt).startswith(("effective_", "forex_")) else "MANUEL"
+            )
         self._delivery_term_manual = bool(getattr(t, "delivery_term_manual", False))
         if t.delivery_term_type:
             self.termin_turu.set(t.delivery_term_type)
@@ -838,9 +2713,17 @@ class TeklifDialog(tk.Toplevel):
             "calculated_offer_subtotal": t.calculated_offer_subtotal,
         }
         if t.cari:
+            self._musteri_alanlari_yaz(
+                getattr(t.cari, "cari_kodu", "") or "",
+                getattr(t.cari, "unvan", "") or "",
+            )
+            self._selected_customer_id = getattr(t.cari, "id", None)
             anahtar = f"{t.cari.cari_kodu} - {t.cari.unvan}"
-            if anahtar in self.musteri_map:
-                self.musteri.set(anahtar)
+            if anahtar not in self.musteri_map:
+                self.musteri_map[anahtar] = t.cari
+            kod = (t.cari.cari_kodu or "").strip()
+            if kod:
+                self._musteri_kod_map[kod] = t.cari
         self.musteri_notu.delete("1.0", "end")
         self.ic_not.delete("1.0", "end")
         self.ticari_sartlar.delete("1.0", "end")
@@ -887,6 +2770,11 @@ class TeklifDialog(tk.Toplevel):
                     "final_offer_unit_price": getattr(s, "final_offer_unit_price", None)
                     or s.teklif_fiyati,
                     "is_manual_price": bool(getattr(s, "is_manual_price", False)),
+                    "fiyat_hesaplandi": bool(
+                        getattr(s, "teklif_fiyati", None) is not None
+                        and Decimal(str(s.teklif_fiyati or 0)) > 0
+                    ),
+                    "yeniden_hesaplanmali": False,
                     "actual_profit_amount": getattr(s, "actual_profit_amount", None) or 0,
                     "actual_margin_rate": getattr(s, "actual_margin_rate", None) or 0,
                     "opsiyonel": s.opsiyonel,
@@ -942,8 +2830,51 @@ class TeklifDialog(tk.Toplevel):
         self._satir_tablo_yenile()
         self._rozet(t.durum)
         self._meta_guncelle()
+        # Kayıtlı Net = Uzlaşılan; Brüt ≠ Net ise Brüt kilidi
+        from database.fatura_genel_toplam_service import kurus
+
+        kayitli_genel = getattr(t, "genel_toplam", None)
+        satir_brut = kurus(
+            sum((self._uzlasilan_satir_genel(v) for v in self.satirlar), Decimal("0"))
+        )
+        tur = (getattr(t, "genel_islem_turu", None) or "").strip().upper()
+        islem_t = kurus(getattr(t, "genel_islem_tutari", 0) or 0)
+        if kayitli_genel is not None:
+            net = kurus(kayitli_genel)
+            self._hesaplanan_genel = net
+            self._uzlasilan_tutar = net
+            self._uzlasilan_ui_kilit = True
+            try:
+                self._uzlasilan_tutar_yaz(net)
+            finally:
+                self._uzlasilan_ui_kilit = False
+            self._genel_islem_turu = tur
+            self._genel_islem_orani = Decimal(str(getattr(t, "genel_islem_orani", 0) or 0))
+            self._genel_islem_tutari = islem_t
+            if tur == "INDIRIM" and islem_t > 0:
+                brut_ref = kurus(net + islem_t)
+            elif tur == "MASRAF" and islem_t > 0:
+                brut_ref = kurus(net - islem_t)
+            else:
+                brut_ref = satir_brut
+            if brut_ref != net:
+                self._uzlasilan_snapshot_brut = brut_ref
+            else:
+                self._uzlasilan_snapshot_brut = None
+        else:
+            self._uzlasilan_snapshot_brut = None
+            self._uzlasilan_tutar = None
         self._toplam_guncelle()
         self._fiyat_ozet_guncelle()
+        # Footer not senkron
+        refs = getattr(self, "_teklif_alt_ozet", None) or {}
+        not_w = refs.get("not_alani")
+        if not_w is not None:
+            try:
+                not_w.delete("1.0", "end")
+                not_w.insert("1.0", t.musteri_notu or "")
+            except tk.TclError:
+                pass
         self.lbl_gecmis.configure(
             text=(
                 f"İşlemi Yapan: {display_user(t.created_by_full_name, t.created_by_user_id)}  |  "
@@ -955,7 +2886,14 @@ class TeklifDialog(tk.Toplevel):
 
     def _meta_guncelle(self):
         no = self.girdiler["teklif_no"].get()
-        mus = self.musteri.get() or self.girdiler["aday_musteri_adi"].get() or "—"
+        try:
+            ad = (self.musteri_adi.get() or "").strip()
+            kod = (self.musteri_kodu.get() or "").strip()
+        except (tk.TclError, AttributeError):
+            ad, kod = "", ""
+        mus = ad or kod or self.girdiler["aday_musteri_adi"].get() or "—"
+        if kod and ad:
+            mus = f"{kod} - {ad}"
         self.lbl_meta.configure(text=f"{no}  ·  {mus}")
 
     def _rozet(self, durum: str):
@@ -972,8 +2910,48 @@ class TeklifDialog(tk.Toplevel):
             self.urun_ad_ara.insert(0, getattr(self, "_urun_ara_placeholder", ""))
             self.urun_ad_ara.configure(foreground="#94A3B8")
 
+    def _secili_kdv_orani(self) -> Decimal:
+        """Ürün giriş çubuğundaki KDV seçimini oku (0 geçerli orandır)."""
+        if hasattr(self, "urun_kdv"):
+            ham = (self.urun_kdv.get() or "").strip()
+            if ham != "":
+                try:
+                    return Decimal(ham.replace(",", "."))
+                except Exception:
+                    pass
+        return Decimal(str(VARSAYILAN_KDV_ORANI))
+
+    def _kdv_deger(self, oran, *, varsayilan=None) -> Decimal:
+        """None/boş → varsayılan; 0 korunur."""
+        if varsayilan is None:
+            varsayilan = VARSAYILAN_KDV_ORANI
+        if oran is None or oran == "":
+            return Decimal(str(varsayilan))
+        try:
+            return Decimal(str(oran).replace(",", "."))
+        except Exception:
+            return Decimal(str(varsayilan))
+
+    def _kdv_alani_ayarla(self, oran) -> None:
+        if not hasattr(self, "urun_kdv"):
+            return
+        try:
+            metin = str(int(self._kdv_deger(oran)))
+        except Exception:
+            metin = str(int(VARSAYILAN_KDV_ORANI))
+        if metin not in KDV_ORANLARI:
+            metin = str(int(VARSAYILAN_KDV_ORANI))
+        once = getattr(self, "_kdv_yukle_kilit", False)
+        self._kdv_yukle_kilit = True
+        try:
+            if (self.urun_kdv.get() or "").strip() != metin:
+                self.urun_kdv.set(metin)
+        finally:
+            self._kdv_yukle_kilit = once
+
     def _urun_giris_temizle(self):
         self._secili_urun = None
+        self._duzenlenen_satir_idx = None
         self.urun_kod.delete(0, "end")
         if hasattr(self, "_urun_arama"):
             self._urun_arama.temizle()
@@ -983,9 +2961,207 @@ class TeklifDialog(tk.Toplevel):
         self.urun_miktar.delete(0, "end")
         self.urun_miktar.insert(0, "1")
         self.urun_birim.set("Adet")
+        self._kdv_alani_ayarla(VARSAYILAN_KDV_ORANI)
+        if hasattr(self, "urun_maliyet"):
+            try:
+                self.urun_maliyet.delete(0, "end")
+            except tk.TclError:
+                pass
+            if hasattr(self, "lbl_urun_maliyet_pb"):
+                self.lbl_urun_maliyet_pb.configure(text="TRY")
+
+    def _satir_tutar_yenile(self, s: dict) -> None:
+        """KDV / miktar / fiyat değişince satır tutarını yeniden hesapla."""
+        from database.teklif_pricing_service import net_iskontolu
+
+        miktar = _decimal(s.get("miktar") or 0)
+        fiyat = _decimal(s.get("teklif_fiyati") or s.get("final_offer_unit_price") or 0)
+        net = _decimal(s.get("net_birim_fiyat") or 0)
+        if (net <= 0) and fiyat > 0:
+            net = net_iskontolu(
+                fiyat,
+                s.get("iskonto_orani", 0),
+                s.get("iskonto_orani_2", 0),
+                s.get("iskonto_orani_3", 0),
+            )
+            s["net_birim_fiyat"] = net
+        kdv_o = self._kdv_deger(s.get("kdv_orani"))
+        if miktar > 0 and net >= 0 and (
+            bool(s.get("fiyat_hesaplandi"))
+            or fiyat > 0
+            or net > 0
+        ):
+            ara = (net * miktar).quantize(Decimal("0.01"))
+            s["satir_toplam"] = ara + (ara * kdv_o / Decimal("100")).quantize(Decimal("0.01"))
+            if fiyat > 0 or net > 0:
+                s["fiyat_hesaplandi"] = True
+                s["yeniden_hesaplanmali"] = False
+        base = _decimal(s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0)
+        if miktar > 0 and base > 0:
+            s["purchase_total_cost"] = (base * miktar).quantize(Decimal("0.01"))
+
+    def _satir_secildi(self, _e=None):
+        if getattr(self, "_satir_yukle_kilit", False):
+            return
+        sec = self.satir_tablo.selection()
+        if not sec:
+            return
+        idx = self.satir_tablo.index(sec[0])
+        if not (0 <= idx < len(self.satirlar)):
+            return
+        self._satir_girise_yukle(idx)
+
+    def _satir_girise_yukle(self, idx: int) -> None:
+        if not (0 <= idx < len(self.satirlar)):
+            return
+        s = self.satirlar[idx]
+        self._duzenlenen_satir_idx = idx
+        self._satir_yukle_kilit = True
+        try:
+            self.urun_kod.delete(0, "end")
+            self.urun_kod.insert(0, (s.get("urun_kodu") or "").strip())
+            ad = (s.get("urun_adi") or "").strip()
+            self.urun_ad_ara.delete(0, "end")
+            self.urun_ad_ara.insert(0, ad)
+            self.urun_ad_ara.configure(foreground="#0F172A")
+            self.urun_miktar.delete(0, "end")
+            self.urun_miktar.insert(0, str(s.get("miktar") or 1).replace(".", ","))
+            birim = (s.get("birim") or "Adet").strip() or "Adet"
+            try:
+                degerler = list(self.urun_birim.cget("values") or ())
+                if birim not in degerler:
+                    self.urun_birim.configure(values=list(degerler) + [birim])
+            except tk.TclError:
+                pass
+            self.urun_birim.set(birim)
+            self._kdv_alani_ayarla(s.get("kdv_orani", VARSAYILAN_KDV_ORANI))
+            depo = (s.get("depo") or "").strip()
+            if depo and hasattr(self, "urun_depo"):
+                try:
+                    dvals = list(self.urun_depo.cget("values") or ())
+                    if depo not in dvals:
+                        self.urun_depo.configure(values=list(dvals) + [depo])
+                    self.urun_depo.set(depo)
+                except tk.TclError:
+                    pass
+            if hasattr(self, "urun_maliyet") and maliyet_izinli():
+                mal = s.get("purchase_unit_price_base") or s.get("birim_maliyet") or ""
+                self.urun_maliyet.delete(0, "end")
+                if mal not in ("", None) and _decimal(mal) > 0:
+                    self.urun_maliyet.insert(0, str(mal).replace(".", ","))
+                pb = (s.get("purchase_currency") or "TRY").strip() or "TRY"
+                if hasattr(self, "lbl_urun_maliyet_pb"):
+                    self.lbl_urun_maliyet_pb.configure(text=pb)
+            self._secili_urun = {
+                "stok_id": s.get("stok_id") or s.get("product_id"),
+                "urun_kodu": s.get("urun_kodu"),
+                "urun_adi": s.get("urun_adi"),
+                "birim": s.get("birim"),
+                "manuel": bool(s.get("is_manual_item") or s.get("manuel")),
+                "kdv_orani": s.get("kdv_orani"),
+            }
+        finally:
+            self._satir_yukle_kilit = False
+
+    def _urun_kdv_degisti(self, _e=None):
+        """Giriş çubuğundaki KDV, seçili/düzenlenen satıra anında yansısın."""
+        if getattr(self, "_kdv_yukle_kilit", False):
+            return
+        idx = self._duzenlenen_satir_idx
+        if idx is None:
+            sec = self.satir_tablo.selection()
+            if sec:
+                idx = self.satir_tablo.index(sec[0])
+        if idx is None or not (0 <= idx < len(self.satirlar)):
+            return
+        s = self.satirlar[idx]
+        s["kdv_orani"] = self._secili_kdv_orani()
+        self._satir_tutar_yenile(s)
+        self._satir_yukle_kilit = True
+        try:
+            self._satir_tablo_yenile()
+            if 0 <= idx < len(self.satirlar):
+                cocuklar = self.satir_tablo.get_children()
+                if idx < len(cocuklar):
+                    self.satir_tablo.selection_set(cocuklar[idx])
+                    self.satir_tablo.focus(cocuklar[idx])
+            self._duzenlenen_satir_idx = idx
+        finally:
+            self._satir_yukle_kilit = False
+        self._toplam_guncelle()
+
+    def _satir_guncelle(self):
+        """Giriş çubuğundaki değerlerle seçili satırı güncelle."""
+        idx = self._duzenlenen_satir_idx
+        if idx is None:
+            sec = self.satir_tablo.selection()
+            if not sec:
+                messagebox.showinfo(
+                    "Güncelle",
+                    "Güncellenecek satırı tablodan seçin.",
+                    parent=self,
+                )
+                return
+            idx = self.satir_tablo.index(sec[0])
+        if not (0 <= idx < len(self.satirlar)):
+            messagebox.showwarning("Güncelle", "Geçerli bir satır seçili değil.", parent=self)
+            return
+        s = self.satirlar[idx]
+        try:
+            miktar = _decimal(self.urun_miktar.get(), "Miktar")
+        except ValueError as hata:
+            messagebox.showerror("Miktar", str(hata), parent=self)
+            return
+        if miktar <= 0:
+            messagebox.showwarning("Miktar", "Miktar pozitif olmalı.", parent=self)
+            return
+        ad_metin = self.urun_ad_ara.get().strip()
+        if ad_metin == getattr(self, "_urun_ara_placeholder", ""):
+            ad_metin = ""
+        kod = self.urun_kod.get().strip() or (s.get("urun_kodu") or "").strip()
+        birim = (self.urun_birim.get() or s.get("birim") or "Adet").strip() or "Adet"
+        kdv = self._secili_kdv_orani()
+        s["urun_kodu"] = kod or s.get("urun_kodu")
+        if ad_metin:
+            s["urun_adi"] = ad_metin
+        s["miktar"] = miktar
+        s["birim"] = birim
+        s["kdv_orani"] = kdv
+        if hasattr(self, "urun_depo"):
+            depo = (self.urun_depo.get() or "").strip()
+            if depo:
+                s["depo"] = depo
+        if hasattr(self, "urun_maliyet") and maliyet_izinli():
+            ham = (self.urun_maliyet.get() or "").strip()
+            if ham:
+                try:
+                    mal = _decimal(ham, "Maliyet Fiyatı")
+                except ValueError as hata:
+                    messagebox.showerror("Maliyet", str(hata), parent=self)
+                    return
+                if mal > 0:
+                    s["birim_maliyet"] = mal
+                    s["purchase_unit_price_base"] = mal
+                    s["estimated_purchase_unit_price"] = mal
+                    s["maliyet_kaynagi"] = "MANUEL"
+                    s["cost_status"] = "OK"
+        self._satir_tutar_yenile(s)
+        self._satir_yukle_kilit = True
+        try:
+            self._satir_tablo_yenile()
+            cocuklar = self.satir_tablo.get_children()
+            if idx < len(cocuklar):
+                self.satir_tablo.selection_set(cocuklar[idx])
+                self.satir_tablo.focus(cocuklar[idx])
+                self.satir_tablo.see(cocuklar[idx])
+            self._duzenlenen_satir_idx = idx
+        finally:
+            self._satir_yukle_kilit = False
+        self._toplam_guncelle()
 
     def _arama_urun_secildi(self, urun: dict):
         """Arama listesinden seçim → satır giriş alanlarını doldur, miktara odaklan."""
+        self._duzenlenen_satir_idx = None
         self._secili_urun = dict(urun)
         kod = (urun.get("urun_kodu") or "").strip()
         ad = (urun.get("urun_adi") or "").strip()
@@ -996,6 +3172,7 @@ class TeklifDialog(tk.Toplevel):
         self.urun_ad_ara.insert(0, ad)
         self.urun_ad_ara.configure(foreground="#0F172A")
         birimler = [birim]
+        kdv_stok = urun.get("kdv_orani")
         try:
             from database.database import get_session
             from database.models.stok import StokKarti
@@ -1010,10 +3187,32 @@ class TeklifDialog(tk.Toplevel):
                         if ba and ba not in ekstra and ba != birim:
                             ekstra.append(ba)
                     birimler = [birim] + ekstra
+                    if kdv_stok is None:
+                        kdv_stok = getattr(kart, "kdv_orani", None)
         except Exception:
             pass
         self.urun_birim.configure(values=birimler)
         self.urun_birim.set(birim)
+        self._kdv_alani_ayarla(
+            kdv_stok if kdv_stok is not None else VARSAYILAN_KDV_ORANI
+        )
+        # Maliyet fiyatını kırmızı alana doldur (stok kartını değiştirmez)
+        if hasattr(self, "urun_maliyet") and maliyet_izinli():
+            depo = (
+                self.urun_depo.get().strip()
+                or self.girdiler["depo"].get().strip()
+                or "ANA DEPO"
+            )
+            try:
+                snap = maliyet_getir(kod, depo, self._secili_maliyet_kaynagi())
+                self.urun_maliyet.delete(0, "end")
+                if snap.birim_maliyet and snap.birim_maliyet > 0:
+                    self.urun_maliyet.insert(0, str(snap.birim_maliyet).replace(".", ","))
+                pb = getattr(snap, "purchase_currency", None) or "TRY"
+                if hasattr(self, "lbl_urun_maliyet_pb"):
+                    self.lbl_urun_maliyet_pb.configure(text=pb)
+            except Exception:
+                pass
         if not self.urun_miktar.get().strip():
             self.urun_miktar.insert(0, "1")
         self.urun_miktar.focus_set()
@@ -1089,6 +3288,7 @@ class TeklifDialog(tk.Toplevel):
                 return
 
         fiyat = _decimal(veri.get("teklif_fiyati") or 0)
+        # Manuel ürün: satış fiyatı boş bırakılabilir; maliyet zorunlu (yetkili)
         is_manual_price = bool(veri.get("is_manual_price")) and fiyat > 0
         isk = _decimal(veri.get("iskonto_orani", 0))
         kdv = _decimal(veri.get("kdv_orani", 20))
@@ -1099,29 +3299,51 @@ class TeklifDialog(tk.Toplevel):
             or 0
         )
         cost_status = veri.get("cost_status") or ("TAHMINI" if base > 0 else "EKSIK")
-        net = net_iskontolu(fiyat, isk, 0, 0) if fiyat > 0 else Decimal("0")
-        ara = (net * miktar).quantize(Decimal("0.01"))
-        kdv_t = (ara * kdv / Decimal("100")).quantize(Decimal("0.01"))
-        oran, marj = kar_metrikleri(net, base) if base > 0 and net > 0 else (Decimal("0"), Decimal("0"))
+        if maliyet_izinli() and base <= 0:
+            messagebox.showwarning(
+                "Maliyet",
+                "Manuel ürün için Maliyet Fiyatı girin. Satış fiyatı «Fiyatları Hesapla» ile üretilir.",
+                parent=self,
+            )
+            return
+        fiyat_hesaplandi = is_manual_price and fiyat > 0
+        net = net_iskontolu(fiyat, isk, 0, 0) if fiyat_hesaplandi else None
+        ara = (
+            (net * miktar).quantize(Decimal("0.01"))
+            if net is not None
+            else None
+        )
+        kdv_t = (
+            (ara * kdv / Decimal("100")).quantize(Decimal("0.01"))
+            if ara is not None
+            else None
+        )
+        oran, marj = (
+            kar_metrikleri(net, base)
+            if base > 0 and net is not None and net > 0
+            else (Decimal("0"), Decimal("0"))
+        )
         satir = {
             **veri,
             "urun_kodu": "MANUEL",
             "urun_adi": ad,
             "miktar": miktar,
             "birim": birim,
-            "liste_fiyati": fiyat,
-            "teklif_fiyati": fiyat,
+            "liste_fiyati": fiyat if fiyat_hesaplandi else Decimal("0"),
+            "teklif_fiyati": fiyat if fiyat_hesaplandi else None,
             "iskonto_orani": isk,
             "iskonto_orani_2": 0,
             "iskonto_orani_3": 0,
             "kdv_orani": kdv,
             "net_birim_fiyat": net,
-            "satir_toplam": ara + kdv_t,
+            "satir_toplam": (ara + kdv_t) if ara is not None and kdv_t is not None else None,
             "kar_orani": oran,
             "gercek_marj": marj,
             "fiyat_yontemi": "MANUEL" if is_manual_price else "MALIYET_USTU",
-            "final_offer_unit_price": fiyat,
+            "final_offer_unit_price": fiyat if fiyat_hesaplandi else None,
             "is_manual_price": is_manual_price,
+            "fiyat_hesaplandi": fiyat_hesaplandi,
+            "yeniden_hesaplanmali": not fiyat_hesaplandi,
             "is_manual_item": True,
             "manuel": True,
             "line_type": "MANUAL_PRODUCT",
@@ -1239,11 +3461,49 @@ class TeklifDialog(tk.Toplevel):
             )
         else:
             menu.add_command(label="Teklif Fiyatını Düzenle", command=self._satir_fiyat_duzenle)
+        menu.add_command(label="KDV Oranı Değiştir…", command=lambda: self._satir_kdv_duzenle(idx))
         menu.add_command(label="Satır Sil", command=self._satir_sil)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _satir_kdv_duzenle(self, idx: int):
+        if not (0 <= idx < len(self.satirlar)):
+            return
+        s = self.satirlar[idx]
+        mevcut = str(int(self._kdv_deger(s.get("kdv_orani"))))
+        win = tk.Toplevel(self)
+        win.title("KDV Oranı")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+        ttk.Label(win, text="KDV %").pack(anchor="w", padx=12, pady=(12, 4))
+        cmb = ttk.Combobox(win, values=list(KDV_ORANLARI), state="readonly", width=8)
+        cmb.set(mevcut if mevcut in KDV_ORANLARI else str(int(VARSAYILAN_KDV_ORANI)))
+        cmb.pack(padx=12, pady=4)
+        cmb.focus_set()
+
+        def _kaydet():
+            try:
+                yeni = self._kdv_deger(cmb.get())
+            except Exception:
+                messagebox.showwarning("KDV", "Geçersiz KDV oranı.", parent=win)
+                return
+            s["kdv_orani"] = yeni
+            self._satir_tutar_yenile(s)
+            self._satir_tablo_yenile()
+            self._toplam_guncelle()
+            if self._duzenlenen_satir_idx == idx:
+                self._kdv_alani_ayarla(yeni)
+            win.destroy()
+
+        btn = ttk.Frame(win)
+        btn.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn, text="Tamam", command=_kaydet).pack(side="right", padx=4)
+        ttk.Button(btn, text="Vazgeç", command=win.destroy).pack(side="right")
+        win.bind("<Return>", lambda _e: _kaydet())
+        win.bind("<Escape>", lambda _e: win.destroy())
 
     def _manuel_stoka_donustur(self, idx: int):
         if not yetki_var("teklif_manuel_stok_donustur", "stok_duzenleme"):
@@ -1323,7 +3583,7 @@ class TeklifDialog(tk.Toplevel):
                     "model": s.get("manual_model") or s.get("varyant") or "",
                     "barkod": barkod or None,
                     "birim": s.get("birim") or "Adet",
-                    "kdv_orani": s.get("kdv_orani") or 20,
+                    "kdv_orani": self._kdv_deger(s.get("kdv_orani")),
                 },
             )
             self.wait_window(dlg)
@@ -1499,7 +3759,8 @@ class TeklifDialog(tk.Toplevel):
         birim = (unit_id or self.urun_birim.get() or "Adet").strip() or "Adet"
         ad = (urun_adi or "").strip() or kod
         liste = Decimal("0")
-        kdv = Decimal("20")
+        # Öncelik: giriş çubuğundaki KDV seçimi (stok varsayılanını ezer)
+        kdv = self._secili_kdv_orani()
         try:
             from database.database import get_session
             from database.models.stok import StokKarti
@@ -1516,17 +3777,11 @@ class TeklifDialog(tk.Toplevel):
                     ad = kart.stok_adi or ad
                     if not unit_id:
                         birim = kart.birim or birim
-                    kdv = Decimal(str(getattr(kart, "kdv_orani", 20) or 20))
                     manuel = False
         except Exception:
             pass
         if self._secili_urun and not urun_adi:
             ad = (self._secili_urun.get("urun_adi") or ad).strip() or ad
-            if self._secili_urun.get("kdv_orani") is not None:
-                try:
-                    kdv = Decimal(str(self._secili_urun["kdv_orani"]))
-                except Exception:
-                    pass
             manuel = bool(self._secili_urun.get("manuel")) or manuel
 
         karar = self._ayni_urun_karar(kod)
@@ -1537,13 +3792,8 @@ class TeklifDialog(tk.Toplevel):
             s = self.satirlar[idx]
             yeni_miktar = Decimal(str(s.get("miktar") or 0)) + miktar
             s["miktar"] = yeni_miktar
-            net = Decimal(str(s.get("net_birim_fiyat") or s.get("teklif_fiyati") or 0))
-            kdv_o = Decimal(str(s.get("kdv_orani") or 20))
-            ara = (net * yeni_miktar).quantize(Decimal("0.01"))
-            kdv_t = (ara * kdv_o / Decimal("100")).quantize(Decimal("0.01"))
-            s["satir_toplam"] = ara + kdv_t
-            base = Decimal(str(s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0))
-            s["purchase_total_cost"] = (base * yeni_miktar).quantize(Decimal("0.01"))
+            s["kdv_orani"] = self._secili_kdv_orani()
+            self._satir_tutar_yenile(s)
             self._satir_tablo_yenile()
             self._toplam_guncelle()
             if any(
@@ -1565,25 +3815,34 @@ class TeklifDialog(tk.Toplevel):
             liste = Decimal("0")
         kay = self._secili_maliyet_kaynagi()
         snap = maliyet_getir(kod, depo, kay)
-        if manuel and maliyet_izinli() and snap.birim_maliyet <= 0:
-            manuel_m = simpledialog.askstring(
-                "Manuel Maliyet",
-                "Manuel ürün için alış maliyeti (zorunlu):",
+        # Giriş çubuğundaki maliyet (teklife özgü; stok kartını güncellemez)
+        giris_maliyet = None
+        if hasattr(self, "urun_maliyet") and maliyet_izinli():
+            ham = (self.urun_maliyet.get() or "").strip()
+            if ham:
+                try:
+                    giris_maliyet = _decimal(ham, "Maliyet Fiyatı")
+                except ValueError as hata:
+                    messagebox.showerror("Maliyet", str(hata), parent=self)
+                    return
+        if giris_maliyet is not None and giris_maliyet > 0:
+            snap = maliyet_getir(kod, depo, "MANUEL", manuel=giris_maliyet)
+        elif manuel and maliyet_izinli() and snap.birim_maliyet <= 0:
+            messagebox.showwarning(
+                "Maliyet",
+                "Manuel ürün için Maliyet Fiyatı girin (kırmızı çerçeveli alan).",
                 parent=self,
             )
-            if manuel_m is None:
-                return
-            snap = maliyet_getir(kod, depo, "MANUEL", manuel=_decimal(manuel_m, "Maliyet"))
+            return
         if (snap.uyari or snap.birim_maliyet <= 0) and maliyet_izinli() and not manuel:
             messagebox.showwarning(
                 "Maliyet",
                 snap.uyari or "Alış maliyeti 0 — satır kırmızı işaretlenecek.",
                 parent=self,
             )
-        fiyat = liste if liste > 0 else Decimal("0")
-        net = fiyat
-        ara = (net * miktar).quantize(Decimal("0.01"))
-        kdv_t = (ara * kdv / Decimal("100")).quantize(Decimal("0.01"))
+        # Satış fiyatı ürün eklenirken boş; yalnızca «Fiyatları Hesapla» ile üretilir
+        fiyat = None
+        net = Decimal("0")
         purchase_total = (snap.purchase_unit_price_base * miktar).quantize(Decimal("0.01"))
         self.satirlar.append(
             {
@@ -1599,11 +3858,11 @@ class TeklifDialog(tk.Toplevel):
                 "iskonto_orani_2": 0,
                 "iskonto_orani_3": 0,
                 "kdv_orani": kdv,
-                "net_birim_fiyat": net,
-                "satir_toplam": ara + kdv_t,
+                "net_birim_fiyat": None,
+                "satir_toplam": None,
                 "kar_orani": Decimal("0"),
                 "gercek_marj": Decimal("0"),
-                "fiyat_yontemi": "FIYAT_LISTESI",
+                "fiyat_yontemi": "MALIYET_USTU",
                 "purchase_unit_price": snap.purchase_unit_price,
                 "purchase_currency": snap.purchase_currency,
                 "purchase_exchange_rate": snap.purchase_exchange_rate,
@@ -1618,8 +3877,10 @@ class TeklifDialog(tk.Toplevel):
                 "allocated_fixed_profit": Decimal("0"),
                 "calculated_offer_unit_price": Decimal("0"),
                 "manual_offer_unit_price": None,
-                "final_offer_unit_price": fiyat,
+                "final_offer_unit_price": None,
                 "is_manual_price": False,
+                "fiyat_hesaplandi": False,
+                "yeniden_hesaplanmali": True,
                 "actual_profit_amount": Decimal("0"),
                 "actual_margin_rate": Decimal("0"),
                 "opsiyonel": False,
@@ -1627,6 +3888,7 @@ class TeklifDialog(tk.Toplevel):
                 "kabul_edildi": True,
                 "manuel": manuel,
                 "stok_id": product_id,
+                "cost_status": "OK" if snap.birim_maliyet > 0 else "EKSIK",
             }
         )
         self._satir_tablo_yenile()
@@ -1708,27 +3970,264 @@ class TeklifDialog(tk.Toplevel):
         self._satir_tablo_yenile()
         self._toplam_guncelle()
 
+    def _teklif_excel_cizgileri_temizle(self) -> None:
+        for w in getattr(self, "_teklif_excel_cizgiler", []) or []:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self._teklif_excel_cizgiler = []
+        aid = getattr(self, "_teklif_excel_after", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except tk.TclError:
+                pass
+            self._teklif_excel_after = None
+
+    def _teklif_excel_cizgileri_kur(self) -> None:
+        """Ürün satır tablosuna fatura benzeri Excel ızgarası bağlar."""
+        if getattr(self, "_teklif_excel_kurulu", False):
+            self._teklif_excel_cizgileri_yenile()
+            return
+        if not hasattr(self, "satir_tablo"):
+            return
+        tree = self.satir_tablo
+        parent = tree.master
+        self._teklif_excel_cizgiler = []
+        self._teklif_excel_after = None
+
+        dikey = None
+        for w in parent.winfo_children():
+            if not isinstance(w, ttk.Scrollbar):
+                continue
+            try:
+                if str(w.cget("orient")) == "vertical":
+                    dikey = w
+                    break
+            except tk.TclError:
+                continue
+
+        def planla(_event=None):
+            aid = getattr(self, "_teklif_excel_after", None)
+            if aid is not None:
+                try:
+                    self.after_cancel(aid)
+                except tk.TclError:
+                    pass
+            self._teklif_excel_after = self.after(15, self._teklif_excel_cizgileri_yenile)
+
+        def yset(*args):
+            if dikey is not None:
+                try:
+                    dikey.set(*args)
+                except tk.TclError:
+                    pass
+            planla()
+
+        tree.configure(yscrollcommand=yset)
+        tree.bind("<Configure>", planla, add="+")
+        tree.bind("<MouseWheel>", planla, add="+")
+        tree.bind("<ButtonRelease-1>", planla, add="+")
+        parent.bind("<Configure>", planla, add="+")
+        self._teklif_excel_kurulu = True
+        planla()
+
+    def _teklif_excel_cizgileri_yenile(self) -> None:
+        """Görünür hücre kenarlarına ince yatay/dikey çizgiler (fatura gibi)."""
+        self._teklif_excel_after = None
+        if not hasattr(self, "satir_tablo"):
+            return
+        tree = self.satir_tablo
+        parent = tree.master
+        self._teklif_excel_cizgileri_temizle()
+        try:
+            if not tree.winfo_ismapped():
+                return
+        except tk.TclError:
+            return
+
+        renk = "#BDBDBD"
+        dcols = tree["displaycolumns"]
+        if not dcols or dcols in ("#all", ("#all",)):
+            dcols = tree["columns"]
+        dcols = list(dcols or ())
+        if not dcols:
+            return
+        try:
+            tx, ty = tree.winfo_x(), tree.winfo_y()
+        except tk.TclError:
+            return
+
+        cizgiler = []
+        self._teklif_excel_cizgiler = cizgiler
+
+        def _tiklama_aktar(event, cift=False):
+            try:
+                x = event.x_root - tree.winfo_rootx()
+                y = event.y_root - tree.winfo_rooty()
+            except tk.TclError:
+                return "break"
+            row = tree.identify_row(y)
+            if row:
+                try:
+                    tree.selection_set(row)
+                    tree.focus(row)
+                except tk.TclError:
+                    pass
+            try:
+                tree.event_generate("<Double-1>" if cift else "<Button-1>", x=x, y=y)
+            except tk.TclError:
+                pass
+            return "break"
+
+        def cizgi(**kwargs):
+            fr = tk.Frame(parent, bg=renk, highlightthickness=0, bd=0, **kwargs)
+            fr.bind("<Button-1>", _tiklama_aktar)
+            fr.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
+            cizgiler.append(fr)
+            return fr
+
+        def hucre(x, y, w, h, sol=False, ust=False):
+            if w <= 1 or h <= 1:
+                return
+            if ust:
+                cizgi(height=1, width=w).place(x=tx + x, y=ty + y)
+            cizgi(height=1, width=w).place(x=tx + x, y=ty + y + h - 1)
+            if sol:
+                cizgi(width=1, height=h).place(x=tx + x, y=ty + y)
+            cizgi(width=1, height=h).place(x=tx + x + w - 1, y=ty + y)
+
+        stil = ttk.Style(self)
+        try:
+            rh = int(float(stil.lookup("TeklifSatir.Treeview", "rowheight") or 42))
+        except (TypeError, ValueError):
+            rh = 42
+
+        children = list(tree.get_children())
+        kolon_xw = None
+        baslik_h = None
+        son_alt = None
+        ilk_veri_y = None
+
+        for item in children:
+            for sira, col in enumerate(dcols):
+                box = tree.bbox(item, col)
+                if not box:
+                    continue
+                x, y, w, h = box
+                if ilk_veri_y is None:
+                    ilk_veri_y = y
+                hucre(x, y, w, h, sol=(sira == 0), ust=(y == ilk_veri_y))
+                if kolon_xw is None:
+                    kolon_xw = []
+                    for c2 in dcols:
+                        b2 = tree.bbox(item, c2)
+                        if b2:
+                            kolon_xw.append((b2[0], b2[2]))
+                    baslik_h = y
+                    rh = h
+                son_alt = y + h
+
+        if kolon_xw is None:
+            toplam_w = sum(max(20, int(tree.column(c, "width") or 20)) for c in dcols) or 1
+            try:
+                sol = float(tree.xview()[0]) * toplam_w
+            except (tk.TclError, ValueError, IndexError):
+                sol = 0.0
+            kolon_xw = []
+            cum = 0
+            for col in dcols:
+                w = max(20, int(tree.column(col, "width") or 20))
+                kolon_xw.append((int(cum - sol), w))
+                cum += w
+            baslik_h = 26
+            son_alt = baslik_h
+
+        if baslik_h and baslik_h > 2 and kolon_xw:
+            for sira, (x, w) in enumerate(kolon_xw):
+                if x + w < 0:
+                    continue
+                hucre(x, 0, w, baslik_h, sol=(sira == 0), ust=True)
+
+        try:
+            tablo_h = tree.winfo_height()
+        except tk.TclError:
+            return
+        y = son_alt if son_alt is not None else (baslik_h or 26)
+        guvenlik = 0
+        while y + rh <= tablo_h and guvenlik < 40 and kolon_xw:
+            for sira, (x, w) in enumerate(kolon_xw):
+                if x + w < 0:
+                    continue
+                hucre(x, y, w, rh, sol=(sira == 0), ust=False)
+            y += rh
+            guvenlik += 1
+
     def _satir_tablo_yenile(self):
         for i in self.satir_tablo.get_children():
             self.satir_tablo.delete(i)
+        if not self.satirlar:
+            # Boş durum satırı (bilgi)
+            kolonlar = getattr(self, "_satir_kolonlar", ()) or ()
+            if kolonlar:
+                bos = [""] * len(kolonlar)
+                if "ad" in kolonlar:
+                    bos[list(kolonlar).index("ad")] = "Henüz ürün eklenmedi"
+                elif len(bos) > 2:
+                    bos[2] = "Henüz ürün eklenmedi"
+                self.satir_tablo.insert("", "end", values=tuple(bos), tags=("tek",))
+            self.after_idle(self._teklif_excel_cizgileri_yenile)
+            return
         maliyeti_goster = maliyet_izinli()
-        for s in self.satirlar:
-            om = "M" if s.get("is_manual_price") else "O"
+
+        def _sat_goster(deger):
+            """Hesaplanmamış satış fiyatı/tutarı boş göster (0 ile karışmasın)."""
+            if deger is None:
+                return ""
+            try:
+                if isinstance(deger, str) and not deger.strip():
+                    return ""
+            except Exception:
+                pass
+            return _para(deger)
+
+        for sira, s in enumerate(self.satirlar):
+            hesapli = bool(s.get("fiyat_hesaplandi")) or (
+                s.get("teklif_fiyati") is not None
+                and _decimal(s.get("teklif_fiyati") or 0) > 0
+                and not s.get("yeniden_hesaplanmali")
+            )
+            # Kayıtlı teklif: fiyat varsa hesaplanmış say
+            if s.get("teklif_fiyati") is not None and s.get("fiyat_hesaplandi") is None:
+                if _decimal(s.get("teklif_fiyati") or 0) > 0:
+                    hesapli = True
+                    s["fiyat_hesaplandi"] = True
+            om = "M" if s.get("is_manual_price") else ("?" if not hesapli else "O")
             alis = s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0
             manuel = bool(s.get("is_manual_item") or s.get("manuel"))
             tur = "M" if manuel else ("H" if s.get("hizmet_satiri") else "S")
-            tags = []
+            tags = ["cift" if sira % 2 else "tek"]
             if maliyeti_goster and (
                 _decimal(alis) <= 0 or s.get("cost_status") == "EKSIK" or s.get("margin_unavailable")
             ):
                 tags.append("maliyet_yok")
             if manuel:
                 tags.append("manuel_satir")
+            if s.get("yeniden_hesaplanmali") and not hesapli:
+                tags.append("yeniden_hesap")
             marj_metin = (
-                "Eksik Maliyet"
-                if s.get("margin_unavailable") or s.get("cost_status") == "EKSIK"
-                else _para(s.get("gercek_marj", s.get("actual_margin_rate", 0)))
+                ""
+                if not hesapli
+                else (
+                    "Eksik Maliyet"
+                    if s.get("margin_unavailable") or s.get("cost_status") == "EKSIK"
+                    else _para(s.get("gercek_marj", s.get("actual_margin_rate", 0)))
+                )
             )
+            fiyat_g = _sat_goster(s.get("teklif_fiyati") if hesapli else None)
+            toplam_g = _sat_goster(s.get("satir_toplam") if hesapli else None)
+            net_g = _sat_goster(s.get("net_birim_fiyat") if hesapli else None)
             if maliyeti_goster:
                 vals = (
                     tur,
@@ -1738,11 +4237,11 @@ class TeklifDialog(tk.Toplevel):
                     s["birim"],
                     "—" if (manuel and s.get("cost_status") == "EKSIK") else _para(alis),
                     s.get("maliyet_kaynagi") or ("MANUEL" if manuel else ""),
-                    _para(s["teklif_fiyati"]),
+                    fiyat_g,
                     om,
-                    _para(s.get("iskonto_orani", 0)),
+                    _para(s.get("iskonto_orani", 0)) if hesapli else "",
                     _para(s["kdv_orani"]),
-                    _para(s["satir_toplam"]),
+                    toplam_g,
                     marj_metin,
                 )
             else:
@@ -1752,32 +4251,22 @@ class TeklifDialog(tk.Toplevel):
                     s["urun_adi"],
                     _para(s["miktar"]),
                     s["birim"],
-                    _para(s["teklif_fiyati"]),
-                    _para(s.get("iskonto_orani", 0)),
+                    fiyat_g,
+                    _para(s.get("iskonto_orani", 0)) if hesapli else "",
                     _para(s["kdv_orani"]),
-                    _para(s["net_birim_fiyat"]),
-                    _para(s["satir_toplam"]),
+                    net_g,
+                    toplam_g,
                 )
             self.satir_tablo.insert("", "end", values=vals, tags=tuple(tags))
+        try:
+            self.satir_tablo.tag_configure("yeniden_hesap", foreground="#B45309")
+        except tk.TclError:
+            pass
+        self.after_idle(self._teklif_excel_cizgileri_yenile)
 
     def _fiyat_ozet_guncelle(self):
-        if not maliyet_izinli():
-            return
-        o = self._fiyat_ozet or {}
-        self.lbl_fiyat_ozet.configure(
-            text=(
-                f"Toplam Alış: {_para(o.get('total_purchase_cost', 0))}\n"
-                f"Masraf (müşteri): {_para(o.get('customer_expense_amount', 0))}\n"
-                f"İç Masraf: {_para(o.get('internal_expense_amount', 0))}\n"
-                f"% Kâr Tutarı: {_para(o.get('percentage_profit_amount', 0))}\n"
-                f"Maktu Kâr: {_para(o.get('fixed_profit_amount', 0))}\n"
-                f"Hedef Kâr: {_para(o.get('total_target_profit', 0))}\n"
-                f"Teklif Ara: {_para(o.get('calculated_offer_subtotal', 0))}\n"
-                f"Gerçek Kâr: {_para(o.get('actual_profit_amount', 0))}\n"
-                f"Maliyet Üstü %: {_para(o.get('cost_markup_rate', 0))}\n"
-                f"Satış Marjı %: {_para(o.get('sales_margin_rate', 0))}"
-            )
-        )
+        """Üst panelde uzun açıklama gösterilmez."""
+        return
 
     def _fiyatlari_hesapla(self):
         if not self.satirlar:
@@ -1841,6 +4330,9 @@ class TeklifDialog(tk.Toplevel):
                 skip_missing_manual_cost=skip_missing,
             )
             self.satirlar = sonuc.satirlar
+            for s in self.satirlar:
+                s["fiyat_hesaplandi"] = True
+                s["yeniden_hesaplanmali"] = False
             self._fiyat_ozet = {
                 "total_purchase_cost": sonuc.total_purchase_cost,
                 "customer_expense_amount": sonuc.customer_expense_amount,
@@ -1963,22 +4455,125 @@ class TeklifDialog(tk.Toplevel):
         yenile()
 
     def _toplam_guncelle(self):
+        from database.fatura_genel_toplam_service import kurus
+
         tot = QuotePricingService.satir_toplamlari(self.satirlar)
-        metin = (
-            f"Brüt: {_para(tot['brut_toplam'])}  |  İskonto: {_para(tot['iskonto_toplam'])}  |  "
-            f"Ara: {_para(tot['ara_toplam'])}  |  KDV: {_para(tot['kdv_toplam'])}  |  "
-            f"Genel: {_para(tot['genel_toplam'])}"
-        )
-        if maliyet_izinli():
-            metin += (
-                f"  |  Maliyet: {_para(tot['toplam_maliyet'])}  |  "
-                f"Kâr: {_para(tot['brut_kar'])}  |  Marj: {_para(tot['gercek_marj'])}%  |  "
-                f"Maliyet üstü: {_para(tot['maliyet_ustu_oran'])}%"
-            )
-        self.lbl_toplam.configure(text=metin)
+        satir_brut = kurus(tot["genel_toplam"])  # KDV dahil satır toplamı = Brüt ölçümü
+        brut_ref = self._uzlasilan_brut_referans(satir_brut)
+        try:
+            fark = self._uzlasilan_indirim_masraf(brut_ref)
+        except ValueError as hata:
+            messagebox.showerror("Uzlaşılan tutar", str(hata), parent=self)
+            fark = {
+                "brut": brut_ref,
+                "indirim_tutari": Decimal("0.00"),
+                "indirim_orani": Decimal("0"),
+                "masraf_tutari": Decimal("0.00"),
+                "masraf_orani": Decimal("0"),
+                "net": brut_ref,
+                "islem_turu": "",
+                "islem_tutari": Decimal("0.00"),
+                "islem_orani": Decimal("0"),
+            }
+        net_toplam = kurus(fark["net"])
+        self._hesaplanan_genel = net_toplam
+        self._teklif_satir_brut = kurus(fark["brut"])
+        self._genel_islem_turu = fark.get("islem_turu") or ""
+        self._genel_islem_orani = fark.get("islem_orani") or Decimal("0")
+        self._genel_islem_tutari = fark.get("islem_tutari") or Decimal("0.00")
+        self._indirim_tutari = fark.get("indirim_tutari") or Decimal("0.00")
+        self._indirim_orani = fark.get("indirim_orani") or Decimal("0")
+        self._masraf_tutari = fark.get("masraf_tutari") or Decimal("0.00")
+        self._masraf_orani = fark.get("masraf_orani") or Decimal("0")
+
+        if hasattr(self, "teklif_toplam_degerleri"):
+            goster = {
+                "ara_toplam": tot["ara_toplam"],
+                "iskonto": tot["iskonto_toplam"],
+                "matrah": tot["ara_toplam"],
+                "kdv": tot["kdv_toplam"],
+                "brut": self._teklif_satir_brut,
+                "indirim": self._indirim_tutari,
+                "masraf": self._masraf_tutari,
+                "genel": net_toplam,
+            }
+            for anahtar, deger in goster.items():
+                self._toplam_etiket_yaz(anahtar, deger)
+            self._toplam_oran_yaz("indirim", self._indirim_orani)
+            self._toplam_oran_yaz("masraf", self._masraf_orani)
+            if hasattr(self, "_teklif_islem_alanlarini_yaz"):
+                self._teklif_islem_alanlarini_yaz()
+            doviz_w = self.teklif_toplam_degerleri.get("doviz")
+            if doviz_w is not None:
+                try:
+                    karsilik = self._teklif_doviz_karsilik_pb_al()
+                    doc_pb = (
+                        self.girdiler.get("para_birimi")
+                        and self.girdiler["para_birimi"].get()
+                        or "TRY"
+                    ).upper()
+                    if karsilik in ("USD", "EUR"):
+                        ham = ""
+                        try:
+                            ham = (self.doviz_karsilik_kur.get() or "").strip()
+                        except (tk.TclError, AttributeError):
+                            ham = ""
+                        kur = _decimal(ham or 0) if ham else Decimal("0")
+                        if kur > 0:
+                            if doc_pb in ("TRY", "TL"):
+                                doviz = (net_toplam / kur).quantize(Decimal("0.01"))
+                            elif doc_pb == karsilik:
+                                doviz = net_toplam.quantize(Decimal("0.01"))
+                            else:
+                                # Belge dövizi → TL → karşılık dövizi
+                                bel_kur = _decimal(
+                                    self.girdiler.get("kur")
+                                    and self.girdiler["kur"].get()
+                                    or 1
+                                )
+                                tl = (
+                                    (net_toplam * bel_kur).quantize(Decimal("0.01"))
+                                    if bel_kur > 0
+                                    else net_toplam
+                                )
+                                doviz = (tl / kur).quantize(Decimal("0.01"))
+                            doviz_w.configure(text=f"{_para(doviz)} {karsilik}")
+                        else:
+                            doviz_w.configure(text="—")
+                    elif doc_pb in ("USD", "EUR"):
+                        kur = _decimal(
+                            self.girdiler.get("kur") and self.girdiler["kur"].get() or 1
+                        )
+                        if kur > 0:
+                            # Belge dövizinde net → TL karşılığı
+                            tl = (net_toplam * kur).quantize(Decimal("0.01"))
+                            doviz_w.configure(text=f"{_para(tl)} TRY")
+                        else:
+                            doviz_w.configure(text="—")
+                    else:
+                        doviz_w.configure(text="—")
+                except Exception:
+                    try:
+                        doviz_w.configure(text="—")
+                    except tk.TclError:
+                        pass
+
+        # Maliyet özeti (fiyat paneli)
+        if maliyet_izinli() and hasattr(self, "lbl_fiyat_ozet"):
+            try:
+                self.lbl_fiyat_ozet.configure(
+                    text=(
+                        f"Maliyet: {_para(tot['toplam_maliyet'])}  |  "
+                        f"Kâr: {_para(tot['brut_kar'])}  |  "
+                        f"Marj: {_para(tot['gercek_marj'])}%  |  "
+                        f"Maliyet üstü: {_para(tot['maliyet_ustu_oran'])}%"
+                    )
+                )
+            except tk.TclError:
+                pass
 
     def _veriler(self) -> tuple[dict, list]:
-        cari = self.musteri_map.get(self.musteri.get())
+        cari = self._secili_musteri()
         tahmini = None
         tahmini_metin = (self.girdiler["estimated_delivery_date"].get() or "").strip()
         if tahmini_metin:
@@ -1988,21 +4583,34 @@ class TeklifDialog(tk.Toplevel):
         ozet = self._fiyat_ozet or {}
         return (
             {
-                "teklif_no": None if self.girdiler["teklif_no"].get() == "Otomatik" else None,
+                "teklif_no": (
+                    None
+                    if (self.teklif and self.teklif.id)
+                    else (
+                        (self.girdiler["teklif_no"].get() or "").strip()
+                        or None
+                    )
+                ),
                 "teklif_tarihi": _parse_tarih(self.girdiler["teklif_tarihi"].get()),
                 "gecerlilik_tarihi": _parse_tarih(self.girdiler["gecerlilik_tarihi"].get()),
                 "gecerlilik_gunu": int(self.girdiler["gecerlilik_gunu"].get() or 30),
                 "cari_id": cari.id if cari else None,
-                "aday_musteri_adi": self.girdiler["aday_musteri_adi"].get().strip() or None,
+                "aday_musteri_adi": (
+                    (self.girdiler["aday_musteri_adi"].get() or "").strip()
+                    or None
+                ),
                 "musteri_yetkilisi": self.girdiler["musteri_yetkilisi"].get().strip() or None,
                 "musteri_telefon": self.girdiler["musteri_telefon"].get().strip() or None,
                 "musteri_email": self.girdiler["musteri_email"].get().strip() or None,
                 "satis_temsilcisi": self.girdiler["satis_temsilcisi"].get().strip() or None,
                 "konu": self.girdiler["konu"].get().strip() or None,
                 "referans_no": self.girdiler["referans_no"].get().strip() or None,
-                "para_birimi": self.girdiler["para_birimi"].get().strip() or "TRY",
+                "para_birimi": (self.para_birimi.get() or "TRY").strip().upper() or "TRY",
                 "kur": _decimal(self.girdiler["kur"].get() or 1, "Kur"),
-                "odeme_sekli": self.girdiler["odeme_sekli"].get().strip() or None,
+                "kur_tarihi": getattr(self, "_teklif_kur_tarihi", None) or self._teklif_kur_tarihi_al(),
+                "kur_turu": getattr(self, "_teklif_kur_turu", None) or "effective_buying",
+                "kur_sabitlendi": (self.para_birimi.get() or "TRY").upper() == "TRY",
+                **self._odeme_alanlari_oku(),
                 "teslim_suresi": self.girdiler["teslim_suresi"].get().strip() or None,
                 "depo": self.girdiler["depo"].get().strip() or "ANA DEPO",
                 "proje": self.girdiler["proje"].get().strip() or None,
@@ -2037,12 +4645,29 @@ class TeklifDialog(tk.Toplevel):
                 "calculated_at": datetime.now() if ozet else None,
                 "yuvarlama_yontemi": self.fiyat_girdiler["yuvarlama"].get() or "kurus",
                 "masraflar": list(self.masraflar),
+                "genel_toplam": getattr(self, "_hesaplanan_genel", None),
+                "genel_islem_turu": getattr(self, "_genel_islem_turu", "") or None,
+                "genel_islem_orani": getattr(self, "_genel_islem_orani", 0),
+                "genel_islem_tutari": getattr(self, "_genel_islem_tutari", 0),
             },
             list(self.satirlar),
         )
 
     def kaydet(self):
         try:
+            self._toplam_guncelle()
+            # Kaydette uzlaşılan kesinleşir (= Net)
+            net = getattr(self, "_hesaplanan_genel", None)
+            if net is not None:
+                from database.fatura_genel_toplam_service import kurus
+
+                net = kurus(net)
+                self._uzlasilan_tutar = net
+                self._uzlasilan_ui_kilit = True
+                try:
+                    self._uzlasilan_tutar_yaz(net)
+                finally:
+                    self._uzlasilan_ui_kilit = False
             veriler, satirlar = self._veriler()
             tid = self.teklif.id if self.teklif else None
             self.teklif = QuoteService.kaydet(veriler, satirlar, teklif_id=tid)
@@ -2059,6 +4684,9 @@ class TeklifDialog(tk.Toplevel):
         if not self.teklif:
             messagebox.showinfo("Teklif", "Önce kaydedin.", parent=self)
             return
+        if yeni in ("MÜŞTERİYE GÖNDERİLDİ", "KABUL EDİLDİ", "KISMEN KABUL"):
+            if not self._musteri_cikti_icin_fiyat_zorunlu(yeni):
+                return
         if yeni == "MÜŞTERİYE GÖNDERİLDİ":
             try:
                 from teklif_print import musteriye_gondermeden_once_kontrol
@@ -2140,8 +4768,121 @@ class TeklifDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("Revizyon", str(hata), parent=self)
 
+    def _siparis_listesi_ac(self):
+        """Ana pencerede Alınan Siparişler listesini açar."""
+        app = getattr(self, "app", None) or self.master
+        if app is None or not hasattr(app, "satis_siparisleri_goster"):
+            messagebox.showwarning(
+                "Siparişler",
+                "Sipariş listesi bu pencereden açılamadı.",
+                parent=self,
+            )
+            return
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.iconify()
+        except tk.TclError:
+            pass
+        try:
+            app.deiconify()
+            app.lift()
+            app.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            app.satis_siparisleri_goster()
+        except Exception as exc:
+            messagebox.showerror("Siparişler", str(exc), parent=app)
+
+    def _bagli_siparis_ac(self):
+        """Bu teklife bağlı satış siparişini açar."""
+        if not self.teklif or not getattr(self.teklif, "siparis_id", None):
+            messagebox.showinfo(
+                "Sipariş",
+                "Bu teklife bağlı sipariş yok.\nÖnce «Kabul Edildi» ile sipariş oluşturun.",
+                parent=self,
+            )
+            return
+        try:
+            from database.satis_siparisi_service import SatisSiparisiService
+            from app import SatisSiparisiDialog
+
+            siparis = SatisSiparisiService.getir(int(self.teklif.siparis_id))
+            if not siparis:
+                messagebox.showwarning("Sipariş", "Bağlı sipariş bulunamadı.", parent=self)
+                return
+            try:
+                self.grab_release()
+            except tk.TclError:
+                pass
+            dlg = SatisSiparisiDialog(self.app or self.master, siparis)
+            self.wait_window(dlg)
+            try:
+                self.grab_set()
+                self.lift()
+            except tk.TclError:
+                pass
+        except Exception as exc:
+            messagebox.showerror("Sipariş", str(exc), parent=self)
+
+    def _kabul_edildi(self):
+        """Kabul → durum güncelle + otomatik satış siparişi oluştur."""
+        onceki_durum = self.teklif.durum if self.teklif else None
+        self._durum("KABUL EDİLDİ")
+        if not self.teklif:
+            return
+        if self.teklif.durum not in ("KABUL EDİLDİ", "SİPARİŞE DÖNÜŞTÜ"):
+            return
+        if self.teklif.siparis_id:
+            messagebox.showinfo(
+                "Sipariş",
+                f"Teklif kabul edildi.\nBağlı sipariş: {self.teklif.siparis_no or self.teklif.siparis_id}",
+                parent=self,
+            )
+            return
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Sipariş oluşturma"):
+            return
+        try:
+            sonuc = QuoteConversionService.convert_to_sales_order(self.teklif.id)
+            self.teklif = QuoteService.getir(self.teklif.id)
+            self._doldur()
+            self._buton_durumlari()
+            self.result = True
+            messagebox.showinfo(
+                "Kabul Edildi",
+                f"Teklif kabul edildi.\nSatış siparişi oluşturuldu: {sonuc['siparis_no']}",
+                parent=self,
+            )
+        except ValueError as hata:
+            messagebox.showerror(
+                "Sipariş",
+                f"Teklif «Kabul Edildi» olarak işaretlendi"
+                f"{f' (önceki: {onceki_durum})' if onceki_durum else ''}.\n"
+                f"Ancak satış siparişi oluşturulamadı:\n\n{hata}\n\n"
+                "Düzeltmeyi yaptıktan sonra Diğer ▾ → Siparişe Dönüştür ile tekrar deneyin.",
+                parent=self,
+            )
+        except Exception as hata:
+            messagebox.showerror("Sipariş", str(hata), parent=self)
+
     def _siparise(self):
         if not self.teklif:
+            return
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Sipariş oluşturma"):
+            return
+        if self.teklif.durum not in ("KABUL EDİLDİ", "KISMEN KABUL"):
+            # Kabul edilmemişse önce kabul et, sonra dönüştür
+            if not messagebox.askyesno(
+                "Sipariş",
+                "Teklif henüz kabul edilmemiş.\n"
+                "Kabul edilip satış siparişi oluşturulsun mu?",
+                parent=self,
+            ):
+                return
+            self._kabul_edildi()
             return
         manuel_satir = any(
             getattr(s, "is_manual_item", False) for s in (self.teklif.satirlar or [])
@@ -2208,10 +4949,362 @@ class TeklifDialog(tk.Toplevel):
             s.setdefault("birim_satis_fiyati", s.get("teklif_fiyati"))
 
     def _secili_musteri(self):
-        return self.musteri_map.get(self.musteri.get())
+        kod = ""
+        try:
+            kod = (self.musteri_kodu.get() or "").strip()
+        except (tk.TclError, AttributeError):
+            kod = ""
+        if kod and getattr(self, "_musteri_kod_map", None):
+            cari = self._musteri_kod_map.get(kod)
+            if cari is not None:
+                return cari
+        cid = getattr(self, "_selected_customer_id", None)
+        if cid is not None:
+            for c in self.musteriler:
+                if getattr(c, "id", None) == cid:
+                    return c
+        return None
+
+    def _musteri_alanlari_yaz(self, kod: str, ad: str) -> None:
+        try:
+            self.musteri_kodu.delete(0, "end")
+            if kod:
+                self.musteri_kodu.insert(0, kod)
+            self.musteri_adi.delete(0, "end")
+            if ad:
+                self.musteri_adi.insert(0, ad)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _musteri_ara_metin(self) -> str:
+        try:
+            return (self.musteri_adi.get() or "").strip()
+        except (tk.TclError, AttributeError):
+            return ""
+
+    def _musteri_unvan_eslesir(self, unvan: str, bloklar: list[str]) -> bool:
+        from database.search_service import kayit_bloklari_eslesir, normalize_text
+
+        havuz = normalize_text(unvan or "")
+        return kayit_bloklari_eslesir(havuz, bloklar)
+
+    def _musteri_ara_filtre_listesi(self, metin: str | None = None) -> list[str]:
+        from database.search_service import tokenize_query
+
+        ara = (metin if metin is not None else self._musteri_ara_metin()).strip()
+        if not ara:
+            return list(self.musteri_map.keys())
+        bloklar = tokenize_query(ara, min_len=2)
+        if not bloklar:
+            return []
+        bulunan: list[str] = []
+        for etiket, cari in self.musteri_map.items():
+            unvan = getattr(cari, "unvan", None) or ""
+            if self._musteri_unvan_eslesir(unvan, bloklar):
+                bulunan.append(etiket)
+        bulunan.sort(key=lambda e: e.casefold())
+        return bulunan
+
+    def _musteri_kod_degisti(self, event=None):
+        if event and getattr(event, "keysym", "") in (
+            "Up",
+            "Down",
+            "Return",
+            "Escape",
+            "Tab",
+            "Left",
+            "Right",
+            "Prior",
+            "Next",
+            "F2",
+        ):
+            return
+        try:
+            kod = (self.musteri_kodu.get() or "").strip()
+        except tk.TclError:
+            return
+        if not kod:
+            self._selected_customer_id = None
+            return
+        cari = (getattr(self, "_musteri_kod_map", {}) or {}).get(kod)
+        if cari is not None:
+            self._musteri_alanlari_yaz(kod, getattr(cari, "unvan", "") or "")
+            self._selected_customer_id = getattr(cari, "id", None)
+            self._meta_guncelle()
+
+    def _musteri_kod_enter(self, _event=None):
+        try:
+            kod = (self.musteri_kodu.get() or "").strip()
+        except tk.TclError:
+            return "break"
+        if not kod:
+            return "break"
+        cari = (getattr(self, "_musteri_kod_map", {}) or {}).get(kod)
+        if cari is not None:
+            self._musteri_sec_cari(cari)
+        else:
+            self._musteri_ara_secim_ac(ara=kod, zorla=True)
+        return "break"
+
+    def _musteri_ara_filtrele(self, event=None):
+        if event and getattr(event, "keysym", "") in (
+            "Up",
+            "Down",
+            "Return",
+            "Escape",
+            "Tab",
+            "Left",
+            "Right",
+            "Prior",
+            "Next",
+            "Shift_L",
+            "Shift_R",
+            "Control_L",
+            "Control_R",
+            "Alt_L",
+            "Alt_R",
+            "Caps_Lock",
+            "F2",
+        ):
+            return
+        metin = self._musteri_ara_metin()
+        if len(metin) < 2:
+            if getattr(self, "_musteri_arama_after", None):
+                try:
+                    self.after_cancel(self._musteri_arama_after)
+                except tk.TclError:
+                    pass
+                self._musteri_arama_after = None
+            self._musteri_ara_sonuclar = list(self.musteri_map.keys())
+            return
+        if getattr(self, "_musteri_arama_after", None):
+            try:
+                self.after_cancel(self._musteri_arama_after)
+            except tk.TclError:
+                pass
+        self._musteri_arama_after = self.after(
+            250, lambda m=metin: self._musteri_ara_filtrele_gecikmeli(m)
+        )
+
+    def _musteri_ara_filtrele_gecikmeli(self, metin: str):
+        self._musteri_arama_after = None
+        guncel = self._musteri_ara_metin()
+        if guncel != metin:
+            return
+        self._musteri_ara_sonuclar = self._musteri_ara_filtre_listesi(guncel)
+        # Enter / F2 ile seçim; yazarken sonuç listesi hazırlanır
+
+    def _musteri_ara_enter(self, _event=None):
+        metin = self._musteri_ara_metin()
+        if len(metin) < 2:
+            return "break"
+        sonuclar = self._musteri_ara_filtre_listesi(metin)
+        self._musteri_ara_sonuclar = sonuclar
+        if len(sonuclar) == 1:
+            self._musteri_sec_etiket(sonuclar[0])
+        elif sonuclar:
+            self._musteri_ara_secim_ac(ara=metin, zorla=True)
+        return "break"
+
+    def _musteri_sec_etiket(self, anahtar: str) -> None:
+        if not anahtar:
+            return
+        cari = self.musteri_map.get(anahtar)
+        if cari is None:
+            return
+        self._musteri_sec_cari(cari)
+
+    def _musteri_sec_cari(self, cari) -> None:
+        if not cari:
+            return
+        anahtar = f"{cari.cari_kodu} - {cari.unvan}"
+        if anahtar not in self.musteri_map:
+            self.musteri_map[anahtar] = cari
+            if cari not in self.musteriler:
+                self.musteriler.append(cari)
+        kod = (cari.cari_kodu or "").strip()
+        if kod:
+            self._musteri_kod_map[kod] = cari
+        self._musteri_alanlari_yaz(kod, getattr(cari, "unvan", "") or "")
+        self._selected_customer_id = getattr(cari, "id", None)
+        self._musteri_ara_sonuclar = list(self.musteri_map.keys())
+        try:
+            self._meta_guncelle()
+        except Exception:
+            pass
+
+    def _musteri_ara_secim_ac(self, ara=None, zorla=False):
+        import sys
+
+        from database.cari_service import CariService
+        from database.search_service import tokenize_query
+
+        if ara is None:
+            ara = self._musteri_ara_metin()
+        if not zorla and not tokenize_query(ara or "", min_len=2):
+            return
+        etiketler = (
+            self._musteri_ara_filtre_listesi(ara)
+            if tokenize_query(ara or "", min_len=2)
+            else list(self.musteri_map.keys())
+        )
+        musteriler = [self.musteri_map[e] for e in etiketler if e in self.musteri_map]
+        if not musteriler and zorla and not (ara or "").strip():
+            musteriler = list(self.musteriler)
+        bakiyeler: dict = {}
+        ids = [c.id for c in musteriler if getattr(c, "id", None) is not None]
+        if ids:
+            try:
+                bakiyeler = CariService.musteri_bakiyeleri_toplu(ids)
+            except Exception:
+                bakiyeler = {}
+        mod = sys.modules.get("app")
+        if mod is not None and hasattr(mod, "MusteriSecimDialog"):
+            MusteriSecimDialog = mod.MusteriSecimDialog
+        else:
+            from app import MusteriSecimDialog
+        dlg = MusteriSecimDialog(
+            self,
+            musteriler=musteriler,
+            bakiyeler=bakiyeler,
+            ara=ara or "",
+            on_select=self._musteri_sec_cari,
+            canli_arama=True,
+        )
+        self.wait_window(dlg)
+        try:
+            self.musteri_adi.focus_set()
+            self.musteri_adi.icursor("end")
+        except tk.TclError:
+            pass
+
+    def _musteri_listesini_yenile(self) -> None:
+        self.musteriler = QuoteService.aktif_musterileri()
+        self.musteri_map = {f"{m.cari_kodu} - {m.unvan}": m for m in self.musteriler}
+        self._musteri_kod_map = {
+            (m.cari_kodu or "").strip(): m
+            for m in self.musteriler
+            if (m.cari_kodu or "").strip()
+        }
+        self._musteri_ara_sonuclar = list(self.musteri_map.keys())
+
+    def _yeni_musteri_ekle(self):
+        from cari_kart_ui import CariDialog
+        from database.cari_service import CariService
+
+        try:
+            grup = CariService.aday_musteri_grubunu_garanti()
+        except Exception:
+            grup = CariService.ADAY_MUSTERI_GRUP
+
+        aday = ""
+        try:
+            aday = (
+                self.girdiler.get("aday_musteri_adi")
+                and self.girdiler["aday_musteri_adi"].get()
+                or ""
+            ).strip()
+        except tk.TclError:
+            aday = ""
+        yetkili = ""
+        telefon = ""
+        email = ""
+        try:
+            yetkili = (
+                self.girdiler.get("musteri_yetkilisi")
+                and self.girdiler["musteri_yetkilisi"].get()
+                or ""
+            ).strip()
+            telefon = (
+                self.girdiler.get("musteri_telefon")
+                and self.girdiler["musteri_telefon"].get()
+                or ""
+            ).strip()
+            email = (
+                self.girdiler.get("musteri_email")
+                and self.girdiler["musteri_email"].get()
+                or ""
+            ).strip()
+        except tk.TclError:
+            pass
+
+        dialog = CariDialog(self, cari_turu="Müşteri")
+        try:
+            if "musteri_grubu" in getattr(dialog, "degerler", {}):
+                dialog.musteri_grubu_secimini_hazirla()
+                dialog.degerler["musteri_grubu"].set(grup)
+            if aday and "unvan" in dialog.degerler:
+                w = dialog.degerler["unvan"]
+                w.delete(0, "end")
+                w.insert(0, aday)
+            if telefon and "telefon" in dialog.degerler:
+                w = dialog.degerler["telefon"]
+                w.delete(0, "end")
+                w.insert(0, telefon)
+            if email and "email" in dialog.degerler:
+                w = dialog.degerler["email"]
+                w.delete(0, "end")
+                w.insert(0, email)
+            if hasattr(dialog, "_baslik_rozetlerini_guncelle"):
+                dialog._baslik_rozetlerini_guncelle()
+        except Exception:
+            pass
+        self.wait_window(dialog)
+        yeni = dialog.result
+        if not yeni:
+            return
+        self._musteri_listesini_yenile()
+        self._musteri_sec_cari(yeni)
+        try:
+            self.girdiler["aday_musteri_adi"].configure(values=self._aday_musteri_secenekleri())
+            unvan = (yeni.unvan if yeni else "") or ""
+            self._aday_musteri_yaz(unvan)
+        except (tk.TclError, KeyError, AttributeError):
+            pass
+        if yetkili and not (
+            self.girdiler.get("musteri_yetkilisi")
+            and self.girdiler["musteri_yetkilisi"].get().strip()
+        ):
+            try:
+                self.girdiler["musteri_yetkilisi"].insert(0, yetkili)
+            except (tk.TclError, KeyError):
+                pass
+        self._meta_guncelle()
+
+    def _hesaplanmamis_satis_satirlari(self) -> list[str]:
+        """Satış fiyatı henüz üretilmemiş satır etiketleri."""
+        eksik = []
+        for s in self.satirlar:
+            hesapli = bool(s.get("fiyat_hesaplandi"))
+            fiyat = s.get("teklif_fiyati")
+            if fiyat is None or (not hesapli and _decimal(fiyat or 0) <= 0):
+                if s.get("fiyat_hesaplandi") is None and _decimal(fiyat or 0) > 0:
+                    continue  # kayıtlı eski teklif
+                kod = s.get("urun_kodu") or ""
+                ad = (s.get("urun_adi") or "")[:40]
+                eksik.append(f"{kod} — {ad}".strip(" —"))
+        return eksik
+
+    def _musteri_cikti_icin_fiyat_zorunlu(self, islem_adi: str) -> bool:
+        """Ön izleme / PDF / gönderim / sipariş öncesi eksik satış fiyatı engeli."""
+        eksik = self._hesaplanmamis_satis_satirlari()
+        if not eksik:
+            return True
+        liste = "\n".join(f"• {x}" for x in eksik[:15])
+        if len(eksik) > 15:
+            liste += f"\n… +{len(eksik) - 15} satır"
+        messagebox.showwarning(
+            "Eksik satış fiyatı",
+            f"{islem_adi} için önce «Fiyatları Hesapla» ile satış fiyatlarını üretin.\n\n"
+            f"Hesaplanmamış satırlar:\n{liste}",
+            parent=self,
+        )
+        return False
 
     def _onizleme(self):
         """Müşteri Teklif Ön İzlemesi — maliyet/kâr yok."""
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Ön izleme"):
+            return
         try:
             if not self.teklif:
                 self.kaydet()
@@ -2232,6 +5325,8 @@ class TeklifDialog(tk.Toplevel):
 
     def _pdf(self):
         """Önce önizleme; kullanıcı PDF'i oradan kaydeder. Doğrudan kayıt da mümkün."""
+        if not self._musteri_cikti_icin_fiyat_zorunlu("PDF"):
+            return
         try:
             if not self.teklif:
                 self.kaydet()
@@ -2242,6 +5337,8 @@ class TeklifDialog(tk.Toplevel):
             messagebox.showerror("PDF", str(exc), parent=self)
 
     def _word(self):
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Word"):
+            return
         try:
             if not self.teklif:
                 self.kaydet()
@@ -2254,13 +5351,15 @@ class TeklifDialog(tk.Toplevel):
             messagebox.showerror("Word", str(exc), parent=self)
 
     def _yazdir(self):
+        """A4 yazdırma ön izlemesi açar (müşteri formu)."""
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Yazdır"):
+            return
         try:
             if not self.teklif:
                 self.kaydet()
             from teklif_print import MusteriTeklifOnizlemeDialog
 
-            dlg = MusteriTeklifOnizlemeDialog(self, self)
-            dlg._yazdir()
+            MusteriTeklifOnizlemeDialog(self, self)
         except Exception as exc:
             messagebox.showerror("Yazdır", str(exc), parent=self)
 
@@ -2410,15 +5509,14 @@ class TeklifDialog(tk.Toplevel):
     def _buton_durumlari(self):
         durum = self.teklif.durum if self.teklif else "TASLAK"
         kilitli = durum in ("SİPARİŞE DÖNÜŞTÜ", "İPTAL")
-        for btn in (self.btn_kaydet, self.btn_onaya, self.btn_gonderildi, self.btn_kabul):
+        for btn in (self.btn_kaydet, self.btn_gonderildi, self.btn_kabul):
             try:
                 btn.configure(state="disabled" if kilitli else "normal")
             except tk.TclError:
                 pass
-        siparis_ok = durum in ("KABUL EDİLDİ", "KISMEN KABUL") and not (
-            self.teklif and self.teklif.siparis_id
-        )
-        try:
-            self.btn_siparis.configure(state="normal" if siparis_ok else "disabled")
-        except tk.TclError:
-            pass
+        # Kabul sonrası sipariş varsa kabul butonu da kilitli kalsın
+        if durum == "KABUL EDİLDİ" and self.teklif and self.teklif.siparis_id:
+            try:
+                self.btn_kabul.configure(state="disabled")
+            except tk.TclError:
+                pass

@@ -40,6 +40,9 @@ class CariKartSmokeTest(unittest.TestCase):
         import database.models.satis_siparisi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401
         import database.models.satis_faturasi  # noqa: F401
+        import database.models.alis_siparisi  # noqa: F401
+        import database.models.alis_irsaliyesi  # noqa: F401
+        import database.models.alis_faturasi  # noqa: F401
         import database.models.finans  # noqa: F401
         import database.models.firma  # noqa: F401
 

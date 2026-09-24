@@ -377,8 +377,14 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     iid = str(idx)
     tablo.selection_set(iid)
     mevcut = dialog.satirlar[idx].get("miktar") or "1"
+    try:
+        from app import miktar_goster as _mg
+
+        baslangic = _mg(mevcut)
+    except Exception:
+        baslangic = str(mevcut).replace(".", ",")
     editor, var = _overlay_entry(
-        dialog, tablo, iid, "miktar", str(mevcut).replace(".", ","), justify="right"
+        dialog, tablo, iid, "miktar", baslangic, justify="right"
     )
     if editor is None:
         return

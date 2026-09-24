@@ -17,6 +17,9 @@ from database.stok_service import StokService
 from database.doviz_service import DovizService
 from database.finans_service import FinansService
 
+# Sipariş → fatura: kalan = sipariş miktarı − faturalanan_miktar (sevk zorunlu değil).
+# İrsaliye → fatura: kalan = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
+# satırının faturalanan_miktar'ı da artar. Kaynak: FATURA_KAYNAK_KURALI.
 FATURA_DURUMLARI = ("TASLAK", "AÇIK", "KAPALI", "İPTAL")
 TAHSILAT_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
 
@@ -122,48 +125,35 @@ class SatisFaturasiService:
         fatura.doviz_ara_toplam = decimal(veriler.get("doviz_ara_toplam", 0), "Döviz ara toplam", Decimal("0"))
         fatura.tl_matrah = toplam["ara_toplam"] - toplam["iskonto"]
         fatura.tl_kdv = toplam["kdv"]
-        # Satır toplamı = muhasebe Net (dağıtım sonrası fiyatlar satırlarda)
-        from database.fatura_genel_toplam_service import islem_turunu_normalize, netten_islem, kurus
+        # Doğal satır toplamı = muhasebe genel toplamı (override/yuvarlama yok)
+        from decimal import ROUND_HALF_UP as _RHU
 
-        satir_net = kurus(toplam["genel_toplam"])
-        brut_iz = (
-            decimal(veriler.get("tl_brut_toplam"), "Brüt toplam", Decimal("0"))
-            if veriler.get("tl_brut_toplam") is not None
-            else satir_net
-        )
-        hedef_net = (
-            decimal(veriler.get("tl_genel_toplam"), "Net toplam", Decimal("0"))
-            if veriler.get("tl_genel_toplam") is not None
-            else satir_net
-        )
-        # Dağıtım yapılmışsa satır toplamı Net'tir; brüt/işlem hesap izi
-        if abs(kurus(brut_iz) - satir_net) > Decimal("0.009"):
-            try:
-                iz = netten_islem(brut_iz, satir_net)
-            except ValueError:
-                iz = {
-                    "brut_toplam": brut_iz,
-                    "islem_turu": islem_turunu_normalize(veriler.get("genel_islem_turu")),
-                    "islem_orani": decimal(veriler.get("genel_islem_orani", 0), "oran", Decimal("0")),
-                    "islem_tutari": decimal(veriler.get("genel_islem_tutari", 0), "tutar", Decimal("0")),
-                    "net_toplam": satir_net,
-                }
-            fatura.tl_brut_toplam = iz["brut_toplam"]
-            fatura.genel_islem_turu = iz["islem_turu"] or None
-            fatura.genel_islem_orani = iz["islem_orani"]
-            fatura.genel_islem_tutari = iz["islem_tutari"]
-            fatura.tl_genel_toplam = satir_net
-        else:
-            fatura.tl_brut_toplam = satir_net
-            fatura.genel_islem_turu = None
-            fatura.genel_islem_orani = Decimal("0")
-            fatura.genel_islem_tutari = Decimal("0")
-            fatura.tl_genel_toplam = satir_net
-        # İstemci hedefi ile satır neti sapmasın
-        if abs(kurus(hedef_net) - satir_net) > Decimal("0.01"):
-            raise ValueError(
-                f"Fatura sağlaması: satır toplamı ({satir_net}) hedef Net ({hedef_net}) ile uyuşmuyor."
+        def _kurus(v):
+            return Decimal(str(v or 0)).quantize(Decimal("0.01"), rounding=_RHU)
+
+        satir_net = _kurus(toplam["genel_toplam"])
+        # Uzlaşılan tutar / genel işlem varsa onları kullan; yoksa satır toplamı
+        brut = veriler.get("tl_brut_toplam")
+        net = veriler.get("tl_genel_toplam")
+        fatura.tl_brut_toplam = _kurus(brut if brut is not None else satir_net)
+        fatura.tl_genel_toplam = _kurus(net if net is not None else satir_net)
+        if hasattr(fatura, "genel_islem_turu"):
+            tur = veriler.get("genel_islem_turu")
+            fatura.genel_islem_turu = (str(tur).strip() or None) if tur else None
+            fatura.genel_islem_orani = _kurus(veriler.get("genel_islem_orani", 0))
+            fatura.genel_islem_tutari = _kurus(veriler.get("genel_islem_tutari", 0))
+        if hasattr(fatura, "invoice_rounding_adjustment"):
+            fatura.invoice_rounding_adjustment = _kurus(
+                veriler.get("invoice_rounding_adjustment", 0)
             )
+        if hasattr(fatura, "rounding_applied"):
+            fatura.rounding_applied = bool(veriler.get("rounding_applied", False))
+            hedef = veriler.get("rounding_target_total")
+            fatura.rounding_target_total = _kurus(hedef) if hedef is not None else None
+            if veriler.get("rounding_version") is not None:
+                fatura.rounding_version = int(veriler.get("rounding_version") or 0)
+            else:
+                fatura.rounding_version = int(getattr(fatura, "rounding_version", 0) or 0)
 
     @staticmethod
     def _satir_doviz_alanlari(veri: dict, kur: Decimal, para_birimi: str) -> dict:
@@ -398,6 +388,7 @@ class SatisFaturasiService:
                 sp_id = int(sp_raw)
                 sp_ad = (veriler.get("sales_person_full_name") or "").strip() or None
         tahsilat_verileri = list(tahsilat_verileri or [])
+        beklenen_versiyon = veriler.get("row_version")
         with get_session() as session:
             yeni = False
             if fatura_id:
@@ -408,14 +399,22 @@ class SatisFaturasiService:
                     raise ValueError("İptal edilmiş fatura düzenlenemez.")
                 if getattr(fatura, "onaylandi", False):
                     raise ValueError("Düzenlemek için önce Onay Kaldır yapın.")
+                mevcut_v = int(getattr(fatura, "row_version", 1) or 1)
+                if beklenen_versiyon is not None and int(beklenen_versiyon) != mevcut_v:
+                    raise ValueError(
+                        "Bu fatura başka bir ekranda veya kullanıcıda değiştirilmiş. "
+                        "Listeyi yenileyip faturayı tekrar açın."
+                    )
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
                 fatura.satirlar.clear()
                 fatura.tahsilatlar.clear()
+                fatura.row_version = mevcut_v + 1
             else:
                 yeni = True
                 fatura = SatisFaturasi(
                     fatura_no=(veriler.get("fatura_no") or "").strip()
-                    or SatisFaturasiService.fatura_no()
+                    or SatisFaturasiService.fatura_no(),
+                    row_version=1,
                 )
                 session.add(fatura)
             fatura.fatura_tarihi, fatura.vade_tarihi = tarih, vade
@@ -975,23 +974,23 @@ class SatisFaturasiService:
 
     @staticmethod
     def _satir_net(miktar, fiyat, iskonto1=0, iskonto2=0, iskonto3=0):
-        """Üç kademeli iskonto sonrası KDV matrahı; satır tutarı tam TL (ROUND_HALF_UP).
+        """Üç kademeli iskonto sonrası KDV matrahı; kuruş hassasiyeti (0,01).
 
-        Birim fiyat / miktar hassasiyeti korunur; yuvarlama yalnızca satır
-        matrahına uygulanır. İskonto yoksa brüt de aynı tam TL değerine çekilir
-        (ara toplam = matrah). İskonto varsa brüt ham kalır, fark indirimde.
+        Tam TL alta/üste yuvarlama yok — satır tutarı kuruşlu kalır.
+        Birim fiyat / miktar hassasiyeti korunur; matrah kuruşa HALF_UP.
         """
-        from database.iskonto_hesap_service import round_line_total, satir_net_brut_indirim
+        from database.iskonto_hesap_service import satir_net_brut_indirim, yuvarla_kurus
 
         brut, indirim, net = satir_net_brut_indirim(
             miktar, fiyat, iskonto1, iskonto2, iskonto3
         )
-        net = round_line_total(net)
+        net = yuvarla_kurus(net, "normal")
         if indirim == 0:
             brut = net
             indirim = Decimal("0")
         else:
-            indirim = brut - net
+            brut = yuvarla_kurus(brut, "normal")
+            indirim = yuvarla_kurus(brut - net, "normal")
         return brut, indirim, net
 
     @staticmethod

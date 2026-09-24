@@ -504,6 +504,12 @@ def arac_cubugu_kur(dialog) -> None:
     except tk.TclError:
         pass
 
+    if hasattr(dialog, "_fatura_satir_basliklari_yenile"):
+        try:
+            dialog._fatura_satir_basliklari_yenile()
+        except Exception:
+            pass
+
     _bos_mesaj_guncelle(dialog)
 
 

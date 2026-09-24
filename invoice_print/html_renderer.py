@@ -205,7 +205,7 @@ def _toplamlar(vm: InvoicePrintViewModel) -> str:
             f"<td class='r'>{_e(vm.genel_islem_goster)}</td></tr>"
         )
     satirlar.append(
-        f"<tr class='genel'><td>Net Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
+        f"<tr class='genel'><td>Genel Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
     )
     if a.get("tahsil_kalan_goster", True):
         satirlar.append(

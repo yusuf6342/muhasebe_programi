@@ -439,10 +439,10 @@ def dagitimli_hesapla(
     calculation_method: str = "MALIYET_USTU_KAR",
     skip_missing_manual_cost: bool = False,
 ) -> DagitimSonucu:
-    """Alış + %kâr + maktu + müşteri masrafını satır alış payına göre dağıtır.
+    """Alış + satış marjı (%) + maktu + müşteri masrafını satır alış payına göre dağıtır.
 
-    New_toplam = purchase + %profit_amount + fixed + customer_expense
-    Satır payı = satır_alış / toplam_alış; kuruş farkı en büyük paylı satıra.
+    Kâr marjı satış fiyatı üzerinden: satış = alış × 100 / (100 − marj).
+    New_toplam = purchase + marj_tutarı + fixed + customer_expense
     """
     if not satirlar:
         raise ValueError("Dağıtım için en az bir satır gerekli.")
@@ -497,9 +497,14 @@ def dagitimli_hesapla(
     if total_purchase <= 0:
         raise ValueError("Toplam alış maliyeti sıfır; fiyat dağıtılamaz.")
 
-    percentage_profit_amount = (total_purchase * profit_rate / Decimal("100")).quantize(
-        _KURUS, rounding=ROUND_HALF_UP
-    )
+    percentage_profit_amount = Decimal("0.00")
+    if profit_rate > 0:
+        if profit_rate >= Decimal("100"):
+            raise ValueError("Kâr marjı %100 veya üzeri olamaz (satış fiyatı üzerinden marj).")
+        # Satış marjı: satış = alış × 100 / (100 − marj)  →  örn. 100 ₺, %20 → 100×100/80 = 125
+        percentage_profit_amount = (
+            total_purchase * profit_rate / (Decimal("100") - profit_rate)
+        ).quantize(_KURUS, rounding=ROUND_HALF_UP)
     total_target_profit = percentage_profit_amount + fixed_profit_amount
     hedef_dagitim_toplam = (
         total_purchase + total_target_profit + customer_expense_amount

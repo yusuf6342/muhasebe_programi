@@ -48,6 +48,29 @@ class CariService:
             session.flush()
             return ad
 
+    ADAY_MUSTERI_GRUP = "ADAY MÜŞTERİ"
+
+    @staticmethod
+    def aday_musteri_grubunu_garanti() -> str:
+        """Aday Müşteri sınıfı yoksa oluşturur; varsa mevcut adı döner."""
+        from database.models.cari import MusteriGrubu
+
+        hedef = CariService.ADAY_MUSTERI_GRUP
+        with get_session() as session:
+            mevcut = next(
+                (
+                    g
+                    for g in session.scalars(select(MusteriGrubu))
+                    if CariService._grup_anahtari(g.ad) == CariService._grup_anahtari(hedef)
+                ),
+                None,
+            )
+            if mevcut:
+                return mevcut.ad
+            session.add(MusteriGrubu(ad=hedef))
+            session.flush()
+            return hedef
+
     @staticmethod
     def _arama_kontrol(arama: str) -> str:
         arama = arama.strip()
@@ -85,8 +108,11 @@ class CariService:
 
     @staticmethod
     def _toplu_liste_ozet(session, cariler: list[Cari]) -> list[dict[str, Any]]:
-        """Liste ekranı: tek seferde bakiye + yaklaşık valör (FIFO yok)."""
+        """Liste ekranı: tek seferde bakiye + çift yönlü FIFO ortalama valör."""
         from database.cari_bakiye_service import net_bakiye
+        from database.cari_ortalama_valor_service import (
+            calculate_accounts_average_value_date_bulk,
+        )
 
         if not cariler:
             return []
@@ -100,53 +126,60 @@ class CariService:
         for h in hareketler:
             hareket_by.setdefault(h.cari_id, []).append(h)
 
-        bugun = date.today()
+        islemler = list(
+            session.scalars(select(CariIslem).where(CariIslem.cari_id.in_(ids))).all()
+        )
+        islem_by: dict[int, list[CariIslem]] = {i: [] for i in ids}
+        for islem in islemler:
+            islem_by.setdefault(islem.cari_id, []).append(islem)
+
+        bakiyeler: dict[int, Decimal] = {}
+        borc_alacak: dict[int, tuple[Decimal, Decimal]] = {}
+        for cari in cariler:
+            nb = net_bakiye(cari.id, session=session)
+            bakiyeler[cari.id] = nb["bakiye"]
+            borc_alacak[cari.id] = (nb["toplam_borc"], nb["toplam_alacak"])
+
+        valor_by = calculate_accounts_average_value_date_bulk(
+            cariler,
+            session,
+            hareket_by=hareket_by,
+            islem_by=islem_by,
+            bakiyeler=bakiyeler,
+        )
+
         sonuclar: list[dict[str, Any]] = []
         for cari in cariler:
             cid = cari.id
-            # Net bakiye — fatura Eski Bakiye ile aynı merkezî servis
-            nb = net_bakiye(cid, session=session)
-            bakiye = nb["bakiye"]
-            toplam_borc = nb["toplam_borc"]
-            toplam_alacak = nb["toplam_alacak"]
-
-            agirlik = 0.0
-            tutar_toplam = Decimal("0")
-            acik_sayisi = 0
-            for h in hareket_by.get(cid, []):
-                kalan = Decimal(str(h.kalan_acik_tutar or 0))
-                if kalan == 0:
-                    continue
-                acik_sayisi += 1
-                abs_kalan = abs(kalan)
-                tutar_toplam += abs_kalan
-                vade = h.satis_tarihi or bugun
-                agirlik += float(abs_kalan) * (bugun - vade).days
-            valor = agirlik / float(tutar_toplam) if tutar_toplam else 0.0
-
-            if bakiye > 0:
-                durum = "Borçlu"
-            elif bakiye < 0:
-                durum = "Alacaklı"
-            else:
-                durum = "Bakiye yok"
+            bakiye = bakiyeler[cid]
+            toplam_borc, toplam_alacak = borc_alacak[cid]
+            valor = valor_by.get(cid) or {}
+            gun = float(valor.get("ortalama_valor_gun") or 0)
+            acik_sayisi = len(valor.get("acik_kalemler") or [])
 
             sonuclar.append(
                 {
                     "cari": cari,
                     "bakiye": bakiye,
-                    "bakiye_durumu": durum,
+                    "bakiye_durumu": valor.get("bakiye_durumu")
+                    or ("Borçlu" if bakiye > 0 else ("Alacaklı" if bakiye < 0 else "Kapalı")),
+                    "bakiye_yonu": valor.get("bakiye_yonu"),
+                    "valor_turu": valor.get("valor_turu"),
+                    "valor_turu_etiket": valor.get("valor_turu_etiket"),
+                    "ortalama_valor_tarihi": valor.get("ortalama_valor_tarihi"),
+                    "ortalama_valor_uyari": valor.get("uyari"),
+                    "ortalama_valor_sebep": valor.get("hesaplama_sebep"),
                     "toplam_borc": toplam_borc,
                     "toplam_alacak": toplam_alacak,
                     "odenen_ortalama_valor_gun": 0.0,
                     "odenen_ortalama_valor_basit_gun": 0.0,
-                    "bakiye_ortalama_valor_gun": valor,
+                    "bakiye_ortalama_valor_gun": gun,
                     "borc_tutar": Decimal("0"),
                     "alacak_tutar": Decimal("0"),
-                    "borc_valor_gun": valor,
-                    "alacak_valor_gun": 0.0,
-                    "ortalama_gun": valor,
-                    "agirlikli_ortalama_gun": valor,
+                    "borc_valor_gun": gun if bakiye > 0 else 0.0,
+                    "alacak_valor_gun": gun if bakiye < 0 else 0.0,
+                    "ortalama_gun": gun,
+                    "agirlikli_ortalama_gun": gun,
                     "acik_hareket_sayisi": acik_sayisi,
                     "ana_yetkili": "",
                     "yetkili_telefon": "",
@@ -1372,18 +1405,19 @@ class CariService:
         cari_id: int,
         cari_turu: str | None = None,
         referans: date | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        """FIFO valör: (tamamen_kapanan_faturalar, açık_kalan, kapanan_dilimler).
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        """FIFO valör: (tam_kapanan, açık_borç, kapanan_dilimler, açık_alacak).
 
         Eşleştirme: alacaklar en eski açık borçtan düşülür (FIFO).
-        Tamamen kapanan fatura:
-          kapanma_günü = son_kapatan_ödeme_tarihi − vade; tutar = fatura tutarı
-        Kapanan dilim (her ödeme parçası):
-          gün = ödeme_tarihi − vade; tutar = kapanan parça
-        Açık: gecikme = referans − vade; tutar = kalan açık
-        Vade: fatura.vade_tarihi, yoksa belge tarihi. Peşinat uydurulmaz.
+        Açık alacak: eşleşmeyen ödeme/alacak dilimleri (alacaklı bakiye valörü).
         """
-        bugun = referans or date.today()
+        from database.cari_ortalama_valor_service import fifo_valor_paketi_hesapla
+
         hareketler = list(
             session.scalars(
                 select(SatisHareketi)
@@ -1391,91 +1425,32 @@ class CariService:
                 .order_by(SatisHareketi.satis_tarihi, SatisHareketi.id)
             ).all()
         )
+        islemler = list(
+            session.scalars(
+                select(CariIslem)
+                .where(CariIslem.cari_id == cari_id)
+                .order_by(CariIslem.tarih, CariIslem.id)
+            ).all()
+        )
         vade_harita = CariService._borc_vade_haritasi(
             session, [h.belge_no for h in hareketler]
         )
-        # [vade, belge_tarih, kalan, orijinal, belge_no, son_odeme_tarihi]
-        kuyruk: list[list] = []
-        for h in hareketler:
-            tutar = Decimal(str(h.satis_tutari or 0))
-            if tutar <= 0:
-                continue
-            no = h.belge_no or ""
-            if no.startswith(CariService._VALOR_BORC_HARIC_ONEK):
-                continue
-            vade = CariService._hareket_vade(h, vade_harita)
-            kuyruk.append([vade, h.satis_tarihi, tutar, tutar, no, None])
-
-        kapanan_dilimler: list[dict[str, Any]] = []
-        if kuyruk:
-            islemler = list(
-                session.scalars(
-                    select(CariIslem)
-                    .where(CariIslem.cari_id == cari_id)
-                    .order_by(CariIslem.tarih, CariIslem.id)
-                ).all()
-            )
-            tedarikci = (cari_turu or "").casefold().startswith("tedarik")
-            for islem in islemler:
-                kalan_odeme = CariService._odeme_borc_dusurur_mu(islem, tedarikci)
-                if kalan_odeme <= 0:
-                    continue
-                for dilim_satir in kuyruk:
-                    if kalan_odeme <= 0:
-                        break
-                    vade, belge_tarih, kalan_dilim, _orj, borc_no, _son = dilim_satir
-                    if kalan_dilim <= 0:
-                        continue
-                    if belge_tarih > islem.tarih:
-                        continue
-                    dilim = min(kalan_dilim, kalan_odeme)
-                    dilim_satir[2] = kalan_dilim - dilim
-                    dilim_satir[5] = islem.tarih
-                    kapanan_dilimler.append(
-                        {
-                            "odeme_belge_no": islem.belge_no,
-                            "odeme_tarihi": islem.tarih,
-                            "borc_belge_no": borc_no,
-                            "borc_tarihi": belge_tarih,
-                            "borc_vadesi": vade,
-                            "tutar": dilim,
-                            "gun": (islem.tarih - vade).days,
-                        }
-                    )
-                    kalan_odeme -= dilim
-
-        kapanan: list[dict[str, Any]] = []
-        acik: list[dict[str, Any]] = []
-        for vade, belge_tarih, kalan_dilim, orijinal, borc_no, son_odeme in kuyruk:
-            if kalan_dilim <= 0 and son_odeme is not None:
-                kapanan.append(
-                    {
-                        "borc_belge_no": borc_no,
-                        "borc_tarihi": belge_tarih,
-                        "borc_vadesi": vade,
-                        "kapanma_tarihi": son_odeme,
-                        "tutar": orijinal,
-                        "gun": (son_odeme - vade).days,
-                    }
-                )
-            elif kalan_dilim > 0:
-                acik.append(
-                    {
-                        "borc_belge_no": borc_no,
-                        "borc_tarihi": belge_tarih,
-                        "borc_vadesi": vade,
-                        "tutar": kalan_dilim,
-                        "gun": (bugun - vade).days,
-                    }
-                )
-        return kapanan, acik, kapanan_dilimler
+        return fifo_valor_paketi_hesapla(
+            hareketler,
+            islemler,
+            cari_turu=cari_turu,
+            vade_harita=vade_harita,
+            referans=referans,
+        )
 
     @staticmethod
     def _fifo_odeme_borc_eslesmeleri(
         session, cari_id: int, cari_turu: str | None = None
     ) -> list[dict[str, Any]]:
         """FIFO kapanış dilimleri (geriye dönük API)."""
-        _tam, _acik, dilimler = CariService._fifo_valor_dilimleri(session, cari_id, cari_turu)
+        _tam, _acik, dilimler, _alacak = CariService._fifo_valor_dilimleri(
+            session, cari_id, cari_turu
+        )
         return dilimler
 
     @staticmethod
@@ -1485,7 +1460,9 @@ class CariService:
         Öncelik: tamamen kapanan faturalar (son ödeme − vade).
         Yoksa: kapanan dilimler (ödeme − vade) — kısmi tahsilatta boş kalmasın.
         """
-        tam, _acik, dilimler = CariService._fifo_valor_dilimleri(session, cari_id, cari_turu)
+        tam, _acik, dilimler, _alacak = CariService._fifo_valor_dilimleri(
+            session, cari_id, cari_turu
+        )
         kaynak = tam if tam else dilimler
         return CariService._agirlikli_gun_ortalama(kaynak)
 
@@ -1494,7 +1471,7 @@ class CariService:
         session, cari_id: int, cari_turu: str | None = None, referans: date | None = None
     ) -> float:
         """Açık bakiyenin tutar-ağırlıklı ortalama valörü (gün = bugün − vade)."""
-        _tam, acik, _dilimler = CariService._fifo_valor_dilimleri(
+        _tam, acik, _dilimler, _alacak = CariService._fifo_valor_dilimleri(
             session, cari_id, cari_turu, referans=referans
         )
         return CariService._agirlikli_gun_ortalama(acik)
@@ -1511,20 +1488,18 @@ class CariService:
 
         Toplam borç/alacak: defter sütun toplamları (hareket genel toplam ile aynı).
         Bakiye: toplam_borç − toplam_alacak (defter kalan konvansiyonu).
-        Bakiye durumu: Borçlu / Alacaklı / Bakiye yok.
+        Bakiye durumu: Borçlu / Alacaklı / Kapalı.
 
-        Kapanan borcun ort. valörü (tutar ağırlıklı):
-          1) Tamamen kapanan faturalar: gün = son_kapatan_ödeme − vade;
-             Σ(fatura_tutarı × gün) / Σ(kapanan fatura tutarları).
-          2) Hiç tam kapanan yoksa: FIFO kapanan dilimler;
-             Σ(dilim × (ödeme − vade)) / Σ(dilim).
-
-        Bakiyenin ort. valörü:
-          Açık kalan; gün = bugün − vade;
-          Σ(kalan_açık × gün) / Σ(kalan_açık).
+        Bakiyenin ort. valörü (çift yönlü — ``cari_ortalama_valor_service``):
+          Borçlu → açık borç FIFO; Alacaklı → açık alacak FIFO;
+          gün = rapor_tarihi − valör (mevcut borç yolu ile aynı).
 
         ``defter`` / ``fifo_sonuc`` verilirse tekrar hesaplanmaz (kart özeti performansı).
         """
+        from database.cari_ortalama_valor_service import (
+            calculate_account_average_value_date,
+        )
+
         bugun = date.today()
         hareketler = list(cari.satis_hareketleri or [])
         borclar = [h for h in hareketler if Decimal(str(h.kalan_acik_tutar or 0)) > 0]
@@ -1535,6 +1510,8 @@ class CariService:
         odenen_valor = 0.0
         odenen_valor_basit = 0.0
         bakiye_valor = 0.0
+        valor_meta: dict[str, Any] = {}
+        acik_dilimler: list[dict[str, Any]] = []
         if session is not None:
             if defter is None:
                 defter = CariService._defter(session, cari.id)
@@ -1542,15 +1519,34 @@ class CariService:
             toplam_alacak = sum((Decimal(str(k.get("alacak") or 0)) for k in defter), Decimal("0"))
             bakiye = toplam_borc - toplam_alacak
             if fifo_sonuc is None:
-                kapanan_tam, acik_dilimler, kapanan_dilimler = CariService._fifo_valor_dilimleri(
+                fifo_sonuc = CariService._fifo_valor_dilimleri(
                     session, cari.id, cari_turu=cari.cari_turu, referans=bugun
                 )
+            if len(fifo_sonuc) >= 4:
+                kapanan_tam, acik_dilimler, kapanan_dilimler, _acik_alacak = (
+                    fifo_sonuc[0],
+                    fifo_sonuc[1],
+                    fifo_sonuc[2],
+                    fifo_sonuc[3],
+                )
             else:
-                kapanan_tam, acik_dilimler, kapanan_dilimler = fifo_sonuc
+                kapanan_tam, acik_dilimler, kapanan_dilimler = (
+                    fifo_sonuc[0],
+                    fifo_sonuc[1],
+                    fifo_sonuc[2],
+                )
             kapanan_kaynak = kapanan_tam if kapanan_tam else kapanan_dilimler
             odenen_valor = CariService._agirlikli_gun_ortalama(kapanan_kaynak)
             odenen_valor_basit = CariService._basit_gun_ortalama(kapanan_kaynak)
-            bakiye_valor = CariService._agirlikli_gun_ortalama(acik_dilimler)
+            valor_meta = calculate_account_average_value_date(
+                cari.id,
+                rapor_tarihi=bugun,
+                session=session,
+                cari_turu=cari.cari_turu,
+                bakiye=bakiye,
+                fifo_paketi=fifo_sonuc,
+            )
+            bakiye_valor = float(valor_meta.get("ortalama_valor_gun") or 0)
         else:
             toplam_borc = sum(
                 (Decimal(str(h.satis_tutari or 0)) for h in hareketler if Decimal(str(h.satis_tutari or 0)) > 0),
@@ -1560,32 +1556,34 @@ class CariService:
             bakiye = sum((Decimal(str(h.kalan_acik_tutar or 0)) for h in hareketler), Decimal("0"))
             acik_dilimler = []
             defter = []
+            from database.cari_ortalama_valor_service import _yon_etiket, _valor_turu_etiket
 
-        if bakiye > 0:
-            bakiye_durumu = "Borçlu"
-        elif bakiye < 0:
-            bakiye_durumu = "Alacaklı"
-        else:
-            bakiye_durumu = "Bakiye yok"
+            yon, tur, durum = _yon_etiket(bakiye)
+            valor_meta = {
+                "bakiye_yonu": yon,
+                "valor_turu": tur,
+                "valor_turu_etiket": _valor_turu_etiket(tur),
+                "ortalama_valor_tarihi": None,
+                "ortalama_valor_gun": 0.0,
+                "uyari": None,
+                "hesaplama_sebep": "Oturum yok",
+                "bakiye_durumu": durum,
+            }
 
-        borc_valor = bakiye_valor
-        alacak_valor = 0.0
+        bakiye_durumu = valor_meta.get("bakiye_durumu") or (
+            "Borçlu" if bakiye > 0 else ("Alacaklı" if bakiye < 0 else "Kapalı")
+        )
+
+        borc_valor = (
+            CariService._agirlikli_gun_ortalama(acik_dilimler) if session is not None else 0.0
+        )
+        alacak_valor = bakiye_valor if bakiye < 0 else 0.0
+
         vade_harita: dict[str, date] | None = None
         if session is not None:
             vade_harita = CariService._borc_vade_haritasi(
                 session, [h.belge_no for h in hareketler]
             )
-        if alacaklar:
-            toplam_a = Decimal("0")
-            agirlik_a = 0.0
-            for h in alacaklar:
-                tutar = -Decimal(str(h.kalan_acik_tutar or 0))
-                if tutar <= 0:
-                    continue
-                toplam_a += tutar
-                vade = CariService._hareket_vade(h, vade_harita)
-                agirlik_a += float(tutar) * (bugun - vade).days
-            alacak_valor = agirlik_a / float(toplam_a) if toplam_a else 0.0
 
         ortalama = (
             sum(
@@ -1599,6 +1597,12 @@ class CariService:
             "cari": cari,
             "bakiye": bakiye,
             "bakiye_durumu": bakiye_durumu,
+            "bakiye_yonu": valor_meta.get("bakiye_yonu"),
+            "valor_turu": valor_meta.get("valor_turu"),
+            "valor_turu_etiket": valor_meta.get("valor_turu_etiket"),
+            "ortalama_valor_tarihi": valor_meta.get("ortalama_valor_tarihi"),
+            "ortalama_valor_uyari": valor_meta.get("uyari"),
+            "ortalama_valor_sebep": valor_meta.get("hesaplama_sebep"),
             "toplam_borc": toplam_borc,
             "toplam_alacak": toplam_alacak,
             "odenen_ortalama_valor_gun": odenen_valor,
@@ -1609,7 +1613,7 @@ class CariService:
             "borc_valor_gun": borc_valor,
             "alacak_valor_gun": alacak_valor,
             "ortalama_gun": ortalama,
-            "agirlikli_ortalama_gun": bakiye_valor if bakiye >= 0 else alacak_valor,
+            "agirlikli_ortalama_gun": bakiye_valor,
             "acik_hareket_sayisi": len(borclar) + len(alacaklar),
         }
 
@@ -1661,11 +1665,18 @@ class CariService:
             return {
                 "cari": cari,
                 "bakiye": bakiye,
-                "bakiye_durumu": ozet.get("bakiye_durumu") or "Bakiye yok",
+                "bakiye_durumu": ozet.get("bakiye_durumu") or "Kapalı",
+                "bakiye_yonu": ozet.get("bakiye_yonu"),
+                "valor_turu": ozet.get("valor_turu"),
+                "valor_turu_etiket": ozet.get("valor_turu_etiket"),
+                "ortalama_valor_tarihi": ozet.get("ortalama_valor_tarihi"),
+                "ortalama_valor_uyari": ozet.get("ortalama_valor_uyari"),
+                "ortalama_valor_sebep": ozet.get("ortalama_valor_sebep"),
                 "toplam_borc": ozet.get("toplam_borc", Decimal("0")),
                 "toplam_alacak": ozet.get("toplam_alacak", Decimal("0")),
                 "odenen_ortalama_valor_gun": float(ozet.get("odenen_ortalama_valor_gun") or 0),
                 "bakiye_ortalama_valor_gun": float(ozet.get("bakiye_ortalama_valor_gun") or 0),
+                "agirlikli_ortalama_gun": float(ozet.get("agirlikli_ortalama_gun") or 0),
                 "vadesi_gecmis": vadesi_gecmis,
                 "kullanilabilir_risk": risk.get("kalan_limit"),
                 "risk_durum": risk.get("durum") or "ok",

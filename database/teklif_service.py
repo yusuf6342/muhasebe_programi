@@ -56,12 +56,12 @@ RED_NEDENLERI = (
 
 # Kaynak durum → izin verilen hedefler
 DURUM_GECISLERI: dict[str, set[str]] = {
-    "TASLAK": {"ONAY BEKLİYOR", "İÇ ONAYLI", "MÜŞTERİYE GÖNDERİLDİ", "İPTAL"},
-    "ONAY BEKLİYOR": {"İÇ ONAYLI", "TASLAK", "İPTAL"},
-    "İÇ ONAYLI": {"MÜŞTERİYE GÖNDERİLDİ", "TASLAK", "İPTAL"},
+    "TASLAK": {"MÜŞTERİYE GÖNDERİLDİ", "KABUL EDİLDİ", "İPTAL"},
+    "ONAY BEKLİYOR": {"İÇ ONAYLI", "TASLAK", "MÜŞTERİYE GÖNDERİLDİ", "KABUL EDİLDİ", "İPTAL"},
+    "İÇ ONAYLI": {"MÜŞTERİYE GÖNDERİLDİ", "KABUL EDİLDİ", "TASLAK", "İPTAL"},
     "MÜŞTERİYE GÖNDERİLDİ": {"GÖRÜŞÜLÜYOR", "KABUL EDİLDİ", "KISMEN KABUL", "REDDEDİLDİ", "SÜRESİ DOLDU", "İPTAL"},
     "GÖRÜŞÜLÜYOR": {"KABUL EDİLDİ", "KISMEN KABUL", "REDDEDİLDİ", "REVİZE EDİLDİ", "SÜRESİ DOLDU", "İPTAL"},
-    "REVİZE EDİLDİ": {"ONAY BEKLİYOR", "İÇ ONAYLI", "MÜŞTERİYE GÖNDERİLDİ", "İPTAL"},
+    "REVİZE EDİLDİ": {"MÜŞTERİYE GÖNDERİLDİ", "KABUL EDİLDİ", "İPTAL"},
     "KABUL EDİLDİ": {"SİPARİŞE DÖNÜŞTÜ", "İPTAL"},
     "KISMEN KABUL": {"SİPARİŞE DÖNÜŞTÜ", "İPTAL"},
     "REDDEDİLDİ": {"REVİZE EDİLDİ", "İPTAL"},
@@ -116,6 +116,14 @@ class QuoteService:
                 "calculated_by_user_id": "INTEGER",
                 "yuvarlama_yontemi": "VARCHAR(20) DEFAULT 'kurus' NOT NULL",
                 "tahmini_termin": "DATE",
+                "genel_islem_turu": "VARCHAR(20)",
+                "genel_islem_orani": "NUMERIC(12, 6) DEFAULT 0 NOT NULL",
+                "genel_islem_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+                "odeme_taksit": "INTEGER",
+                "odeme_vade_gun": "INTEGER",
+                "odeme_vade_tarihi": "DATE",
+                "odeme_nakit_turu": "VARCHAR(20)",
+                "odeme_json": "TEXT",
             }
             eksikler = {a: t for a, t in eklenecekler.items() if a not in mevcut}
             if eksikler:
@@ -180,8 +188,8 @@ class QuoteService:
 
     @staticmethod
     def teklif_no() -> str:
-        yil = date.today().year
-        onek = f"TKL-{yil}-"
+        """Sonraki teklif no: TKF-00001, TKF-00002, …"""
+        onek = "TKF-"
         with get_session() as session:
             numaralar = session.scalars(
                 select(SatisTeklifi.teklif_no).where(SatisTeklifi.teklif_no.like(f"{onek}%"))
@@ -189,12 +197,12 @@ class QuoteService:
         max_sira = 0
         for no in numaralar:
             kuyruk = str(no)[len(onek) :]
-            # R01 revizyon sonekini ayır
+            # R01 revizyon sonekini ayır (TKF-00001-R02)
             if "-R" in kuyruk:
                 kuyruk = kuyruk.split("-R")[0]
             if kuyruk.isdigit():
                 max_sira = max(max_sira, int(kuyruk))
-        return f"{onek}{max_sira + 1:04d}"
+        return f"{onek}{max_sira + 1:05d}"
 
     @staticmethod
     def gosterim_no(teklif: SatisTeklifi) -> str:
@@ -482,10 +490,23 @@ class QuoteService:
             teklif.para_birimi = (veriler.get("para_birimi") or "TRY").upper()
             teklif.kur = _d(veriler.get("kur", 1), "Kur", Decimal("0.000001"))
             teklif.kur_tarihi = veriler.get("kur_tarihi")
-            teklif.kur_turu = veriler.get("kur_turu") or "forex_selling"
+            teklif.kur_turu = veriler.get("kur_turu") or "effective_selling"
             teklif.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", False))
             teklif.fiyat_listesi = veriler.get("fiyat_listesi") or None
             teklif.odeme_sekli = veriler.get("odeme_sekli") or None
+            teklif.odeme_taksit = (
+                int(veriler["odeme_taksit"])
+                if veriler.get("odeme_taksit") not in (None, "")
+                else None
+            )
+            teklif.odeme_vade_gun = (
+                int(veriler["odeme_vade_gun"])
+                if veriler.get("odeme_vade_gun") not in (None, "")
+                else None
+            )
+            teklif.odeme_vade_tarihi = veriler.get("odeme_vade_tarihi")
+            teklif.odeme_nakit_turu = veriler.get("odeme_nakit_turu") or None
+            teklif.odeme_json = veriler.get("odeme_json") or None
             teklif.teslim_suresi = veriler.get("teslim_suresi") or None
             teklif.teslimat_sekli = veriler.get("teslimat_sekli") or None
             teklif.teslimat_adresi = veriler.get("teslimat_adresi") or None
@@ -541,7 +562,14 @@ class QuoteService:
             teklif.iskonto_toplam = tot["iskonto_toplam"]
             teklif.ara_toplam = tot["ara_toplam"]
             teklif.kdv_toplam = tot["kdv_toplam"]
-            teklif.genel_toplam = tot["genel_toplam"]
+            # Net = Uzlaşılan (verilirse); aksi halde satır genel toplamı
+            if veriler.get("genel_toplam") is not None and veriler.get("genel_toplam") != "":
+                teklif.genel_toplam = _d(veriler["genel_toplam"])
+            else:
+                teklif.genel_toplam = tot["genel_toplam"]
+            teklif.genel_islem_turu = (str(veriler.get("genel_islem_turu") or "").strip() or None)
+            teklif.genel_islem_orani = _d(veriler.get("genel_islem_orani", 0))
+            teklif.genel_islem_tutari = _d(veriler.get("genel_islem_tutari", 0))
             teklif.toplam_maliyet = tot["toplam_maliyet"]
             teklif.brut_kar = tot["brut_kar"]
             teklif.gercek_marj = tot["gercek_marj"]
@@ -735,6 +763,11 @@ class QuoteService:
                 kur_sabitlendi=kaynak.kur_sabitlendi,
                 fiyat_listesi=kaynak.fiyat_listesi,
                 odeme_sekli=kaynak.odeme_sekli,
+                odeme_taksit=getattr(kaynak, "odeme_taksit", None),
+                odeme_vade_gun=getattr(kaynak, "odeme_vade_gun", None),
+                odeme_vade_tarihi=getattr(kaynak, "odeme_vade_tarihi", None),
+                odeme_nakit_turu=getattr(kaynak, "odeme_nakit_turu", None),
+                odeme_json=getattr(kaynak, "odeme_json", None),
                 teslim_suresi=kaynak.teslim_suresi,
                 teslimat_sekli=kaynak.teslimat_sekli,
                 teslimat_adresi=kaynak.teslimat_adresi,

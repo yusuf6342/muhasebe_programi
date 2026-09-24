@@ -35,10 +35,12 @@ def _para(tutar, pb: str = "TRY") -> str:
 
 
 def _miktar(m) -> str:
+    """Tam sayı ondalıksız; ondalıklıysa 2 hane (TR virgül)."""
     d = _d(m)
     if d == d.to_integral_value():
-        return str(int(d))
-    return f"{d:.4f}".rstrip("0").rstrip(".").replace(".", ",")
+        return format(int(d), "d")
+    q = d.quantize(_KURUS, rounding=ROUND_HALF_UP)
+    return f"{q:.2f}".replace(".", ",")
 
 
 def _iskonto_goster(i1, i2, i3) -> str:
@@ -215,7 +217,6 @@ def build_from_satirlar(
     kaynak_siparis_olusturan: str = "",
     satis_personeli: str = "",
 ) -> InvoicePrintViewModel:
-    from database.fatura_genel_toplam_service import islem_uygula, islem_turunu_normalize, netten_islem
     from database.satis_faturasi_service import SatisFaturasiService
 
     ayarlar = load_print_settings()
@@ -235,47 +236,19 @@ def build_from_satirlar(
     ara = toplam["ara_toplam"]
     isk = toplam["iskonto"]
     kdv = toplam["kdv"]
-    satir_genel = toplam["genel_toplam"]  # Brüt (satırlardan)
+    satir_genel = toplam["genel_toplam"]
     matrah = (ara - isk).quantize(_KURUS, rounding=ROUND_HALF_UP)
 
-    brut = _d(tl_brut_db) if tl_brut_db is not None else satir_genel
-    tur = islem_turunu_normalize(genel_islem_turu)
-    oran = _d(genel_islem_orani or 0)
-    tutar = _d(genel_islem_tutari or 0)
+    # Doğal toplam: satırlardan; DB genel varsa yalnızca satırlarla uyumluysa kullan
+    genel = satir_genel
     if tl_genel_db is not None:
-        net = _d(tl_genel_db)
-        if tur or tutar or oran:
-            try:
-                sonuc = islem_uygula(
-                    brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
-                )
-                if abs(sonuc["net_toplam"] - net) > Decimal("0.05"):
-                    sonuc = netten_islem(brut, net)
-            except ValueError:
-                sonuc = netten_islem(brut, net)
-        elif abs(net - brut) > Decimal("0.009"):
-            sonuc = netten_islem(brut, net)
-        else:
-            sonuc = {
-                "brut_toplam": brut,
-                "islem_turu": "",
-                "islem_orani": Decimal("0"),
-                "islem_tutari": Decimal("0"),
-                "net_toplam": net,
-            }
-    else:
-        sonuc = islem_uygula(
-            brut, islem_turu=tur, islem_orani=oran, islem_tutari=tutar, kaynak="tutar"
-        )
-    genel = sonuc["net_toplam"]  # Baskıda Genel Toplam = Net
-    islem_tur = sonuc["islem_turu"]
-    islem_tutar = sonuc["islem_tutari"]
-    fatura_brut = sonuc.get("brut_toplam", brut)
+        db_net = _d(tl_genel_db)
+        if abs(db_net - satir_genel) <= Decimal("0.05"):
+            genel = db_net
+    fatura_brut = genel
     islem_etiket = ""
-    if islem_tur == "INDIRIM" and islem_tutar > 0:
-        islem_etiket = "İndirim"
-    elif islem_tur == "MASRAF" and islem_tutar > 0:
-        islem_etiket = "Masraf"
+    islem_tutar = Decimal("0")
+    islem_tur = ""
 
     # Satır toplamları brüt ile tutarlı olmalı; net farkı işlem satırında
     satir_modelleri = _satirlari_satir_model(satirlar_dict, pb, ayarlar)
@@ -623,35 +596,16 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
             )
         norm.append(d)
 
-    # Brüt her zaman satırlardan hesaplanır (ekrandaki eski Brüt PDF'ye gitmesin)
+    # Brüt her zaman satırlardan
     tl_brut = None
     net_kart = getattr(kart, "_hesaplanan_genel", None)
     if net_kart is None:
         net_kart = getattr(kart, "_alis_net_toplam", None)
-    if getattr(kart, "_hedef_net_toplam", None) is not None and getattr(
-        kart, "_dagitim_uygulandi", False
-    ):
-        net_kart = kart._hedef_net_toplam
-    if getattr(kart, "_alis_net_hedef", None) is not None and getattr(
-        kart, "_alis_dagitim_uygulandi", False
-    ):
-        net_kart = kart._alis_net_hedef
     if net_kart is not None:
         tl_genel = net_kart
-    islem_tur = getattr(kart, "_genel_islem_turu", None)
-    if islem_tur is None:
-        islem_tur = getattr(kart, "_alis_genel_islem_turu", None)
-    islem_oran = getattr(kart, "_genel_islem_orani", None)
-    if islem_oran is None:
-        islem_oran = getattr(kart, "_alis_genel_islem_orani", None)
-    islem_tutar = getattr(kart, "_genel_islem_tutari", None)
-    if islem_tutar is None:
-        islem_tutar = getattr(kart, "_alis_genel_islem_tutari", None)
-    if islem_tur is None and getattr(kart, "fatura", None):
-        fobj = kart.fatura
-        islem_tur = getattr(fobj, "genel_islem_turu", None)
-        islem_oran = getattr(fobj, "genel_islem_orani", None)
-        islem_tutar = getattr(fobj, "genel_islem_tutari", None)
+    islem_tur = None
+    islem_oran = None
+    islem_tutar = None
 
     siparis_no = ""
     irsaliye_no = ""

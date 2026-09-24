@@ -67,6 +67,9 @@ class RaporService:
                 "bakiye": ozet["bakiye"],
                 "ortalama_gun": ozet["ortalama_gun"],
                 "agirlikli_ortalama_gun": ozet["agirlikli_ortalama_gun"],
+                "ortalama_valor_tarihi": ozet.get("ortalama_valor_tarihi"),
+                "bakiye_yonu": ozet.get("bakiye_yonu"),
+                "valor_turu": ozet.get("valor_turu"),
                 "ortalama_vade": ortalama_vade,
                 "vade_bakiyesi": vade_ozet.get("bakiye") or Decimal("0"),
                 "geciken_gun": geciken_gun,
@@ -112,6 +115,9 @@ class RaporService:
             "bakiye": ozet["bakiye"] if ozet else calisan,
             "ortalama_gun": ozet["ortalama_gun"] if ozet else 0,
             "agirlikli_ortalama_gun": ozet["agirlikli_ortalama_gun"] if ozet else 0,
+            "ortalama_valor_tarihi": (ozet or {}).get("ortalama_valor_tarihi"),
+            "bakiye_yonu": (ozet or {}).get("bakiye_yonu"),
+            "valor_turu": (ozet or {}).get("valor_turu"),
             "ortalama_vade": vade_ozet.get("ortalama_vade"),
             "satirlar": list(reversed(satirlar)),  # yeni üstte
         }

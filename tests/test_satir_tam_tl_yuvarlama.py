@@ -1,4 +1,4 @@
-"""Satış faturası satır toplamı tam TL yuvarlama (ROUND_HALF_UP)."""
+"""Satış faturası satır toplamı — kuruş hassasiyeti (tam TL alta/üste yok)."""
 
 from decimal import Decimal
 import unittest
@@ -8,63 +8,41 @@ from database.satis_faturasi_service import SatisFaturasiService
 from database.alis_faturasi_service import AlisFaturasiService
 
 
-class RoundLineTotalTest(unittest.TestCase):
-    def test_zorunlu_ornek_1000_x_03241(self):
-        ham = Decimal("1000") * Decimal("0.3241")
-        self.assertEqual(ham, Decimal("324.1000"))
-        self.assertEqual(round_line_total(ham), Decimal("324"))
+class RoundLineTotalHelperTest(unittest.TestCase):
+    """Yardımcı hâlâ tam TL yapabilir; satış satırı artık kullanmaz."""
 
-    def test_alt_ust_sinir(self):
+    def test_yardimci_tam_tl(self):
         self.assertEqual(round_line_total(Decimal("324.10")), Decimal("324"))
-        self.assertEqual(round_line_total(Decimal("324.49")), Decimal("324"))
         self.assertEqual(round_line_total(Decimal("324.50")), Decimal("325"))
-        self.assertEqual(round_line_total(Decimal("324.99")), Decimal("325"))
-
-    def test_negatif_simetrik(self):
-        self.assertEqual(round_line_total(Decimal("-324.50")), Decimal("-325"))
-        self.assertEqual(round_line_total(Decimal("-324.49")), Decimal("-324"))
-
-    def test_float_string_uzerinden(self):
-        # float doğrudan Decimal'e verilmez; str ile
-        self.assertEqual(round_line_total("324.50"), Decimal("325"))
-
-    def test_coklu_satir_toplami(self):
-        a = round_line_total(Decimal("324.10"))
-        b = round_line_total(Decimal("10.50"))
-        self.assertEqual(a + b, Decimal("335"))
 
 
-class SatisSatirNetTamTlTest(unittest.TestCase):
-    def test_vida_ornek_birim_fiyat_korunur(self):
+class SatisSatirNetKurusTest(unittest.TestCase):
+    def test_vida_ornek_kurus_korunur(self):
         fiyat = Decimal("0.3241")
         brut, indirim, net = SatisFaturasiService._satir_net(1000, fiyat, 0, 0, 0)
-        self.assertEqual(net, Decimal("324"))
-        self.assertEqual(brut, Decimal("324"))
+        self.assertEqual(net, Decimal("324.10"))
+        self.assertEqual(brut, Decimal("324.10"))
         self.assertEqual(indirim, Decimal("0"))
-        # Ham çarpım kontrolü — birim fiyat değişmez
         self.assertEqual(Decimal("1000") * fiyat, Decimal("324.1000"))
 
-    def test_1_x_32449_ve_32450(self):
+    def test_1_x_32449_ve_32450_kurus(self):
         _, _, n49 = SatisFaturasiService._satir_net(1, Decimal("324.49"), 0, 0, 0)
         _, _, n50 = SatisFaturasiService._satir_net(1, Decimal("324.50"), 0, 0, 0)
-        self.assertEqual(n49, Decimal("324"))
-        self.assertEqual(n50, Decimal("325"))
+        self.assertEqual(n49, Decimal("324.49"))
+        self.assertEqual(n50, Decimal("324.50"))
 
-    def test_kdv_yuvarlanmis_matrahtan(self):
+    def test_kdv_kuruslu_matrahtan(self):
         _, _, net = SatisFaturasiService._satir_net(1000, Decimal("0.3241"), 0, 0, 0)
-        kdv = (net * Decimal("20") / Decimal("100")).quantize(
-            Decimal("0.01")
-        )
-        self.assertEqual(net, Decimal("324"))
-        self.assertEqual(kdv, Decimal("64.80"))
-        self.assertEqual(net + kdv, Decimal("388.80"))
+        kdv = (net * Decimal("20") / Decimal("100")).quantize(Decimal("0.01"))
+        self.assertEqual(net, Decimal("324.10"))
+        self.assertEqual(kdv, Decimal("64.82"))
+        self.assertEqual(net + kdv, Decimal("388.92"))
 
-    def test_alis_ham_kalir_satis_yuvarlar(self):
-        """Alış ortak motoru kuruşta kalır; satış _satir_net tam TL."""
+    def test_alis_ve_satis_kurus_uyumlu(self):
         ham_b, ham_i, ham_n = satir_net_brut_indirim(1000, Decimal("0.3241"), 0, 0, 0)
         self.assertEqual(ham_n, Decimal("324.1000"))
         _, _, satis_n = SatisFaturasiService._satir_net(1000, Decimal("0.3241"), 0, 0, 0)
-        self.assertEqual(satis_n, Decimal("324"))
+        self.assertEqual(satis_n, Decimal("324.10"))
         alis = AlisFaturasiService.toplam(
             [
                 {
@@ -77,10 +55,9 @@ class SatisSatirNetTamTlTest(unittest.TestCase):
                 }
             ]
         )
-        # Alış: ara = 324.10 (kuruş)
         self.assertEqual(alis["ara_toplam"], Decimal("324.10"))
 
-    def test_toplam_coklu_satir(self):
+    def test_toplam_coklu_satir_kurus(self):
         toplam = SatisFaturasiService.toplam(
             [
                 {
@@ -97,9 +74,9 @@ class SatisSatirNetTamTlTest(unittest.TestCase):
                 },
             ]
         )
-        # 324 + 11 = 335
-        self.assertEqual(toplam["genel_toplam"], Decimal("335.00"))
-        self.assertEqual(toplam["ara_toplam"], Decimal("335.00"))
+        # 324.10 + 10.50 = 334.60 (tam TL yok)
+        self.assertEqual(toplam["genel_toplam"], Decimal("334.60"))
+        self.assertEqual(toplam["ara_toplam"], Decimal("334.60"))
 
 
 if __name__ == "__main__":

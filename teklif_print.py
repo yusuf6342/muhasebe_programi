@@ -231,14 +231,16 @@ def _klasor_ac(yol: Path) -> None:
         _LOG.warning("Klasör açılamadı: %s", exc)
 
 
-def musteri_teklif_html_uret(dialog) -> tuple[CustomerQuoteViewModel, str]:
+def musteri_teklif_html_uret(
+    dialog, *, preview: bool = False, zoom_pct: int = 100
+) -> tuple[CustomerQuoteViewModel, str]:
     vm = build_customer_quote_from_dialog(dialog)
-    html_metin = render_customer_quote_html(vm)
+    html_metin = render_customer_quote_html(vm, preview=preview, zoom_pct=zoom_pct)
     return vm, html_metin
 
 
 def musteri_teklif_pdf_uret(dialog, hedef: Path | None = None) -> Path:
-    vm, html_metin = musteri_teklif_html_uret(dialog)
+    vm, html_metin = musteri_teklif_html_uret(dialog, preview=False)
     if hedef is None:
         hedef = kaydet_teklif_cikti_yolu(vm, "pdf")
     else:
@@ -250,25 +252,42 @@ def musteri_teklif_pdf_uret(dialog, hedef: Path | None = None) -> Path:
 
 
 class MusteriTeklifOnizlemeDialog(tk.Toplevel):
-    """Müşteri Teklif Ön İzlemesi — maliyet sütunu yok."""
+    """Müşteri teklif A4 yazdırma ön izlemesi — maliyet sütunu yok."""
+
+    # A4 oranı ~ 210:297 ≈ 0.707; ekranda ~794×1123 @96dpi, önizlemede küçültülür
+    _A4_W = 560
+    _A4_H = 792
 
     def __init__(self, parent, dialog):
         super().__init__(parent)
         self.dialog = dialog
-        self.title("Müşteri Teklif Ön İzlemesi")
-        self.geometry("1040x720")
+        self.zoom = 100
+        self.title("Teklif Yazdırma Ön İzlemesi — A4")
+        self.geometry("920x780")
+        self.minsize(720, 560)
         self.transient(parent)
         try:
             self.grab_set()
         except tk.TclError:
             pass
         self.configure(bg="#6B7280")
-        self.vm, self.html = musteri_teklif_html_uret(dialog)
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Control-p>", lambda _e: self._yazdir())
+        self.bind("<Control-P>", lambda _e: self._yazdir())
+        self.vm, self.html = musteri_teklif_html_uret(dialog, preview=True, zoom_pct=100)
+        self._html_path: Path | None = None
+        self._toolbar_kur()
+        self._govde_kur()
+        self._yenile_a4()
+        # Tarayıcıda gerçek A4 örneğini hemen aç
+        self.after(200, self._tarayici_sessiz)
+
+    def _toolbar_kur(self):
         bar = tk.Frame(self, bg="#0b1f3a", pady=6, padx=8)
         bar.pack(fill="x")
         tk.Label(
             bar,
-            text="Müşteri Teklif Ön İzlemesi",
+            text="Teklif Yazdırma Ön İzlemesi · A4",
             bg="#0b1f3a",
             fg="#e8b923",
             font=("Segoe UI", 11, "bold"),
@@ -276,44 +295,168 @@ class MusteriTeklifOnizlemeDialog(tk.Toplevel):
 
         def btn(t, cmd, bg="#e8b923", fg="#0b1f3a"):
             b = tk.Button(
-                bar, text=t, command=cmd, bg=bg, fg=fg, relief="flat", padx=8, pady=3,
-                font=("Segoe UI", 9, "bold"), cursor="hand2",
+                bar,
+                text=t,
+                command=cmd,
+                bg=bg,
+                fg=fg,
+                relief="flat",
+                padx=8,
+                pady=3,
+                font=("Segoe UI", 9, "bold"),
+                cursor="hand2",
             )
             b.pack(side="left", padx=2)
             return b
 
-        btn("Tarayıcıda Aç", self._tarayici)
-        btn("Word Oluştur", self._word)
-        btn("PDF Kaydet", self._pdf_kaydet)
+        btn("A4 Ön İzleme", self._tarayici)
         btn("Yazdır", self._yazdir)
+        btn("PDF Kaydet", self._pdf_kaydet)
+        btn("Word Oluştur", self._word)
         btn("WhatsApp PDF", self._whatsapp)
         btn("E-posta PDF", self._email)
         btn("Kapat", self.destroy, "#9CA3AF", "#111")
-        cerceve = tk.Frame(self, bg="#9CA3AF")
-        cerceve.pack(fill="both", expand=True, padx=8, pady=8)
-        self.txt = tk.Text(cerceve, wrap="word", font=("Consolas", 9))
-        self.txt.pack(fill="both", expand=True)
-        ozet = (
-            f"{self.vm.belge_baslik}  {self.vm.teklif_no}\n"
-            f"Müşteri: {(self.vm.musteri or {}).get('unvan')}\n"
-            f"Genel Toplam: {self.vm.genel_goster} {self.vm.para_birimi_etiket or self.vm.para_birimi}\n"
-            f"Satır sayısı: {len(self.vm.satirlar)}\n\n"
-            "Tam A4 görünümü için «Tarayıcıda Aç», «Word Oluştur» veya «PDF Kaydet» kullanın.\n"
-            "Bu ön izleme maliyet, kâr ve alış bilgisi içermez."
-        )
-        self.txt.insert("1.0", ozet)
-        self.txt.configure(state="disabled")
-        self._html_path: Path | None = None
 
-    def _html_yaz(self) -> Path:
+    def _govde_kur(self):
+        dis = tk.Frame(self, bg="#6B7280")
+        dis.pack(fill="both", expand=True, padx=10, pady=10)
+        canvas = tk.Canvas(dis, bg="#6B7280", highlightthickness=0)
+        sy = ttk.Scrollbar(dis, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sy.set)
+        sy.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self._canvas = canvas
+        self._a4 = tk.Frame(
+            canvas,
+            bg="#FFFFFF",
+            width=self._A4_W,
+            height=self._A4_H,
+            highlightthickness=1,
+            highlightbackground="#94A3B8",
+        )
+        self._win = canvas.create_window((0, 0), window=self._a4, anchor="n")
+        canvas.bind("<Configure>", self._canvas_ortala)
+        self._a4.bind(
+            "<Configure>",
+            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+
+        # A4 üst şerit
+        ust = tk.Frame(self._a4, bg="#0B2A4A", height=36)
+        ust.pack(fill="x")
+        ust.pack_propagate(False)
+        tk.Label(
+            ust,
+            text="FİYAT TEKLİFİ — A4 YAZDIRMA ÖRNEĞİ",
+            bg="#0B2A4A",
+            fg="#E8B923",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=12, pady=6)
+        tk.Label(
+            ust,
+            text="210 × 297 mm",
+            bg="#0B2A4A",
+            fg="#94A3B8",
+            font=("Segoe UI", 8),
+        ).pack(side="right", padx=12)
+
+        ic = tk.Frame(self._a4, bg="#FFFFFF", padx=18, pady=12)
+        ic.pack(fill="both", expand=True)
+        self._lbl_baslik = tk.Label(
+            ic, text="", bg="#FFFFFF", fg="#0B2A4A",
+            font=("Segoe UI", 14, "bold"), anchor="w",
+        )
+        self._lbl_baslik.pack(fill="x", pady=(0, 6))
+        self._lbl_ozet = tk.Label(
+            ic,
+            text="",
+            bg="#FFFFFF",
+            fg="#1E293B",
+            justify="left",
+            anchor="nw",
+            font=("Segoe UI", 9),
+            wraplength=self._A4_W - 48,
+        )
+        self._lbl_ozet.pack(fill="both", expand=True, anchor="nw")
+        tk.Label(
+            ic,
+            text="Tam A4 görünümü tarayıcıda açılır · Alış / maliyet / ayrı masraf satırı yoktur",
+            bg="#F1F5F9",
+            fg="#64748B",
+            font=("Segoe UI", 8),
+            pady=6,
+        ).pack(fill="x", pady=(8, 0))
+
+    def _canvas_ortala(self, event):
+        x = max(0, (event.width - self._A4_W) // 2)
+        self._canvas.itemconfigure(self._win, width=self._A4_W)
+        self._canvas.coords(self._win, x, 8)
+
+    def _yenile_a4(self):
+        m = self.vm.musteri or {}
+        f = self.vm.firma or {}
+        pb = self.vm.para_birimi_etiket or self.vm.para_birimi
+        satirlar = []
+        for s in (self.vm.satirlar or [])[:12]:
+            satirlar.append(
+                f"  {s.sira:>2}. {s.urun_kodu or '—'}  {s.urun_adi}  ·  "
+                f"{s.miktar_goster} {s.birim}  ·  {s.birim_fiyat_goster} {pb}  ·  "
+                f"{s.kdv_hariç_goster} {pb}"
+            )
+        if len(self.vm.satirlar or []) > 12:
+            satirlar.append(f"  … +{len(self.vm.satirlar) - 12} kalem daha")
+        if not satirlar:
+            satirlar.append("  (ürün kalemi yok)")
+        sart_ozet = []
+        for madde in (self.vm.sart_maddeleri or [])[:4]:
+            sart_ozet.append(f"  • {madde}")
+        metin = (
+            f"Firma: {f.get('unvan') or ''}\n"
+            f"Teklif No: {self.vm.teklif_no}    Tarih: {self.vm.teklif_tarihi}    "
+            f"Geçerlilik: {self.vm.gecerlilik_tarihi or self.vm.gecerlilik_suresi}\n"
+            f"Müşteri: {m.get('unvan') or '—'}\n"
+            f"Ödeme: {self.vm.odeme_sekli or '—'}    "
+            f"Teslim: {self.vm.termin_suresi or self.vm.teslimat_sekli or '—'}\n"
+            f"{'─' * 64}\n"
+            f"1 · GENEL BİLGİLER  ·  2 · STOK / ÜRÜN KALEMLERİ  ·  3 · ÖZEL ŞARTLAR\n"
+            f"{'─' * 64}\n"
+            f"Stok / ürün kalemleri:\n"
+            + "\n".join(satirlar)
+            + f"\n{'─' * 64}\n"
+            f"Ara Toplam: {self.vm.ara_goster} {pb}\n"
+            f"KDV: {self.vm.kdv_goster} {pb}\n"
+            f"GENEL TOPLAM: {self.vm.genel_goster} {pb}\n"
+            f"{'─' * 64}\n"
+            f"Özel şartlar (özet):\n"
+            + ("\n".join(sart_ozet) if sart_ozet else "  —")
+        )
+        self._lbl_baslik.configure(
+            text=f"{self.vm.belge_baslik or 'FİYAT TEKLİFİ'}  ·  {self.vm.teklif_no}"
+        )
+        self._lbl_ozet.configure(text=metin)
+
+    def _html_yaz(self, *, preview: bool = True) -> Path:
         klasor = teklif_cikti_klasoru()
         yol = klasor / f"musteri_onizleme_{datetime.now():%H%M%S}.html"
-        yol.write_text(self.html, encoding="utf-8")
+        if preview:
+            _, html = musteri_teklif_html_uret(
+                self.dialog, preview=True, zoom_pct=self.zoom
+            )
+        else:
+            html = self.html
+        yol.write_text(html, encoding="utf-8")
         self._html_path = yol
+        self.html = html
         return yol
 
+    def _tarayici_sessiz(self):
+        try:
+            webbrowser.open(self._html_yaz(preview=True).resolve().as_uri())
+        except Exception as exc:
+            _LOG.warning("A4 ön izleme tarayıcıda açılamadı: %s", exc)
+
     def _tarayici(self):
-        webbrowser.open(self._html_yaz().resolve().as_uri())
+        webbrowser.open(self._html_yaz(preview=True).resolve().as_uri())
 
     def _word(self):
         try:
@@ -339,16 +482,21 @@ class MusteriTeklifOnizlemeDialog(tk.Toplevel):
         if not yol:
             return
         try:
-            html_to_pdf(self.html, Path(yol))
+            _, temiz = musteri_teklif_html_uret(self.dialog, preview=False)
+            html_to_pdf(temiz, Path(yol))
             messagebox.showinfo("PDF", f"Kaydedildi:\n{yol}", parent=self)
         except Exception as exc:
             messagebox.showerror("PDF", str(exc), parent=self)
 
     def _yazdir(self):
-        webbrowser.open(self._html_yaz().resolve().as_uri())
+        """A4 ön izlemeyi tarayıcıda açar ve yazdırma diyaloğunu tetikler."""
+        yol = self._html_yaz(preview=True)
+        webbrowser.open(yol.resolve().as_uri())
         messagebox.showinfo(
-            "Yazdır",
-            "Teklif tarayıcıda açıldı. Yazdırma için Ctrl+P kullanın.",
+            "Yazdır — A4",
+            "Teklif A4 ön izlemesi tarayıcıda açıldı.\n\n"
+            "Yazdırma için tarayıcıdaki «Yazdır» düğmesine basın veya Ctrl+P kullanın.\n"
+            "Kağıt boyutu: A4 Dikey.",
             parent=self,
         )
 

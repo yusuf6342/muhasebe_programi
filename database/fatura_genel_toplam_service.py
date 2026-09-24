@@ -249,7 +249,7 @@ def kdv_brut_net_satir_saglama(
     islem_turu: str | None,
     islem_tutari: Decimal,
     net_toplam: Decimal,
-    tolerans: Decimal = KURUS,
+    tolerans: Decimal = Decimal("0.00"),
     gross_lock_active: bool = False,
     calculated_gross_total: Decimal | None = None,
 ) -> dict[str, Any]:
@@ -257,6 +257,7 @@ def kdv_brut_net_satir_saglama(
 
     Kilit açıksa Matrah+KDV, ekrandaki sabit Brüt ile değil calculated_gross
     ile karşılaştırılır (KDV değişince satır toplamı güncellenir, kilit bozulmaz).
+    Kuruş farkı toleransı yok: residual kesin 0,00 TL olmalıdır.
     """
     sorunlar: list[str] = []
     matrah = kurus(kdv_matrahi)
@@ -318,7 +319,7 @@ def fatura_toplam_durumu(
     elif (
         locked is not None
         and hedef is not None
-        and abs(kurus(locked) - kurus(hedef)) > KURUS
+        and kurus(locked) != kurus(hedef)
     ):
         lock = True
     else:
@@ -426,13 +427,15 @@ def brut_net_esitlik_saglama(
     islem_tutari: Decimal,
     net: Decimal,
     satir_net: Decimal,
-    tolerans: Decimal = KURUS,
+    invoice_rounding_adjustment: Decimal | None = None,
+    tolerans: Decimal = Decimal("0.00"),
 ) -> dict[str, Any]:
-    """Kayıt öncesi: Net = Brüt + Masraf − İndirim; |satır − net| ≤ 0,01."""
+    """Kayıt öncesi: Net = Brüt ± işlem; satır + kuruş düzeltmesi = Net (kesin 0,00)."""
     sorunlar: list[str] = []
     b = kurus(brut)
     n = kurus(net)
     s = kurus(satir_net)
+    adj = kurus(invoice_rounding_adjustment or 0)
     t = kurus(islem_tutari)
     tur = islem_turunu_normalize(islem_turu)
     beklenen = net_hesapla(b, tur, t)
@@ -441,15 +444,18 @@ def brut_net_esitlik_saglama(
             f"Net Toplam ({n}) ≠ Brüt ({b}) ± işlem ({tur or 'yok'}, {t}); "
             f"beklenen {beklenen}"
         )
-    if abs(s - n) > tolerans:
+    etkin = kurus(s + adj)
+    if abs(etkin - n) > tolerans:
         sorunlar.append(
-            f"Dağıtılmış satır toplamı ({s}) ile Net Toplam ({n}) arasında "
-            f"{kurus(s - n)} TL fark var (izin ≤ {tolerans}). "
-            "Brüt veya Net güncel değil; Fiyatlara Dağıt / Geri Al kullanın."
+            f"Dağıtılmış satır toplamı ({s}) + kuruş düzeltmesi ({adj}) = {etkin} "
+            f"ile Net Toplam ({n}) arasında {kurus(etkin - n)} TL fark var "
+            f"(izin verilen: {tolerans} TL). "
+            "Brüt veya Net güncel değil; Yuvarla / Fiyatlara Dağıt kullanın."
         )
     return {
         "ok": len(sorunlar) == 0,
         "sorunlar": sorunlar,
         "beklenen_net": beklenen,
-        "fark_satir_net": kurus(s - n),
+        "fark_satir_net": kurus(etkin - n),
+        "invoice_rounding_adjustment": adj,
     }
