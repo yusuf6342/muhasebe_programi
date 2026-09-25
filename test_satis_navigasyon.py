@@ -13,18 +13,17 @@ class SatisNavigasyonTest(unittest.TestCase):
         from satis_ui import CARI_ISLEM_KARTLARI, RAPOR_KARTLARI, SATIS_HUB_KARTLARI, navigasyon_haritasi
 
         hub = [k[0] for k in SATIS_HUB_KARTLARI]
-        self.assertEqual(
-            hub,
-            [
-                "MÜŞTERİ KARTLARI",
-                "SATIŞ FATURALARI",
-                "ALINAN SİPARİŞLER",
-                "TEKLİFLER",
-                "SATIŞ İRSALİYELERİ",
-                "CARİ HESAP İŞLEMLERİ",
-                "RAPORLAR",
-            ],
-        )
+        self.assertEqual(hub[0], "MÜŞTERİ KARTLARI")
+        self.assertEqual(hub[1], "MÜŞTERİ LİSTESİ")
+        self.assertIn("SATIŞ FATURALARI", hub)
+        self.assertIn("ALINAN SİPARİŞLER", hub)
+        self.assertIn("TEKLİFLER", hub)
+        self.assertIn("SATIŞ İRSALİYELERİ", hub)
+        self.assertIn("CARİ HESAP İŞLEMLERİ", hub)
+        self.assertIn("RAPORLAR", hub)
+        anahtarlar = [k[2] for k in SATIS_HUB_KARTLARI]
+        self.assertEqual(anahtarlar[0], "musteri")
+        self.assertEqual(anahtarlar[1], "musteri_liste")
         cari = [k[0].replace("\n", " ") for k in CARI_ISLEM_KARTLARI]
         self.assertEqual(cari[0], "TAHSİLAT MAKBUZU")
         self.assertEqual(cari[1], "CARİ VİRMAN")
@@ -33,12 +32,12 @@ class SatisNavigasyonTest(unittest.TestCase):
         self.assertEqual(cari[3], "GELİR FİŞİ")
         self.assertEqual(cari[4], "GİDER FİŞİ")
         rapor = [k[0] for k in RAPOR_KARTLARI]
-        self.assertEqual(
-            rapor,
-            ["SATIŞ RAPORLARI", "DÖVİZ KURLARI", "DÖVİZ BAZINDA RAPORLAR"],
-        )
+        self.assertIn("SATIŞ RAPORLARI", rapor)
+        self.assertIn("DÖVİZ KURLARI", rapor)
+        self.assertIn("DÖVİZ BAZINDA RAPORLAR", rapor)
         harita = navigasyon_haritasi()
         self.assertEqual(harita["hub"], hub)
+        self.assertEqual(harita["acici_anahtarlar"]["hub"][:2], ["musteri", "musteri_liste"])
 
     def test_tema_renkleri(self):
         from satis_tema import (

@@ -12,7 +12,7 @@ After completing any code change that affects the running desktop app (Python UI
 1. If `CinMuhasebe.exe` is running and locking the file, kill it first.
 2. Rebuild with:
    `.venv\Scripts\python.exe -m PyInstaller --noconfirm CinMuhasebe.spec`
-3. In the completion summary, mention the new EXE path: `dist\CinMuhasebe.exe` (and size if useful).
+3. In the completion summary, mention the new EXE path: `dist\CinMuhasebe\CinMuhasebe.exe` (onedir; and size if useful).
 
 ## Exceptions — skip rebuild only when
 

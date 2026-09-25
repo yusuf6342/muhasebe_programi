@@ -80,6 +80,136 @@ def decimal(deger: object, alan: str, minimum: Decimal | None = None) -> Decimal
 
 class SatisSiparisiService:
     @staticmethod
+    def _satir_alanlarini_yaz(satir: SatisSiparisiSatiri, veri: dict[str, Any]) -> None:
+        """Ticari alanları güncelle; sevk/fatura sayaçlarını DB'den koru (mevcut satır)."""
+        miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
+        sevk = decimal(satir.irsaliyelenen_miktar or 0, "Sevk", Decimal("0"))
+        fat = decimal(satir.faturalanan_miktar or 0, "Fatura", Decimal("0"))
+        min_miktar = max(sevk, fat)
+        if miktar < min_miktar:
+            raise ValueError(
+                f"{veri.get('urun_kodu') or 'Satır'}: sipariş miktarı "
+                f"sevk/faturalanan miktarın ({min_miktar}) altına indirilemez."
+            )
+        satir.urun_kodu = veri["urun_kodu"]
+        satir.urun_adi = veri["urun_adi"]
+        satir.aciklama = bos_metin(veri.get("aciklama")) or None
+        satir.miktar = miktar
+        satir.birim = veri["birim"]
+        satir.birim_satis_fiyati = decimal(veri["birim_satis_fiyati"], "Birim satış fiyatı", Decimal("0"))
+        satir.iskonto_orani = decimal(veri.get("iskonto_orani", 0), "İskonto oranı", Decimal("0"))
+        satir.kdv_orani = decimal(veri.get("kdv_orani", 20), "KDV oranı", Decimal("0"))
+        satir.fifo_birim_maliyeti = decimal(veri.get("fifo_birim_maliyeti", 0), "FIFO maliyeti", Decimal("0"))
+        satir.son_alis_birim_maliyeti = decimal(
+            veri.get("son_alis_birim_maliyeti", 0), "Son alış maliyeti", Decimal("0")
+        )
+        satir.ortalama_birim_maliyeti = decimal(
+            veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyeti", Decimal("0")
+        )
+        satir.agirlikli_ortalama_birim_maliyeti = decimal(
+            veri.get("agirlikli_ortalama_birim_maliyeti", 0), "Ağırlıklı maliyeti", Decimal("0")
+        )
+        satir.is_manual_item = bool(veri.get("is_manual_item", False))
+        satir.line_type = (
+            veri.get("line_type")
+            or ("MANUAL_PRODUCT" if veri.get("is_manual_item") else "STOCK_PRODUCT")
+        )
+        satir.product_id = (
+            int(veri["product_id"]) if veri.get("product_id") not in (None, "") else None
+        )
+        satir.delivery_term_days = (
+            int(veri["delivery_term_days"])
+            if veri.get("delivery_term_days") not in (None, "")
+            else None
+        )
+        satir.estimated_delivery_date = veri.get("estimated_delivery_date")
+        satir.delivery_term_note = veri.get("delivery_term_note")
+        satir.stock_pending = bool(
+            veri.get("stock_pending", veri.get("is_manual_item", False))
+        )
+
+    @staticmethod
+    def _satirlari_uygula(
+        siparis: SatisSiparisi, satir_verileri: list[dict[str, Any]], *, yeni: bool
+    ) -> None:
+        """Mevcut satır id'lerini koruyarak güncelle; yeni satır ekle; kullanılmayanı sil."""
+        mevcut = {int(s.id): s for s in list(siparis.satirlar) if s.id is not None}
+        gorulen: set[int] = set()
+        for veri in satir_verileri:
+            ham_id = veri.get("id") if veri.get("id") not in (None, "") else veri.get("siparis_satiri_id")
+            sid = int(ham_id) if ham_id not in (None, "") else None
+            if sid and sid in mevcut:
+                satir = mevcut[sid]
+                SatisSiparisiService._satir_alanlarini_yaz(satir, veri)
+                gorulen.add(sid)
+            else:
+                satir = SatisSiparisiSatiri(
+                    urun_kodu=veri["urun_kodu"],
+                    urun_adi=veri["urun_adi"],
+                    aciklama=bos_metin(veri.get("aciklama")) or None,
+                    miktar=decimal(veri["miktar"], "Miktar", Decimal("0.0001")),
+                    birim=veri["birim"],
+                    birim_satis_fiyati=decimal(
+                        veri["birim_satis_fiyati"], "Birim satış fiyatı", Decimal("0")
+                    ),
+                    iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto oranı", Decimal("0")),
+                    kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV oranı", Decimal("0")),
+                    fifo_birim_maliyeti=decimal(
+                        veri.get("fifo_birim_maliyeti", 0), "FIFO maliyeti", Decimal("0")
+                    ),
+                    son_alis_birim_maliyeti=decimal(
+                        veri.get("son_alis_birim_maliyeti", 0), "Son alış maliyeti", Decimal("0")
+                    ),
+                    ortalama_birim_maliyeti=decimal(
+                        veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyeti", Decimal("0")
+                    ),
+                    agirlikli_ortalama_birim_maliyeti=decimal(
+                        veri.get("agirlikli_ortalama_birim_maliyeti", 0),
+                        "Ağırlıklı maliyeti",
+                        Decimal("0"),
+                    ),
+                    is_manual_item=bool(veri.get("is_manual_item", False)),
+                    line_type=(
+                        veri.get("line_type")
+                        or ("MANUAL_PRODUCT" if veri.get("is_manual_item") else "STOCK_PRODUCT")
+                    ),
+                    product_id=(
+                        int(veri["product_id"])
+                        if veri.get("product_id") not in (None, "")
+                        else None
+                    ),
+                    delivery_term_days=(
+                        int(veri["delivery_term_days"])
+                        if veri.get("delivery_term_days") not in (None, "")
+                        else None
+                    ),
+                    estimated_delivery_date=veri.get("estimated_delivery_date"),
+                    delivery_term_note=veri.get("delivery_term_note"),
+                    stock_pending=bool(
+                        veri.get("stock_pending", veri.get("is_manual_item", False))
+                    ),
+                )
+                # Yeni satır: sayaçlar sıfır (veya açıkça verilen)
+                satir.irsaliyelenen_miktar = decimal(
+                    veri.get("irsaliyelenen_miktar", 0), "İrsaliyelenen miktar", Decimal("0")
+                )
+                satir.faturalanan_miktar = decimal(
+                    veri.get("faturalanan_miktar", 0), "Faturalanan miktar", Decimal("0")
+                )
+                siparis.satirlar.append(satir)
+        if not yeni:
+            for sid, satir in mevcut.items():
+                if sid in gorulen:
+                    continue
+                sevk = decimal(satir.irsaliyelenen_miktar or 0, "Sevk", Decimal("0"))
+                fat = decimal(satir.faturalanan_miktar or 0, "Fatura", Decimal("0"))
+                if sevk > 0 or fat > 0:
+                    raise ValueError(
+                        f"{satir.urun_kodu}: sevk veya fatura bağlantısı olan satır silinemez."
+                    )
+                siparis.satirlar.remove(satir)
+
+    @staticmethod
     def durumu_guncelle(session, siparis_id: int | None) -> None:
         if not siparis_id:
             return
@@ -141,6 +271,18 @@ class SatisSiparisiService:
         SatisSiparisiSatiri.__table__.create(engine, checkfirst=True)
         SatisSiparisiTahsilati.__table__.create(engine, checkfirst=True)
         insp = inspect(engine)
+        if insp.has_table("satis_siparisleri"):
+            ust_mevcut = {c["name"] for c in insp.get_columns("satis_siparisleri")}
+            ust_eklenecekler = {
+                "siparis_saati": "VARCHAR(8)",
+            }
+            ust_eksikler = {a: t for a, t in ust_eklenecekler.items() if a not in ust_mevcut}
+            if ust_eksikler:
+                with engine.begin() as connection:
+                    for alan, tip in ust_eksikler.items():
+                        connection.execute(
+                            text(f'ALTER TABLE "satis_siparisleri" ADD COLUMN "{alan}" {tip}')
+                        )
         if not insp.has_table("satis_siparisi_satirlari"):
             return
         mevcut = {c["name"] for c in insp.get_columns("satis_siparisi_satirlari")}
@@ -200,7 +342,7 @@ class SatisSiparisiService:
                 siparis = session.get(SatisSiparisi, siparis_id)
                 if siparis is None:
                     raise ValueError("Sipariş bulunamadı.")
-                siparis.satirlar.clear()
+                # Satır kimliklerini koru (irsaliye/fatura FK'ları kırılmasın).
                 siparis.tahsilatlar.clear()
             else:
                 yeni = True
@@ -225,6 +367,9 @@ class SatisSiparisiService:
                 raise ValueError("Hedef kâr marjı 0 ile 99,99 arasında olmalıdır.")
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
+            if "siparis_saati" in veriler:
+                saat = bos_metin(veriler.get("siparis_saati")) or None
+                siparis.siparis_saati = saat
             siparis.cari_id = int(veriler["cari_id"])
             siparis.maliyet_yontemi = maliyet_yontemi
             siparis.hedef_kar_marji = hedef
@@ -233,29 +378,7 @@ class SatisSiparisiService:
                 siparis.durum = "AÇIK"
             if siparis.durum == "İPTAL" and not siparis_id:
                 siparis.durum = "AÇIK"
-            for veri in satir_verileri:
-                satir = SatisSiparisiSatiri(
-                    urun_kodu=veri["urun_kodu"], urun_adi=veri["urun_adi"],
-                    aciklama=bos_metin(veri.get("aciklama")) or None,
-                    miktar=decimal(veri["miktar"], "Miktar", Decimal("0.0001")), birim=veri["birim"],
-                    birim_satis_fiyati=decimal(veri["birim_satis_fiyati"], "Birim satış fiyatı", Decimal("0")),
-                    iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto oranı", Decimal("0")),
-                    kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV oranı", Decimal("0")),
-                    fifo_birim_maliyeti=decimal(veri.get("fifo_birim_maliyeti", 0), "FIFO maliyeti", Decimal("0")),
-                    son_alis_birim_maliyeti=decimal(veri.get("son_alis_birim_maliyeti", 0), "Son alış maliyeti", Decimal("0")),
-                    ortalama_birim_maliyeti=decimal(veri.get("ortalama_birim_maliyeti", 0), "Ortalama maliyeti", Decimal("0")),
-                    agirlikli_ortalama_birim_maliyeti=decimal(veri.get("agirlikli_ortalama_birim_maliyeti", 0), "Ağırlıklı maliyeti", Decimal("0")),
-                    is_manual_item=bool(veri.get("is_manual_item", False)),
-                    line_type=(veri.get("line_type") or ("MANUAL_PRODUCT" if veri.get("is_manual_item") else "STOCK_PRODUCT")),
-                    product_id=int(veri["product_id"]) if veri.get("product_id") not in (None, "") else None,
-                    delivery_term_days=int(veri["delivery_term_days"]) if veri.get("delivery_term_days") not in (None, "") else None,
-                    estimated_delivery_date=veri.get("estimated_delivery_date"),
-                    delivery_term_note=veri.get("delivery_term_note"),
-                    stock_pending=bool(veri.get("stock_pending", veri.get("is_manual_item", False))),
-                )
-                satir.irsaliyelenen_miktar = decimal(veri.get("irsaliyelenen_miktar", 0), "İrsaliyelenen miktar", Decimal("0"))
-                satir.faturalanan_miktar = decimal(veri.get("faturalanan_miktar", 0), "Faturalanan miktar", Decimal("0"))
-                siparis.satirlar.append(satir)
+            SatisSiparisiService._satirlari_uygula(siparis, satir_verileri, yeni=yeni)
             toplam = SatisSiparisiService.siparis_toplami(siparis.satirlar)
             tahsilat_toplam = Decimal("0")
             for veri in tahsilat_verileri:
@@ -330,7 +453,16 @@ class SatisSiparisiService:
 
     @staticmethod
     def siparis_no() -> str:
-        return f"SIP-{datetime.now():%Y%m%d%H%M%S%f}"
+        with get_session() as session:
+            mevcutler = session.scalars(
+                select(SatisSiparisi.siparis_no).where(SatisSiparisi.siparis_no.like("SIP-%"))
+            ).all()
+        son_numara = 0
+        for siparis_no in mevcutler:
+            ek = str(siparis_no)[4:]
+            if len(ek) == 5 and ek.isdigit():
+                son_numara = max(son_numara, int(ek))
+        return f"SIP-{son_numara + 1:05d}"
 
     @staticmethod
     def calculate_order_progress(satirlar) -> dict[str, Decimal]:

@@ -109,9 +109,13 @@ a = Analysis(
         "cv2",
         "fitz",
         "satis_irsaliyesi_ui",
+        "kismi_belge_secim_ui",
+        "database.kalan_belge_service",
         "database.irsaliye_customer_view",
         "database.satis_irsaliyesi_service",
         "cari_kart_ui",
+        "cari_bekleyen_siparis_ui",
+        "database.cari_bekleyen_siparis_service",
         "database.cari_fatura_detay_service",
         "cari_kart_tema",
         "ui_tablo_siralama",
@@ -170,20 +174,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# onedir: python314.dll ve bağımlılıklar EXE yanında (_internal).
+# onefile + UPX, bootloader'da "Failed to load Python DLL ... Belirtilen modül
+# bulunamadı" hatasına yol açıyordu (kısayol açılamıyordu).
 exe_kwargs = dict(
     name="CinMuhasebe",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    exclude_binaries=True,
 )
 
 if ICO.is_file():
@@ -192,9 +198,17 @@ if ICO.is_file():
 exe = EXE(
     pyz,
     a.scripts,
+    [],
+    **exe_kwargs,
+)
+
+coll = COLLECT(
+    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
-    [],
-    **exe_kwargs,
+    name="CinMuhasebe",
+    strip=False,
+    upx=False,
+    upx_exclude=[],
 )

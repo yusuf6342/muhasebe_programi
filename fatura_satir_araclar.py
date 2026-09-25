@@ -413,7 +413,7 @@ def _bos_mesaj_guncelle(dialog) -> None:
 
 
 def arac_cubugu_kur(dialog) -> None:
-    """Tablo ile ürün şeridi arasına ince işlem çubuğu yerleştir."""
+    """Ürün satırları tablosunun hemen altına ince işlem çubuğu yerleştir."""
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
@@ -444,13 +444,18 @@ def arac_cubugu_kur(dialog) -> None:
 
     try:
         giris = dialog.satir_girdileri["urun_kodu"].master
-        giris.grid_configure(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+        # Faturada ürün şeridi dışarıda; yalnızca tablo parent'ındaki eski formu hizala
+        if giris.master is parent:
+            giris.grid_configure(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 2))
     except Exception:
         pass
 
     cubuk = tk.Frame(parent, bg="#0B2A4A", height=34)
-    cubuk.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 2))
     dialog._satir_arac_cubugu = cubuk
+    try:
+        cubuk.grid_propagate(False)
+    except tk.TclError:
+        pass
 
     ic = tk.Frame(cubuk, bg="#0B2A4A")
     ic.pack(fill="x", padx=4, pady=2)
@@ -478,6 +483,8 @@ def arac_cubugu_kur(dialog) -> None:
     _btn("Satırı Çoğalt", lambda: satir_cogalt(dialog))
     _btn("Üste Taşı", lambda: satir_uste_tasi(dialog))
     _btn("Alta Taşı", lambda: satir_alta_tasi(dialog))
+    if hasattr(dialog, "_fatura_siparisten_getir"):
+        _btn("Siparişten Getir (Alt+S)", dialog._fatura_siparisten_getir)
     _btn("Fiyatı Yenile", lambda: fiyati_yenile(dialog))
     _btn("Dağıtıma Kilitle", lambda: dagitima_kilitle_ac_kapa(dialog))
     _btn("Çoklu İskonto", lambda: _coklu_iskonto_duzenle(dialog))
@@ -486,20 +493,21 @@ def arac_cubugu_kur(dialog) -> None:
     if hasattr(dialog, "_fatura_kolon_ayarlari_ac"):
         _btn("Kolon Ayarları", dialog._fatura_kolon_ayarlari_ac)
 
-    # Ürün şeridi 0 | araç 1 | tablo 2 | yatay 3 | özet 4
+    # Ürün şeridi 0 | tablo 1 | yatay 2 | araç 3 | özet 4 (araç tablonun hemen altında)
     try:
-        tablo.grid_configure(row=2, column=0, sticky="nsew")
+        tablo.grid_configure(row=1, column=0, sticky="nsew")
         if dikey is not None:
-            dikey.grid_configure(row=2, column=1, sticky="ns")
+            dikey.grid_configure(row=1, column=1, sticky="ns")
         if yatay is not None:
-            yatay.grid_configure(row=3, column=0, sticky="ew")
+            yatay.grid_configure(row=2, column=0, sticky="ew")
+        cubuk.grid(row=3, column=0, columnspan=2, sticky="ew", pady=0)
         if ozet is not None:
-            ozet.grid_configure(row=4, column=0, columnspan=2, sticky="ew", pady=6)
-        parent.rowconfigure(0, weight=0)
-        parent.rowconfigure(1, weight=0)
-        parent.rowconfigure(2, weight=1)
-        parent.rowconfigure(3, weight=0)
-        parent.rowconfigure(4, weight=0)
+            ozet.grid_configure(row=4, column=0, columnspan=2, sticky="ew", pady=0)
+        parent.rowconfigure(0, weight=0, minsize=0)
+        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=0, minsize=0)
+        parent.rowconfigure(3, weight=0, minsize=0)
+        parent.rowconfigure(4, weight=0, minsize=0)
         parent.columnconfigure(0, weight=1)
     except tk.TclError:
         pass

@@ -362,12 +362,23 @@ class SatisIrsaliyesiService:
                     (satir.faturalanan_miktar * satir.birim_fiyat for satir in irsaliye.satirlar),
                     Decimal("0"),
                 )
+                sevk_miktar = sum(
+                    (Decimal(str(satir.miktar or 0)) for satir in irsaliye.satirlar),
+                    Decimal("0"),
+                )
+                fatura_miktar = sum(
+                    (Decimal(str(satir.faturalanan_miktar or 0)) for satir in irsaliye.satirlar),
+                    Decimal("0"),
+                )
                 sonuc.append(
                     {
                         "irsaliye": irsaliye,
                         "toplam": toplam["genel_toplam"],
                         "faturalanan": faturalanan,
                         "kalan": toplam["genel_toplam"] - faturalanan,
+                        "sevk_miktar": sevk_miktar,
+                        "fatura_miktar": fatura_miktar,
+                        "fatura_kalani_miktar": sevk_miktar - fatura_miktar,
                     }
                 )
             return sonuc

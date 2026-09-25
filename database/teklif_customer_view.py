@@ -588,7 +588,35 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     # Genel iskonto sonrası KDV yeniden (basit oran: satır KDV toplamını orantıla)
     if genel_isk_tutar > 0 and ara > 0:
         kdv_toplam = (kdv_toplam * iskonto_sonrasi / ara).quantize(_KURUS, rounding=ROUND_HALF_UP)
-    genel = iskonto_sonrasi + kdv_toplam
+    # Satır toplamı KDV dahil = Brüt; yazıcıya giden nihai tutar Net Toplam olmalı
+    brut_genel = (iskonto_sonrasi + kdv_toplam).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    genel = brut_genel
+
+    def _dialog_net_toplam():
+        net = getattr(dialog, "_hesaplanan_genel", None)
+        if net is None and hasattr(dialog, "_uzlasilan_tutar_oku"):
+            try:
+                net = dialog._uzlasilan_tutar_oku()
+            except Exception:
+                net = getattr(dialog, "_uzlasilan_tutar", None)
+        if net is None and teklif is not None:
+            net = getattr(teklif, "genel_toplam", None)
+        if net is None or net == "":
+            return None
+        try:
+            return _d(net).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        except Exception:
+            return None
+
+    net_hedef = _dialog_net_toplam()
+    if net_hedef is not None:
+        genel = net_hedef
+        # Brüt − Net farkını belge indirimi olarak göster (yüzde iskontodan ayrı)
+        belge_fark = (brut_genel - genel).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        if belge_fark > 0:
+            genel_isk_tutar = (genel_isk_tutar + belge_fark).quantize(
+                _KURUS, rounding=ROUND_HALF_UP
+            )
 
     termin_gun = _g("delivery_term_days")
     termin_metin = ""

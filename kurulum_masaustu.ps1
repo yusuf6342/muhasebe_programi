@@ -30,18 +30,36 @@ Get-ChildItem -Path $inner.FullName | Move-Item -Destination $dest -Force
 Remove-Item -Recurse -Force $inner.FullName
 Remove-Item -Force $zip
 
-$bat = Join-Path $dest 'calistir.bat'
-if (-not (Test-Path $bat)) {
-    throw 'calistir.bat bulunamadi'
+$exe = Join-Path $dest 'dist\CinMuhasebe\CinMuhasebe.exe'
+if (-not (Test-Path $exe)) {
+    $exe = Join-Path $dest 'dist\CinMuhasebe.exe'
+}
+if (-not (Test-Path $exe)) {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+    if (-not $py) { throw 'Python bulunamadi' }
+    Write-Host 'EXE olusturuluyor...'
+    & $py.Source -m pip install PyInstaller
+    & $py.Source -m PyInstaller (Join-Path $dest 'CinMuhasebe.spec') --noconfirm
+    $exe = Join-Path $dest 'dist\CinMuhasebe\CinMuhasebe.exe'
+    if (-not (Test-Path $exe)) {
+        $exe = Join-Path $dest 'dist\CinMuhasebe.exe'
+    }
+}
+if (-not (Test-Path $exe)) {
+    throw 'CinMuhasebe.exe olusturulamadi'
 }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $lnkPath = Join-Path $desktop 'Cin Muhasebe.lnk'
-$ico = Join-Path $dest 'assets\branding\cin_muhasebe.ico'
+$ico = Join-Path $dest 'assets\branding\CinLogo.ico'
+if (-not (Test-Path -LiteralPath $ico)) {
+    $ico = Join-Path $dest 'assets\branding\cin_muhasebe.ico'
+}
 $w = New-Object -ComObject WScript.Shell
 $s = $w.CreateShortcut($lnkPath)
-$s.TargetPath = $bat
-$s.WorkingDirectory = $dest
+$s.TargetPath = $exe
+$s.WorkingDirectory = (Split-Path -Parent $exe)
 $s.WindowStyle = 1
 $s.Description = 'Cin Muhasebe Programı'
 if (Test-Path -LiteralPath $ico) {
@@ -54,5 +72,5 @@ Write-Host ("Kurulum klasoru: " + $dest)
 Write-Host ("Masaustu kisayol: " + $lnkPath)
 Write-Host ''
 Write-Host 'Masaustunde Cin Muhasebe kisayolunu goreceksiniz.'
-Write-Host 'Bitti. Kisayola cift tiklayarak programi acabilirsiniz.'
+Write-Host 'Bitti. Kisayola cift tiklayarak EXE ile programi acabilirsiniz.'
 explorer.exe $desktop

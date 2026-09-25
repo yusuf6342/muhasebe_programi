@@ -1157,8 +1157,11 @@ class TeklifDialog(tk.Toplevel):
             )
         self.satir_tablo.pack(side="left", fill="both", expand=True)
         self.satir_tablo.bind("<Double-1>", self._satir_cift_tik)
-        self.satir_tablo.bind("<<TreeviewSelect>>", self._satir_secildi)
+        # Satır tıklanınca girişi doldur — <<TreeviewSelect>> kullanma:
+        # Satır Ekle sonrası otomatik seçim girişi yeniden dolduruyordu.
+        self.satir_tablo.bind("<ButtonRelease-1>", self._satir_tablo_kullanici_secimi, add="+")
         self._duzenlenen_satir_idx: int | None = None
+        self._giris_temiz_koruma = False
         self.satir_tablo.tag_configure("tek", background=BEYAZ, foreground="#0B1220")
         self.satir_tablo.tag_configure("cift", background="#F0F3F7", foreground="#0B1220")
         self.satir_tablo.tag_configure("maliyet_yok", foreground=KIRMIZI)
@@ -2950,25 +2953,92 @@ class TeklifDialog(tk.Toplevel):
             self._kdv_yukle_kilit = once
 
     def _urun_giris_temizle(self):
-        self._secili_urun = None
-        self._duzenlenen_satir_idx = None
-        self.urun_kod.delete(0, "end")
-        if hasattr(self, "_urun_arama"):
-            self._urun_arama.temizle()
-            self.urun_ad_ara.configure(foreground="#94A3B8")
-            if not self.urun_ad_ara.get().strip():
-                self.urun_ad_ara.insert(0, self._urun_ara_placeholder)
-        self.urun_miktar.delete(0, "end")
-        self.urun_miktar.insert(0, "1")
-        self.urun_birim.set("Adet")
-        self._kdv_alani_ayarla(VARSAYILAN_KDV_ORANI)
-        if hasattr(self, "urun_maliyet"):
+        """Ana ürün ekleme satırını boşalt (kod / ad / miktar / maliyet)."""
+        self._giris_temiz_koruma = True
+        self._satir_yukle_kilit = True
+        try:
+            self._secili_urun = None
+            self._duzenlenen_satir_idx = None
             try:
-                self.urun_maliyet.delete(0, "end")
+                if hasattr(self, "satir_tablo"):
+                    sec = self.satir_tablo.selection()
+                    if sec:
+                        self.satir_tablo.selection_remove(sec)
+                    try:
+                        self.satir_tablo.focus("")
+                    except tk.TclError:
+                        pass
             except tk.TclError:
                 pass
-            if hasattr(self, "lbl_urun_maliyet_pb"):
-                self.lbl_urun_maliyet_pb.configure(text="TRY")
+            try:
+                self.urun_kod.delete(0, "end")
+            except tk.TclError:
+                pass
+            if hasattr(self, "_urun_arama"):
+                try:
+                    self._urun_arama.temizle()
+                except Exception:
+                    pass
+            try:
+                self.urun_ad_ara.delete(0, "end")
+                self.urun_ad_ara.configure(foreground="#94A3B8")
+                ph = getattr(self, "_urun_ara_placeholder", "") or ""
+                if ph:
+                    self.urun_ad_ara.insert(0, ph)
+            except tk.TclError:
+                pass
+            try:
+                self.urun_miktar.delete(0, "end")
+                self.urun_miktar.insert(0, "1")
+            except tk.TclError:
+                pass
+            try:
+                self.urun_birim.set("Adet")
+            except tk.TclError:
+                pass
+            self._kdv_alani_ayarla(VARSAYILAN_KDV_ORANI)
+            if hasattr(self, "urun_maliyet"):
+                try:
+                    self.urun_maliyet.delete(0, "end")
+                except tk.TclError:
+                    pass
+                if hasattr(self, "lbl_urun_maliyet_pb"):
+                    try:
+                        self.lbl_urun_maliyet_pb.configure(text="TRY")
+                    except tk.TclError:
+                        pass
+        finally:
+            self._satir_yukle_kilit = False
+            self._giris_temiz_koruma = True
+
+    def _urun_giris_temizle_sonra(self):
+        """Tablo yenileme sonrası giriş satırını kesin boşalt."""
+        self._urun_giris_temizle()
+        try:
+            self.urun_kod.focus_set()
+        except tk.TclError:
+            pass
+
+    def _satir_tablo_kullanici_secimi(self, event=None):
+        """Kullanıcı satıra tıkladığında giriş çubuğunu doldur."""
+        if getattr(self, "_satir_yukle_kilit", False):
+            return
+        if getattr(self, "_giris_temiz_koruma", False):
+            # Satır Ekle sonrası koruma: yalnızca gerçek satır tıklamasında aç
+            if event is not None:
+                try:
+                    if not self.satir_tablo.identify_row(event.y):
+                        return
+                except tk.TclError:
+                    return
+            self._giris_temiz_koruma = False
+        elif event is not None:
+            try:
+                if not self.satir_tablo.identify_row(event.y):
+                    return
+            except tk.TclError:
+                return
+        self._satir_secildi()
 
     def _satir_tutar_yenile(self, s: dict) -> None:
         """KDV / miktar / fiyat değişince satır tutarını yeniden hesapla."""
@@ -3002,6 +3072,8 @@ class TeklifDialog(tk.Toplevel):
 
     def _satir_secildi(self, _e=None):
         if getattr(self, "_satir_yukle_kilit", False):
+            return
+        if getattr(self, "_giris_temiz_koruma", False):
             return
         sec = self.satir_tablo.selection()
         if not sec:
@@ -3161,6 +3233,7 @@ class TeklifDialog(tk.Toplevel):
 
     def _arama_urun_secildi(self, urun: dict):
         """Arama listesinden seçim → satır giriş alanlarını doldur, miktara odaklan."""
+        self._giris_temiz_koruma = False
         self._duzenlenen_satir_idx = None
         self._secili_urun = dict(urun)
         kod = (urun.get("urun_kodu") or "").strip()
@@ -3371,9 +3444,16 @@ class TeklifDialog(tk.Toplevel):
         else:
             self.satirlar.append(satir)
             islem = "TEKLIF_MANUEL_URUN_EKLE"
-        self._satir_tablo_yenile()
-        self._toplam_guncelle()
-        self._urun_giris_temizle()
+        self._satir_yukle_kilit = True
+        try:
+            self._satir_tablo_yenile()
+            self._toplam_guncelle()
+        finally:
+            self._satir_yukle_kilit = False
+            self._urun_giris_temizle_sonra()
+            self._giris_temiz_koruma = True
+            self.after_idle(self._urun_giris_temizle)
+            self.after(50, self._urun_giris_temizle)
         try:
             audit_document(
                 islem,
@@ -3794,8 +3874,16 @@ class TeklifDialog(tk.Toplevel):
             s["miktar"] = yeni_miktar
             s["kdv_orani"] = self._secili_kdv_orani()
             self._satir_tutar_yenile(s)
-            self._satir_tablo_yenile()
-            self._toplam_guncelle()
+            self._satir_yukle_kilit = True
+            try:
+                self._satir_tablo_yenile()
+                self._toplam_guncelle()
+            finally:
+                self._satir_yukle_kilit = False
+                self._urun_giris_temizle_sonra()
+                self._giris_temiz_koruma = True
+                self.after_idle(self._urun_giris_temizle)
+                self.after(50, self._urun_giris_temizle)
             if any(
                 _decimal(self.fiyat_girdiler[k].get(), k) > 0
                 for k in ("profit_rate", "fixed_profit_amount", "customer_expense_amount")
@@ -3806,7 +3894,6 @@ class TeklifDialog(tk.Toplevel):
                     "Miktar güncellendi. Kâr/masraf dağıtımı için «Fiyatları Hesapla» çalıştırın.",
                     parent=self,
                 )
-            self._urun_giris_temizle()
             return
 
         try:
@@ -3891,9 +3978,17 @@ class TeklifDialog(tk.Toplevel):
                 "cost_status": "OK" if snap.birim_maliyet > 0 else "EKSIK",
             }
         )
-        self._satir_tablo_yenile()
-        self._toplam_guncelle()
-        self._urun_giris_temizle()
+        self._giris_temiz_koruma = True
+        self._satir_yukle_kilit = True
+        try:
+            self._satir_tablo_yenile()
+            self._toplam_guncelle()
+        finally:
+            self._satir_yukle_kilit = False
+            self._urun_giris_temizle_sonra()
+            self._giris_temiz_koruma = True
+            self.after_idle(self._urun_giris_temizle)
+            self.after(50, self._urun_giris_temizle)
 
     def _satir_ekle(self):
         kod = self.urun_kod.get().strip() or "OZEL"
@@ -3921,8 +4016,16 @@ class TeklifDialog(tk.Toplevel):
         idx = self.satir_tablo.index(sec[0])
         if 0 <= idx < len(self.satirlar):
             del self.satirlar[idx]
-        self._satir_tablo_yenile()
-        self._toplam_guncelle()
+        self._satir_yukle_kilit = True
+        try:
+            self._satir_tablo_yenile()
+            self._toplam_guncelle()
+        finally:
+            self._satir_yukle_kilit = False
+            self._urun_giris_temizle_sonra()
+            self._giris_temiz_koruma = True
+            self.after_idle(self._urun_giris_temizle)
+            self.after(50, self._urun_giris_temizle)
 
     def _satir_fiyat_duzenle(self, _e=None):
         if not yetki_var("satis_duzenleme", "yeni_kayit"):
@@ -4073,6 +4176,10 @@ class TeklifDialog(tk.Toplevel):
                 try:
                     tree.selection_set(row)
                     tree.focus(row)
+                    self._giris_temiz_koruma = False
+                    idx = tree.index(row)
+                    if not cift:
+                        self._satir_girise_yukle(idx)
                 except tk.TclError:
                     pass
             try:

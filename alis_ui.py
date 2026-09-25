@@ -171,44 +171,43 @@ class AlisSiparisiDialog(tk.Toplevel):
         super().__init__(parent)
         self.siparis = siparis
         self.result = None
+        self.mevcut_borc = Decimal("0")
         self.title("SATIN ALMA SİPARİŞİ")
-        self.geometry("1100x700")
+        self.geometry("1180x720")
+        self.minsize(980, 580)
         self.transient(parent)
         self.grab_set()
         self.satirlar = []
         self.odemeler = []
+        self.girdiler = {}
         tedarikciler = AlisSiparisiService.aktif_tedarikcileri()
         if siparis and siparis.cari and siparis.cari not in tedarikciler:
             tedarikciler.append(siparis.cari)
+        if cari and cari not in tedarikciler:
+            tedarikciler.append(cari)
         self.tedarikci_map = {f"{c.cari_kodu} - {c.unvan}": c for c in tedarikciler}
         self.tedarikci = tk.StringVar()
-        ust = ttk.LabelFrame(self, text="Sipariş Bilgileri", padding=10)
-        ust.pack(fill="x", padx=10, pady=8)
-        self.girdiler = {}
-        ttk.Label(ust, text="Tedarikçi").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(ust, textvariable=self.tedarikci, values=list(self.tedarikci_map), width=40).grid(
-            row=0, column=1, sticky="w", padx=6, pady=3
-        )
-        for sira, (etiket, alan, varsayilan) in enumerate((
-            ("Sipariş Tarihi", "siparis_tarihi", date.today().strftime("%d.%m.%Y")),
-            ("Termin Tarihi", "termin_tarihi", date.today().strftime("%d.%m.%Y")),
-            ("Açıklama", "aciklama", ""),
-        ), start=1):
-            ttk.Label(ust, text=etiket).grid(row=sira, column=0, sticky="w")
-            e = ttk.Entry(ust, width=42)
-            e.insert(0, varsayilan)
-            e.grid(row=sira, column=1, sticky="w", padx=6, pady=3)
-            self.girdiler[alan] = e
+
+        ust = ttk.LabelFrame(self, text="Sipariş Bilgileri", padding=6)
+        ust.pack(fill="x", padx=10, pady=(8, 4))
+        self._genel_olustur(ust)
+
+        aciklama_fr = ttk.Frame(self, padding=(10, 0))
+        aciklama_fr.pack(fill="x")
+        ttk.Label(aciklama_fr, text="Açıklama").pack(side="left")
+        self.girdiler["aciklama"] = ttk.Entry(aciklama_fr)
+        self.girdiler["aciklama"].pack(side="left", fill="x", expand=True, padx=8)
 
         orta = ttk.LabelFrame(self, text="Satırlar", padding=8)
         orta.pack(fill="both", expand=True, padx=10, pady=4)
         self.satir_tablosu = ttk.Treeview(
-            orta, columns=("kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv"),
+            orta, columns=("kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "tutar"),
             show="headings", height=10,
         )
         for kolon, baslik, w in (
             ("kod", "Kod", 100), ("ad", "Ad", 200), ("miktar", "Miktar", 80),
-            ("birim", "Birim", 70), ("fiyat", "Alış Fiyatı", 100), ("isk", "İsk%", 60), ("kdv", "KDV%", 60),
+            ("birim", "Birim", 70), ("fiyat", "Alış Fiyatı", 100), ("isk", "İsk%", 60),
+            ("kdv", "KDV%", 60), ("tutar", "Satır Tutarı", 110),
         ):
             self.satir_tablosu.heading(kolon, text=baslik)
             self.satir_tablosu.column(kolon, width=w)
@@ -218,8 +217,10 @@ class AlisSiparisiDialog(tk.Toplevel):
         ttk.Button(satir_btn, text="Satır Ekle", command=self.satir_ekle).pack(side="left")
         ttk.Button(satir_btn, text="Satır Düzenle", command=self.satir_duzenle).pack(side="left", padx=6)
         ttk.Button(satir_btn, text="Satır Sil", command=self.satir_sil).pack(side="left")
+        self.satir_ozet = ttk.Label(satir_btn, text="Sipariş tutarı: 0,00 TL")
+        self.satir_ozet.pack(side="right")
 
-        odeme_cerceve = ttk.LabelFrame(self, text="Ödemeler", padding=8)
+        odeme_cerceve = ttk.LabelFrame(self, text="Ödemeler / Avans", padding=8)
         odeme_cerceve.pack(fill="x", padx=10, pady=4)
         self.odeme_tablosu = ttk.Treeview(
             odeme_cerceve, columns=("tarih", "tutar", "sekil", "hesap"), show="headings", height=4,
@@ -241,9 +242,225 @@ class AlisSiparisiDialog(tk.Toplevel):
         if siparis:
             self._doldur()
         elif cari:
-            anahtar = f"{cari.cari_kodu} - {cari.unvan}"
-            if anahtar in self.tedarikci_map:
+            anahtar = _tedarikci_ekle(self.tedarikci_map, cari)
+            self.tedarikci_combo["values"] = list(self.tedarikci_map)
+            if anahtar:
                 self.tedarikci.set(anahtar)
+                self._tedarikci_kart_uygula()
+        else:
+            self._bakiye_guncelle()
+
+    def _genel_olustur(self, parent):
+        """Üst kısım: 4 eşit bölme — Sipariş | Vade | Tedarikçi | Bakiyeler."""
+        for i in range(4):
+            parent.columnconfigure(i, weight=1, uniform="alis_siparis_ust")
+        parent.rowconfigure(0, weight=1)
+
+        def _kart(column, baslik, arka_plan):
+            cerceve = tk.Frame(parent, bg=arka_plan, bd=1, relief="solid", padx=10, pady=10)
+            cerceve.grid(row=0, column=column, sticky="nsew", padx=6, pady=4)
+            tk.Label(
+                cerceve, text=baslik, bg=arka_plan, fg="#1F2937", font=("Segoe UI", 10, "bold")
+            ).pack(anchor="w", pady=(0, 8))
+            return cerceve
+
+        siparis_karti = _kart(0, "Sipariş", "#FFF7CC")
+        ttk.Label(siparis_karti, text="Sipariş No").pack(anchor="w")
+        self.girdiler["siparis_no"] = ttk.Entry(siparis_karti, width=28)
+        siparis_no = self.siparis.siparis_no if self.siparis else AlisSiparisiService.siparis_no()
+        self.girdiler["siparis_no"].insert(0, siparis_no)
+        self.girdiler["siparis_no"].pack(fill="x", pady=(0, 6))
+        if self.siparis:
+            self.girdiler["siparis_no"].configure(state="readonly")
+        ttk.Label(siparis_karti, text="Sipariş Tarihi").pack(anchor="w")
+        self.girdiler["siparis_tarihi"] = ttk.Entry(siparis_karti, width=28)
+        siparis_tarihi = (
+            tarih_goster(self.siparis.siparis_tarihi)
+            if self.siparis
+            else date.today().strftime("%d.%m.%Y")
+        )
+        self.girdiler["siparis_tarihi"].insert(0, siparis_tarihi)
+        self.girdiler["siparis_tarihi"].pack(fill="x")
+        self.girdiler["siparis_tarihi"].bind("<FocusOut>", self._termin_tarih_uygula)
+
+        vade_karti = _kart(1, "Vade", "#FFFFFF")
+        ttk.Label(vade_karti, text="Termin Günü").pack(anchor="w")
+        self.girdiler["termin_gun"] = ttk.Entry(vade_karti, width=20)
+        self.girdiler["termin_gun"].pack(fill="x", pady=(0, 6))
+        self.girdiler["termin_gun"].bind("<KeyRelease>", self._termin_tarih_uygula)
+        if self.siparis and self.siparis.siparis_tarihi and self.siparis.termin_tarihi:
+            termin_gun = (self.siparis.termin_tarihi - self.siparis.siparis_tarihi).days
+            self.girdiler["termin_gun"].insert(0, str(termin_gun))
+        else:
+            self.girdiler["termin_gun"].insert(0, "0")
+        ttk.Label(vade_karti, text="Termin Tarihi").pack(anchor="w")
+        self.girdiler["termin_tarihi"] = ttk.Entry(vade_karti, width=20)
+        termin_tarihi = (
+            tarih_goster(self.siparis.termin_tarihi)
+            if self.siparis
+            else date.today().strftime("%d.%m.%Y")
+        )
+        self.girdiler["termin_tarihi"].insert(0, termin_tarihi)
+        self.girdiler["termin_tarihi"].pack(fill="x")
+
+        tedarikci_karti = _kart(2, "Tedarikçi", "#FFF7CC")
+        ttk.Label(tedarikci_karti, text="Tedarikçi Kodu").pack(anchor="w")
+        self.girdiler["tedarikci_kodu"] = ttk.Entry(tedarikci_karti, width=28, state="readonly")
+        self.girdiler["tedarikci_kodu"].pack(fill="x", pady=(0, 6))
+        ttk.Label(tedarikci_karti, text="Tedarikçi Adı").pack(anchor="w")
+        self.girdiler["tedarikci_adi"] = ttk.Entry(tedarikci_karti, width=28, state="readonly")
+        self.girdiler["tedarikci_adi"].pack(fill="x", pady=(0, 6))
+        ttk.Label(tedarikci_karti, text="Seç / Ara").pack(anchor="w")
+        self.tedarikci_combo = ttk.Combobox(
+            tedarikci_karti, textvariable=self.tedarikci, values=list(self.tedarikci_map),
+            state="normal", width=28,
+        )
+        self.tedarikci_combo.pack(fill="x")
+        self.tedarikci_combo.bind("<<ComboboxSelected>>", self._tedarikci_kart_uygula)
+        self.tedarikci_combo.bind("<KeyRelease>", self._tedarikci_arama_filtrele)
+
+        bakiye_karti = _kart(3, "Bakiyeler", "#F4F7FF")
+        ttk.Label(bakiye_karti, text="Bakiye").pack(anchor="w")
+        self.girdiler["mevcut_bakiye"] = ttk.Entry(bakiye_karti, width=25, state="readonly")
+        self.girdiler["mevcut_bakiye"].insert(0, "—")
+        self.girdiler["mevcut_bakiye"].pack(fill="x", pady=(0, 6))
+        ttk.Label(bakiye_karti, text="Yeni Bakiye").pack(anchor="w")
+        self.girdiler["yeni_bakiye"] = ttk.Entry(bakiye_karti, width=25, state="readonly")
+        self.girdiler["yeni_bakiye"].insert(0, "—")
+        self.girdiler["yeni_bakiye"].pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            bakiye_karti,
+            text="Yeni = bakiye + sipariş tutarı",
+            font=("Segoe UI", 8),
+        ).pack(anchor="w")
+        ttk.Label(bakiye_karti, text="Sipariş Durumu").pack(anchor="w", pady=(8, 0))
+        self.durum = ttk.Combobox(
+            bakiye_karti,
+            values=("AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL"),
+            state="readonly",
+            width=25,
+        )
+        self.durum.pack(fill="x")
+        self.durum.set(self.siparis.durum if self.siparis else "AÇIK")
+
+    def _termin_tarih_uygula(self, _event=None):
+        try:
+            gun = self.girdiler["termin_gun"].get().strip()
+            if not gun:
+                return
+            termin_gun = int(gun)
+            tarih_metin = self.girdiler["siparis_tarihi"].get().strip()
+            siparis_tarihi = (
+                datetime.strptime(tarih_metin, "%d.%m.%Y").date() if tarih_metin else date.today()
+            )
+            yeni_tarih = siparis_tarihi + timedelta(days=termin_gun)
+            self.girdiler["termin_tarihi"].delete(0, "end")
+            self.girdiler["termin_tarihi"].insert(0, tarih_goster(yeni_tarih))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def _tedarikci_kart_uygula(self, _event=None):
+        secili = self.tedarikci_map.get(self.tedarikci.get())
+        for alan, deger in (
+            ("tedarikci_kodu", secili.cari_kodu if secili else ""),
+            ("tedarikci_adi", secili.unvan if secili else ""),
+        ):
+            widget = self.girdiler.get(alan)
+            if widget is None:
+                continue
+            widget.configure(state="normal")
+            widget.delete(0, "end")
+            widget.insert(0, deger)
+            widget.configure(state="readonly")
+        self._bakiye_guncelle()
+
+    def _tedarikci_arama_filtrele(self, _event=None):
+        sorgu = self.tedarikci.get().strip().casefold()
+        if len(sorgu) < 2:
+            self.tedarikci_combo.configure(values=())
+            return
+        eslesenler = [
+            etiket
+            for etiket, cari in self.tedarikci_map.items()
+            if sorgu in (cari.unvan or "").casefold() or sorgu in (cari.cari_kodu or "").casefold()
+        ]
+        self.tedarikci_combo.configure(values=eslesenler)
+        if eslesenler:
+            try:
+                self.tedarikci_combo.tk.call("ttk::combobox::Post", self.tedarikci_combo._w)
+            except tk.TclError:
+                pass
+
+    def _readonly_yaz(self, alan, deger):
+        widget = self.girdiler.get(alan)
+        if widget is None:
+            return
+        widget.configure(state="normal")
+        widget.delete(0, "end")
+        widget.insert(0, deger)
+        widget.configure(state="readonly")
+
+    def _siparis_tutari(self) -> Decimal:
+        ara = Decimal("0")
+        iskonto = Decimal("0")
+        kdv = Decimal("0")
+        for s in self.satirlar:
+            miktar = decimal(s.get("miktar") or 0, "Miktar", Decimal("0"))
+            fiyat = decimal(s.get("birim_alis_fiyati") or 0, "Fiyat", Decimal("0"))
+            isk = decimal(s.get("iskonto_orani") or 0, "İskonto", Decimal("0"))
+            kdv_o = decimal(s.get("kdv_orani") or 0, "KDV", Decimal("0"))
+            brut = miktar * fiyat
+            indirim = brut * isk / Decimal("100")
+            net = brut - indirim
+            ara += brut
+            iskonto += indirim
+            kdv += net * kdv_o / Decimal("100")
+        return (ara - iskonto) + kdv
+
+    def _satir_tutari(self, s: dict) -> Decimal:
+        miktar = decimal(s.get("miktar") or 0, "Miktar", Decimal("0"))
+        fiyat = decimal(s.get("birim_alis_fiyati") or 0, "Fiyat", Decimal("0"))
+        isk = decimal(s.get("iskonto_orani") or 0, "İskonto", Decimal("0"))
+        kdv_o = decimal(s.get("kdv_orani") or 0, "KDV", Decimal("0"))
+        brut = miktar * fiyat
+        net = brut - (brut * isk / Decimal("100"))
+        return net + (net * kdv_o / Decimal("100"))
+
+    def _bakiye_guncelle(self):
+        from database.cari_service import CariService
+
+        tedarikci = self.tedarikci_map.get(self.tedarikci.get())
+        if not tedarikci:
+            self.mevcut_borc = Decimal("0")
+            self._readonly_yaz("mevcut_bakiye", "—")
+            self._readonly_yaz("yeni_bakiye", "—")
+            self._toplamlari_guncelle()
+            return
+        ozet = next(
+            (o for o in CariService.listele(hizli=True) if o["cari"].id == tedarikci.id),
+            None,
+        )
+        self.mevcut_borc = ozet["bakiye"] if ozet else Decimal("0")
+        self._readonly_yaz("mevcut_bakiye", para_goster(self.mevcut_borc))
+        self._toplamlari_guncelle()
+
+    def _toplamlari_guncelle(self):
+        siparis_tutari = self._siparis_tutari()
+        odeme = sum(
+            (decimal(o.get("tutar") or 0, "Ödeme", Decimal("0")) for o in self.odemeler),
+            Decimal("0"),
+        )
+        if hasattr(self, "satir_ozet"):
+            self.satir_ozet.configure(
+                text=f"Sipariş tutarı: {para_goster(siparis_tutari)} | Ödeme: {para_goster(odeme)}"
+            )
+        tedarikci = self.tedarikci_map.get(self.tedarikci.get())
+        if not tedarikci:
+            self._readonly_yaz("yeni_bakiye", "—")
+            return
+        # Yeni bakiye = mevcut bakiye + bu sipariş tutarı (− ödeme/avans)
+        yeni = self.mevcut_borc + siparis_tutari - odeme
+        self._readonly_yaz("yeni_bakiye", para_goster(yeni))
 
     def _satir_listesini_yenile(self):
         for item in self.satir_tablosu.get_children():
@@ -252,7 +469,9 @@ class AlisSiparisiDialog(tk.Toplevel):
             self.satir_tablosu.insert("", "end", iid=str(sira), values=(
                 s["urun_kodu"], s["urun_adi"], s["miktar"], s["birim"],
                 para_goster(s["birim_alis_fiyati"]), s.get("iskonto_orani", 0), s.get("kdv_orani", 20),
+                para_goster(self._satir_tutari(s)),
             ))
+        self._toplamlari_guncelle()
 
     def _odeme_listesini_yenile(self):
         for item in self.odeme_tablosu.get_children():
@@ -262,6 +481,7 @@ class AlisSiparisiDialog(tk.Toplevel):
                 tarih_goster(o["odeme_tarihi"]), para_goster(o["tutar"]),
                 o["odeme_sekli"], o.get("hesap") or "",
             ))
+        self._toplamlari_guncelle()
 
     def satir_ekle(self):
         dialog = AlisSiparisSatiriDialog(self)
@@ -302,18 +522,30 @@ class AlisSiparisiDialog(tk.Toplevel):
 
     def _doldur(self):
         s = self.siparis
-        self.tedarikci.set(f"{s.cari.cari_kodu} - {s.cari.unvan}")
+        anahtar = _tedarikci_ekle(self.tedarikci_map, s.cari)
+        self.tedarikci_combo["values"] = list(self.tedarikci_map)
+        if anahtar:
+            self.tedarikci.set(anahtar)
+        self.girdiler["siparis_tarihi"].configure(state="normal")
         self.girdiler["siparis_tarihi"].delete(0, "end")
         self.girdiler["siparis_tarihi"].insert(0, tarih_goster(s.siparis_tarihi))
         self.girdiler["termin_tarihi"].delete(0, "end")
         self.girdiler["termin_tarihi"].insert(0, tarih_goster(s.termin_tarihi))
+        self.girdiler["aciklama"].delete(0, "end")
         self.girdiler["aciklama"].insert(0, s.aciklama or "")
+        if hasattr(self, "durum"):
+            self.durum.set(s.durum or "AÇIK")
+        self.satirlar.clear()
+        self.odemeler.clear()
         for satir in s.satirlar:
             self.satirlar.append({
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "aciklama": satir.aciklama or "", "miktar": satir.miktar, "birim": satir.birim,
                 "birim_alis_fiyati": satir.birim_alis_fiyati,
-                "iskonto_orani": satir.iskonto_orani, "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0, "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0, "kdv_orani": satir.kdv_orani,
+                "iskonto_orani": satir.iskonto_orani,
+                "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
+                "kdv_orani": satir.kdv_orani,
                 "irsaliyelenen_miktar": satir.irsaliyelenen_miktar,
                 "faturalanan_miktar": satir.faturalanan_miktar,
             })
@@ -323,6 +555,7 @@ class AlisSiparisiDialog(tk.Toplevel):
                 "odeme_sekli": odeme.odeme_sekli, "hesap": odeme.hesap or "",
                 "aciklama": odeme.aciklama or "",
             })
+        self._tedarikci_kart_uygula()
         self._satir_listesini_yenile()
         self._odeme_listesini_yenile()
 
@@ -336,6 +569,7 @@ class AlisSiparisiDialog(tk.Toplevel):
             return
         try:
             veriler = {
+                "siparis_no": self.girdiler["siparis_no"].get().strip(),
                 "siparis_tarihi": datetime.strptime(self.girdiler["siparis_tarihi"].get(), "%d.%m.%Y").date(),
                 "termin_tarihi": datetime.strptime(self.girdiler["termin_tarihi"].get(), "%d.%m.%Y").date(),
                 "cari_id": tedarikci.id,

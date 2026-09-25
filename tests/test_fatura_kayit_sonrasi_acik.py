@@ -35,4 +35,7 @@ def test_override_ui_kaldirildi():
         assert yasak not in src
     # Yeni sistem: Uzlaşılan Net'e orantılı fiyat uydurma mevcut olmalı
     assert "_uzlasilan_fiyatlara_dagit" in src
-    assert "Fiyatları Net'e Uydur" in src
+    assert "Fiyatları Düzenle" in src
+    assert "Fiyatları Net'e Uydur" not in src
+    assert "Onayla ve Yeni (F4)" in src
+    assert "Kaydet ve Onayla (F4)" not in src

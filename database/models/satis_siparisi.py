@@ -17,6 +17,7 @@ class SatisSiparisi(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     siparis_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     siparis_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    siparis_saati: Mapped[str | None] = mapped_column(String(8), nullable=True)
     termin_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
     maliyet_yontemi: Mapped[str] = mapped_column(String(50), nullable=False)

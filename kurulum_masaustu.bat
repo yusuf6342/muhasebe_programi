@@ -8,7 +8,7 @@ rem irm https://raw.githubusercontent.com/yusuf6342/muhasebe_programi/main/kurul
 
 echo.
 echo  Cin Muhasebe kuruluyor...
-echo  (GitHub'dan indirilecek, masaustune kisayol eklenecek)
+echo  (GitHub'dan indirilecek, masaustune EXE kisayolu eklenecek)
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -26,15 +26,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Get-ChildItem -Path $inner.FullName | Move-Item -Destination $dest -Force;" ^
   "Remove-Item -Recurse -Force $inner.FullName;" ^
   "Remove-Item -Force $zip;" ^
-  "$bat = Join-Path $dest 'calistir.bat';" ^
-  "if (-not (Test-Path $bat)) { throw 'calistir.bat bulunamadi' };" ^
+  "$py = Get-Command py -ErrorAction SilentlyContinue;" ^
+  "if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue };" ^
+  "if (-not $py) { throw 'Python bulunamadi' };" ^
+  "$exe = Join-Path $dest 'dist\CinMuhasebe\CinMuhasebe.exe';" ^
+  "if (-not (Test-Path $exe)) { $exe = Join-Path $dest 'dist\CinMuhasebe.exe' };" ^
+  "if (-not (Test-Path $exe)) { Write-Host 'EXE olusturuluyor...'; & $py.Source -m pip install PyInstaller; & $py.Source -m PyInstaller (Join-Path $dest 'CinMuhasebe.spec') --noconfirm; $exe = Join-Path $dest 'dist\CinMuhasebe\CinMuhasebe.exe'; if (-not (Test-Path $exe)) { $exe = Join-Path $dest 'dist\CinMuhasebe.exe' } };" ^
+  "if (-not (Test-Path $exe)) { throw 'CinMuhasebe.exe olusturulamadi' };" ^
   "$desktop = [Environment]::GetFolderPath('Desktop');" ^
   "$lnkPath = Join-Path $desktop 'Cin Muhasebe.lnk';" ^
-  "$ico = Join-Path $dest 'assets\branding\cin_muhasebe.ico';" ^
+  "$ico = Join-Path $dest 'assets\branding\CinLogo.ico';" ^
+  "if (-not (Test-Path -LiteralPath $ico)) { $ico = Join-Path $dest 'assets\branding\cin_muhasebe.ico' };" ^
   "$w = New-Object -ComObject WScript.Shell;" ^
   "$s = $w.CreateShortcut($lnkPath);" ^
-  "$s.TargetPath = $bat;" ^
-  "$s.WorkingDirectory = $dest;" ^
+  "$s.TargetPath = $exe;" ^
+  "$s.WorkingDirectory = (Split-Path -Parent $exe);" ^
   "$s.WindowStyle = 1;" ^
   "$s.Description = 'Cin Muhasebe Programı';" ^
   "if (Test-Path -LiteralPath $ico) { $s.IconLocation = ($ico + ',0') };" ^
@@ -42,17 +48,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Write-Host '';" ^
   "Write-Host ('Kurulum klasoru: ' + $dest);" ^
   "Write-Host ('Masaustu kisayol: ' + $lnkPath);" ^
-  "explorer.exe $desktop;" ^
-  "Write-Host '';" ^
-  "Write-Host 'Masaustunde Cin Muhasebe kisayolunu goreceksiniz.';"
+  "Write-Host '' ;" ^
+  "Write-Host 'Masaustunde Cin Muhasebe kisayolunu goreceksiniz.';" ^
+  "explorer.exe $desktop;"
 
 if errorlevel 1 (
   echo.
-  echo Hata: kurulum basarisiz. Internet baglantisini ve Python kurulumunu kontrol edin.
+  echo Hata: kurulum basarisiz. Internet baglantisini, Python kurulumunu ve PyInstaller yapilandirmasini kontrol edin.
   pause
   exit /b 1
 )
 
 echo.
 echo Bitti. Masaustunde "Cin Muhasebe" kisayoluna cift tiklayin.
+echo EXE bazli acilis kullaniliyor.
 pause

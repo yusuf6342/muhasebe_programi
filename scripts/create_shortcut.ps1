@@ -41,8 +41,8 @@ function Resolve-LaunchTarget {
     }
 
     $exeCandidates = @(
-        (Join-Path $Root "dist\CinMuhasebe.exe"),
         (Join-Path $Root "dist\CinMuhasebe\CinMuhasebe.exe"),
+        (Join-Path $Root "dist\CinMuhasebe.exe"),
         (Join-Path $Root "build\CinMuhasebe.exe"),
         (Join-Path $Root "CinMuhasebe.exe")
     )

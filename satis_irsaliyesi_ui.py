@@ -65,11 +65,12 @@ def _tarih(d) -> str:
 class SatisIrsaliyesiDialog(tk.Toplevel):
     """Kurumsal satış irsaliyesi kartı."""
 
-    def __init__(self, parent, irsaliye=None, siparis=None, cari=None):
+    def __init__(self, parent, irsaliye=None, siparis=None, cari=None, satir_override=None):
         super().__init__(parent)
         self.irsaliye = irsaliye
         self.siparis = siparis
         self.result = None
+        self._satir_override = satir_override
         self.title("SATIŞ İRSALİYESİ")
         from ui_pencere import belge_penceresini_hazirla
 
@@ -147,6 +148,13 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.bind("<F1>", lambda _e: self.kaydet())
         if irsaliye:
             self._doldur()
+        elif satir_override is not None and siparis is not None:
+            self.siparis_secimi.set(siparis.siparis_no)
+            self.musteri.set(f"{siparis.cari.cari_kodu} - {siparis.cari.unvan}")
+            self.bakiye_guncelle()
+            self._sevk_adres_cari_doldur(siparis.cari)
+            self.satirlar = list(satir_override)
+            self.satir_listesini_yenile()
         elif siparis:
             self._siparisten_doldur(siparis)
         elif cari:

@@ -69,6 +69,7 @@ HIZLI_ISLEMLER: tuple[tuple[str, str], ...] = (
     ("Yeni Satış", "yeni_satis"),
     ("Yeni Tahsilat", "yeni_tahsilat"),
     ("Yeni Ödeme", "yeni_odeme"),
+    ("Yeni Alış Siparişi", "yeni_alis_siparis"),
     ("Müşteri Kartı Aç", "musteri_karti"),
     ("Stok Sorgula", "stok_sorgula"),
     ("Fiyat Gör", "fiyat_gor"),
@@ -840,7 +841,7 @@ def giris_dashboard_goster(app) -> None:
         _hizli_islem_calistir(app, kod)
 
     for i, (etiket, kod) in enumerate(HIZLI_ISLEMLER):
-        onemli = kod in ("yeni_satis", "barkodlu_satis", "gun_sonu")
+        onemli = kod in ("yeni_satis", "barkodlu_satis", "gun_sonu", "yeni_alis_siparis")
         b = tk.Button(
             hiz_f,
             text=etiket,
@@ -942,9 +943,22 @@ def _hizli_islem_calistir(app, kod: str) -> None:
             app._menu_islemi(app.odeme_makbuzu_ac)
         else:
             _hazirlaniyor(app, "Yeni Ödeme")
+    elif kod == "yeni_alis_siparis":
+        if hasattr(app, "hizli_alis_siparis_ac"):
+            app._menu_islemi(app.hizli_alis_siparis_ac)
+        else:
+            _hazirlaniyor(app, "Yeni Alış Siparişi")
     elif kod == "musteri_karti":
-        if hasattr(app, "cariler_goster"):
-            app._menu_islemi(lambda: (app._icerigi_temizle(), app.cariler_goster()))
+        if hasattr(app, "musteri_karti_ac"):
+            app._menu_islemi(app.musteri_karti_ac)
+        elif hasattr(app, "cariler_goster"):
+            # Eski yedek: liste yerine mümkünse boş kart
+            try:
+                from cari_kart_ui import CariDialog
+
+                app._menu_islemi(lambda: CariDialog(app, cari=None, cari_turu="Müşteri"))
+            except Exception:
+                app._menu_islemi(lambda: (app._icerigi_temizle(), app.cariler_goster()))
         else:
             _hazirlaniyor(app, "Müşteri Kartı")
     elif kod == "stok_sorgula":

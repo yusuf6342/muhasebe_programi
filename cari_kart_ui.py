@@ -42,7 +42,6 @@ from cari_kart_tema import (
     UYARI,
     beyaz_kart,
     font,
-    ozet_karti,
     rozet,
     stil_uygula,
     tk_buton,
@@ -300,17 +299,19 @@ class CariDialog(tk.Toplevel):
         self.cari_turu = (cari.cari_turu if cari else cari_turu) or "Müşteri"
         self.tedarikci_modu = self.cari_turu == "Tedarikçi"
         self.etiket = "Tedarikçi" if self.tedarikci_modu else "Müşteri"
-        self.title(f"{self.etiket} Cari Hesap Kartı" if cari else f"Yeni {self.etiket}")
-        self.geometry("1280x820")
-        self.minsize(1100, 680)
+        self.title(f"{self.etiket} Cari Hesap Kartı")
+        self.geometry("1280x780")
+        self.minsize(1040, 620)
         try:
             self.state("zoomed")
         except tk.TclError:
             pass
+        # transient sonra kaldırılır — Windows büyüt/küçült için
         self.transient(parent)
         self.grab_set()
         self.configure(bg=ACIK_BG)
         stil_uygula(root=self)
+        self._cari_onceki_geometry = None
 
         self.degerler = {}
         self.ozet_kartlari = {}
@@ -333,8 +334,10 @@ class CariDialog(tk.Toplevel):
         self.bind("<F1>", self._f1_kaydet)
         self.bind_all("<F1>", self._f1_kaydet)
         self.bind("<Escape>", lambda _e: self._kapat_istegi())
+        self.bind("<F10>", self._hizli_cari_ara)
 
         self._ust_baslik_olustur()
+        self._hizli_arama_seridi_olustur()
         self._uyari_bandi = tk.Frame(self, bg="#FEF2F2", highlightthickness=1, highlightbackground="#FECACA")
         self._uyari_bandi_lbl = tk.Label(
             self._uyari_bandi,
@@ -348,8 +351,7 @@ class CariDialog(tk.Toplevel):
         )
         self._uyari_bandi_lbl.pack(fill="x", padx=12, pady=6)
         self._uyari_rozet_satiri = tk.Frame(self, bg=ACIK_BG)
-        self._ozet_satiri_olustur()
-        self._uyari_rozet_satiri.pack(fill="x", padx=12, pady=(0, 4))
+        self._uyari_rozet_satiri.pack(fill="x", padx=12, pady=(6, 4))
 
         kaydirma = tk.Frame(self, bg=ACIK_BG)
         kaydirma.pack(fill="both", expand=True, padx=10, pady=(0, 6))
@@ -371,6 +373,7 @@ class CariDialog(tk.Toplevel):
         self.canvas.bind_all("<MouseWheel>", self._fare_tekerlegi)
 
         self._ana_kolonlari_olustur()
+        self._detay_seridini_olustur(self.icerik)
         self._hizli_islemleri_olustur(self.icerik)
         self._hareket_tablosunu_olustur(self.icerik)
 
@@ -380,9 +383,13 @@ class CariDialog(tk.Toplevel):
         self._kirli = False
         self._baslik_rozetlerini_guncelle()
         self._uyari_bandini_guncelle()
+        # Boyutlandırma: transient yarı ekranda büyütmeyi engelleyebilir — OS kontrolleri aç
+        self._cari_pencere_boyutlandirma_ac()
         if self.cari:
             self.after(50, self.yenile)
-        self.degerler["unvan"].focus_set()
+            self.degerler["unvan"].focus_set()
+        else:
+            self.after(50, lambda: (self._hizli_ara.focus_set(), self._hizli_ara.icursor("end")))
 
     # ─── Üst chrome ───────────────────────────────────────────────
     def _ust_baslik_olustur(self):
@@ -419,7 +426,8 @@ class CariDialog(tk.Toplevel):
         tk_buton(btn_satir, "Kaydet ve Kapat", self.kaydet_ve_kapat, rol="vurgu").pack(
             side="left", padx=3
         )
-        tk_buton(btn_satir, "Yeni Kart", self.yeni_kart, rol="ikincil").pack(side="left", padx=3)
+        # Boş kartta yeni kayıt akışı: formu doldur → Kaydet (F1)
+        tk_buton(btn_satir, "Yeni", self.yeni_kart, rol="vurgu").pack(side="left", padx=3)
         if self.cari:
             self._pasif_btn = tk_buton(
                 btn_satir,
@@ -428,7 +436,23 @@ class CariDialog(tk.Toplevel):
                 rol="tehlike" if self.cari.aktif else "basari",
             )
             self._pasif_btn.pack(side="left", padx=3)
-        tk_buton(btn_satir, "Kapat", self._kapat_istegi, rol="ikincil").pack(side="left", padx=3)
+        # Pencere: aşağı indir / büyüt-geri al (OS başlığı eksik kalabiliyor)
+        btn_asagi = tk_buton(btn_satir, "─", self._cari_pencere_asagi, rol="ikincil")
+        btn_asagi.pack(side="left", padx=(10, 2))
+        ToolTip(btn_asagi, "Aşağı indir (görev çubuğu)")
+        self._btn_pencere_buyut = tk_buton(
+            btn_satir, "□", self._cari_pencere_buyut_toggle, rol="ikincil"
+        )
+        self._btn_pencere_buyut.pack(side="left", padx=2)
+        ToolTip(self._btn_pencere_buyut, "Büyüt / eski boyuta dön")
+        try:
+            if str(self.state() or "") == "zoomed":
+                self._btn_pencere_buyut.configure(text="❐")
+        except tk.TclError:
+            pass
+        tk_buton(btn_satir, "Kapat", self._kapat_istegi, rol="ikincil").pack(
+            side="left", padx=(8, 3)
+        )
         self._sari_cizgi = tk.Frame(self, bg=SARI, height=3)
         self._sari_cizgi.pack(fill="x")
         self._ust_son = self._sari_cizgi
@@ -444,7 +468,14 @@ class CariDialog(tk.Toplevel):
             kod = getattr(self.cari, "cari_kodu", "") or ""
         if not unvan and self.cari:
             unvan = getattr(self.cari, "unvan", "") or ""
-        self._baslik_alt.configure(text=f"{kod}  ·  {unvan}" if (kod or unvan) else "Yeni kayıt")
+        if kod or unvan:
+            self._baslik_alt.configure(text=f"{kod}  ·  {unvan}")
+        elif self.cari:
+            self._baslik_alt.configure(text="")
+        else:
+            self._baslik_alt.configure(
+                text="Kayıt seçilmedi — isimle ara (F10) veya yeni kayıt girin"
+            )
         aktif = bool(self.degerler.get("aktif").get()) if "aktif" in self.degerler else True
         if aktif:
             self._rozet_aktif.configure(text="Aktif", bg=BASARI, fg=BEYAZ)
@@ -455,114 +486,281 @@ class CariDialog(tk.Toplevel):
             grup = (self.degerler["musteri_grubu"].get() or "").strip()
         self._rozet_grup.configure(text=f"Grup: {grup}" if grup else "Grup: —")
 
-    def _ozet_satiri_olustur(self):
-        satir = tk.Frame(self, bg=ACIK_BG)
-        satir.pack(fill="x", padx=12, pady=(10, 4))
-        for i in range(4):
-            satir.columnconfigure(i, weight=1, uniform="ozet")
-        tanimlar = (
-            ("guncel_bakiye", "Güncel Bakiye"),
-            ("vadesi_gecmis", "Vadesi Geçmiş"),
-            ("kullanilabilir_risk", "Kullanılabilir Risk"),
-            ("son_islem", "Son İşlem"),
+    def _hizli_arama_seridi_olustur(self):
+        """Üst şerit: müşteri/tedarikçi ismiyle hızlı arama → seçilen kartı yükler."""
+        serit = tk.Frame(self, bg=ACIK_BG)
+        serit.pack(fill="x", padx=12, pady=(8, 0), after=self._sari_cizgi)
+        self._arama_serit = serit
+        tk.Label(
+            serit,
+            text=f"{self.etiket} Ara:",
+            bg=ACIK_BG,
+            fg=LACIVERT,
+            font=font(9, "bold", self),
+        ).pack(side="left")
+        self._hizli_ara = ttk.Entry(serit, width=40)
+        self._hizli_ara.pack(side="left", padx=(8, 4), fill="x", expand=True)
+        self._hizli_ara.bind("<Return>", self._hizli_cari_ara)
+        self._hizli_ara.bind("<F10>", self._hizli_cari_ara)
+        tk_buton(serit, "Ara (F10)", self._hizli_cari_ara, rol="ara").pack(
+            side="left", padx=(0, 8)
         )
-        for i, (anahtar, baslik) in enumerate(tanimlar):
-            kart = ozet_karti(satir, baslik)
-            kart["frame"].grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
-            self.ozet_kartlari[anahtar] = kart
+        tk.Label(
+            serit,
+            text="İsim / kod yazıp Ara — seçilen kayıt bu karta yüklenir",
+            bg=ACIK_BG,
+            fg=IKINCIL,
+            font=font(8, root=self),
+        ).pack(side="left")
+        self._ust_son = serit  # uyarı bandı bu şeridin altına gelsin
+
+    def _hizli_cari_ara(self, _event=None):
+        """Hızlı arama: seçim listesi açar; seçilen cari bu karta yüklenir."""
+        ara = ""
+        if hasattr(self, "_hizli_ara"):
+            ara = (self._hizli_ara.get() or "").strip()
+        try:
+            from app import MusteriSecimDialog
+        except Exception as hata:
+            messagebox.showerror(
+                "Arama", f"Seçim ekranı açılamadı:\n{hata}", parent=self
+            )
+            return "break"
+
+        if self.tedarikci_modu:
+            try:
+                kayitlar = list(CariService.aktif_tedarikciler())
+            except Exception:
+                kayitlar = []
+            kayitlar.sort(
+                key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
+            )
+            varsayilan = kayitlar[:80]
+            canli = False
+        else:
+            try:
+                kayitlar = list(CariService.aktif_musteriler())
+            except Exception:
+                kayitlar = []
+            kayitlar.sort(
+                key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
+            )
+            varsayilan = kayitlar[:80]
+            canli = True
+
+        bakiyeler: dict = {}
+        ids = [c.id for c in varsayilan]
+        if ids:
+            try:
+                bakiyeler = CariService.musteri_bakiyeleri_toplu(ids)
+            except Exception:
+                bakiyeler = {}
+
+        dlg = MusteriSecimDialog(
+            self,
+            musteriler=varsayilan,
+            bakiyeler=bakiyeler,
+            ara=ara,
+            baslik=f"{self.etiket} Seçimi",
+            kayit_adi=self.etiket.lower(),
+            canli_arama=canli,
+        )
+        self.wait_window(dlg)
+        if dlg.result:
+            self._cariye_gec(dlg.result)
+        return "break"
+
+    def _cariye_gec(self, cari):
+        """Seçilen kaydı bu kart penceresine yükler (aynı diyalog yeniden açılır)."""
+        if cari is None:
+            return
+        if self.cari is not None and getattr(self.cari, "id", None) == getattr(cari, "id", None):
+            return
+        if not self._kapatmadan_once_onay():
+            return
+        parent = self.master
+        tur = (getattr(cari, "cari_turu", None) or self.cari_turu) or "Müşteri"
+        self.destroy()
+        CariDialog(parent, cari=cari, cari_turu=tur)
 
     # ─── Ana kolonlar ─────────────────────────────────────────────
     def _ana_kolonlari_olustur(self):
         ust = tk.Frame(self.icerik, bg=ACIK_BG)
-        ust.pack(fill="x", pady=(0, 8))
-        ust.columnconfigure(0, weight=65)
-        ust.columnconfigure(1, weight=35)
+        ust.pack(fill="x", pady=(0, 6))
+        for i in range(3):
+            ust.columnconfigure(i, weight=1, uniform="cari_ust")
+        ust.rowconfigure(0, weight=0)
 
-        sol_dis, sol = beyaz_kart(ust, padx=12, pady=10)
-        sol_dis.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        sag_dis, sag = beyaz_kart(ust, padx=12, pady=10)
-        sag_dis.grid(row=0, column=1, sticky="nsew")
+        p1_dis, p1 = beyaz_kart(ust, padx=6, pady=4)
+        p1_dis.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        p2_dis, p2 = beyaz_kart(ust, padx=6, pady=4)
+        p2_dis.grid(row=0, column=1, sticky="nsew", padx=(0, 4))
+        p3_dis, p3 = beyaz_kart(ust, padx=6, pady=4)
+        p3_dis.grid(row=0, column=2, sticky="nsew")
 
-        self._musteri_formu(sol)
-        self._ticari_risk_paneli(sag)
+        self._musteri_formu(p1)
+        self._ticari_risk_paneli(p2)
+        self._bakiye_ozet_paneli(p3)
 
-    def _etiket(self, parent, metin):
-        return tk.Label(parent, text=metin, bg=BEYAZ, fg=IKINCIL, font=font(8, root=self), anchor="w")
+    def _etiket(self, parent, metin, width=None):
+        """Üst 3 panel satır başlığı: mevcut +1 pt, bold, koyu lacivert."""
+        kw = {
+            "text": metin,
+            "bg": BEYAZ,
+            "fg": LACIVERT,
+            "font": font(8, "bold", self),
+            "anchor": "w",
+        }
+        if width is not None:
+            kw["width"] = width
+        return tk.Label(parent, **kw)
 
     def _entry(self, parent, alan, width=28, **kw):
         w = ttk.Entry(parent, width=width, **kw)
         self.degerler[alan] = w
         return w
 
-    def _musteri_formu(self, parent):
+    def _bolum_baslik(self, parent, metin):
         tk.Label(
-            parent,
-            text=f"{self.etiket} Bilgileri",
+            parent, text=metin, bg=BEYAZ, fg=LACIVERT, font=font(9, "bold", self)
+        ).pack(anchor="w", pady=(0, 3))
+
+    def _form_satiri(self, parent, etiket: str, etiket_genislik: int = 11):
+        """Etiket solda, değer alanı sağda — kompakt üst paneller."""
+        satir = tk.Frame(parent, bg=BEYAZ)
+        satir.pack(fill="x", pady=(0, 1))
+        self._etiket(satir, etiket, width=etiket_genislik).pack(side="left", padx=(0, 4))
+        sag = tk.Frame(satir, bg=BEYAZ)
+        sag.pack(side="left", fill="x", expand=True)
+        return sag
+
+    def _ozet_deger_satiri(self, parent, baslik: str, *, kalin: bool = False):
+        """Sol etiket, sağ değer — borç/alacak özet satırı."""
+        satir = tk.Frame(parent, bg=BEYAZ)
+        satir.pack(fill="x", pady=0)
+        lbl = tk.Label(
+            satir,
+            text=baslik,
             bg=BEYAZ,
             fg=LACIVERT,
-            font=font(12, "bold", self),
-        ).pack(anchor="w", pady=(0, 8))
-
-        grid = tk.Frame(parent, bg=BEYAZ)
-        grid.pack(fill="x")
-        for c in range(4):
-            grid.columnconfigure(c, weight=1 if c % 2 else 0)
-
-        ciftler = (
-            (f"{self.etiket} Kodu", "cari_kodu", f"{self.etiket} Adı / Ünvanı", "unvan"),
-            ("Vergi Dairesi", "vergi_dairesi", "Vergi Numarası (VKN)", "vergi_numarasi"),
-            ("Telefon", "telefon", "TC Kimlik No", "tc_kimlik"),
-            ("Telefon 2", "telefon2", "Telefon 3", "telefon3"),
-            ("E-posta", "email", "", ""),
+            font=font(8, "bold", self),
+            anchor="w",
         )
-        for r, (e1, a1, e2, a2) in enumerate(ciftler):
-            self._etiket(grid, e1).grid(row=r * 2, column=0, sticky="w", padx=(0, 6))
-            w1 = self._entry(grid, a1, width=26 if a1 == "cari_kodu" else 32)
-            w1.grid(row=r * 2 + 1, column=0, columnspan=1, sticky="ew", padx=(0, 10), pady=(0, 6))
-            if a1 == "vergi_numarasi":
-                w1.bind("<FocusOut>", self._vergi_no_kontrol)
-            if a2:
-                self._etiket(grid, e2).grid(row=r * 2, column=1, sticky="w")
-                w2 = self._entry(grid, a2, width=32)
-                w2.grid(row=r * 2 + 1, column=1, sticky="ew", pady=(0, 6))
-                if a2 == "tc_kimlik":
-                    w2.bind("<FocusOut>", self._tc_kimlik_kontrol)
+        lbl.pack(side="left")
+        deger = tk.Label(
+            satir,
+            text="—",
+            bg=BEYAZ,
+            fg=LACIVERT,
+            font=font(9 if kalin else 8, "bold", self),
+            anchor="e",
+        )
+        deger.pack(side="right")
+        self.ozet_degerleri[baslik] = deger
+        return lbl, deger
 
-        # Telefon aksiyonları
-        tel_aksiyon = tk.Frame(parent, bg=BEYAZ)
-        tel_aksiyon.pack(fill="x", pady=(0, 6))
-        self._ara_btn = tk_buton(tel_aksiyon, "Ara", self._telefon_ara, rol="ikincil")
-        self._ara_btn.pack(side="left", padx=(0, 6))
-        self._wa_btn = tk_buton(tel_aksiyon, "WhatsApp", self._whatsapp_ac, rol="ikincil")
-        self._wa_btn.pack(side="left")
-        ToolTip(self._ara_btn, "Telefon alanındaki numarayı arama bağlantısı ile açar.")
-        ToolTip(self._wa_btn, "WhatsApp Web/uygulama bağlantısı (numara varsa).")
+    def _musteri_formu(self, parent):
+        self._bolum_baslik(parent, f"{self.etiket} Bilgileri")
 
-        grup_satir = tk.Frame(parent, bg=BEYAZ)
-        grup_satir.pack(fill="x", pady=(2, 6))
-        self._etiket(grup_satir, f"{self.etiket} Grubu").pack(side="left", padx=(0, 6))
-        grup_widget = ttk.Combobox(grup_satir, state="readonly", width=28)
-        grup_widget.pack(side="left")
+        alanlar = (
+            ("Kod", "cari_kodu"),
+            ("Ünvan", "unvan"),
+            ("V.Dairesi", "vergi_dairesi"),
+            ("VKN", "vergi_numarasi"),
+            ("TCKN", "tc_kimlik"),
+            ("Tel", "telefon"),
+            ("Tel 2", "telefon2"),
+            ("Tel 3", "telefon3"),
+            ("E-posta", "email"),
+        )
+        for etiket, alan in alanlar:
+            sag = self._form_satiri(parent, etiket)
+            w = self._entry(sag, alan, width=16)
+            w.pack(fill="x")
+            if alan == "vergi_numarasi":
+                w.bind("<FocusOut>", self._vergi_no_kontrol)
+            elif alan == "tc_kimlik":
+                w.bind("<FocusOut>", self._tc_kimlik_kontrol)
+
+        grup_sag = self._form_satiri(parent, "Grup")
+        grup_widget = ttk.Combobox(grup_sag, state="readonly", width=10)
+        grup_widget.pack(side="left", fill="x", expand=True)
         self.degerler["musteri_grubu"] = grup_widget
-        tk_buton(grup_satir, "Yeni Grup", self.yeni_grup_ekle, rol="ikincil").pack(
-            side="left", padx=(8, 0)
+        tk_buton(grup_sag, "Yeni", self.yeni_grup_ekle, rol="ikincil").pack(
+            side="left", padx=(4, 0)
         )
-        durum = tk.BooleanVar(value=cari.aktif if (cari := self.cari) else True)
-        self.degerler["aktif"] = durum
-        ttk.Checkbutton(
-            grup_satir, text="Aktif", variable=durum, command=self._baslik_rozetlerini_guncelle
-        ).pack(side="left", padx=(16, 0))
+        # Aktif checkbox yok; rozet / Pasife Al ile yönetilir.
+        self.degerler["aktif"] = tk.BooleanVar(
+            value=cari.aktif if (cari := self.cari) else True
+        )
 
         self.musteri_grubu_secimini_hazirla()
-        self._yetkili_panelini_olustur(parent)
-        self._adres_sekmelerini_olustur(parent)
-        self._istihbarat_sekmelerini_olustur(parent)
+
+    def _detay_seridini_olustur(self, parent):
+        """Adresler · İstihbarat/Uyarı · Yetkililer · Muhasebe — buton şeridi + açılır panel."""
+        dis, cerceve = beyaz_kart(parent, padx=8, pady=6)
+        dis.pack(fill="x", pady=(0, 6))
+        self._detay_dis = dis
+        self._detay_aktif = None
+
+        btn_satir = tk.Frame(cerceve, bg=BEYAZ)
+        btn_satir.pack(fill="x")
+        self._detay_butonlari = {}
+        for anahtar, baslik in (
+            ("adres", "Adresler"),
+            ("istihbarat", "İstihbarat / Uyarı"),
+            ("yetkili", "İşletme Yetkilileri"),
+        ):
+            dugme = tk_buton(
+                btn_satir,
+                baslik,
+                lambda a=anahtar: self._detay_panel_ac(a),
+                rol="ikincil",
+            )
+            dugme.pack(side="left", padx=(0, 6))
+            self._detay_butonlari[anahtar] = dugme
+
+        tk_buton(
+            btn_satir, "Muhasebe Hesap Kodları", self.muhasebe_ac, rol="ikincil"
+        ).pack(side="left", padx=(0, 6))
+
+        self._detay_icerik = tk.Frame(cerceve, bg=BEYAZ)
+        self._detay_paneller = {}
+
+        adres_panel = tk.Frame(self._detay_icerik, bg=BEYAZ)
+        self._adres_sekmelerini_olustur(adres_panel)
+        self._detay_paneller["adres"] = adres_panel
+
+        not_panel = tk.Frame(self._detay_icerik, bg=BEYAZ)
+        self._istihbarat_sekmelerini_olustur(not_panel)
+        self._detay_paneller["istihbarat"] = not_panel
+
+        yetkili_panel = tk.Frame(self._detay_icerik, bg=BEYAZ)
+        self._yetkili_panelini_olustur(yetkili_panel)
+        self._detay_paneller["yetkili"] = yetkili_panel
+
+    def _detay_panel_ac(self, anahtar: str):
+        if self._detay_aktif == anahtar:
+            self._detay_icerik.pack_forget()
+            self._detay_aktif = None
+            return
+        for p in self._detay_paneller.values():
+            p.pack_forget()
+        panel = self._detay_paneller.get(anahtar)
+        if panel is None:
+            return
+        self._detay_icerik.pack(fill="x", pady=(10, 0))
+        panel.pack(fill="both", expand=True)
+        self._detay_aktif = anahtar
+        if anahtar == "yetkili":
+            self.yetkili_ozetini_guncelle()
 
     def _yetkili_panelini_olustur(self, parent):
         from cari_yetkili_ui import YetkiliPanel
 
-        self._yetkili_panel = YetkiliPanel(parent, dialog=self)
-        self._yetkili_panel.pack(fill="x", pady=(10, 4))
+        self._bolum_baslik(parent, "İşletme Yetkilileri")
+        self._yetkili_panel = YetkiliPanel(parent, dialog=self, gomulu=True)
+        self._yetkili_panel.pack(fill="both", expand=True)
 
     def yetkili_ozetini_guncelle(self):
         panel = getattr(self, "_yetkili_panel", None)
@@ -576,8 +774,8 @@ class CariDialog(tk.Toplevel):
         from database.turkiye_il_ilce import iller
 
         tk.Label(
-            parent, text="Adresler", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
-        ).pack(anchor="w", pady=(8, 4))
+            parent, text="Adresler", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", self)
+        ).pack(anchor="w", pady=(0, 4))
         self.adres_sekme = ttk.Notebook(parent, style="CariKart.TNotebook")
         self.adres_sekme.pack(fill="x")
         tanimlar = (
@@ -587,12 +785,12 @@ class CariDialog(tk.Toplevel):
         )
         tip_secenekleri = ("Merkez", "Fatura", "Sevk", "Depo", "Şube", "Diğer")
         for _no, sekme_baslik, adres_alan, il_alan, ilce_alan, tip_alan, varsayilan_tip in tanimlar:
-            sekme = tk.Frame(self.adres_sekme, bg=BEYAZ, padx=6, pady=6)
+            sekme = tk.Frame(self.adres_sekme, bg=BEYAZ, padx=4, pady=4)
             self.adres_sekme.add(sekme, text=sekme_baslik)
             ust_satir = tk.Frame(sekme, bg=BEYAZ)
             ust_satir.pack(fill="x", pady=(0, 4))
-            self._etiket(ust_satir, "Adres türü").pack(side="left", padx=(0, 4))
-            tip_cb = ttk.Combobox(ust_satir, values=tip_secenekleri, state="readonly", width=14)
+            self._etiket(ust_satir, "Tür").pack(side="left", padx=(0, 4))
+            tip_cb = ttk.Combobox(ust_satir, values=tip_secenekleri, state="readonly", width=12)
             tip_cb.set(varsayilan_tip)
             tip_cb.pack(side="left")
             self.degerler[tip_alan] = tip_cb
@@ -603,166 +801,186 @@ class CariDialog(tk.Toplevel):
             il_satir = tk.Frame(sekme, bg=BEYAZ)
             il_satir.pack(fill="x")
             self._etiket(il_satir, "İl").pack(side="left", padx=(0, 4))
-            il_widget = ttk.Combobox(il_satir, state="readonly", width=18, values=iller())
+            il_widget = ttk.Combobox(il_satir, state="readonly", width=14, values=iller())
             il_widget.pack(side="left")
             il_widget.bind(
                 "<<ComboboxSelected>>",
                 lambda _e, ia=il_alan, ica=ilce_alan: self._il_degisti(il_alan=ia, ilce_alan=ica),
             )
             self.degerler[il_alan] = il_widget
-            self._etiket(il_satir, "İlçe").pack(side="left", padx=(12, 4))
-            ilce_widget = ttk.Combobox(il_satir, state="readonly", width=18, values=[])
+            self._etiket(il_satir, "İlçe").pack(side="left", padx=(8, 4))
+            ilce_widget = ttk.Combobox(il_satir, state="readonly", width=14, values=[])
             ilce_widget.pack(side="left")
             self.degerler[ilce_alan] = ilce_widget
 
     def _istihbarat_sekmelerini_olustur(self, parent):
         tk.Label(
-            parent, text="İstihbarat / Notlar", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
-        ).pack(anchor="w", pady=(10, 4))
+            parent, text="İstihbarat / Uyarı Notları", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", self)
+        ).pack(anchor="w", pady=(0, 4))
         not_sekme = ttk.Notebook(parent, style="CariKart.TNotebook")
         not_sekme.pack(fill="x")
-        n1 = tk.Frame(not_sekme, bg=BEYAZ, padx=8, pady=8)
-        n2 = tk.Frame(not_sekme, bg=BEYAZ, padx=8, pady=8)
+        n1 = tk.Frame(not_sekme, bg=BEYAZ, padx=6, pady=6)
+        n2 = tk.Frame(not_sekme, bg=BEYAZ, padx=6, pady=6)
         not_sekme.add(n1, text="Özel Notlar")
         not_sekme.add(n2, text="Uyarı Notu")
         self.not_butonu = tk_buton(
             n1,
-            "İstihbarat ve Notları Düzenle",
+            "Notları Düzenle",
             self.notlari_ac,
             rol="ikincil",
             state="normal" if self.cari else "disabled",
         )
         self.not_butonu.pack(anchor="w")
-        self.not_durumu = tk.Label(n1, text="", bg=BEYAZ, fg=IKINCIL, font=font(9, root=self))
-        self.not_durumu.pack(anchor="w", pady=(6, 0))
-        self.uyari_butonu = tk_buton(n2, "Uyarı Notunu Düzenle", self.uyari_ac, rol="ikincil")
+        self.not_durumu = tk.Label(n1, text="", bg=BEYAZ, fg=IKINCIL, font=font(8, root=self))
+        self.not_durumu.pack(anchor="w", pady=(4, 0))
+        self.uyari_butonu = tk_buton(n2, "Uyarıyı Düzenle", self.uyari_ac, rol="ikincil")
         self.uyari_butonu.pack(anchor="w")
-        self.uyari_durumu = tk.Label(n2, text="", bg=BEYAZ, fg=UYARI, font=font(9, "bold", self))
-        self.uyari_durumu.pack(anchor="w", pady=(6, 0))
+        self.uyari_durumu = tk.Label(n2, text="", bg=BEYAZ, fg=UYARI, font=font(8, "bold", self))
+        self.uyari_durumu.pack(anchor="w", pady=(4, 0))
         self.not_durumunu_guncelle()
         self.uyari_durumunu_guncelle(self.uyari_notu)
 
+    def _yan_yana_metrik(self, parent, anahtar: str, baslik: str, etiket_genislik: int = 14):
+        """Sol etiket + sağ değer; ozet_kartlari {deger, alt} uyumlu (alt gizli)."""
+        satir = tk.Frame(parent, bg=BEYAZ)
+        satir.pack(fill="x", pady=(0, 1))
+        self._etiket(satir, baslik, width=etiket_genislik).pack(side="left", padx=(0, 4))
+        deger = tk.Label(
+            satir, text="—", bg=BEYAZ, fg=LACIVERT, font=font(8, "bold", self), anchor="e"
+        )
+        deger.pack(side="right")
+        alt = tk.Label(satir, text="", bg=BEYAZ)  # uyumluluk; pack edilmez
+        self.ozet_kartlari[anahtar] = {"frame": satir, "deger": deger, "alt": alt}
+
     def _ticari_risk_paneli(self, parent):
-        tk.Label(
-            parent, text="Ticari Koşullar / Risk", bg=BEYAZ, fg=LACIVERT, font=font(12, "bold", self)
-        ).pack(anchor="w", pady=(0, 8))
+        self._bolum_baslik(parent, "Ticari Bilgiler / Risk")
+        self.ozet_kartlari = getattr(self, "ozet_kartlari", {}) or {}
         satis_listeler = ("",) + tuple(SATIS_FIYAT_ADLARI)
         alis_listeler = ("",) + tuple(ALIŞ_FIYAT_ADLARI)
+        # Risk limiti (açık hesap) kaldırıldı; çek/senet + kullanılabilir risk kaldı.
         alanlar = (
-            ("Satış fiyat listesi", "satis_fiyat_listesi", "combobox", satis_listeler),
-            ("Alış fiyat listesi", "alis_fiyat_listesi", "combobox", alis_listeler),
-            ("Satış vade (gün)", "satis_vade_gunu", "entry", None),
-            ("Alış vade (gün)", "alis_vade_gunu", "entry", None),
-            ("Açık hesap risk limiti", "acik_hesap_risk_limiti", "entry", None),
-            ("Çek risk limiti", "cek_risk_limiti", "entry", None),
-            ("Senet risk limiti", "senet_risk_limiti", "entry", None),
+            ("Satış listesi", "satis_fiyat_listesi", "combobox", satis_listeler),
+            ("Alış listesi", "alis_fiyat_listesi", "combobox", alis_listeler),
+            ("Satış vade", "satis_vade_gunu", "entry", None),
+            ("Alış vade", "alis_vade_gunu", "entry", None),
+            ("Çek risk", "cek_risk_limiti", "entry", None),
+            ("Senet risk", "senet_risk_limiti", "entry", None),
         )
         for etiket, alan, tur, degerler_liste in alanlar:
-            self._etiket(parent, etiket).pack(anchor="w")
+            sag = self._form_satiri(parent, etiket, etiket_genislik=11)
             if tur == "combobox":
-                w = ttk.Combobox(parent, values=degerler_liste, width=28)
+                w = ttk.Combobox(sag, values=degerler_liste, width=14)
             else:
-                w = ttk.Entry(parent, width=30)
-            w.pack(anchor="w", fill="x", pady=(0, 6))
+                w = ttk.Entry(sag, width=14)
+            w.pack(fill="x")
             self.degerler[alan] = w
 
-        tk_buton(parent, "Muhasebe Hesap Kodları", self.muhasebe_ac, rol="ikincil").pack(
-            anchor="w", pady=(4, 10)
-        )
+        self._yan_yana_metrik(parent, "kullanilabilir_risk", "Kullanılabilir risk", 14)
 
-        sep = tk.Frame(parent, bg=CIZGI, height=1)
-        sep.pack(fill="x", pady=(0, 8))
-        tk.Label(
-            parent, text="Bakiye / Performans", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
-        ).pack(anchor="w", pady=(0, 6))
-
+    def _bakiye_ozet_paneli(self, parent):
+        """Üçüncü üst panel: Toplam borç’tan başlayan borç / alacak özeti."""
+        self._bolum_baslik(parent, "Borç / Alacak Özeti")
+        if not getattr(self, "ozet_kartlari", None):
+            self.ozet_kartlari = {}
         self.ozet_degerleri = {}
-        performans = (
-            ("Toplam borç", False),
-            ("Toplam alacak", False),
-            ("Bakiye yönü", True),
-            ("Ortalama borç kapatma süresi", False),
-            ("Ortalama Valör", False),
-            ("Ortalama Valör Tarihi", False),
-            ("Ortalama Valör Gün Sayısı", False),
+
+        lbl, _ = self._ozet_deger_satiri(parent, "Toplam borç")
+        lbl, _ = self._ozet_deger_satiri(parent, "Toplam alacak")
+        lbl, _ = self._ozet_deger_satiri(parent, "Kalan Bakiye", kalin=True)
+        ToolTip(lbl, "Toplam borç − toplam alacak (defter kalan bakiyesi).")
+        self._ozet_deger_satiri(parent, "Bakiye yönü")
+        lbl, _ = self._ozet_deger_satiri(parent, "Ortalama borç kapatma süresi")
+        ToolTip(
+            lbl,
+            "Teknik: Kapanan borcun tutar-ağırlıklı ortalama valörü (gün). "
+            "FIFO eşleştirme; tamamen kapanan faturalar öncelikli.",
         )
-        for baslik, _renkli in performans:
-            satir = tk.Frame(parent, bg=BEYAZ)
-            satir.pack(fill="x", pady=2)
-            lbl = tk.Label(
-                satir, text=baslik, bg=BEYAZ, fg=IKINCIL, font=font(8, root=self), anchor="w"
-            )
-            lbl.pack(side="left")
-            if baslik == "Ortalama borç kapatma süresi":
-                ToolTip(
-                    lbl,
-                    "Teknik: Kapanan borcun tutar-ağırlıklı ortalama valörü (gün). "
-                    "FIFO eşleştirme; tamamen kapanan faturalar öncelikli.",
-                )
-            elif baslik == "Ortalama Valör":
-                ToolTip(
-                    lbl,
-                    "Bakiyeye göre Borç Valörü veya Alacak Valörü. "
-                    "Açık kalan tutarların ağırlıklı ortalama valörü.",
-                )
-            deger = tk.Label(
-                satir, text="—", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", self), anchor="e"
-            )
-            deger.pack(side="right")
-            self.ozet_degerleri[baslik] = deger
+        lbl, _ = self._ozet_deger_satiri(parent, "Ortalama Valör")
+        ToolTip(
+            lbl,
+            "Bakiyeye göre Borç Valörü veya Alacak Valörü. "
+            "Açık kalan tutarların ağırlıklı ortalama valörü.",
+        )
+        self._ozet_deger_satiri(parent, "Ortalama Valör Tarihi")
+        self._ozet_deger_satiri(parent, "Ortalama Valör Gün Sayısı")
+        # Son işlem: valör gün sayısının altında; yan yana
+        self._yan_yana_metrik(parent, "son_islem", "Son işlem", 14)
+        # Bekleyen sipariş tutarı bakiyeye dahil değildir — panelin en altında (bilgilendirme).
+        bek_etiket = (
+            "Bekleyen satın alma siparişleri"
+            if self.tedarikci_modu
+            else "Bekleyen satış siparişleri"
+        )
+        lbl_bek, deger_bek = self._ozet_deger_satiri(parent, bek_etiket)
+        self._bekleyen_siparis_etiket = bek_etiket
+        deger_bek.configure(cursor="hand2")
+        lbl_bek.configure(cursor="hand2")
+        deger_bek.bind("<Button-1>", lambda _e: self.bekleyen_siparisler_ac())
+        lbl_bek.bind("<Button-1>", lambda _e: self.bekleyen_siparisler_ac())
+        ToolTip(
+            lbl_bek,
+            "Açık siparişlerin kalan tutarı. Cari bakiyeye eklenmez; tıklayınca liste açılır.",
+        )
 
     # ─── Hızlı işlemler / hareketler ──────────────────────────────
     def _hizli_islemleri_olustur(self, parent):
+        """Hızlı işlemler + ekstre/bekleyen — tek satır, orantılı, sarı/lacivert dönüşümlü."""
         dis, hizli = beyaz_kart(parent, padx=10, pady=8)
         dis.pack(fill="x", pady=(0, 8))
+        baslik_satir = tk.Frame(hizli, bg=BEYAZ)
+        baslik_satir.pack(fill="x", pady=(0, 6))
         tk.Label(
-            hizli, text="Hızlı İşlemler", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
-        ).pack(anchor="w", pady=(0, 6))
+            baslik_satir,
+            text="Hızlı İşlemler",
+            bg=BEYAZ,
+            fg=LACIVERT,
+            font=font(11, "bold", self),
+        ).pack(side="left")
+        self._yukleniyor_lbl = tk.Label(
+            baslik_satir, text="", bg=BEYAZ, fg=DIKKAT, font=font(9, root=self)
+        )
+        self._yukleniyor_lbl.pack(side="left", padx=10)
+        tk_buton(baslik_satir, "Yenile", self.yenile, rol="ikincil").pack(side="right")
+
         satir = tk.Frame(hizli, bg=BEYAZ)
         satir.pack(fill="x")
         self.hizli_dugmeleri = []
         kayitli = bool(self.cari)
         if self.tedarikci_modu:
             komutlar = (
-                ("Yeni Sipariş", self.yeni_alis_siparis_ac, "vurgu", ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni İrsaliye", self.yeni_alis_irsaliye_ac, "ara", ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni Fatura", self.yeni_alis_fatura_ac, "vurgu", ("satis_duzenleme", "yeni_kayit")),
-                ("Ödeme Gir", self.odeme_gir, "ara", ("finans_duzenleme", "cari_duzenleme")),
-                ("Tahsilat", self.tahsilat_gir, "vurgu", ("finans_duzenleme", "cari_duzenleme")),
+                ("Yeni Sipariş", self.yeni_alis_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Yeni İrsaliye", self.yeni_alis_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Yeni Fatura", self.yeni_alis_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
+                ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
             )
         else:
             komutlar = (
-                ("Yeni Sipariş", self.yeni_siparis_ac, "vurgu", ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni İrsaliye", self.yeni_irsaliye_ac, "ara", ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni Fatura", self.yeni_fatura_ac, "vurgu", ("satis_duzenleme", "yeni_kayit")),
-                ("Tahsilat", self.tahsilat_gir, "vurgu", ("finans_duzenleme", "cari_duzenleme")),
-                ("Ödeme Gir", self.odeme_gir, "ara", ("finans_duzenleme", "cari_duzenleme")),
+                ("Yeni Sipariş", self.yeni_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Yeni İrsaliye", self.yeni_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Yeni Fatura", self.yeni_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
+                ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
             )
-        for baslik, komut, rol, izinler in komutlar:
-            izin_ok = _izin_var(*izinler)
-            state = "normal" if (kayitli and izin_ok) else "disabled"
+        # Sağda: stok detaylı ekstre + bekleyenler — aynı orantılı şeritte
+        sag_ekler = (
+            ("Stok Detaylı Cari Ekstre", self.stok_detayli_ekstre_ac, None),
+            ("Bekleyen Siparişler", self.bekleyen_siparisler_ac, None),
+        )
+        tumu = list(komutlar) + list(sag_ekler)
+        for i, (baslik, komut, izinler) in enumerate(tumu):
+            rol = "vurgu" if i % 2 == 0 else "kaydet"  # sarı / lacivert
+            if izinler is None:
+                state = "normal" if kayitli else "disabled"
+                izin_ok = True
+            else:
+                izin_ok = _izin_var(*izinler)
+                state = "normal" if (kayitli and izin_ok) else "disabled"
             dugme = tk_buton(satir, baslik, komut, rol=rol, state=state)
             dugme.pack(side="left", expand=True, fill="x", padx=3)
             self.hizli_dugmeleri.append(dugme)
             if not izin_ok:
                 ToolTip(dugme, "Bu işlem için yetkiniz yok.")
-
-        alt = tk.Frame(hizli, bg=BEYAZ)
-        alt.pack(fill="x", pady=(8, 0))
-        ekstre = tk_buton(
-            alt,
-            "Stok Detaylı Cari Ekstre",
-            self.stok_detayli_ekstre_ac,
-            rol="ikincil",
-            state="normal" if kayitli else "disabled",
-        )
-        ekstre.pack(side="left")
-        self.hizli_dugmeleri.append(ekstre)
-        tk_buton(alt, "Yenile", self.yenile, rol="ikincil").pack(side="right")
-        self._yukleniyor_lbl = tk.Label(
-            alt, text="", bg=BEYAZ, fg=DIKKAT, font=font(9, root=self)
-        )
-        self._yukleniyor_lbl.pack(side="right", padx=10)
 
     def _hareket_tablosunu_olustur(self, parent):
         dis, hareket = beyaz_kart(parent, padx=10, pady=8)
@@ -865,11 +1083,40 @@ class CariDialog(tk.Toplevel):
         )
         tablo_cercevesi = tk.Frame(hareket, bg=BEYAZ)
         tablo_cercevesi.pack(fill="both", expand=True)
+        # Hareket satırları: mevcut +2 pt, bold/koyu; başlıklar da büyütülür
+        stil = ttk.Style(self)
+        stil.configure(
+            "CariKartHareket.Treeview",
+            font=font(11, "bold", self),
+            rowheight=32,
+            fieldbackground=BEYAZ,
+            background=BEYAZ,
+            foreground=LACIVERT,
+            borderwidth=0,
+        )
+        stil.configure(
+            "CariKartHareket.Treeview.Heading",
+            font=font(11, "bold", self),
+            background=LACIVERT,
+            foreground=BEYAZ,
+            relief="flat",
+            padding=(6, 5),
+        )
+        stil.map(
+            "CariKartHareket.Treeview",
+            background=[("selected", tema.SECIM_SARI)],
+            foreground=[("selected", LACIVERT)],
+        )
+        stil.map(
+            "CariKartHareket.Treeview.Heading",
+            background=[("active", tema.LACIVERT_ORTA)],
+            foreground=[("active", BEYAZ)],
+        )
         tablo = ttk.Treeview(
             tablo_cercevesi,
             columns=kolonlar,
             show="tree headings",
-            style="CariKart.Treeview",
+            style="CariKartHareket.Treeview",
             selectmode="browse",
             height=10,
         )
@@ -913,10 +1160,22 @@ class CariDialog(tk.Toplevel):
         tablo.tag_configure(
             "detay",
             background="#EEF2F7",
-            foreground="#334155",
-            font=font(8, root=self),
+            foreground=LACIVERT,
+            font=font(10, "bold", self),
         )
-        tablo.tag_configure("detay_uyari", background="#FEF3C7", foreground="#92400E")
+        tablo.tag_configure(
+            "detay_uyari",
+            background="#FEF3C7",
+            foreground="#92400E",
+            font=font(10, "bold", self),
+        )
+        # Fatura satırları açılınca toplam satırı — kırmızı + koyu/bold
+        tablo.tag_configure(
+            "detay_toplam",
+            background="#FEE2E2",
+            foreground=UYARI,
+            font=font(11, "bold", self),
+        )
         dikey = ttk.Scrollbar(tablo_cercevesi, orient="vertical", command=tablo.yview)
         yatay = ttk.Scrollbar(tablo_cercevesi, orient="horizontal", command=tablo.xview)
         tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
@@ -1185,8 +1444,6 @@ class CariDialog(tk.Toplevel):
                 and Decimal(str(metrik.get("kullanilabilir_risk"))) < 0
             ):
                 mesajlar.append("Risk limiti aşımı / yetersiz kullanılabilir risk.")
-            if Decimal(str(metrik.get("vadesi_gecmis") or 0)) > 0:
-                mesajlar.append(f"Vadesi geçmiş borç: {para_goster(metrik['vadesi_gecmis'])}")
         for w in self._uyari_rozet_satiri.winfo_children():
             w.destroy()
         if mesajlar:
@@ -1196,8 +1453,6 @@ class CariDialog(tk.Toplevel):
                 self._uyari_bandi.pack(fill="x", padx=12, pady=(6, 0), after=self._ust_son)
             if not aktif:
                 rozet(self._uyari_rozet_satiri, "Satışa kapalı", bg=UYARI).pack(side="left", padx=(0, 6))
-            if metrik and Decimal(str(metrik.get("vadesi_gecmis") or 0)) > 0:
-                rozet(self._uyari_rozet_satiri, "Vadesi geçmiş", bg=DIKKAT).pack(side="left", padx=(0, 6))
             if metrik and metrik.get("kullanilabilir_risk") is not None:
                 kalan = Decimal(str(metrik["kullanilabilir_risk"]))
                 if kalan < 0:
@@ -1285,10 +1540,15 @@ class CariDialog(tk.Toplevel):
 
     # ─── Özet güncelleme ──────────────────────────────────────────
     def _ozet_kartlarini_guncelle(self, metrik: dict | None):
+        if not self.ozet_kartlari and not self.ozet_degerleri:
+            return
         if not metrik:
             for k in self.ozet_kartlari.values():
                 k["deger"].configure(text="—", fg=LACIVERT)
                 k["alt"].configure(text="")
+            for lbl in self.ozet_degerleri.values():
+                lbl.configure(text="—", fg=LACIVERT)
+            self._bekleyen_siparis_ozetini_guncelle()
             return
         bakiye = Decimal(str(metrik.get("bakiye") or 0))
         durum = metrik.get("bakiye_durumu") or "Bakiye yok"
@@ -1298,46 +1558,41 @@ class CariDialog(tk.Toplevel):
             renk, etiket = BASARI, "Alacaklı"
         else:
             renk, etiket = IKINCIL, "Kapalı"
-        self.ozet_kartlari["guncel_bakiye"]["deger"].configure(
-            text=para_goster(abs(bakiye)), fg=renk
-        )
-        self.ozet_kartlari["guncel_bakiye"]["alt"].configure(text=f"{etiket} · {durum}")
+        if "guncel_bakiye" in self.ozet_kartlari:
+            self.ozet_kartlari["guncel_bakiye"]["deger"].configure(
+                text=para_goster(abs(bakiye)), fg=renk
+            )
+            self.ozet_kartlari["guncel_bakiye"]["alt"].configure(text=f"{etiket} · {durum}")
 
-        vgec = Decimal(str(metrik.get("vadesi_gecmis") or 0))
-        self.ozet_kartlari["vadesi_gecmis"]["deger"].configure(
-            text=para_goster(vgec), fg=DIKKAT if vgec > 0 else IKINCIL
-        )
-        self.ozet_kartlari["vadesi_gecmis"]["alt"].configure(
-            text="Vadesi geçmiş açık borç" if vgec > 0 else "Yok"
-        )
+        if "kullanilabilir_risk" in self.ozet_kartlari:
+            kalan = metrik.get("kullanilabilir_risk")
+            if kalan is None:
+                self.ozet_kartlari["kullanilabilir_risk"]["deger"].configure(
+                    text="Tanımsız", fg=IKINCIL
+                )
+                self.ozet_kartlari["kullanilabilir_risk"]["alt"].configure(text="")
+            else:
+                kd = Decimal(str(kalan))
+                self.ozet_kartlari["kullanilabilir_risk"]["deger"].configure(
+                    text=para_goster(kd),
+                    fg=UYARI if kd < 0 else (BASARI if kd > 0 else DIKKAT),
+                )
+                self.ozet_kartlari["kullanilabilir_risk"]["alt"].configure(text="")
 
-        kalan = metrik.get("kullanilabilir_risk")
-        if kalan is None:
-            self.ozet_kartlari["kullanilabilir_risk"]["deger"].configure(text="Tanımsız", fg=IKINCIL)
-            self.ozet_kartlari["kullanilabilir_risk"]["alt"].configure(text="Risk limiti yok")
-        else:
-            kd = Decimal(str(kalan))
-            self.ozet_kartlari["kullanilabilir_risk"]["deger"].configure(
-                text=para_goster(kd),
-                fg=UYARI if kd < 0 else (BASARI if kd > 0 else DIKKAT),
-            )
-            self.ozet_kartlari["kullanilabilir_risk"]["alt"].configure(
-                text=metrik.get("risk_mesaj") or "Limit − borç bakiyesi"
-            )
-
-        st = metrik.get("son_islem_tarih")
-        stutar = metrik.get("son_islem_tutar")
-        if st is None:
-            self.ozet_kartlari["son_islem"]["deger"].configure(text="—", fg=IKINCIL)
-            self.ozet_kartlari["son_islem"]["alt"].configure(text="İşlem yok")
-        else:
-            self.ozet_kartlari["son_islem"]["deger"].configure(
-                text=para_goster(abs(Decimal(str(stutar or 0)))), fg=LACIVERT
-            )
-            tur = metrik.get("son_islem_tur") or ""
-            self.ozet_kartlari["son_islem"]["alt"].configure(
-                text=f"{tarih_goster(st)} · {tur}"
-            )
+        if "son_islem" in self.ozet_kartlari:
+            st = metrik.get("son_islem_tarih")
+            stutar = metrik.get("son_islem_tutar")
+            if st is None:
+                self.ozet_kartlari["son_islem"]["deger"].configure(text="—", fg=IKINCIL)
+                self.ozet_kartlari["son_islem"]["alt"].configure(text="")
+            else:
+                tur = metrik.get("son_islem_tur") or ""
+                tutar_yazi = para_goster(abs(Decimal(str(stutar or 0))))
+                self.ozet_kartlari["son_islem"]["deger"].configure(
+                    text=f"{tarih_goster(st)} · {tur} · {tutar_yazi}".strip(" ·"),
+                    fg=LACIVERT,
+                )
+                self.ozet_kartlari["son_islem"]["alt"].configure(text="")
 
         odenen = float(metrik.get("odenen_ortalama_valor_gun") or 0)
         bvalor = float(metrik.get("bakiye_ortalama_valor_gun") or 0)
@@ -1363,6 +1618,10 @@ class CariDialog(tk.Toplevel):
             self.ozet_degerleri["Toplam alacak"].configure(
                 text=para_goster(metrik.get("toplam_alacak") or 0)
             )
+            if "Kalan Bakiye" in self.ozet_degerleri:
+                self.ozet_degerleri["Kalan Bakiye"].configure(
+                    text=para_goster(abs(bakiye)), fg=renk
+                )
             if "Bakiye yönü" in self.ozet_degerleri:
                 self.ozet_degerleri["Bakiye yönü"].configure(text=yon_yazi, fg=renk)
             elif "Bakiye durumu" in self.ozet_degerleri:
@@ -1395,6 +1654,33 @@ class CariDialog(tk.Toplevel):
                 self.ozet_degerleri["Bakiyenin ortalama valörü"].configure(
                     text=f"{valor_etiket}: {bvalor:.1f} gün"
                 )
+        self._bekleyen_siparis_ozetini_guncelle()
+
+    def _bekleyen_siparis_ozetini_guncelle(self):
+        """Risk satırındaki bekleyen sipariş tutarını yeniler (bakiyeyi değiştirmez)."""
+        etiket = getattr(self, "_bekleyen_siparis_etiket", None)
+        if not etiket or etiket not in getattr(self, "ozet_degerleri", {}):
+            return
+        lbl = self.ozet_degerleri[etiket]
+        if not self.cari or not getattr(self.cari, "id", None):
+            lbl.configure(text="—", fg=IKINCIL)
+            return
+        try:
+            from database.cari_bekleyen_siparis_service import cari_bekleyen_siparis_ozeti
+
+            yon = "alis" if self.tedarikci_modu else "satis"
+            ozet = cari_bekleyen_siparis_ozeti(int(self.cari.id), yon=yon)
+            tutar = ozet.get("toplam_try") or 0
+            diger = ozet.get("diger_pb") or {}
+            yazi = para_goster(tutar)
+            if diger:
+                ek = " · ".join(
+                    f"{para_goster(v).replace(' TL', '')} {pb}" for pb, v in diger.items()
+                )
+                yazi = f"{yazi} · {ek}"
+            lbl.configure(text=yazi, fg=LACIVERT if tutar or diger else IKINCIL)
+        except Exception:
+            lbl.configure(text="—", fg=IKINCIL)
 
     # ─── Hareketler (orijinal mantık) ─────────────────────────────
     def _hareket_tarih_araligi(self):
@@ -1856,7 +2142,22 @@ class CariDialog(tk.Toplevel):
             )
             return
 
+        net_toplam = Decimal("0")
+        brut_toplam = Decimal("0")
+        kdv_toplam = Decimal("0")
         for s in satirlar:
+            try:
+                net_toplam += Decimal(str(s.get("net_tutar") or 0))
+            except Exception:
+                pass
+            try:
+                brut_toplam += Decimal(str(s.get("brut_tutar") or 0))
+            except Exception:
+                pass
+            try:
+                kdv_toplam += Decimal(str(s.get("kdv_tutar") or 0))
+            except Exception:
+                pass
             parcalar = [
                 f"#{s.get('sira')}",
                 f"{s.get('miktar_goster')} {s.get('birim') or ''}".strip(),
@@ -1897,6 +2198,31 @@ class CariDialog(tk.Toplevel):
                 ),
                 tags=("detay",),
             )
+
+        # Fatura toplamları — kırmızı + bold
+        net_g = para_goster(net_toplam)
+        brut_g = para_goster(brut_toplam)
+        kdv_g = para_goster(kdv_toplam)
+
+        self.hareket_tablosu.insert(
+            iid,
+            "end",
+            text="",
+            values=(
+                "",
+                "",
+                "FATURA TOPLAMI",
+                f"  Net {net_g}  ·  KDV {kdv_g}  ·  Brüt {brut_g}",
+                "",
+                "",
+                "",
+                net_g,
+                brut_g,
+                "",
+                "",
+            ),
+            tags=("detay_toplam",),
+        )
 
     def _clear_invoice_detail_cache(self):
         self._fatura_detay_cache = {}
@@ -2066,6 +2392,17 @@ class CariDialog(tk.Toplevel):
         dialog = StokDetayliCariEkstreDialog(self, self.cari)
         self.wait_window(dialog)
 
+    def bekleyen_siparisler_ac(self):
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from cari_bekleyen_siparis_ui import CariBekleyenSiparislerDialog
+
+        yon = "alis" if self.tedarikci_modu else "satis"
+        dialog = CariBekleyenSiparislerDialog(self, self.cari, yon=yon)
+        self.wait_window(dialog)
+        self._bekleyen_siparis_ozetini_guncelle()
+
     def yeni_siparis_ac(self):
         if not self.cari:
             return
@@ -2188,6 +2525,8 @@ class CariDialog(tk.Toplevel):
             "senet_risk_limiti": "Senet risk limiti",
         }
         for alan in self.SAYISAL_TUTAR_ALANLARI:
+            if alan not in veriler:
+                continue
             ham = veriler.get(alan)
             if not ham:
                 veriler[alan] = None
@@ -2270,7 +2609,103 @@ class CariDialog(tk.Toplevel):
     def kaydet_ve_kapat(self):
         self.kaydet(kapat=True)
 
+    def _cari_pencere_boyutlandirma_ac(self) -> None:
+        """Cari kart yeniden boyutlanabilir olsun; büyüt/küçült çalışsın."""
+        try:
+            self.wm_transient("")
+        except tk.TclError:
+            try:
+                self.transient(None)
+            except Exception:
+                pass
+        try:
+            self.resizable(True, True)
+        except tk.TclError:
+            pass
+        try:
+            from ui_pencere import belge_penceresini_hazirla
+
+            belge_penceresini_hazirla(
+                self,
+                min_genislik=1040,
+                min_yukseklik=620,
+                varsayilan_genislik=1280,
+                varsayilan_yukseklik=780,
+                maximize=True,
+            )
+        except Exception:
+            try:
+                from ui_pencere import calisma_alani
+
+                _x, _y, aw, ah = calisma_alani(self)
+                min_w = min(800, max(640, aw // 2))
+                min_h = min(500, max(420, ah // 2))
+                self.minsize(min_w, min_h)
+            except Exception:
+                try:
+                    self.minsize(720, 480)
+                except tk.TclError:
+                    pass
+            try:
+                self.state("zoomed")
+            except tk.TclError:
+                pass
+        try:
+            if str(self.state() or "") == "zoomed":
+                btn = getattr(self, "_btn_pencere_buyut", None)
+                if btn is not None:
+                    btn.configure(text="❐")
+        except tk.TclError:
+            pass
+
+    def _cari_pencere_asagi(self, _event=None):
+        """Görev çubuğuna indir (minimize)."""
+        try:
+            self.iconify()
+        except tk.TclError:
+            pass
+
+    def _cari_pencere_buyut_toggle(self, _event=None):
+        """Tam ekran (zoomed) ↔ önceki boyut."""
+        try:
+            durum = str(self.state() or "")
+        except tk.TclError:
+            durum = ""
+        btn = getattr(self, "_btn_pencere_buyut", None)
+        try:
+            if durum == "zoomed":
+                self.state("normal")
+                geo = getattr(self, "_cari_onceki_geometry", None)
+                if geo:
+                    try:
+                        self.geometry(geo)
+                    except tk.TclError:
+                        pass
+                if btn is not None:
+                    btn.configure(text="□")
+            else:
+                try:
+                    self._cari_onceki_geometry = self.geometry()
+                except tk.TclError:
+                    self._cari_onceki_geometry = None
+                self.state("zoomed")
+                if btn is not None:
+                    btn.configure(text="❐")
+        except tk.TclError:
+            pass
+        return "break"
+
     def yeni_kart(self):
+        """Boş form → doldur → Kaydet akışı için yeni cari kartı açar."""
+        if self.cari is None and not self._kirli_mi():
+            # Zaten boş kart: odak ünvan — Kaydet (F1) ile kaydedilir
+            try:
+                w = self.degerler.get("unvan")
+                if w is not None:
+                    w.focus_set()
+            except tk.TclError:
+                pass
+            return
         if not self._kapatmadan_once_onay():
             return
         parent = self.master

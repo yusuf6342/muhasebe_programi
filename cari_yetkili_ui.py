@@ -139,55 +139,66 @@ class YetkiliDialog(tk.Toplevel):
 class YetkiliPanel(tk.Frame):
     """Cari kart içi İşletme Yetkilileri paneli."""
 
-    def __init__(self, parent, *, dialog, **kw):
-        super().__init__(parent, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI, **kw)
+    def __init__(self, parent, *, dialog, gomulu: bool = False, **kw):
+        kenar = 0 if gomulu else 1
+        super().__init__(parent, bg=BEYAZ, highlightthickness=kenar, highlightbackground=CIZGI, **kw)
         self.dialog = dialog
         self._cari_id = int(dialog.cari.id) if dialog.cari and getattr(dialog.cari, "id", None) else None
 
-        baslik = tk.Frame(self, bg=LACIVERT)
-        baslik.pack(fill="x")
-        tk.Label(
-            baslik,
-            text="İşletme Yetkilileri",
-            bg=LACIVERT,
-            fg=SARI,
-            font=font(11, "bold", dialog),
-            padx=10,
-            pady=6,
-        ).pack(side="left")
-        self._ozet_lbl = tk.Label(
-            baslik, text="", bg=LACIVERT, fg=BEYAZ, font=font(9, root=dialog), padx=8
-        )
-        self._ozet_lbl.pack(side="right")
+        if gomulu:
+            self._ozet_lbl = tk.Label(
+                self, text="", bg=BEYAZ, fg=IKINCIL, font=font(8, root=dialog), anchor="w"
+            )
+            self._ozet_lbl.pack(fill="x", padx=2, pady=(0, 4))
+        else:
+            baslik = tk.Frame(self, bg=LACIVERT)
+            baslik.pack(fill="x")
+            tk.Label(
+                baslik,
+                text="İşletme Yetkilileri",
+                bg=LACIVERT,
+                fg=SARI,
+                font=font(11, "bold", dialog),
+                padx=10,
+                pady=6,
+            ).pack(side="left")
+            self._ozet_lbl = tk.Label(
+                baslik, text="", bg=LACIVERT, fg=BEYAZ, font=font(9, root=dialog), padx=8
+            )
+            self._ozet_lbl.pack(side="right")
 
-        arac = tk.Frame(self, bg=BEYAZ, padx=8, pady=6)
+        arac = tk.Frame(self, bg=BEYAZ, padx=4 if gomulu else 8, pady=4 if gomulu else 6)
         arac.pack(fill="x")
-        self._btn_yeni = tk_buton(arac, "Yeni Yetkili", self._yeni, rol="yeni")
-        self._btn_yeni.pack(side="left", padx=(0, 4))
+        self._btn_yeni = tk_buton(
+            arac, "Yeni" if gomulu else "Yeni Yetkili", self._yeni, rol="yeni"
+        )
+        self._btn_yeni.pack(side="left", padx=(0, 3))
         self._btn_duzenle = tk_buton(arac, "Düzenle", self._duzenle, rol="duzenle")
-        self._btn_duzenle.pack(side="left", padx=4)
-        self._btn_pasif = tk_buton(arac, "Pasife Al", self._pasif, rol="ara")
-        self._btn_pasif.pack(side="left", padx=4)
+        self._btn_duzenle.pack(side="left", padx=3)
+        self._btn_pasif = tk_buton(
+            arac, "Pasif" if gomulu else "Pasife Al", self._pasif, rol="ara"
+        )
+        self._btn_pasif.pack(side="left", padx=3)
         self._btn_sil = tk_buton(arac, "Sil", self._sil, rol="iptal")
-        self._btn_sil.pack(side="left", padx=4)
+        self._btn_sil.pack(side="left", padx=3)
 
         kolonlar = ("ad", "unvan", "telefon", "email", "ana", "durum")
         self.tablo = ttk.Treeview(
-            self, columns=kolonlar, show="headings", height=5, selectmode="browse"
+            self, columns=kolonlar, show="headings", height=8 if gomulu else 5, selectmode="browse"
         )
         for k, b, w in (
-            ("ad", "Ad Soyad", 160),
-            ("unvan", "Unvan / Görev", 140),
-            ("telefon", "Telefon", 110),
-            ("email", "E-posta", 150),
-            ("ana", "Ana", 50),
-            ("durum", "Durum", 60),
+            ("ad", "Ad Soyad", 100 if gomulu else 160),
+            ("unvan", "Unvan", 90 if gomulu else 140),
+            ("telefon", "Tel", 80 if gomulu else 110),
+            ("email", "E-posta", 90 if gomulu else 150),
+            ("ana", "Ana", 36 if gomulu else 50),
+            ("durum", "Durum", 48 if gomulu else 60),
         ):
             self.tablo.heading(k, text=b)
-            self.tablo.column(k, width=w, anchor="w")
+            self.tablo.column(k, width=w, anchor="w", stretch=True)
         self.tablo.tag_configure("cift", background=STRIPE)
         self.tablo.tag_configure("tek", background=BEYAZ)
-        self.tablo.pack(fill="x", padx=8, pady=(0, 8))
+        self.tablo.pack(fill="both", expand=True, padx=4 if gomulu else 8, pady=(0, 6))
         self.tablo.bind("<Double-1>", lambda _e: self._duzenle())
         self.tablo.bind("<Button-3>", self._sag_tik)
         self.tablo.bind("<F2>", lambda _e: self._duzenle())

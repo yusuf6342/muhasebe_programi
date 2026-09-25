@@ -330,10 +330,23 @@ class SatisFaturasiService:
 
     @staticmethod
     def acik_irsaliyeler(cari_id=None, siparis_id=None):
+        """Faturalanacak kalanı olan sevk edilmiş / kısmi faturalı irsaliyeler."""
+        from database.satis_irsaliyesi_service import faturalanacak_kalan
+
         with get_session() as session:
             statement = (
                 select(SatisIrsaliyesi)
-                .where(SatisIrsaliyesi.durum.in_(("AÇIK", "KISMİ FATURALANDI")))
+                .where(
+                    SatisIrsaliyesi.durum.in_(
+                        (
+                            "AÇIK",
+                            "SEVK EDİLDİ",
+                            "TESLİM EDİLDİ",
+                            "KISMİ FATURALANDI",
+                            "TASLAK",
+                        )
+                    )
+                )
                 .options(
                     selectinload(SatisIrsaliyesi.cari),
                     selectinload(SatisIrsaliyesi.siparis),
@@ -345,7 +358,13 @@ class SatisFaturasiService:
                 statement = statement.where(SatisIrsaliyesi.cari_id == int(cari_id))
             if siparis_id is not None:
                 statement = statement.where(SatisIrsaliyesi.siparis_id == int(siparis_id))
-            return list(session.scalars(statement).all())
+            irsaliyeler = list(session.scalars(statement).all())
+            return [
+                ir
+                for ir in irsaliyeler
+                if (ir.durum or "").upper() not in ("İPTAL", "FATURALANDI")
+                and any(faturalanacak_kalan(s) > 0 for s in (ir.satirlar or []))
+            ]
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None, tahsilat_verileri=None):

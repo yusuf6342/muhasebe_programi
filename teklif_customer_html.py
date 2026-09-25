@@ -53,7 +53,7 @@ def _alan_satir(etiket: str, deger, *, kalin: bool = False) -> str:
 
 
 def _toplam_html(vm: CustomerQuoteViewModel) -> str:
-    """Ticari toplamlar — masraf/alış satırı yok."""
+    """Ticari toplamlar — masraf/alış satırı yok; nihai tutar Net Toplam."""
     pb = vm.para_birimi_etiket or vm.para_birimi
     gizle = vm.sifir_kalemleri_gizle
     satirlar: list[tuple[str, str, bool]] = [
@@ -62,12 +62,10 @@ def _toplam_html(vm: CustomerQuoteViewModel) -> str:
     if not gizle or (vm.iskonto_toplam and vm.iskonto_toplam > 0):
         satirlar.append(("Satır İskontoları", para_birimli(vm.iskonto_goster, pb), False))
     if not gizle or (vm.genel_iskonto and vm.genel_iskonto > 0):
-        satirlar.append(("Genel İskonto", para_birimli(vm.genel_iskonto_goster, pb), False))
-        satirlar.append(
-            ("İskonto Sonrası", para_birimli(vm.iskonto_sonrasi_goster, pb), False)
-        )
+        satirlar.append(("İndirim", para_birimli(vm.genel_iskonto_goster, pb), False))
     satirlar.append(("KDV Toplamı", para_birimli(vm.kdv_goster, pb), False))
-    satirlar.append(("GENEL TOPLAM", para_birimli(vm.genel_goster, pb), True))
+    # Nihai tutar formdaki Net Toplam ile aynı (brüt değil)
+    satirlar.append(("NET TOPLAM", para_birimli(vm.genel_goster, pb), True))
 
     rows = []
     for etiket, deger, genel in satirlar:

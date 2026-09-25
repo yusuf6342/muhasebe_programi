@@ -16,8 +16,13 @@ from satis_tema import (
 SATIS_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     (
         "MÜŞTERİ KARTLARI",
-        "Müşteri bilgileri, cari hareketler ve bakiye takibi",
+        "Boş kart açılır; isimle hızlı arayıp kaydı yükleyin",
         "musteri",
+    ),
+    (
+        "MÜŞTERİ LİSTESİ",
+        "Tüm müşterileri listeleyin, filtreleyin ve yönetin",
+        "musteri_liste",
     ),
     (
         "SATIŞ FATURALARI",
@@ -112,7 +117,8 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         )
 
     return {
-        "musteri": app.cariler_goster,
+        "musteri": app.musteri_karti_ac,
+        "musteri_liste": app.cariler_goster,
         "fatura": app.satis_faturalari_alt_menusu_goster,
         "siparis": app.satis_siparisleri_goster,
         "teklif": lambda: __import__("teklif_ui", fromlist=["teklifler_hub_goster"]).teklifler_hub_goster(app),
