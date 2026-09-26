@@ -371,6 +371,9 @@ class SatisSiparisiService:
                 saat = bos_metin(veriler.get("siparis_saati")) or None
                 siparis.siparis_saati = saat
             siparis.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            siparis.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             siparis.maliyet_yontemi = maliyet_yontemi
             siparis.hedef_kar_marji = hedef
             siparis.aciklama = bos_metin(veriler.get("aciklama")) or None

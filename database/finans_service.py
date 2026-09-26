@@ -2972,6 +2972,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         aciklama = (veriler.get("aciklama") or "").strip() or None
 
         with get_session() as session:
+            from database.sube_service import SubeService
+
+            sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             hesap = session.scalar(
                 select(FinansHesabi)
                 .where(FinansHesabi.id == hesap_id)
@@ -3001,6 +3004,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             )
             fis = GiderFisi(
                 belge_no=belge_no,
+                sube_id=sube_id,
                 tarih=tarih,
                 gider_turu="HIZMET",
                 tutar=tutar,
@@ -3241,6 +3245,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             raise ValueError("Toplam tutar sıfırdan büyük olmalı.")
 
         with get_session() as session:
+            from database.sube_service import SubeService
+
+            sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             cari = session.get(Cari, cari_id)
             if cari is None:
                 raise ValueError("Cari hesap seçin.")
@@ -3292,6 +3299,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             ilk_hesap = cozulmus[0][1]
             makbuz = KasaMakbuzu(
                 belge_no=belge_no,
+                sube_id=sube_id,
                 tarih=tarih,
                 makbuz_turu=tur,
                 tutar=toplam,
@@ -3311,6 +3319,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 session.add(
                     FinansHareketi(
                         hesap_id=hesap.id,
+                        sube_id=sube_id,
                         tarih=s["tarih"],
                         hareket_turu=hareket_turu,
                         belge_no=belge_no,

@@ -8,6 +8,7 @@ from database.database import Base
 
 if TYPE_CHECKING:
     from database.models.donem import Donem
+    from database.models.sube import Sube
 
 
 class Firma(Base):
@@ -69,4 +70,8 @@ class Firma(Base):
     donemler: Mapped[list["Donem"]] = relationship(
         "Donem",
         back_populates="firma"
+    )
+
+    subeler: Mapped[list["Sube"]] = relationship(
+        "Sube", back_populates="firma", cascade="all, delete-orphan"
     )

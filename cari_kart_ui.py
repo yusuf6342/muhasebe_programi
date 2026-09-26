@@ -1073,6 +1073,13 @@ class CariDialog(tk.Toplevel):
             "tur",
             "belge",
             "aciklama",
+            "urun_kodu",
+            "barkod",
+            "urun_adi",
+            "miktar",
+            "birim",
+            "net_birim_fiyat",
+            "satir_tutari",
             "pb",
             "doviz",
             "kur",
@@ -1127,6 +1134,13 @@ class CariDialog(tk.Toplevel):
             "tur": ("Belge Türü", 110, "w", False),
             "belge": ("Belge No", 120, "w", False),
             "aciklama": ("Açıklama", 180, "w", True),
+            "urun_kodu": ("Stok Kodu", 105, "w", False),
+            "barkod": ("Barkod", 120, "w", False),
+            "urun_adi": ("Ürün Adı", 230, "w", True),
+            "miktar": ("Miktar", 78, "e", False),
+            "birim": ("Birim", 65, "center", False),
+            "net_birim_fiyat": ("Net Birim Fiyat", 115, "e", False),
+            "satir_tutari": ("Satır Tutarı", 115, "e", False),
             "pb": ("PB", 42, "center", False),
             "doviz": ("Döviz", 95, "e", False),
             "kur": ("Kur", 78, "e", False),
@@ -1161,7 +1175,7 @@ class CariDialog(tk.Toplevel):
             "detay",
             background="#EEF2F7",
             foreground=LACIVERT,
-            font=font(10, "bold", self),
+            font=font(10, root=self),
         )
         tablo.tag_configure(
             "detay_uyari",
@@ -1169,7 +1183,13 @@ class CariDialog(tk.Toplevel):
             foreground="#92400E",
             font=font(10, "bold", self),
         )
-        # Fatura satırları açılınca toplam satırı — kırmızı + koyu/bold
+        tablo.tag_configure(
+            "fatura_toplam",
+            background="#DCEAF7",
+            foreground=LACIVERT,
+            font=font(11, "bold", self),
+        )
+        # Uyarı satırı ürün detayı olmayan belgelerde yalnızca bilgi verir.
         tablo.tag_configure(
             "detay_toplam",
             background="#FEE2E2",
@@ -1833,6 +1853,13 @@ class CariDialog(tk.Toplevel):
             "Belge Türü",
             "Belge Numarası",
             "Açıklama",
+            "Stok Kodu",
+            "Barkod",
+            "Ürün Adı",
+            "Miktar",
+            "Birim",
+            "Net Birim Fiyat",
+            "Satır Tutarı",
             "Borç",
             "Alacak",
             "Kalan Bakiye",
@@ -1874,17 +1901,63 @@ class CariDialog(tk.Toplevel):
                     hareket.get("tur") or "",
                     hareket.get("belge_no") or "",
                     hareket.get("aciklama") or "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                     float(Decimal(str(hareket.get("borc") or 0))),
                     float(Decimal(str(hareket.get("alacak") or 0))),
                     float(Decimal(str(kalan_deger or 0))),
                     gun,
                 ]
             )
+            if hareket.get("genisletilebilir") and hareket.get("fatura_id"):
+                try:
+                    from database.cari_fatura_detay_service import CariFaturaDetayService
+
+                    detay = CariFaturaDetayService.load_invoice_details(
+                        int(hareket["fatura_id"]),
+                        str(hareket.get("belge_tipi") or ""),
+                        cari_id=int(hareket.get("cari_id") or self.cari.id),
+                        hareket_id=hareket.get("hareket_id"),
+                    )
+                except (ValueError, TypeError):
+                    detay = {}
+                for satir in detay.get("satirlar") or []:
+                    ws.append(
+                        [
+                            "",
+                            "  Ürün",
+                            "",
+                            "",
+                            satir.get("urun_kodu") or "",
+                            satir.get("barkod") or "",
+                            satir.get("urun_adi") or "",
+                            satir.get("miktar_goster") or "",
+                            satir.get("birim") or "",
+                            satir.get("birim_fiyat_goster") or "",
+                            satir.get("net_goster") or "",
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
         t_borc, t_alacak, t_net = self._hareket_tutar_toplamlari(gorunen)
         ws.append([])
         ws.append(
             [
                 "TOPLAM",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1975,6 +2048,7 @@ class CariDialog(tk.Toplevel):
         )
         genislet = bool(hareket.get("genisletilebilir") and hareket.get("fatura_id"))
         text0 = "▶" if genislet else ""
+        satir_tag = "fatura_toplam" if genislet else tag
         iid = self.hareket_tablosu.insert(
             "",
             "end",
@@ -1984,6 +2058,13 @@ class CariDialog(tk.Toplevel):
                 hareket["tur"],
                 hareket["belge_no"],
                 (hareket.get("aciklama") or "").strip(),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 pb if pb != "TRY" else "",
                 doviz_metin,
                 kur_metin,
@@ -1992,7 +2073,7 @@ class CariDialog(tk.Toplevel):
                 kalan,
                 gun,
             ),
-            tags=(tag,),
+            tags=(satir_tag,),
             open=False,
         )
         self._hareket_iid_meta[iid] = dict(hareket)
@@ -2002,7 +2083,7 @@ class CariDialog(tk.Toplevel):
                 iid,
                 "end",
                 text="",
-                values=("", "", "", "  (ürün detayı yüklenmedi)", "", "", "", "", "", "", ""),
+                values=("", "", "", "  (ürün detayı yüklenmedi)", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
                 tags=("detay",),
                 iid=f"{iid}__ph",
             )
@@ -2123,7 +2204,7 @@ class CariDialog(tk.Toplevel):
                     iid,
                     "end",
                     text="",
-                    values=("", "", "", "  Detay yüklenemedi", "", "", "", "", "", "", ""),
+                    values=("", "", "", "  Detay yüklenemedi", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
                     tags=("detay_uyari",),
                 )
                 return
@@ -2137,32 +2218,13 @@ class CariDialog(tk.Toplevel):
                 iid,
                 "end",
                 text="",
-                values=("", "", "", f"  {msg}", "", "", "", "", "", "", ""),
+                values=("", "", "", f"  {msg}", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
                 tags=("detay_uyari",),
             )
             return
 
-        net_toplam = Decimal("0")
-        brut_toplam = Decimal("0")
-        kdv_toplam = Decimal("0")
         for s in satirlar:
-            try:
-                net_toplam += Decimal(str(s.get("net_tutar") or 0))
-            except Exception:
-                pass
-            try:
-                brut_toplam += Decimal(str(s.get("brut_tutar") or 0))
-            except Exception:
-                pass
-            try:
-                kdv_toplam += Decimal(str(s.get("kdv_tutar") or 0))
-            except Exception:
-                pass
-            parcalar = [
-                f"#{s.get('sira')}",
-                f"{s.get('miktar_goster')} {s.get('birim') or ''}".strip(),
-                f"Fiyat {s.get('birim_fiyat_goster')}",
-            ]
+            parcalar = []
             if s.get("iskonto") and str(s.get("iskonto")) not in ("0", "0.0", ""):
                 parcalar.append(f"İsk %{s.get('iskonto')}")
             parcalar.append(f"KDV {s.get('kdv_orani_goster')} ({s.get('kdv_goster')})")
@@ -2185,44 +2247,27 @@ class CariDialog(tk.Toplevel):
                 text="",
                 values=(
                     "",
+                    "Ürün",
+                    "",
+                    "",
                     s.get("urun_kodu") or "",
+                    s.get("barkod") or "",
                     s.get("urun_adi") or "",
-                    acik,
+                    s.get("miktar_goster") or "",
+                    s.get("birim") or "",
+                    s.get("birim_fiyat_goster") or "",
+                    s.get("net_goster") or "",
                     s.get("para_birimi") or "",
                     "",
                     "",
-                    s.get("net_goster") or "",
-                    s.get("brut_goster") or "",
+                    "",
+                    "",
                     "",
                     "",
                 ),
                 tags=("detay",),
             )
 
-        # Fatura toplamları — kırmızı + bold
-        net_g = para_goster(net_toplam)
-        brut_g = para_goster(brut_toplam)
-        kdv_g = para_goster(kdv_toplam)
-
-        self.hareket_tablosu.insert(
-            iid,
-            "end",
-            text="",
-            values=(
-                "",
-                "",
-                "FATURA TOPLAMI",
-                f"  Net {net_g}  ·  KDV {kdv_g}  ·  Brüt {brut_g}",
-                "",
-                "",
-                "",
-                net_g,
-                brut_g,
-                "",
-                "",
-            ),
-            tags=("detay_toplam",),
-        )
 
     def _clear_invoice_detail_cache(self):
         self._fatura_detay_cache = {}

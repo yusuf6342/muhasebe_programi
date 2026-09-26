@@ -435,6 +435,7 @@ class MuhasebeFisService:
                     "toplam_borc": decimal(f.toplam_borc),
                     "toplam_alacak": decimal(f.toplam_alacak),
                     "mali_yil": f.mali_yil,
+                    "sube_id": f.sube_id,
                 }
                 for f in session.scalars(q).all()
             ]
@@ -464,6 +465,7 @@ class MuhasebeFisService:
                 "donem_id": f.donem_id,
                 "kaynak_turu": f.kaynak_turu,
                 "kaynak_id": f.kaynak_id,
+                "sube_id": f.sube_id,
                 "satirlar": [
                     {
                         "id": s.id,
@@ -546,6 +548,9 @@ class MuhasebeFisService:
 
         with get_session() as session:
             firma_id = MuhasebeService.yerel_firma_id(session)
+            from database.sube_service import SubeService
+
+            sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             mali_yil = int(veriler.get("mali_yil") or fis_tarihi.year)
 
             if fis_id:
@@ -565,6 +570,7 @@ class MuhasebeFisService:
             else:
                 fis = MuhasebeFisi(
                     firma_id=firma_id,
+                    sube_id=sube_id,
                     donem_id=oturum.period_id,
                     mali_yil=mali_yil,
                     fis_no=MuhasebeFisService._sonraki_fis_no(session, firma_id, mali_yil),
@@ -581,6 +587,7 @@ class MuhasebeFisService:
                 session.flush()
 
             fis.fis_tarihi = fis_tarihi
+            fis.sube_id = sube_id
             fis.fis_turu = fis_turu
             fis.aciklama = (veriler.get("aciklama") or "").strip() or None
             fis.belge_no = (veriler.get("belge_no") or "").strip() or None

@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
+from database.models.sube import Sube  # noqa: F401
 
 # Banka ana kartındaki alt hesap türleri (sağ üst bakiyeler + alt menüler)
 BANKA_ALT_HESAP_TURLERI = (
@@ -194,6 +195,7 @@ class FinansHareketi(Base):
     __tablename__ = "finans_hareketleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     hesap_id: Mapped[int] = mapped_column(ForeignKey("finans_hesaplari.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     tarih: Mapped[date] = mapped_column(Date, nullable=False)
     hareket_turu: Mapped[str] = mapped_column(String(50), nullable=False)
     belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
@@ -523,6 +525,7 @@ class GiderFisi(Base):
 
     __tablename__ = "gider_fisleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     tarih: Mapped[date] = mapped_column(Date, nullable=False)
     gider_turu: Mapped[str] = mapped_column(String(40), nullable=False)  # HIZMET | KREDI_*
@@ -542,6 +545,7 @@ class KasaMakbuzu(Base):
 
     __tablename__ = "kasa_makbuzlari"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     tarih: Mapped[date] = mapped_column(Date, nullable=False)
     makbuz_turu: Mapped[str] = mapped_column(String(20), nullable=False)  # TAHSILAT | ODEME

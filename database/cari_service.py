@@ -247,8 +247,12 @@ class CariService:
     def listele(
         arama: str = "",
         cari_turu: str | None = None,
-        hizli: bool = False,
+        hizli: bool = True,
     ) -> list[dict[str, Any]]:
+        """Cari listesi. Varsayılan hizli=True (toplu bakiye/valör; UI donmasını önler).
+
+        Tam defter + odenen valör için hizli=False kullanın.
+        """
         from sqlalchemy.orm import selectinload
 
         from database.search_service import SearchService, tokenize_query

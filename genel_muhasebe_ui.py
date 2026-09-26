@@ -665,6 +665,13 @@ class FisDialog(tk.Toplevel):
         ttk.Label(ust, text="Açıklama:").grid(row=1, column=2, sticky="w")
         self.aciklama = ttk.Entry(ust, width=50)
         self.aciklama.grid(row=1, column=3, columnspan=3, sticky="ew", padx=4)
+        ttk.Label(ust, text="Şube:").grid(row=2, column=0, sticky="w", pady=6)
+        from sube_ui import sube_secim_hazirla
+
+        self.sube, self._sube_map = sube_secim_hazirla(
+            ust, None
+        )
+        self.sube.grid(row=2, column=1, sticky="w", padx=6)
 
         orta = ttk.Frame(self, padding=(10, 0))
         orta.pack(fill="both", expand=True)
@@ -737,6 +744,11 @@ class FisDialog(tk.Toplevel):
         self.tur.set(data["fis_turu"])
         self.belge.insert(0, data["belge_no"])
         self.aciklama.insert(0, data["aciklama"])
+        if data.get("sube_id"):
+            for etiket, sube_id in self._sube_map.items():
+                if int(sube_id) == int(data["sube_id"]):
+                    self.sube.set(etiket)
+                    break
         for s in data["satirlar"]:
             self._satir_verileri.append(
                 {
@@ -860,6 +872,7 @@ class FisDialog(tk.Toplevel):
                 "belge_no": self.belge.get(),
                 "durum": durum,
                 "satirlar": self._satir_verileri,
+                "sube_id": self._sube_map.get(self.sube.get()),
             }
             MuhasebeFisService.kaydet(veriler, fis_id=self.fis_id)
         except Exception as hata:

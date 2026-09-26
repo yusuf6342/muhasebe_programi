@@ -13,6 +13,12 @@ from fatura_satir_hucre_edit import hucre_duzenle
 
 
 def _secili_indeksler(dialog) -> list[int]:
+    """Önce işaretli (☐/☑) satırlar; yoksa Treeview seçimi — Alınan Sipariş modeli."""
+    n = len(getattr(dialog, "satirlar", None) or [])
+    isaretler = getattr(dialog, "_satir_isaretleri", None) or set()
+    isaretli = sorted({i for i in isaretler if isinstance(i, int) and 0 <= i < n})
+    if isaretli:
+        return isaretli
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return []
@@ -22,7 +28,7 @@ def _secili_indeksler(dialog) -> list[int]:
             idx = int(iid)
         except (TypeError, ValueError):
             continue
-        if 0 <= idx < len(dialog.satirlar):
+        if 0 <= idx < n:
             sonuc.append(idx)
     return sorted(set(sonuc))
 
@@ -130,7 +136,7 @@ def satir_sil(dialog, *, neden: str = "") -> None:
     if not idxs:
         messagebox.showinfo(
             "Satır sil",
-            "Silmek için tabloda bir veya daha fazla satır seçin.",
+            "Silmek için satır seçin veya başındaki kutuyu işaretleyin.",
             parent=dialog,
         )
         return
@@ -460,15 +466,15 @@ def arac_cubugu_kur(dialog) -> None:
     ic = tk.Frame(cubuk, bg="#0B2A4A")
     ic.pack(fill="x", padx=4, pady=2)
 
-    def _btn(metin, komut):
+    def _btn(metin, komut, *, bg="#163E66", active="#1A4068", bold=False):
         b = tk.Button(
             ic,
             text=metin,
             command=komut,
-            font=("Segoe UI", 8),
-            bg="#163E66",
+            font=("Segoe UI", 8, "bold") if bold else ("Segoe UI", 8),
+            bg=bg,
             fg="#FFFFFF",
-            activebackground="#1A4068",
+            activebackground=active,
             activeforeground="#FFFFFF",
             relief="flat",
             padx=8,
@@ -479,7 +485,6 @@ def arac_cubugu_kur(dialog) -> None:
         return b
 
     _btn("Satırı Düzenle", lambda: satir_duzenle(dialog))
-    _btn("Satırı Sil", lambda: satir_sil(dialog))
     _btn("Satırı Çoğalt", lambda: satir_cogalt(dialog))
     _btn("Üste Taşı", lambda: satir_uste_tasi(dialog))
     _btn("Alta Taşı", lambda: satir_alta_tasi(dialog))
@@ -530,7 +535,7 @@ def baglam_menu_kur(dialog) -> None:
         master = dialog.satir_tablosu
     menu = tk.Menu(master, tearoff=0)
     menu.add_command(label="Düzenle", command=lambda: satir_duzenle(dialog))
-    menu.add_command(label="Satırı Sil", command=lambda: satir_sil(dialog))
+    menu.add_command(label="Seçili Satırı Sil", command=lambda: satir_sil(dialog))
     menu.add_command(label="Satırı Çoğalt", command=lambda: satir_cogalt(dialog))
     menu.add_separator()
     menu.add_command(label="Üste Taşı", command=lambda: satir_uste_tasi(dialog))
@@ -624,6 +629,15 @@ def fatura_satir_araclari_kur(dialog) -> None:
         dialog.satir_tablosu.configure(selectmode="extended")
     except tk.TclError:
         pass
+    if not hasattr(dialog, "_satir_isaretleri"):
+        dialog._satir_isaretleri = set()
+    # Seçim kutusu (☐/☑) — Alınan Sipariş ile aynı model
+    handler = getattr(dialog, "_satir_secim_kutusu_tikla", None)
+    if callable(handler):
+        try:
+            dialog.satir_tablosu.bind("<Button-1>", handler, add="+")
+        except tk.TclError:
+            pass
     arac_cubugu_kur(dialog)
     baglam_menu_kur(dialog)
     kisayollar_kur(dialog)

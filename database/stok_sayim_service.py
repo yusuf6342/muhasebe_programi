@@ -107,6 +107,7 @@ class StokSayimService:
         fis_tarihi: date,
         satirlar: list[dict[str, Any]],
         aciklama: str | None = None,
+        sube_id: int | None = None,
     ) -> int:
         """
         Sayım satırlarını kaydeder ve farkları tek transaction içinde stoğa yansıtır.
@@ -118,12 +119,16 @@ class StokSayimService:
             raise ValueError("Sayım satırı yok.")
 
         with get_session() as session:
+            from database.sube_service import SubeService
+
+            sube_id = SubeService.transaction_subesi(session, sube_id)
             depo = session.get(Depo, int(depo_id))
             if not depo:
                 raise ValueError("Depo bulunamadı.")
 
             fis = StokSayimFisi(
                 fis_no=StokSayimService.fis_no(),
+                sube_id=sube_id,
                 fis_tarihi=fis_tarihi,
                 depo_id=depo.id,
                 durum="TASLAK",

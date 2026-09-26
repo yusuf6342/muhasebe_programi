@@ -24,6 +24,7 @@ EKRAN_ALIS = "alis_faturasi_satirlari"
 # id, baslik, genislik, min_w, max_w, gorunur, zorunlu
 FATURA_SATIR_KOLON_TANIM: dict[str, tuple[tuple[str, str, int, int, int, bool, bool], ...]] = {
     EKRAN_SATIS: (
+        ("sec", "☐", 36, 32, 48, True, True),
         ("sira", "Sıra", 48, 40, 80, True, False),
         ("urun_kodu", "Ürün Kodu", 95, 90, 220, True, False),
         ("urun_adi", "Ürün Adı", 220, 180, 500, True, True),
@@ -64,7 +65,7 @@ FATURA_SATIR_KOLON_TANIM: dict[str, tuple[tuple[str, str, int, int, int, bool, b
 _SAG_HIZA = frozenset(
     {"fiyat", "toplam", "miktar", "iskonto_tutar", "kdv_tutar", "kur", "net_birim"}
 )
-_ORTA_HIZA = frozenset({"sira", "birim", "para_birimi", "kdv"})
+_ORTA_HIZA = frozenset({"sec", "sira", "birim", "para_birimi", "kdv"})
 
 
 def _ayar_kimlik() -> tuple[str, str]:
@@ -185,10 +186,14 @@ def ayarlari_yukle(ekran_kodu: str) -> dict:
         sira = [k for k in (kayit.get("sira") or kayit.get("_sira") or []) if k in bilinen]
         for k in bilinen:
             if k not in sira:
-                if k == "net_birim" and "toplam" in sira:
+                if k == "sec":
+                    sira.insert(0, k)
+                elif k == "net_birim" and "toplam" in sira:
                     sira.insert(sira.index("toplam"), k)
                 else:
                     sira.append(k)
+        if "sec" in sira and sira[0] != "sec":
+            sira = ["sec"] + [k for k in sira if k != "sec"]
         zorunlu = zorunlu_kolonlar(ekran_kodu)
         kolonlar: dict = {}
         for anahtar, meta in bilinen.items():
@@ -267,7 +272,12 @@ def flat_to_nested(flat: dict, ekran_kodu: str) -> dict:
     sira = [k for k in (flat.get("_sira") or flat.get("sira") or []) if k in bilinen]
     for k in bilinen:
         if k not in sira:
-            sira.append(k)
+            if k == "sec":
+                sira.insert(0, k)
+            else:
+                sira.append(k)
+    if "sec" in sira and sira[0] != "sec":
+        sira = ["sec"] + [k for k in sira if k != "sec"]
     kolonlar = {}
     for k, meta in bilinen.items():
         cfg = flat.get(k) or {}
@@ -281,6 +291,8 @@ def flat_to_nested(flat: dict, ekran_kodu: str) -> dict:
             "max_width": meta["max_width"],
             "zorunlu": meta["zorunlu"],
         }
+    if "sec" in kolonlar:
+        kolonlar["sec"]["gorunur"] = True
     return {"sira": sira, "kolonlar": kolonlar, "_sira": sira}
 
 
@@ -310,7 +322,12 @@ def tabloya_uygula(tree: ttk.Treeview, ekran_kodu: str, ayarlar: dict | None = N
     sira = [k for k in (ayar.get("sira") or []) if k in bilinen]
     for k in bilinen:
         if k not in sira:
-            sira.append(k)
+            if k == "sec":
+                sira.insert(0, k)
+            else:
+                sira.append(k)
+    if "sec" in sira and sira[0] != "sec":
+        sira = ["sec"] + [k for k in sira if k != "sec"]
     ayar["sira"] = sira
     ayar["_sira"] = sira
 

@@ -20,6 +20,7 @@ class SatisSiparisi(Base):
     siparis_saati: Mapped[str | None] = mapped_column(String(8), nullable=True)
     termin_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     maliyet_yontemi: Mapped[str] = mapped_column(String(50), nullable=False)
     hedef_kar_marji: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)

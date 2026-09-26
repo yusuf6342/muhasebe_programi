@@ -129,6 +129,9 @@ class AlisSiparisiService:
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
             siparis.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            siparis.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             siparis.aciklama = veriler.get("aciklama")
             if siparis.durum == "İPTAL" and not siparis_id:
                 siparis.durum = "AÇIK"

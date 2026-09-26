@@ -11,6 +11,7 @@ from database.database import (
 # Modelleri sisteme tanıtıyoruz
 from database.models.firma import Firma
 from database.models.donem import Donem
+from database.models.sube import Sube  # noqa: F401
 from database.models.cari import Cari, CariIslem, CariYetkili, SatisHareketi  # noqa: F401
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
 from database.models.satis_teklifi import SatisTeklifi, SatisTeklifiSatiri  # noqa: F401

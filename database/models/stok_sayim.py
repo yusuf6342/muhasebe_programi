@@ -9,12 +9,14 @@ from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
+from database.models.sube import Sube  # noqa: F401
 
 
 class StokSayimFisi(Base):
     __tablename__ = "stok_sayim_fisleri"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     fis_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     fis_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     depo_id: Mapped[int] = mapped_column(ForeignKey("depolar.id"), nullable=False, index=True)

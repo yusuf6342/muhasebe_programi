@@ -1605,6 +1605,7 @@ class StokService:
         """Stok ara. limit verilirse en fazla o kadar kayıt döner (fatura araması).
 
         Dolu sorguda çoklu blok / sıra bağımsız SearchService kullanılır.
+        Boş aramada limit yoksa en fazla 500 kart (UI donmasını önler).
         """
         ham = (arama or "").strip()
         if ham:
@@ -1630,8 +1631,9 @@ class StokService:
                 )
                 .order_by(StokKarti.stok_adi)
             )
-            if limit is not None:
-                q = q.limit(max(1, min(int(limit), 200)))
+            # Boş liste: varsayılan üst sınır (tüm stokları Treeview'a basmayı engelle)
+            lim = 500 if limit is None else max(1, min(int(limit), 2000))
+            q = q.limit(lim)
             return list(session.scalars(q).all())
 
     @staticmethod
@@ -3594,11 +3596,15 @@ class StokService:
         fis_no = (veriler.get("fis_no") or "").strip() or StokService.depo_transfer_fis_no()
 
         with get_session() as session:
+            from database.sube_service import SubeService
+
+            sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             if session.scalar(select(DepoTransferFisi).where(DepoTransferFisi.fis_no == fis_no)):
                 raise ValueError(f"{fis_no} numaralı fiş zaten var.")
             genel = Decimal("0")
             fis = DepoTransferFisi(
                 fis_no=fis_no,
+                sube_id=sube_id,
                 fis_tarihi=tarih,
                 cikis_depo=cikis,
                 giris_depo=giris,

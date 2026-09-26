@@ -442,6 +442,9 @@ class SatisFaturasiService:
             for alan in ("cari_id", "siparis_id", "irsaliye_id", "depo", "aciklama", "dokuman_yolu"):
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            fatura.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             adres_no = veriler.get("adres_no")
             try:
                 fatura.adres_no = int(adres_no) if adres_no not in (None, "") else None

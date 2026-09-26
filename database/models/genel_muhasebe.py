@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
+from database.models.sube import Sube  # noqa: F401
 
 HESAP_TURLERI = ("Aktif", "Pasif", "Gelir", "Gider", "Nazım")
 
@@ -115,6 +116,7 @@ class MuhasebeFisi(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     firma_id: Mapped[int] = mapped_column(ForeignKey("firmalar.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     donem_id: Mapped[Optional[int]] = mapped_column(ForeignKey("donemler.id"), nullable=True)
     mali_yil: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     fis_no: Mapped[str] = mapped_column(String(40), nullable=False)

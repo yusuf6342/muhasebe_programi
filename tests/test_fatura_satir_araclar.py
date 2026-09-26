@@ -101,6 +101,18 @@ class CogaltTasiSilTest(unittest.TestCase):
         self.assertEqual([s["urun_kodu"] for s in d.satirlar], ["B"])
 
     @patch("fatura_satir_araclar.messagebox")
+    @patch("fatura_satir_araclar._audit_satir_sil")
+    def test_isaretli_satirlari_sil(self, _audit, mb):
+        """Checkbox (☐/☑) işaretleri Treeview seçiminden önce gelir."""
+        d = _dialog([_satir(urun_kodu="A"), _satir(urun_kodu="B"), _satir(urun_kodu="C")])
+        d._satir_isaretleri = {0, 2}
+        d.satir_tablosu.selection.return_value = ("1",)  # yok sayılmalı
+        mb.askyesno.return_value = True
+        araclar.satir_sil(d)
+        self.assertEqual([s["urun_kodu"] for s in d.satirlar], ["B"])
+        self.assertEqual(d._satir_isaretleri, set())
+
+    @patch("fatura_satir_araclar.messagebox")
     def test_iskontoyu_temizle(self, mb):
         d = _dialog([_satir(iskonto_orani="15", iskonto_orani_2="5")])
         d.satir_tablosu.selection.return_value = ("0",)

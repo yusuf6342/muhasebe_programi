@@ -159,6 +159,9 @@ class AlisIrsaliyesiService:
                 session.add(irsaliye)
             irsaliye.irsaliye_tarihi = irsaliye_tarihi
             irsaliye.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            irsaliye.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             irsaliye.siparis_id = veriler.get("siparis_id")
             irsaliye.aciklama = veriler.get("aciklama")
             irsaliye.ayrintili_notlar = veriler.get("ayrintili_notlar")

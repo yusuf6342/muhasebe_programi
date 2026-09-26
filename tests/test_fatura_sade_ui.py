@@ -31,6 +31,7 @@ class KolonTanimTest(unittest.TestCase):
         self.assertEqual(
             anahtarlar,
             [
+                "sec",
                 "sira",
                 "urun_kodu",
                 "urun_adi",
@@ -50,8 +51,9 @@ class KolonTanimTest(unittest.TestCase):
             ],
         )
         # Eski satır formu kolonları yok
-        for eski in ("sec", "lot", "net_birim_kdv", "irsaliye"):
+        for eski in ("lot", "net_birim_kdv", "irsaliye"):
             self.assertNotIn(eski, anahtarlar)
+        self.assertEqual(anahtarlar[0], "sec")
 
     def test_duzenlenebilir_kolonlar(self):
         for k in (

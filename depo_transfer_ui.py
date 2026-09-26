@@ -72,9 +72,16 @@ class DepoTransferFisiDialog(tk.Toplevel):
             elif depolar:
                 self.giris_depo.current(0)
 
-        ttk.Label(ust, text="Açıklama").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(ust, text="Şube").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        from sube_ui import sube_secim_hazirla
+
+        self.sube, self._sube_map = sube_secim_hazirla(
+            ust, getattr(fis, "sube_id", None) if fis else None
+        )
+        self.sube.grid(row=2, column=1, sticky="w", padx=4, pady=4)
+        ttk.Label(ust, text="Açıklama").grid(row=2, column=2, sticky="w", padx=4, pady=4)
         self.aciklama = ttk.Entry(ust, width=70)
-        self.aciklama.grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=4)
+        self.aciklama.grid(row=2, column=3, sticky="ew", padx=4, pady=4)
         if fis and fis.aciklama:
             self.aciklama.insert(0, fis.aciklama)
 
@@ -332,6 +339,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
                     "fis_tarihi": tarih,
                     "cikis_depo": self.cikis_depo.get(),
                     "giris_depo": self.giris_depo.get(),
+                    "sube_id": self._sube_map.get(self.sube.get()),
                     "aciklama": self.aciklama.get().strip(),
                 },
                 self.satirlar,

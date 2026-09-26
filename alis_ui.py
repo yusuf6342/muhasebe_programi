@@ -342,6 +342,13 @@ class AlisSiparisiDialog(tk.Toplevel):
         )
         self.durum.pack(fill="x")
         self.durum.set(self.siparis.durum if self.siparis else "AÇIK")
+        ttk.Label(bakiye_karti, text="Şube").pack(anchor="w", pady=(8, 0))
+        from sube_ui import sube_secim_hazirla
+
+        self.sube, self._sube_map = sube_secim_hazirla(
+            bakiye_karti, getattr(self.siparis, "sube_id", None) if self.siparis else None
+        )
+        self.sube.pack(fill="x")
 
     def _termin_tarih_uygula(self, _event=None):
         try:
@@ -573,6 +580,7 @@ class AlisSiparisiDialog(tk.Toplevel):
                 "siparis_tarihi": datetime.strptime(self.girdiler["siparis_tarihi"].get(), "%d.%m.%Y").date(),
                 "termin_tarihi": datetime.strptime(self.girdiler["termin_tarihi"].get(), "%d.%m.%Y").date(),
                 "cari_id": tedarikci.id,
+                "sube_id": self._sube_map.get(self.sube.get()),
                 "aciklama": self.girdiler["aciklama"].get().strip() or None,
                 "row_version": int(getattr(self.siparis, "row_version", 1) or 1) if self.siparis else None,
             }
@@ -630,6 +638,13 @@ class AlisIrsaliyesiDialog(tk.Toplevel):
         self.aciklama = ttk.Entry(ust, width=42)
         ttk.Label(ust, text="Açıklama").grid(row=3, column=0, sticky="w")
         self.aciklama.grid(row=3, column=1, sticky="w", padx=6)
+        ttk.Label(ust, text="Şube").grid(row=4, column=0, sticky="w")
+        from sube_ui import sube_secim_hazirla
+
+        self.sube, self._sube_map = sube_secim_hazirla(
+            ust, getattr(irsaliye, "sube_id", None) if irsaliye else getattr(siparis, "sube_id", None)
+        )
+        self.sube.grid(row=4, column=1, sticky="w", padx=6)
 
         orta = ttk.LabelFrame(self, text="Satırlar", padding=8)
         orta.pack(fill="both", expand=True, padx=10)
@@ -763,6 +778,7 @@ class AlisIrsaliyesiDialog(tk.Toplevel):
                 {
                     "irsaliye_tarihi": datetime.strptime(self.tarih.get(), "%d.%m.%Y").date(),
                     "cari_id": tedarikci.id,
+                    "sube_id": self._sube_map.get(self.sube.get()),
                     "siparis_id": siparis_id,
                     "aciklama": self.aciklama.get().strip() or None,
                     "ayrintili_notlar": None,
@@ -1268,6 +1284,17 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.girdiler["fatura_tarihi"].bind("<FocusOut>", self.vade_gun_degisti)
         self.girdiler["vade_tarihi"].bind("<FocusOut>", self.vade_tarih_degisti)
         self.girdiler["vade_gunu"].bind("<KeyRelease>", self.vade_gun_degisti)
+
+        ttk.Label(genel, text="Şube").grid(row=8, column=0, padx=8, pady=5, sticky="w")
+        from sube_ui import sube_secim_hazirla
+
+        kaynak_sube_id = (
+            getattr(self.fatura, "sube_id", None)
+            or getattr(self.kaynak_irsaliye, "sube_id", None)
+            or getattr(self.kaynak_siparis, "sube_id", None)
+        )
+        self.sube, self._sube_map = sube_secim_hazirla(genel, kaynak_sube_id)
+        self.sube.grid(row=8, column=1, padx=8, pady=5, sticky="ew")
 
         ttk.Label(genel, text="Tedarikçi").grid(row=5, column=0, padx=8, pady=5, sticky="w")
         self.tedarikci = tk.StringVar()
@@ -2462,6 +2489,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "islem_saati": islem_saati,
                 "vade_tarihi": vade_tarihi,
                 "cari_id": tedarikci.id,
+                "sube_id": self._sube_map.get(self.sube.get()),
                 "siparis_id": siparis_id,
                 "irsaliye_id": irsaliye_id,
                 "depo": self.depo.get(),
@@ -2564,6 +2592,12 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
         self.kaynak_lbl = ttk.Label(ust, text=kaynak_fatura.fatura_no if kaynak_fatura else "-")
         self.kaynak_lbl.grid(row=3, column=1, sticky="w", padx=6)
         ttk.Button(ust, text="Kaynak Fatura Seç", command=self.kaynak_sec).grid(row=3, column=2, padx=6)
+        ttk.Label(ust, text="Şube").grid(row=3, column=3, sticky="w", padx=(12, 0))
+        from sube_ui import sube_secim_hazirla
+
+        kaynak_sube_id = getattr(iade, "sube_id", None) if iade else getattr(kaynak_fatura, "sube_id", None)
+        self.sube, self._sube_map = sube_secim_hazirla(ust, kaynak_sube_id)
+        self.sube.grid(row=3, column=4, padx=6, sticky="w")
         ttk.Label(ust, text="İade Ödeme").grid(row=4, column=0, sticky="w")
         self.iade_odeme_tutari = ttk.Entry(ust, width=16)
         self.iade_odeme_tutari.insert(0, "0")
@@ -2679,6 +2713,7 @@ class AlisIadeFaturasiDialog(tk.Toplevel):
             veriler = {
                 "iade_tarihi": datetime.strptime(self.tarih.get(), "%d.%m.%Y").date(),
                 "cari_id": tedarikci.id,
+                "sube_id": self._sube_map.get(self.sube.get()),
                 "kaynak_fatura_id": self.kaynak.id if self.kaynak else None,
                 "depo": self.depo.get() or "ANA DEPO",
                 "aciklama": self.aciklama.get().strip() or None,

@@ -19,6 +19,7 @@ class SatisIrsaliyesi(Base):
     irsaliye_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     irsaliye_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     siparis_id: Mapped[int | None] = mapped_column(ForeignKey("satis_siparisleri.id"), nullable=True, index=True)
     # Legacy "AÇIK" rows remain readable; new docs use TASLAK / SEVK EDİLDİ etc.
     durum: Mapped[str] = mapped_column(String(40), nullable=False, default="TASLAK")

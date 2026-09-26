@@ -47,7 +47,7 @@ class RaporService:
         """Cari bakiye durumu. cari_turu verilirse sadece o tür (Müşteri/Tedarikçi)."""
         bugun = date.today()
         sonuc = []
-        for ozet in CariService.listele(cari_turu=cari_turu):
+        for ozet in CariService.listele(cari_turu=cari_turu, hizli=True):
             cari = ozet["cari"]
             if (cari.cari_turu or "") == "Tedarikçi":
                 vade_ozet = AlisFaturasiService.bakiye_ozeti(cari.id)
@@ -509,7 +509,7 @@ class RaporService:
                 key=str.casefold,
             )
             # Cari kartındaki tedarikçileri de ekle
-            for ozet in CariService.listele(cari_turu="Tedarikçi"):
+            for ozet in CariService.listele(cari_turu="Tedarikçi", hizli=True):
                 ad = (ozet["cari"].unvan or "").strip()
                 if ad and ad not in tedarikciler:
                     tedarikciler.append(ad)

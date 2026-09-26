@@ -745,8 +745,6 @@ def giris_dashboard_goster(app) -> None:
     for c in range(4):
         kartlar_f.columnconfigure(c, weight=1, uniform="ozet")
 
-    ozet = ozet_verileri_topla()
-
     def _kart(parent, col, baslik, deger, alt, renk_cizgi=SARI):
         k = tk.Frame(parent, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
         k.grid(row=0, column=col, sticky="nsew", padx=6, pady=2)
@@ -754,12 +752,15 @@ def giris_dashboard_goster(app) -> None:
         gov = tk.Frame(k, bg=BEYAZ)
         gov.pack(fill="both", expand=True, padx=14, pady=12)
         tk.Label(gov, text=baslik, bg=BEYAZ, fg=PASIF, font=FONT_ALT).pack(anchor="w")
-        tk.Label(gov, text=deger, bg=BEYAZ, fg=LACIVERT, font=("Segoe UI", 16, "bold")).pack(
-            anchor="w", pady=(6, 2)
+        deger_lbl = tk.Label(
+            gov, text=deger, bg=BEYAZ, fg=LACIVERT, font=("Segoe UI", 16, "bold")
         )
-        tk.Label(gov, text=alt, bg=BEYAZ, fg=PASIF, font=FONT_KUCUK, wraplength=180, justify="left").pack(
-            anchor="w"
+        deger_lbl.pack(anchor="w", pady=(6, 2))
+        alt_lbl = tk.Label(
+            gov, text=alt, bg=BEYAZ, fg=PASIF, font=FONT_KUCUK, wraplength=180, justify="left"
         )
+        alt_lbl.pack(anchor="w")
+        return deger_lbl, alt_lbl
 
     def _deger_para(v):
         if v is None:
@@ -771,30 +772,42 @@ def giris_dashboard_goster(app) -> None:
             return "—"
         return sayi_tr(v)
 
-    bekleyen = "Veri bağlantısı bekleniyor" if not ozet.get("baglanti_ok") else "Bugün"
-    _kart(
-        kartlar_f, 0, "Bugünkü Satış",
-        _deger_para(ozet.get("bugunku_satis")),
-        bekleyen if ozet.get("bugunku_satis") is None else "Onaylı satış faturaları",
-    )
-    _kart(
-        kartlar_f, 1, "Bugünkü Tahsilat",
-        _deger_para(ozet.get("bugunku_tahsilat")),
-        "Tahsilat makbuzları" if ozet.get("bugunku_tahsilat") is not None else "Veri bağlantısı bekleniyor",
-        BASARI,
-    )
-    _kart(
-        kartlar_f, 2, "Toplam Cari Alacak",
-        _deger_para(ozet.get("cari_alacak")),
-        "Müşteri bakiyeleri (+)" if ozet.get("cari_alacak") is not None else "Veri bağlantısı bekleniyor",
-        UYARI,
-    )
-    _kart(
-        kartlar_f, 3, "Kritik Stok",
-        _deger_sayi(ozet.get("kritik_stok")),
-        ozet.get("kritik_aciklama") or "Veri bağlantısı bekleniyor",
-        UYARI,
-    )
+    # Önce yer tutucu; ağır sorgu arka planda
+    d0, a0 = _kart(kartlar_f, 0, "Bugünkü Satış", "…", "Yükleniyor…")
+    d1, a1 = _kart(kartlar_f, 1, "Bugünkü Tahsilat", "…", "Yükleniyor…", BASARI)
+    d2, a2 = _kart(kartlar_f, 2, "Toplam Cari Alacak", "…", "Yükleniyor…", UYARI)
+    d3, a3 = _kart(kartlar_f, 3, "Kritik Stok", "…", "Yükleniyor…", UYARI)
+
+    def _ozet_doldur(ozet):
+        if not app.winfo_exists() or not kartlar_f.winfo_exists():
+            return
+        bekleyen = "Veri bağlantısı bekleniyor" if not ozet.get("baglanti_ok") else "Bugün"
+        d0.configure(text=_deger_para(ozet.get("bugunku_satis")))
+        a0.configure(
+            text=bekleyen if ozet.get("bugunku_satis") is None else "Onaylı satış faturaları"
+        )
+        d1.configure(text=_deger_para(ozet.get("bugunku_tahsilat")))
+        a1.configure(
+            text=(
+                "Tahsilat makbuzları"
+                if ozet.get("bugunku_tahsilat") is not None
+                else "Veri bağlantısı bekleniyor"
+            )
+        )
+        d2.configure(text=_deger_para(ozet.get("cari_alacak")))
+        a2.configure(
+            text=(
+                "Müşteri bakiyeleri (+)"
+                if ozet.get("cari_alacak") is not None
+                else "Veri bağlantısı bekleniyor"
+            )
+        )
+        d3.configure(text=_deger_sayi(ozet.get("kritik_stok")))
+        a3.configure(text=ozet.get("kritik_aciklama") or "Veri bağlantısı bekleniyor")
+
+    from ui_bg import arka_planda
+
+    arka_planda(app, ozet_verileri_topla, on_ok=_ozet_doldur, on_err=lambda _e: _ozet_doldur({}))
 
     # —— Modül kartları ——
     tk.Label(

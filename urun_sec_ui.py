@@ -405,53 +405,98 @@ class UrunSecDialog(tk.Toplevel):
         self._hover_iid = None
         for item in self.tablo.get_children():
             self.tablo.delete(item)
+        if getattr(self, "kayit_sayisi", None):
+            self.kayit_sayisi.configure(text="Aranıyor…")
 
-        if self.ayrintili:
+        ayrintili = self.ayrintili
+        sadece_stokta = self.sadece_stokta
+        depo_ad = self.depo_ad
+        token = getattr(self, "_liste_token", 0) + 1
+        self._liste_token = token
+
+        if ayrintili:
             hizli = self.kod_filtre.get().strip()
             kelimeler = self._ayrinti_kelimeler()
             yontem = self._ayrinti_yontem_kod()
-            self._urunler = StokService.stoklari_ayrintili_ara(
-                kelimeler,
-                yontem=yontem,
-                hizli_arama=hizli,
-                min_harf=2,
-            )
-            if self.sadece_stokta:
-                depo = self.depo_ad
-                filtrelenmis = []
-                for stok in self._urunler:
-                    mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
-                    if depo:
+
+            def _yukle():
+                urunler = StokService.stoklari_ayrintili_ara(
+                    kelimeler,
+                    yontem=yontem,
+                    hizli_arama=hizli,
+                    min_harf=2,
+                )
+                if sadece_stokta:
+                    depo = depo_ad
+                    filtrelenmis = []
+                    for stok in urunler:
                         mevcut = sum(
-                            (
-                                lot.kalan_miktar
-                                for lot in (stok.lotlar or [])
-                                if (getattr(getattr(lot, "depo", None), "ad", None) or "") == depo
-                            ),
+                            (lot.kalan_miktar for lot in (stok.lotlar or [])),
                             Decimal("0"),
                         )
-                    if mevcut > 0:
-                        filtrelenmis.append(stok)
-                self._urunler = filtrelenmis
+                        if depo:
+                            mevcut = sum(
+                                (
+                                    lot.kalan_miktar
+                                    for lot in (stok.lotlar or [])
+                                    if (getattr(getattr(lot, "depo", None), "ad", None) or "")
+                                    == depo
+                                ),
+                                Decimal("0"),
+                            )
+                        if mevcut > 0:
+                            filtrelenmis.append(stok)
+                    urunler = filtrelenmis
+                return urunler
+
         else:
             kod = self.kod_filtre.get().strip()
             ad = self.ad_filtre.get().strip()
             from database.search_service import tokenize_query
 
             birlesik = " ".join(p for p in (kod, ad) if p).strip()
-            # Geçerli ≥2 karakterlik blok yoksa listeyi boşalt
-            if not tokenize_query(birlesik):
-                self._urunler = []
-            else:
-                self._urunler = StokService.stoklari_filtrele(
+
+            def _yukle():
+                if not tokenize_query(birlesik):
+                    return []
+                return StokService.stoklari_filtrele(
                     kod=kod,
                     ad=ad,
                     limit=80,
-                    sadece_stokta=self.sadece_stokta,
-                    depo_ad=self.depo_ad if self.sadece_stokta else None,
+                    sadece_stokta=sadece_stokta,
+                    depo_ad=depo_ad if sadece_stokta else None,
                     kelime_sirasiz=True,
                     min_ad_harf=2,
                 )
+
+        def _doldur(urunler):
+            if getattr(self, "_liste_token", 0) != token:
+                return
+            if not self.winfo_exists():
+                return
+            self._urunler = urunler or []
+            self._listeyi_tabloya_yaz()
+
+        def _hata(exc):
+            if getattr(self, "_liste_token", 0) != token:
+                return
+            if getattr(self, "kayit_sayisi", None):
+                self.kayit_sayisi.configure(text="Arama hatası")
+            try:
+                from tkinter import messagebox
+
+                messagebox.showerror("Ürün seçimi", str(exc), parent=self)
+            except Exception:
+                pass
+
+        from ui_bg import arka_planda
+
+        arka_planda(self, _yukle, on_ok=_doldur, on_err=_hata)
+
+    def _listeyi_tabloya_yaz(self):
+        """Arama sonucu hazır; Treeview'ı doldur (ana thread)."""
+        for item in self.tablo.get_children():
+            self.tablo.delete(item)
 
         for sira, stok in enumerate(self._urunler):
             fiyat = _satis_fiyati_nesneden(stok)

@@ -107,13 +107,18 @@ class GiderFisiDialog(tk.Toplevel):
         ttk.Label(form, text="Açıklama").grid(row=4, column=0, sticky="nw", padx=4, pady=6)
         self.aciklama = ttk.Entry(form, width=42)
         self.aciklama.grid(row=4, column=1, sticky="ew", padx=4, pady=6)
+        ttk.Label(form, text="Şube *").grid(row=5, column=0, sticky="w", padx=4, pady=6)
+        from sube_ui import sube_secim_hazirla
+
+        self.sube, self._sube_map = sube_secim_hazirla(form)
+        self.sube.grid(row=5, column=1, sticky="w", padx=4, pady=6)
 
         ttk.Label(
             form,
             text="Cari hesap gerekmez. Örnek: kasadan ekmek alımı → işletme gideri hizmet kartı.",
             foreground="#555",
             wraplength=420,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         alt = ttk.Frame(self, padding=(14, 8))
         alt.pack(fill="x", side="bottom")
@@ -179,6 +184,7 @@ class GiderFisiDialog(tk.Toplevel):
                     "hizmet_id": self.hizmet_id,
                     "tutar": tutar,
                     "aciklama": self.aciklama.get().strip() or None,
+                    "sube_id": self._sube_map.get(self.sube.get()),
                 }
             )
         except ValueError as hata:

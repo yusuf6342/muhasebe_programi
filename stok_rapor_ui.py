@@ -116,30 +116,48 @@ def rapor_envanter(app):
             messagebox.showerror("Tarih", str(hata), parent=app)
             return
         depo_adi = None if depo.get() == "(Tümü)" else depo.get()
-        rapor = RaporService.stok_envanter(
-            tarih=t,
-            maliyet_yontemi=maliyet.get(),
-            depo_adi=depo_adi,
-            stok_filtre=stok.get().strip() or None,
-        )
-        ozet.configure(
-            text=(
-                f"Tarih: {_tarih(rapor['tarih'])}  |  {rapor['maliyet_yontemi']}  |  "
-                f"Satır: {len(rapor['satirlar'])}  |  "
-                f"Toplam tutar: {_para(rapor['toplam_tutar'])}"
+        maliyet_adi = maliyet.get()
+        stok_f = stok.get().strip() or None
+        ozet.configure(text="Rapor hesaplanıyor…")
+
+        def _yukle():
+            return RaporService.stok_envanter(
+                tarih=t,
+                maliyet_yontemi=maliyet_adi,
+                depo_adi=depo_adi,
+                stok_filtre=stok_f,
             )
-        )
-        for item in tablo.get_children():
-            tablo.delete(item)
-        for s in rapor["satirlar"]:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["stok_kodu"], s["stok_adi"], s["kart_turu"], s["depo"], s["birim"],
-                    s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
-                ),
+
+        def _ok(rapor):
+            if not app.winfo_exists():
+                return
+            ozet.configure(
+                text=(
+                    f"Tarih: {_tarih(rapor['tarih'])}  |  {rapor['maliyet_yontemi']}  |  "
+                    f"Satır: {len(rapor['satirlar'])}  |  "
+                    f"Toplam tutar: {_para(rapor['toplam_tutar'])}"
+                )
             )
+            for item in tablo.get_children():
+                tablo.delete(item)
+            for s in rapor["satirlar"]:
+                tablo.insert(
+                    "",
+                    "end",
+                    values=(
+                        s["stok_kodu"], s["stok_adi"], s["kart_turu"], s["depo"], s["birim"],
+                        s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
+                    ),
+                )
+
+        def _err(exc):
+            if app.winfo_exists():
+                ozet.configure(text="Rapor alınamadı.")
+                messagebox.showerror("Stok envanter", str(exc), parent=app)
+
+        from ui_bg import arka_planda
+
+        arka_planda(app, _yukle, on_ok=_ok, on_err=_err)
 
     ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=10)
     getir()
@@ -169,22 +187,17 @@ def rapor_kar_zarar(app):
     filtre2 = ttk.Frame(app.icerik)
     filtre2.pack(fill="x", pady=4)
 
-    musteriler = CariService.listele(cari_turu="Müşteri", hizli=True)
-    cari_map = {"(Tümü)": None}
-    cari_map.update({f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in musteriler})
     ttk.Label(filtre2, text="Cari:").pack(side="left")
-    cari = ttk.Combobox(filtre2, values=list(cari_map), width=28, state="readonly")
+    cari = ttk.Combobox(filtre2, values=["(Tümü)"], width=28, state="readonly")
     cari.set("(Tümü)")
     cari.pack(side="left", padx=4)
+    cari_map = {"(Tümü)": None}
 
     ttk.Label(filtre2, text="Stok:").pack(side="left", padx=(8, 2))
-    stoklar = StokService.stoklari_ara()
-    stok_degerler = ["(Tümü)"] + [f"{s.stok_kodu} - {s.stok_adi}" for s in stoklar]
-    stok_kod_map = {"(Tümü)": None}
-    stok_kod_map.update({f"{s.stok_kodu} - {s.stok_adi}": s.stok_kodu for s in stoklar})
-    stok = ttk.Combobox(filtre2, values=stok_degerler, width=22)
+    stok = ttk.Combobox(filtre2, values=["(Tümü)"], width=22)
     stok.set("(Tümü)")
     stok.pack(side="left", padx=2)
+    stok_kod_map = {"(Tümü)": None}
 
     ttk.Label(filtre2, text="Lot:").pack(side="left", padx=(8, 2))
     lot = ttk.Combobox(filtre2, width=14)
@@ -213,9 +226,35 @@ def rapor_kar_zarar(app):
         else:
             tedarikci.set("(Tümü)")
 
+    def _filtre_seceneklerini_yukle():
+        def _yukle():
+            musteriler = CariService.listele(cari_turu="Müşteri", hizli=True)
+            stoklar = StokService.stoklari_ara(limit=400)
+            return musteriler, stoklar
+
+        def _ok(paket):
+            if not app.winfo_exists():
+                return
+            musteriler, stoklar = paket
+            cari_map.clear()
+            cari_map["(Tümü)"] = None
+            cari_map.update(
+                {f"{o['cari'].cari_kodu} - {o['cari'].unvan}": o["cari"].id for o in musteriler}
+            )
+            cari["values"] = list(cari_map)
+            stok_kod_map.clear()
+            stok_kod_map["(Tümü)"] = None
+            stok_kod_map.update({f"{s.stok_kodu} - {s.stok_adi}": s.stok_kodu for s in stoklar})
+            stok["values"] = ["(Tümü)"] + [f"{s.stok_kodu} - {s.stok_adi}" for s in stoklar]
+            _filtre_listelerini_yenile()
+
+        from ui_bg import arka_planda
+
+        arka_planda(app, _yukle, on_ok=_ok)
+
     stok.bind("<<ComboboxSelected>>", _filtre_listelerini_yenile)
     stok.bind("<FocusOut>", _filtre_listelerini_yenile)
-    _filtre_listelerini_yenile()
+    _filtre_seceneklerini_yukle()
 
     ttk.Label(filtre2, text="Maliyet:").pack(side="left", padx=(8, 2))
     maliyet = ttk.Combobox(filtre2, values=MALIYET_YONTEMLERI_RAPOR, state="readonly", width=22)
@@ -248,37 +287,57 @@ def rapor_kar_zarar(app):
         if stok_sec is None and stok.get() and stok.get() != "(Tümü)":
             metin = stok.get().strip()
             stok_sec = metin.split(" - ", 1)[0].strip() if " - " in metin else metin
-        rapor = RaporService.stok_kar_zarar(
-            baslangic=b,
-            bitis=e,
-            stok=stok_sec,
-            cari_id=cari_map.get(cari.get()),
-            lot=_secim_veya_bos(lot),
-            tedarikci=_secim_veya_bos(tedarikci),
-            maliyet_yontemi=maliyet.get(),
-        )
-        ozet.configure(
-            text=(
-                f"{rapor['maliyet_yontemi']}  |  Satır: {len(rapor['satirlar'])}  |  "
-                f"Satış: {_para(rapor['toplam_satis'])}  |  "
-                f"Maliyet: {_para(rapor['toplam_maliyet'])}  |  "
-                f"Kâr: {_para(rapor['toplam_kar'])}  |  Marj: {rapor['toplam_marj']:.1f}%"
+        cari_id = cari_map.get(cari.get())
+        lot_v = _secim_veya_bos(lot)
+        ted_v = _secim_veya_bos(tedarikci)
+        maliyet_adi = maliyet.get()
+        ozet.configure(text="Rapor hesaplanıyor…")
+
+        def _yukle():
+            return RaporService.stok_kar_zarar(
+                baslangic=b,
+                bitis=e,
+                stok=stok_sec,
+                cari_id=cari_id,
+                lot=lot_v,
+                tedarikci=ted_v,
+                maliyet_yontemi=maliyet_adi,
             )
-        )
-        for item in tablo.get_children():
-            tablo.delete(item)
-        for s in rapor["satirlar"]:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["fatura_no"], _tarih(s["tarih"]),
-                    f"{s['cari_kodu']} - {s['cari_unvan']}"[:28],
-                    s["urun_kodu"], s["urun_adi"][:24], s["lot"][:18],
-                    s["miktar"], _para(s["net_satis"]), _para(s["toplam_maliyet"]),
-                    _para(s["kar"]), f"{s['marj']:.1f}",
-                ),
+
+        def _ok(rapor):
+            if not app.winfo_exists():
+                return
+            ozet.configure(
+                text=(
+                    f"{rapor['maliyet_yontemi']}  |  Satır: {len(rapor['satirlar'])}  |  "
+                    f"Satış: {_para(rapor['toplam_satis'])}  |  "
+                    f"Maliyet: {_para(rapor['toplam_maliyet'])}  |  "
+                    f"Kâr: {_para(rapor['toplam_kar'])}  |  Marj: {rapor['toplam_marj']:.1f}%"
+                )
             )
+            for item in tablo.get_children():
+                tablo.delete(item)
+            for s in rapor["satirlar"]:
+                tablo.insert(
+                    "",
+                    "end",
+                    values=(
+                        s["fatura_no"], _tarih(s["tarih"]),
+                        f"{s['cari_kodu']} - {s['cari_unvan']}"[:28],
+                        s["urun_kodu"], s["urun_adi"][:24], s["lot"][:18],
+                        s["miktar"], _para(s["net_satis"]), _para(s["toplam_maliyet"]),
+                        _para(s["kar"]), f"{s['marj']:.1f}",
+                    ),
+                )
+
+        def _err(exc):
+            if app.winfo_exists():
+                ozet.configure(text="Rapor alınamadı.")
+                messagebox.showerror("Stok kâr/zarar", str(exc), parent=app)
+
+        from ui_bg import arka_planda
+
+        arka_planda(app, _yukle, on_ok=_ok, on_err=_err)
 
     ttk.Button(filtre2, text="Raporu Getir", command=getir).pack(side="left", padx=10)
     getir()

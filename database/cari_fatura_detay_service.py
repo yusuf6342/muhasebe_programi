@@ -342,6 +342,7 @@ class CariFaturaDetayService:
                         oz["lotlar"].append(str(lot.lot_no))
 
             kod_to_stok_id: dict[str, int] = {}
+            kod_to_barkod: dict[str, str] = {}
             kodlar = {(getattr(s, "urun_kodu", None) or "").strip() for s in satirlar_orm}
             kodlar.discard("")
             if kodlar:
@@ -349,6 +350,8 @@ class CariFaturaDetayService:
                     select(StokKarti).where(StokKarti.stok_kodu.in_(list(kodlar)))
                 ):
                     kod_to_stok_id[sk.stok_kodu] = int(sk.id)
+                    if getattr(sk, "barkod", None):
+                        kod_to_barkod[sk.stok_kodu] = str(sk.barkod)
 
             depo_map: dict[int, str] = {}
             if stok_hareketleri:
@@ -429,6 +432,7 @@ class CariFaturaDetayService:
                     {
                         "sira": sira,
                         "urun_kodu": kod,
+                        "barkod": kod_to_barkod.get(kod, ""),
                         "urun_adi": getattr(satir, "urun_adi", "") or "",
                         "aciklama": (getattr(satir, "aciklama", None) or "")[:80],
                         "miktar": miktar,

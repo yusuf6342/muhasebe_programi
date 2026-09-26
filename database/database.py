@@ -269,6 +269,42 @@ def sistem_altyapisini_baslat() -> dict:
 
 def cari_kart_schemasini_guncelle() -> None:
     """Eksik cari alanlarını mevcut SQLite tablosuna veri kaybetmeden ekler."""
+    from database.models.firma import Firma
+    from database.models.sube import Sube
+    from database.sube_service import SubeService
+
+    Sube.__table__.create(bind=engine, checkfirst=True)
+    with get_session() as session:
+        firma_ids = [int(firma_id) for firma_id in session.scalars(select(Firma.id))]
+    if len(firma_ids) > 1:
+        raise RuntimeError(
+            "Şube migrationı durduruldu: aynı operasyon veritabanında birden fazla firma var; "
+            "eski evrakların hangi firmaya ait olduğu güvenle belirlenemiyor."
+        )
+    merkez_id = None
+    if firma_ids:
+        merkez_id = int(SubeService.merkez_hazirla(firma_ids[0]).id)
+    evrak_tablolari = (
+        "satis_teklifleri", "satis_siparisleri", "alis_siparisleri",
+        "satis_irsaliyeleri", "alis_irsaliyeleri", "satis_faturalari",
+        "alis_faturalari", "satis_iade_faturalari", "alis_iade_faturalari",
+        "finans_hareketleri", "gider_fisleri", "kasa_makbuzlari",
+        "muhasebe_fisleri", "stok_hareketleri", "depo_transfer_fisleri",
+        "stok_sayim_fisleri",
+    )
+    for tablo in evrak_tablolari:
+        if not inspect(engine).has_table(tablo):
+            continue
+        sutunlar = {s["name"] for s in inspect(engine).get_columns(tablo)}
+        with engine.begin() as connection:
+            if "sube_id" not in sutunlar:
+                connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "sube_id" INTEGER'))
+            if merkez_id is not None:
+                connection.execute(
+                    text(f'UPDATE "{tablo}" SET "sube_id" = :merkez WHERE "sube_id" IS NULL'),
+                    {"merkez": merkez_id},
+                )
+
     tablo = "cari_kartlar"
     mevcut_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(tablo)}
     eklenecekler = {

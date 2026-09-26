@@ -106,31 +106,43 @@ def gelir_tablosu_sayfasi_goster(app):
         if b > e:
             messagebox.showwarning("Tarih", "Başlangıç bitişten sonra olamaz.", parent=app)
             return
-        try:
-            veri = RaporService.gelir_tablosu(
+        yontem_adi = yontem.get().strip() or "FIFO"
+        ozet_etiket.configure(text="Hesaplanıyor…")
+
+        def _yukle():
+            return RaporService.gelir_tablosu(
                 baslangic=b,
                 bitis=e,
-                maliyet_yontemi=yontem.get().strip() or "FIFO",
+                maliyet_yontemi=yontem_adi,
             )
-        except Exception as hata:
-            messagebox.showerror("Gelir Tablosu", str(hata), parent=app)
-            return
 
-        _tabloyu_doldur(tablo, veri["satirlar"])
-        o = veri["ozet"]
-        net = o["net_kar"]
-        net_metin = f"Net kâr: {_para(net)}" if net >= 0 else f"Net zarar: {_para(abs(net))}"
-        ozet_etiket.configure(
-            text=(
-                f"{veri['baslangic'].strftime('%d.%m.%Y')} – {veri['bitis'].strftime('%d.%m.%Y')}  |  "
-                f"{veri['maliyet_yontemi']}  |  "
-                f"Net satış: {_para(o['net_satislar'])}  |  "
-                f"SMM: {_para(o['smm'])}  |  "
-                f"Brüt kâr: {_para(o['brut_kar'])}  |  "
-                f"{net_metin}"
+        def _ok(veri):
+            if not app.winfo_exists():
+                return
+            _tabloyu_doldur(tablo, veri["satirlar"])
+            o = veri["ozet"]
+            net = o["net_kar"]
+            net_metin = f"Net kâr: {_para(net)}" if net >= 0 else f"Net zarar: {_para(abs(net))}"
+            ozet_etiket.configure(
+                text=(
+                    f"{veri['baslangic'].strftime('%d.%m.%Y')} – {veri['bitis'].strftime('%d.%m.%Y')}  |  "
+                    f"{veri['maliyet_yontemi']}  |  "
+                    f"Net satış: {_para(o['net_satislar'])}  |  "
+                    f"SMM: {_para(o['smm'])}  |  "
+                    f"Brüt kâr: {_para(o['brut_kar'])}  |  "
+                    f"{net_metin}"
+                )
             )
-        )
-        not_etiket.configure(text=veri.get("notlar") or "")
+            not_etiket.configure(text=veri.get("notlar") or "")
+
+        def _err(exc):
+            if app.winfo_exists():
+                ozet_etiket.configure(text="")
+                messagebox.showerror("Gelir Tablosu", str(exc), parent=app)
+
+        from ui_bg import arka_planda
+
+        arka_planda(app, _yukle, on_ok=_ok, on_err=_err)
 
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=8)

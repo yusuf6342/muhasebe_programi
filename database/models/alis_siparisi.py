@@ -19,6 +19,7 @@ class AlisSiparisi(Base):
     siparis_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     termin_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     durum: Mapped[str] = mapped_column(String(30), nullable=False, default="AÇIK")
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)

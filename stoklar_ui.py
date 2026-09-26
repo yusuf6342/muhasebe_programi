@@ -361,6 +361,11 @@ def stok_sayim_goster(app) -> None:
 
     ust = tk.Frame(kok, bg=ACIK_BG)
     ust.pack(fill="x", padx=16, pady=8)
+    from sube_ui import sube_secim_hazirla
+
+    tk.Label(ust, text="Şube:", bg=ACIK_BG).pack(side="left")
+    sube_cb, sube_map = sube_secim_hazirla(ust)
+    sube_cb.pack(side="left", padx=6)
     tk.Label(ust, text="Depo:", bg=ACIK_BG).pack(side="left")
     depolar = StokService.depolar()
     depo_map = {d.ad: d for d in depolar}
@@ -471,7 +476,9 @@ def stok_sayim_goster(app) -> None:
         ):
             return
         try:
-            fis_id = StokSayimService.kaydet_ve_onayla(depo.id, tarih, satirlar)
+            fis_id = StokSayimService.kaydet_ve_onayla(
+                depo.id, tarih, satirlar, sube_id=sube_map.get(sube_cb.get())
+            )
         except ValueError as e:
             messagebox.showerror("Sayım", str(e), parent=app)
             return

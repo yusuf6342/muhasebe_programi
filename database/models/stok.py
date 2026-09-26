@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
+from database.models.sube import Sube  # noqa: F401
 
 # Fatura / Hızlı Satış (app.KDV_ORANLARI, hizli_satis_sepet) ile aynı seçenekler
 KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
@@ -228,6 +229,7 @@ class StokLotu(Base):
 class StokHareketi(Base):
     __tablename__ = "stok_hareketleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     tarih: Mapped[date] = mapped_column(Date, nullable=False)
     hareket_turu: Mapped[str] = mapped_column(String(30), nullable=False)
     belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
@@ -242,6 +244,7 @@ class StokHareketi(Base):
 class DepoTransferFisi(Base):
     __tablename__ = "depo_transfer_fisleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     fis_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     fis_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cikis_depo: Mapped[str] = mapped_column(String(100), nullable=False)

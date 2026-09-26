@@ -214,6 +214,9 @@ class AlisFaturasiService:
             for alan in ("cari_id", "siparis_id", "irsaliye_id", "depo", "odeme_sekli", "odeme_hesabi", "aciklama", "dokuman_yolu"):
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            fatura.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             fatura.odeme_tutari = decimal(veriler.get("odeme_tutari", 0), "Ödeme", Decimal("0"))
             pb = (veriler.get("para_birimi") or "TRY").upper()
             kur = decimal(veriler.get("kur", 1), "Kur", Decimal("0.000001"))

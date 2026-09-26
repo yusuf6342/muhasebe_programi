@@ -77,26 +77,39 @@ def bilanco_sayfasi_goster(app):
         tablo.tag_configure("notr", foreground="#222222")
 
     def doldur():
-        try:
-            veri = RaporService.bilanco_ozeti(maliyet_yontemi=yontem.get().strip() or "FIFO")
-        except Exception as hata:
-            messagebox.showerror("Bilanço", str(hata), parent=app)
-            return
-        _tabloyu_doldur(aktif_tablo, veri["aktif"])
-        _tabloyu_doldur(pasif_tablo, veri["pasif"])
-        o = veri["ozet"]
-        tarih = veri["tarih"].strftime("%d.%m.%Y")
-        denge = o["denge"]
-        denge_metin = "dengeli" if denge == 0 else f"fark {_para(denge)}"
-        ozet_etiket.configure(
-            text=(
-                f"Tarih: {tarih}  |  "
-                f"Toplam varlık: {_para(o['toplam_aktif'])}  |  "
-                f"Toplam borç: {_para(o['toplam_borclar'])}  |  "
-                f"Özkaynak: {_para(o['ozkaynak'])}  |  "
-                f"Aktif = Pasif: {denge_metin}"
+        yontem_adi = yontem.get().strip() or "FIFO"
+        ozet_etiket.configure(text="Hesaplanıyor…")
+
+        def _yukle():
+            return RaporService.bilanco_ozeti(maliyet_yontemi=yontem_adi)
+
+        def _ok(veri):
+            if not app.winfo_exists():
+                return
+            _tabloyu_doldur(aktif_tablo, veri["aktif"])
+            _tabloyu_doldur(pasif_tablo, veri["pasif"])
+            o = veri["ozet"]
+            tarih = veri["tarih"].strftime("%d.%m.%Y")
+            denge = o["denge"]
+            denge_metin = "dengeli" if denge == 0 else f"fark {_para(denge)}"
+            ozet_etiket.configure(
+                text=(
+                    f"Tarih: {tarih}  |  "
+                    f"Toplam varlık: {_para(o['toplam_aktif'])}  |  "
+                    f"Toplam borç: {_para(o['toplam_borclar'])}  |  "
+                    f"Özkaynak: {_para(o['ozkaynak'])}  |  "
+                    f"Aktif = Pasif: {denge_metin}"
+                )
             )
-        )
+
+        def _err(exc):
+            if app.winfo_exists():
+                ozet_etiket.configure(text="")
+                messagebox.showerror("Bilanço", str(exc), parent=app)
+
+        from ui_bg import arka_planda
+
+        arka_planda(app, _yukle, on_ok=_ok, on_err=_err)
 
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=8)

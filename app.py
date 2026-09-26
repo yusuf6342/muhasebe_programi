@@ -190,6 +190,12 @@ class FirmaDialog(tk.Toplevel):
 
         butonlar = ttk.Frame(self)
         butonlar.grid(row=len(alanlar), column=0, columnspan=2, padx=12, pady=12, sticky="e")
+        if firma:
+            ttk.Button(
+                butonlar,
+                text="Şubeler",
+                command=lambda: self._subeleri_ac(firma.id),
+            ).pack(side="left")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
         self.degerler["firma_kodu"].focus_set()
@@ -216,6 +222,11 @@ class FirmaDialog(tk.Toplevel):
             messagebox.showerror("Kayıt yapılamadı", str(hata), parent=self)
             return
         self.destroy()
+
+    def _subeleri_ac(self, firma_id: int):
+        from sube_ui import SubeYonetimDialog
+
+        SubeYonetimDialog(self, firma_id)
 
 
 from cari_kart_ui import (
@@ -2293,6 +2304,37 @@ class SatisSiparisiDialog(tk.Toplevel):
             self.musteri.pack(fill="x")
             self.musteri.bind("<<ComboboxSelected>>", self._musteri_kart_uygula)
             self.musteri.bind("<KeyRelease>", self._musteri_arama_filtrele)
+        try:
+            from database.sube_service import SubeService
+
+            firmalar = list(FirmaService.listele())
+            self._sube_firma_id = int(firmalar[0].id) if firmalar else None
+            subeler = (
+                list(SubeService.listele(self._sube_firma_id))
+                if self._sube_firma_id
+                else []
+            )
+            mevcut_sube_id = getattr(self.siparis, "sube_id", None) if self.siparis else None
+            merkez = SubeService.merkez(self._sube_firma_id) if self._sube_firma_id else None
+            if merkez and not mevcut_sube_id:
+                mevcut_sube_id = merkez.id
+            self._sube_map = {}
+            secenekler = []
+            for sube in subeler:
+                etiket = f"{sube.sube_kodu} - {sube.sube_adi}"
+                if not sube.aktif:
+                    etiket += " (Pasif / Eski Kayıt)"
+                self._sube_map[etiket] = int(sube.id)
+                if sube.aktif or int(sube.id) == int(mevcut_sube_id or 0):
+                    secenekler.append(etiket)
+            _ust_etiket(musteri_karti, "Şube", _musteri_bg).pack(anchor="w", pady=(alan_gap, 0))
+            self.sube = ttk.Combobox(musteri_karti, values=secenekler, state="readonly", width=30)
+            self.sube.pack(fill="x")
+            secili = next((k for k, v in self._sube_map.items() if v == int(mevcut_sube_id or 0)), "")
+            self.sube.set(secili)
+        except Exception:
+            self._sube_firma_id = None
+            self._sube_map = {}
         # Bakiye alanları aşağıda oluşturulur; müşteri kartı orada güncellenir.
 
         bakiye_karti = _kart(0, 3, "Bakiyeler", _bakiye_bg)
@@ -2692,8 +2734,11 @@ class SatisSiparisiDialog(tk.Toplevel):
             "irsaliye": 100,
             "acik": 90,
         }
+        self._siparis_urun_aciklama_toplam = (
+            kolon_genislikleri["urun_adi"] + kolon_genislikleri["aciklama"]
+        )
         for kolon in kolonlar:
-            stretch = kolon == "urun_adi"
+            stretch = False
             min_w = kolon_genislikleri[kolon]
             if kolon == "urun_adi":
                 min_w = 160
@@ -2710,6 +2755,10 @@ class SatisSiparisiDialog(tk.Toplevel):
                 stretch=stretch,
                 anchor=anchor,
             )
+        self.satir_tablosu.bind(
+            "<Configure>", self._siparis_urun_aciklama_genisliklerini_uygula, add="+"
+        )
+        self._siparis_urun_aciklama_genisliklerini_uygula()
         # Sevk Edilen / Kalan: başlık + hücre kesin ortalı (yenileme override etmesin)
         self._siparis_ilerleme_sutun_ortala()
         dikey = ttk.Scrollbar(parent, orient="vertical", command=self.satir_tablosu.yview)
@@ -2730,6 +2779,35 @@ class SatisSiparisiDialog(tk.Toplevel):
         except Exception:
             self.satir_tablosu.bind("<Double-1>", self._siparis_satir_cift_tik)
             self.bind("<F2>", self._siparis_satir_f2)
+
+    def _siparis_urun_aciklama_genisliklerini_uygula(self, _event=None):
+        """Ürün adı + açıklama alanını mevcut toplamı koruyarak %60/%40 böler."""
+        tablo = getattr(self, "satir_tablosu", None)
+        if tablo is None or getattr(self, "_siparis_genislik_guncelleniyor", False):
+            return
+        try:
+            diger_toplam = sum(
+                int(tablo.column(kolon, "width"))
+                for kolon in tablo["columns"]
+                if kolon not in ("urun_adi", "aciklama")
+            )
+            kullanilabilir = int(tablo.winfo_width()) - diger_toplam - 4
+            toplam = max(
+                int(getattr(self, "_siparis_urun_aciklama_toplam", 0)),
+                kullanilabilir,
+                280,
+            )
+            urun_adi = max(160, round(toplam * 0.60))
+            aciklama = max(120, toplam - urun_adi)
+            toplam = urun_adi + aciklama
+            self._siparis_urun_aciklama_toplam = toplam
+            self._siparis_genislik_guncelleniyor = True
+            tablo.column("urun_adi", width=urun_adi, stretch=False)
+            tablo.column("aciklama", width=aciklama, stretch=False)
+        except (tk.TclError, TypeError, ValueError):
+            return
+        finally:
+            self._siparis_genislik_guncelleniyor = False
 
     def _notlar_olustur(self, parent):
         if getattr(self, "_siparis_karti_mi", False):
@@ -3807,6 +3885,10 @@ class SatisSiparisiDialog(tk.Toplevel):
                 "hedef_kar_marji": hedef_kar,
                 "aciklama": aciklama or None,
             }
+            sube_id = self._sube_map.get(self.sube.get()) if hasattr(self, "sube") else None
+            if not sube_id:
+                raise ValueError("Şube seçimi zorunludur.")
+            veriler["sube_id"] = sube_id
             if siparis_saati is not None:
                 veriler["siparis_saati"] = siparis_saati
             if getattr(self, "_siparis_onay_modu", False):
@@ -4369,6 +4451,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             )
         if fatura:
             self._faturayi_doldur()
+            if getattr(fatura, "sube_id", None) and hasattr(self, "sube"):
+                for etiket, sube_id in self._sube_map.items():
+                    if int(sube_id) == int(fatura.sube_id):
+                        self.sube.set(etiket)
+                        break
         elif satir_override is not None:
             self.satirlar = list(satir_override)
             if irsaliye is not None:
@@ -4596,6 +4683,23 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._fatura_toolbar = refs
         self.onay_durum_etiket = refs["rozet"]
         sag = refs["sag"]
+
+        from fatura_satir_araclar import satir_sil
+
+        sil_alani = tk.Frame(
+            self,
+            bg=ftema.ACIK_BG,
+            highlightthickness=1,
+            highlightbackground=ftema.CIZGI,
+        )
+        sil_alani.pack(side="top", fill="x", after=refs["cubuk"])
+        self._fatura_satir_sil_btn = ftema.tk_buton(
+            sil_alani,
+            "Seçili Satırı Sil",
+            lambda: satir_sil(self),
+            rol="tehlike",
+        )
+        self._fatura_satir_sil_btn.pack(side="left", padx=8, pady=3)
 
         liste_btn = ftema.tk_buton(
             sag, "Fatura Listesi (F3)", self._fatura_listesini_ac, rol="ikincil"
@@ -5512,7 +5616,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             except Exception:
                 self.satir_tablosu.bind("<Button-3>", self._fatura_satir_sag_tik)
                 self._satir_ctx = tk.Menu(self, tearoff=0)
-                self._satir_ctx.add_command(label="Satır Sil", command=self.satir_sil)
+                self._satir_ctx.add_command(label="Seçili Satırı Sil", command=self.satir_sil)
 
     def _fatura_miktar_hucre_ac(self):
         from fatura_satir_hucre_edit import miktar_hucre_duzenle
@@ -6225,6 +6329,20 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.vade_gunu.insert(0, str(self.fatura.vade_gunu if self.fatura else 0))
         self.vade_gunu.bind("<KeyRelease>", self.vade_gun_degisti)
         self.vade_gunu.grid(row=2, column=3, padx=0, pady=py, sticky="w", ipady=_ipady)
+
+        ttk.Label(bolum1, text="Şube", style="FaturaUst.TLabel").grid(
+            row=3, column=0, padx=(0, 6), pady=py, sticky="w"
+        )
+        from sube_ui import sube_secim_hazirla
+
+        kaynak_sube_id = (
+            getattr(self.fatura, "sube_id", None)
+            or getattr(self.kaynak_irsaliye, "sube_id", None)
+            or getattr(self.kaynak_siparis, "sube_id", None)
+        )
+        self.sube, self._sube_map = sube_secim_hazirla(bolum1, kaynak_sube_id)
+        self.sube.configure(style="FaturaUst.TCombobox")
+        self.sube.grid(row=3, column=1, padx=(0, 8), pady=py, sticky="ew")
 
         # Gizli stub'lar (eski API uyumu) — Doküman UI tamamen kaldırıldı
         stub = ttk.Frame(bolum1)
@@ -8362,7 +8480,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         _sag = frozenset(
             {"fiyat", "toplam", "miktar", "iskonto_tutar", "kdv_tutar", "kur", "net_birim"}
         )
-        _orta = frozenset({"sira", "birim", "para_birimi", "kdv"})
+        _orta = frozenset({"sec", "sira", "birim", "para_birimi", "kdv"})
         try:
             kolonlar = tuple(tablo.cget("columns") or ())
         except tk.TclError:
@@ -8378,6 +8496,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 anchor = "w"
             try:
                 tablo.heading(anahtar, text=baslik, anchor=anchor)
+                if anahtar == "sec":
+                    tablo.column(
+                        anahtar,
+                        width=meta.get("genislik", 36),
+                        minwidth=meta.get("min_width", 32),
+                        stretch=False,
+                        anchor="center",
+                    )
             except tk.TclError:
                 pass
 
@@ -8817,6 +8943,34 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             bg="#111111",
             fg="#FFFFFF",
         ).pack(side="left", padx=2)
+        # Üst şerit — 3D kırmızı Satır Sil (alt koyu araç çubuğuna ek / görünür konum)
+        sil_btn = tk.Button(
+            uzlas_cer,
+            text="Satır Sil",
+            command=self.satir_sil,
+            bg="#c62828",
+            fg="#ffffff",
+            activebackground="#8e0000",
+            activeforeground="#ffffff",
+            relief=tk.RAISED,
+            borderwidth=3,
+            font=ftema.font(9, "bold", self),
+            cursor="hand2",
+            padx=10,
+            pady=4,
+            highlightthickness=0,
+        )
+
+        def _sil_bas(_e, b=sil_btn):
+            b.configure(relief=tk.SUNKEN)
+
+        def _sil_birak(_e, b=sil_btn):
+            b.configure(relief=tk.RAISED)
+
+        sil_btn.bind("<ButtonPress-1>", _sil_bas)
+        sil_btn.bind("<ButtonRelease-1>", _sil_birak)
+        sil_btn.pack(side="left", padx=2)
+        self._fatura_satir_sil_btn = sil_btn
         _btn3d(
             uzlas_cer,
             "Vazgeç",
@@ -9802,17 +9956,21 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 etiketler = tuple(etiketler) + ("manuel_fiyat",)
             if bool(veri.get("dagitima_kapali")):
                 etiketler = tuple(etiketler) + ("dagitima_kapali",)
+            if sira in self._satir_isaretleri:
+                etiketler = tuple(etiketler) + ("isaretli",)
             fiyat_metin = para_goster(veri.get("birim_satis_fiyati") or 0)
             if bool(veri.get("manuel_fiyat")):
                 fiyat_metin = f"✦ {fiyat_metin}"
             if bool(veri.get("dagitima_kapali")):
                 fiyat_metin = f"🔒 {fiyat_metin}"
+            isaret = "☑" if sira in self._satir_isaretleri else "☐"
             self.satir_tablosu.insert(
                 "",
                 "end",
                 iid=str(sira),
                 tags=etiketler,
                 values=(
+                    isaret,
                     sira + 1,
                     veri.get("urun_kodu", ""),
                     veri.get("urun_adi", ""),
@@ -10608,6 +10766,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             "islem_saati": islem_saati,
             "vade_tarihi": vade_tarihi,
             "cari_id": musteri.id,
+            "sube_id": self._sube_map.get(self.sube.get()) if hasattr(self, "sube") else None,
             "siparis_id": siparis_id,
             "irsaliye_id": irsaliye_id,
             "depo": self.depo.get(),

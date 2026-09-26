@@ -38,6 +38,7 @@ class SatisTeklifi(Base):
     gecerlilik_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     gecerlilik_gunu: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     cari_id: Mapped[int | None] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=True, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     aday_musteri_adi: Mapped[str | None] = mapped_column(String(200), nullable=True)
     musteri_yetkilisi: Mapped[str | None] = mapped_column(String(120), nullable=True)
     musteri_telefon: Mapped[str | None] = mapped_column(String(40), nullable=True)

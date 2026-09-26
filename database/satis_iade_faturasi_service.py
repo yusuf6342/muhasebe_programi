@@ -265,6 +265,9 @@ class SatisIadeFaturasiService:
 
             iade.iade_tarihi = tarih
             iade.cari_id = int(veriler["cari_id"])
+            from database.sube_service import SubeService
+
+            iade.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             iade.kaynak_fatura_id = veriler.get("kaynak_fatura_id")
             iade.depo = veriler.get("depo") or "ANA DEPO"
             iade.aciklama = veriler.get("aciklama")

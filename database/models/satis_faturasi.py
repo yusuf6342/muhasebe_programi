@@ -17,6 +17,7 @@ class SatisFaturasi(Base):
     vade_gunu: Mapped[int] = mapped_column(nullable=False, default=0)
     vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     siparis_id: Mapped[int | None] = mapped_column(ForeignKey("satis_siparisleri.id"), nullable=True, index=True)
     irsaliye_id: Mapped[int | None] = mapped_column(ForeignKey("satis_irsaliyeleri.id"), nullable=True, index=True)
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="TASLAK")
