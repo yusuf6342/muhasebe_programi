@@ -31,6 +31,8 @@ backup/
 yedek/
 _guvenli_yedek_*/
 invoice_imports/
+# Örnek çıktılar (müşteri adı içerebilir)
+ornek_ciktilar/
 
 # --- Derleme / kurulum çıktıları (installer/ ve scripts/ commit edilir) ---
 build_*/

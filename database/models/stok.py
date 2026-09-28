@@ -245,6 +245,7 @@ class DepoTransferFisi(Base):
     __tablename__ = "depo_transfer_fisleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
+    giris_sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     fis_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     fis_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     cikis_depo: Mapped[str] = mapped_column(String(100), nullable=False)

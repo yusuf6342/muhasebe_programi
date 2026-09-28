@@ -3487,7 +3487,7 @@ class StokService:
             )
 
     @staticmethod
-    def _transfer_cikisi(session, belge_no, tarih, stok_kodu, depo_adi, miktar):
+    def _transfer_cikisi(session, belge_no, tarih, stok_kodu, depo_adi, miktar, sube_id=None):
         stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == stok_kodu))
         depo = session.scalar(select(Depo).where(Depo.ad == depo_adi))
         if not stok:
@@ -3521,6 +3521,7 @@ class StokService:
             kullanilan.append(f"{lot.lot_no}:{cikan}")
             session.add(
                 StokHareketi(
+                    sube_id=sube_id,
                     tarih=tarih,
                     hareket_turu="TRANSFER ÇIKIŞ",
                     belge_no=belge_no,
@@ -3534,7 +3535,9 @@ class StokService:
         return ", ".join(kullanilan)
 
     @staticmethod
-    def _transfer_girisi(session, belge_no, tarih, stok_kodu, depo_adi, miktar, birim_fiyat, cikis_depo):
+    def _transfer_girisi(
+        session, belge_no, tarih, stok_kodu, depo_adi, miktar, birim_fiyat, cikis_depo, sube_id=None
+    ):
         stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == stok_kodu))
         depo = session.scalar(select(Depo).where(Depo.ad == depo_adi))
         if not stok:
@@ -3565,6 +3568,7 @@ class StokService:
         session.flush()
         session.add(
             StokHareketi(
+                sube_id=sube_id,
                 tarih=tarih,
                 hareket_turu="TRANSFER GİRİŞ",
                 belge_no=belge_no,
@@ -3597,12 +3601,18 @@ class StokService:
             from database.sube_service import SubeService
 
             sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
+            giris_sube_id = (
+                SubeService.transaction_subesi(session, veriler.get("giris_sube_id"))
+                if veriler.get("giris_sube_id")
+                else sube_id
+            )
             if session.scalar(select(DepoTransferFisi).where(DepoTransferFisi.fis_no == fis_no)):
                 raise ValueError(f"{fis_no} numaralı fiş zaten var.")
             genel = Decimal("0")
             fis = DepoTransferFisi(
                 fis_no=fis_no,
                 sube_id=sube_id,
+                giris_sube_id=giris_sube_id,
                 fis_tarihi=tarih,
                 cikis_depo=cikis,
                 giris_depo=giris,
@@ -3617,10 +3627,11 @@ class StokService:
                 tutar = miktar * fiyat
                 genel += tutar
                 lot_cikis = StokService._transfer_cikisi(
-                    session, fis_no, tarih, veri["urun_kodu"], cikis, miktar
+                    session, fis_no, tarih, veri["urun_kodu"], cikis, miktar, sube_id=sube_id
                 )
                 lot_giris = StokService._transfer_girisi(
-                    session, fis_no, tarih, veri["urun_kodu"], giris, miktar, fiyat, cikis
+                    session, fis_no, tarih, veri["urun_kodu"], giris, miktar, fiyat, cikis,
+                    sube_id=giris_sube_id,
                 )
                 session.add(
                     DepoTransferFisiSatiri(

@@ -440,6 +440,20 @@ def cari_kart_schemasini_guncelle() -> None:
                     {"merkez": merkez_id},
                 )
 
+    if inspect(engine).has_table("depo_transfer_fisleri"):
+        sutunlar = {s["name"] for s in inspect(engine).get_columns("depo_transfer_fisleri")}
+        if "giris_sube_id" not in sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text('ALTER TABLE "depo_transfer_fisleri" ADD COLUMN "giris_sube_id" INTEGER')
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_depo_transfer_fisleri_giris_sube_id "
+                        "ON depo_transfer_fisleri (giris_sube_id)"
+                    )
+                )
+
     tablo = "cari_kartlar"
     mevcut_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(tablo)}
     eklenecekler = {

@@ -72,16 +72,22 @@ class DepoTransferFisiDialog(tk.Toplevel):
             elif depolar:
                 self.giris_depo.current(0)
 
-        ttk.Label(ust, text="Şube").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(ust, text="Çıkış Şubesi").grid(row=2, column=0, sticky="w", padx=4, pady=4)
         from sube_ui import sube_secim_hazirla
 
-        self.sube, self._sube_map = sube_secim_hazirla(
-            ust, getattr(fis, "sube_id", None) if fis else None
-        )
+        cikis_sube_id = getattr(fis, "sube_id", None) if fis else None
+        self.sube, self._sube_map = sube_secim_hazirla(ust, cikis_sube_id)
         self.sube.grid(row=2, column=1, sticky="w", padx=4, pady=4)
-        ttk.Label(ust, text="Açıklama").grid(row=2, column=2, sticky="w", padx=4, pady=4)
+        ttk.Label(ust, text="Giriş Şubesi").grid(row=2, column=2, sticky="w", padx=4, pady=4)
+        self.giris_sube, self._giris_sube_map = sube_secim_hazirla(
+            ust, (getattr(fis, "giris_sube_id", None) or cikis_sube_id) if fis else None
+        )
+        self.giris_sube.grid(row=2, column=3, sticky="w", padx=4, pady=4)
+        if not fis:
+            self.giris_sube.set(self.sube.get())
+        ttk.Label(ust, text="Açıklama").grid(row=3, column=0, sticky="w", padx=4, pady=4)
         self.aciklama = ttk.Entry(ust, width=70)
-        self.aciklama.grid(row=2, column=3, sticky="ew", padx=4, pady=4)
+        self.aciklama.grid(row=3, column=1, columnspan=3, sticky="ew", padx=4, pady=4)
         if fis and fis.aciklama:
             self.aciklama.insert(0, fis.aciklama)
 
@@ -171,6 +177,8 @@ class DepoTransferFisiDialog(tk.Toplevel):
                 self.tarih,
                 self.cikis_depo,
                 self.giris_depo,
+                self.sube,
+                self.giris_sube,
                 self.aciklama,
                 self.urun_kodu,
                 self.urun_adi,
@@ -340,6 +348,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
                     "cikis_depo": self.cikis_depo.get(),
                     "giris_depo": self.giris_depo.get(),
                     "sube_id": self._sube_map.get(self.sube.get()),
+                    "giris_sube_id": self._giris_sube_map.get(self.giris_sube.get()),
                     "aciklama": self.aciklama.get().strip(),
                 },
                 self.satirlar,

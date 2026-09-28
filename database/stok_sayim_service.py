@@ -177,6 +177,7 @@ class StokSayimService:
                     session.flush()
                     session.add(
                         StokHareketi(
+                            sube_id=sube_id,
                             tarih=fis_tarihi,
                             hareket_turu="SAYIM GİRİŞ",
                             belge_no=fis.fis_no,
@@ -216,6 +217,7 @@ class StokSayimService:
                         kalan -= cikan
                         session.add(
                             StokHareketi(
+                                sube_id=sube_id,
                                 tarih=fis_tarihi,
                                 hareket_turu="SAYIM ÇIKIŞ",
                                 belge_no=fis.fis_no,
