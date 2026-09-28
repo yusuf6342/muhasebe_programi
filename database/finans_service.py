@@ -3180,8 +3180,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         baslangic: date | None = None,
         bitis: date | None = None,
         durum: str | None = None,
+        odeme_sekli: str | None = None,
     ):
-        """Makbuz listesi. arama: makbuz no / belge no / cari / açıklama (I/ı duyarsız, herhangi bir yer)."""
+        """Makbuz listesi. arama: makbuz no / belge no / cari / açıklama (I/ı duyarsız, herhangi bir yer).
+
+        odeme_sekli: yalnız bu ödeme yöntemiyle en az bir satırı olan makbuzlar.
+        """
         from database.models.cari import Cari
         from database.turkce_normalize import turkce_normalize
 
@@ -3202,6 +3206,8 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 q = q.where(KasaMakbuzu.tarih <= bitis)
             if durum:
                 q = q.where(KasaMakbuzu.durum == durum)
+            if odeme_sekli:
+                q = q.where(KasaMakbuzu.satirlar.any(KasaMakbuzSatiri.odeme_sekli == odeme_sekli))
             aranan = turkce_normalize(arama or "").strip()
             if not aranan:
                 q = q.limit(limit)

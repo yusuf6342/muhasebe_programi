@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +12,8 @@ from database.access import yazma_zorunlu
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.kk_cekimi import KkCekimi
 from database.turkce_normalize import tr_iceriyor
+
+KK_ODEME_ADI = "MÜŞTERİDEN TEDARİKÇİYE KREDİ KARTI İLE ÖDEME"
 
 
 class KkCekimiService:
@@ -50,6 +53,63 @@ class KkCekimiService:
                 ):
                     continue
                 sonuc.append(kayit)
+            return sonuc
+
+    @staticmethod
+    def makbuz_listesi(
+        limit: int = 500,
+        *,
+        arama: str | None = None,
+        baslangic: date | None = None,
+        bitis: date | None = None,
+        durum: str | None = None,
+    ) -> list[SimpleNamespace]:
+        """Tahsilat makbuzları listesi için KK çekim fişleri (iptaller dahil).
+
+        durum: kasa makbuzu filtre değerleri — "AÇIK" veya "IPTAL".
+        """
+        with get_session() as session:
+            q = (
+                select(KkCekimi)
+                .options(selectinload(KkCekimi.musteri), selectinload(KkCekimi.tedarikci))
+                .order_by(KkCekimi.tarih.desc(), KkCekimi.id.desc())
+            )
+            if baslangic:
+                q = q.where(KkCekimi.tarih >= baslangic)
+            if bitis:
+                q = q.where(KkCekimi.tarih <= bitis)
+            if durum:
+                q = q.where(KkCekimi.durum == ("İPTAL" if durum == "IPTAL" else "AÇIK"))
+            aranan = (arama or "").strip()
+            if not aranan:
+                q = q.limit(limit)
+            sonuc = []
+            for fis in session.scalars(q).all():
+                m, t = fis.musteri, fis.tedarikci
+                if aranan and not tr_iceriyor(
+                    aranan, fis.belge_no, fis.banka, fis.aciklama or "", KK_ODEME_ADI,
+                    getattr(m, "cari_kodu", ""), getattr(m, "unvan", ""),
+                    getattr(t, "cari_kodu", ""), getattr(t, "unvan", ""),
+                ):
+                    continue
+                sonuc.append(
+                    SimpleNamespace(
+                        kk_cekimi=True,
+                        id=fis.id,
+                        belge_no=fis.belge_no,
+                        makbuz_no=None,
+                        tarih=fis.tarih,
+                        tutar=Decimal(str(fis.tutar)),
+                        durum="IPTAL" if fis.durum == "İPTAL" else "AÇIK",
+                        aciklama=fis.aciklama or "",
+                        banka=fis.banka,
+                        taksit_sayisi=int(fis.taksit_sayisi or 1),
+                        musteri=SimpleNamespace(cari_kodu=m.cari_kodu, unvan=m.unvan) if m else None,
+                        tedarikci=SimpleNamespace(cari_kodu=t.cari_kodu, unvan=t.unvan) if t else None,
+                    )
+                )
+                if len(sonuc) >= limit:
+                    break
             return sonuc
 
     @staticmethod

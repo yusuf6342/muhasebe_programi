@@ -2,6 +2,7 @@
 
 Tahsilat makbuzunda "Cari Virman" işlem türü: müşteriden alacak ile tedarikçiye borç aynı tutarda
 mahsup edilir (kasa / banka / POS / kart hareketi yok).
+"Müşteriden tedarikçiye kredi kartı ile ödeme" seçilince KK çekim fişi açılır; listede kendi adıyla görünür.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from tkinter import messagebox, simpledialog, ttk
 from database.cari_service import CariService
 from database.cari_virman_makbuz_service import CariVirmanMakbuzService, musteri_mi, tedarikci_mi
 from database.finans_service import FinansService
+from database.kk_cekimi_service import KK_ODEME_ADI, KkCekimiService
 from database.satis_siparisi_service import ODEME_SEKILLERI
 from database.turkce_normalize import turkce_normalize
 from satis_tema import (
@@ -45,6 +47,7 @@ DURUM_FILTRELERI = {"Tümü": None, "Açık": "AÇIK", "İptal": "IPTAL"}
 ISLEM_TAHSILAT = "Tahsilat"
 ISLEM_VIRMAN = "Cari Virman"
 CARI_VIRMAN_SEKLI = "CARİ VİRMAN"
+KK_ODEME_SEKLI = KK_ODEME_ADI
 VIRMAN_BILGI = (
     "Kasa, banka, POS veya kredi kartı hareketi oluşmaz. Müşteri ve tedarikçi cari hesaplarına aynı tutarda "
     "alacak yazılır: müşterinin borcu ve tedarikçiye olan borcunuz birlikte azalır. İki hareket tek işlemde kaydedilir."
@@ -770,7 +773,9 @@ class KasaMakbuzDialog(tk.Toplevel):
 
         self._etiket(p, "Ödeme yöntemi", 0, 0)
         self.sekil_var = tk.StringVar()
-        self.sekil_cb = ttk.Combobox(p, textvariable=self.sekil_var, values=self._sekil_listesi(), state="readonly", width=24)
+        self.sekil_cb = ttk.Combobox(
+            p, textvariable=self.sekil_var, values=self._sekil_listesi(), state="readonly", width=self._sekil_genisligi()
+        )
         self.sekil_cb.grid(row=0, column=1, sticky="ew", pady=5, padx=(0, 12))
         self.sekil_cb.bind("<<ComboboxSelected>>", lambda _e: self._sekil_degisti(), add="+")
 
@@ -897,7 +902,8 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._etiket(p, "Ödeme yöntemi", 0, 0)
         self.v_sekil_var = tk.StringVar(value=CARI_VIRMAN_SEKLI)
         self.v_sekil_cb = ttk.Combobox(
-            p, textvariable=self.v_sekil_var, values=self._sekil_listesi(), state="readonly", width=24, takefocus=0
+            p, textvariable=self.v_sekil_var, values=self._sekil_listesi(), state="readonly",
+            width=self._sekil_genisligi(), takefocus=0,
         )
         self.v_sekil_cb.grid(row=0, column=1, sticky="w", pady=5)
         self.v_sekil_cb.bind("<<ComboboxSelected>>", lambda _e: self._virmandan_cik(), add="+")
@@ -936,8 +942,51 @@ class KasaMakbuzDialog(tk.Toplevel):
     # ─── Cari virman ────────────────────────────────────────────
     def _sekil_listesi(self) -> tuple:
         if self.tahsilat and not self._fatura_ozet:
-            return tuple(self._odeme_sekilleri) + (CARI_VIRMAN_SEKLI,)
+            return tuple(self._odeme_sekilleri) + (CARI_VIRMAN_SEKLI, KK_ODEME_SEKLI)
         return tuple(self._odeme_sekilleri)
+
+    def _sekil_genisligi(self) -> int:
+        return max(24, max(len(s) for s in self._sekil_listesi()) + 2)
+
+    def _kk_odemeye_gec(self):
+        """Ödeme yöntemi listesinden müşteriden tedarikçiye kredi kartı ile ödeme seçildi."""
+        self.sekil_var.set(self._son_sekil or self._odeme_sekilleri[0])
+        self._sekil_degisti()
+        if self.mod != "yeni" or self._fatura_ozet:
+            return
+        if self.satirlar:
+            messagebox.showinfo(
+                "Kredi Kartı ile Ödeme",
+                "Müşteriden tedarikçiye kredi kartı ile ödeme için önce eklenen tahsilat satırlarını kaldırın.",
+                parent=self,
+            )
+            return
+        self.kk_odeme_ac()
+
+    def kk_odeme_ac(self):
+        """Mevcut KK çekim fişini makbuzdaki müşteri, tarih ve tutarla açar; kayıttan sonra makbuzu kapatır."""
+        from app import KkCekimiDialog
+
+        cari_id = self._cari_arama.secili_id
+        musteri_id = cari_id if cari_id and musteri_mi(self._cari_turleri.get(cari_id)) else None
+        try:
+            tarih = _tarih_oku(self.tarih_var.get())
+        except ValueError:
+            tarih = None
+        try:
+            tutar = _tutar_oku(self.tutar_var.get()) if self.tutar_var.get().strip() else None
+        except ValueError:
+            tutar = None
+        dlg = KkCekimiDialog(self, musteri_id=musteri_id, tarih=tarih, tutar=tutar)
+        if dlg.winfo_exists():
+            self.wait_window(dlg)
+        if not dlg.result:
+            return None
+        if self._on_kayit:
+            self._on_kayit(dlg.result)
+        self._kirli = False
+        self.kapat()
+        return dlg.result
 
     def _virmana_gec(self):
         """Ödeme yöntemi listesinden CARİ VİRMAN seçildi."""
@@ -1546,6 +1595,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if sekil == CARI_VIRMAN_SEKLI:
             self._virmana_gec()
             return
+        if sekil == KK_ODEME_SEKLI:
+            self._kk_odemeye_gec()
+            return
         self._son_sekil = sekil
         tur = _sekil_turu(sekil)
         self._hesap_secenekleri = {}
@@ -1975,8 +2027,8 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     if makbuz_turu == "TAHSILAT":
         baslik = "TAHSİLAT MAKBUZLARI LİSTESİ"
         alt = (
-            "Kayıtlı tahsilat ve cari virman makbuzları — makbuz no, cari, belge no veya açıklamanın "
-            "herhangi bir yerinden arayın."
+            "Kayıtlı tahsilat, cari virman ve müşteriden tedarikçiye kredi kartı ile ödeme kayıtları — "
+            "makbuz no, cari, belge no veya açıklamanın herhangi bir yerinden arayın."
         )
     elif makbuz_turu == "ODEME":
         baslik = "ÖDEME MAKBUZLARI LİSTESİ"
@@ -1985,6 +2037,13 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         baslik = "KASA MAKBUZLARI"
         alt = "Tahsilat (TMK), ödeme (OMK) ve cari virman (CVR) makbuzları."
     virman_dahil = makbuz_turu in (None, "TAHSILAT")
+    ozel_sekiller = (CARI_VIRMAN_SEKLI, KK_ODEME_SEKLI)
+    if makbuz_turu == "ODEME":
+        sekil_filtreleri = ODEME_MAKBUZ_SEKILLERI
+    elif makbuz_turu == "TAHSILAT":
+        sekil_filtreleri = tuple(TAHSILAT_MAKBUZ_SEKILLERI) + ozel_sekiller
+    else:
+        sekil_filtreleri = tuple(dict.fromkeys(tuple(TAHSILAT_MAKBUZ_SEKILLERI) + ODEME_MAKBUZ_SEKILLERI)) + ozel_sekiller
 
     from satis_tema import ekran_ust_cubugu
 
@@ -2008,8 +2067,19 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     durum_cb = ttk.Combobox(filtre, values=tuple(DURUM_FILTRELERI), state="readonly", width=8)
     durum_cb.set("Tümü")
     durum_cb.pack(side="left", padx=(6, 12))
-    tk_buton(filtre, "Filtrele", lambda: yenile(), rol="ara").pack(side="left")
-    tk_buton(filtre, "Temizle", lambda: temizle(), rol="geri").pack(side="left", padx=6)
+    filtre2 = tk.Frame(govde, bg=BEYAZ)
+    filtre2.pack(fill="x", pady=(0, 6))
+    tk.Label(filtre2, text="Ödeme yöntemi", bg=BEYAZ, fg=METIN).pack(side="left")
+    sekil_cb = ttk.Combobox(
+        filtre2,
+        values=("Tümü",) + tuple(sekil_filtreleri),
+        state="readonly",
+        width=max(len(s) for s in sekil_filtreleri) + 2,
+    )
+    sekil_cb.set("Tümü")
+    sekil_cb.pack(side="left", padx=(6, 12))
+    tk_buton(filtre2, "Filtrele", lambda: yenile(), rol="ara").pack(side="left")
+    tk_buton(filtre2, "Temizle", lambda: temizle(), rol="geri").pack(side="left", padx=6)
 
     butonlar = tk.Frame(govde, bg=BEYAZ)
     butonlar.pack(fill="x", pady=(0, 6))
@@ -2068,12 +2138,21 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
             bitis=bit,
             durum=DURUM_FILTRELERI.get(durum_cb.get()),
         )
+        sekil = None if sekil_cb.get() == "Tümü" else sekil_cb.get()
 
         def is_():
-            makbuzlar = FinansService.kasa_makbuz_listele(makbuz_turu=makbuz_turu, limit=500, **kriter)
-            virmanlar = CariVirmanMakbuzService.listele(limit=500, **kriter) if virman_dahil else []
-            if virmanlar:
-                makbuzlar = list(makbuzlar) + virmanlar
+            makbuzlar = []
+            if sekil not in ozel_sekiller:
+                makbuzlar = list(
+                    FinansService.kasa_makbuz_listele(makbuz_turu=makbuz_turu, limit=500, odeme_sekli=sekil, **kriter)
+                )
+            ekler = []
+            if virman_dahil and sekil in (None, CARI_VIRMAN_SEKLI):
+                ekler += CariVirmanMakbuzService.listele(limit=500, **kriter)
+            if virman_dahil and sekil in (None, KK_ODEME_SEKLI):
+                ekler += KkCekimiService.makbuz_listesi(limit=500, **kriter)
+            if ekler:
+                makbuzlar += ekler
                 makbuzlar.sort(key=lambda m: (m.tarih, (m.makbuz_no or "").upper(), m.belge_no), reverse=True)
                 makbuzlar = makbuzlar[:500]
             return makbuzlar
@@ -2089,7 +2168,16 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
                 iptal = m.durum == "IPTAL"
                 if not iptal:
                     toplam += Decimal(str(m.tutar or 0))
-                if getattr(m, "virman", False):
+                if getattr(m, "kk_cekimi", False):
+                    iid = f"K{m.belge_no}"
+                    durum["turler"][iid] = "KK"
+                    musteri, tedarikci = m.musteri, m.tedarikci
+                    cari_yazi = f"{musteri.cari_kodu} - {musteri.unvan}" if musteri else "—"
+                    odeme_yazi = KK_ODEME_SEKLI
+                    taksit = "tek çekim" if m.taksit_sayisi == 1 else f"{m.taksit_sayisi} taksit"
+                    hedef = f"{tedarikci.cari_kodu} - {tedarikci.unvan}" if tedarikci else "—"
+                    hesap_yazi = f"→ {hedef} · {m.banka} / {taksit}"
+                elif getattr(m, "virman", False):
                     iid = f"V{m.id}"
                     durum["turler"][iid] = "VIRMAN"
                     musteri, tedarikci = m.musteri, m.tedarikci
@@ -2141,6 +2229,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         bas_entry.delete(0, "end")
         bit_entry.delete(0, "end")
         durum_cb.set("Tümü")
+        sekil_cb.set("Tümü")
         yenile()
 
     def arama_gecikmeli(*_):
@@ -2153,6 +2242,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
 
     arama_var.trace_add("write", arama_gecikmeli)
     durum_cb.bind("<<ComboboxSelected>>", lambda _e: yenile())
+    sekil_cb.bind("<<ComboboxSelected>>", lambda _e: yenile())
     for e in (bas_entry, bit_entry, arama):
         e.bind("<Return>", lambda _e: yenile())
 
@@ -2167,18 +2257,37 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         return secim[0]
 
     def secili_makbuzlar() -> list:
-        """Liste sırasıyla seçilenler: kasa makbuzu id (int), cari virman "V{id}"."""
+        """Liste sırasıyla seçilen makbuzlar: kasa makbuzu id (int), cari virman "V{id}" (KK fişleri hariç)."""
         secim = set(tablo.selection())
-        return [i if i.startswith("V") else int(i) for i in tablo.get_children() if i in secim]
+        return [
+            i if i.startswith("V") else int(i)
+            for i in tablo.get_children()
+            if i in secim and not i.startswith("K")
+        ]
 
     def yeni(tur, islem_turu=None):
         KasaMakbuzDialog(app, makbuz_turu=tur, on_kayit=lambda _m: yenile(), islem_turu=islem_turu)
+
+    def kk_fisi_ac(belge_no=None):
+        from app import KkCekimiDialog
+
+        dlg = KkCekimiDialog(app, belge_no=belge_no)
+        if dlg.winfo_exists():
+            app.wait_window(dlg)
+        if dlg.result:
+            yenile()
 
     def goruntule(_event=None):
         iid = _secili()
         if not iid:
             return
         try:
+            if iid.startswith("K"):
+                if tablo.set(iid, "durum") == "İPTAL":
+                    messagebox.showinfo("KK ile ödeme", "İptal edilmiş fiş görüntülenemez / güncellenemez.", parent=app)
+                    return
+                kk_fisi_ac(iid[1:])
+                return
             if iid.startswith("V"):
                 KasaMakbuzDialog(app, makbuz_turu="TAHSILAT", virman_id=int(iid[1:]), on_kayit=lambda _m: yenile())
                 return
@@ -2190,6 +2299,11 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     def yazdir():
         idler = secili_makbuzlar()
         if not idler:
+            if any(i.startswith("K") for i in tablo.selection()):
+                messagebox.showinfo(
+                    "Çıktı", "Kredi kartı ile ödeme (KK çekim) fişlerinin makbuz çıktısı yoktur.", parent=app
+                )
+                return None
             messagebox.showinfo("Seçim", "Çıktı almak için bir veya daha fazla makbuz seçin.", parent=app)
             return None
         from makbuz_cikti_ui import makbuz_ciktisi_ac
@@ -2208,9 +2322,10 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         if no == "—":
             no = tablo.set(iid, "belge")
         virman = iid.startswith("V")
+        kk = iid.startswith("K")
         etki = (
             "Müşteri ve tedarikçi cari hareketleri birlikte geri alınır."
-            if virman
+            if virman or kk
             else "Cari, kasa/banka ve kart hareketleri geri alınır."
         )
         if not messagebox.askyesno(
@@ -2218,7 +2333,9 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         ):
             return
         try:
-            if virman:
+            if kk:
+                KkCekimiService.iptal_et(iid[1:])
+            elif virman:
                 CariVirmanMakbuzService.iptal(int(iid[1:]))
             else:
                 FinansService.kasa_makbuz_iptal(int(iid))
@@ -2230,6 +2347,9 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     if makbuz_turu in (None, "TAHSILAT"):
         tk_buton(butonlar, "Yeni Tahsilat Makbuzu", lambda: yeni("TAHSILAT"), rol="yeni").pack(side="left", padx=(0, 6))
         tk_buton(butonlar, "Yeni Cari Virman", lambda: yeni("TAHSILAT", "VIRMAN"), rol="yeni").pack(
+            side="left", padx=(0, 6)
+        )
+        tk_buton(butonlar, "Yeni KK ile Tedarikçiye Ödeme", lambda: kk_fisi_ac(), rol="yeni").pack(
             side="left", padx=(0, 6)
         )
     if makbuz_turu in (None, "ODEME"):

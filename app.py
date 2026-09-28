@@ -773,10 +773,11 @@ class CariVirmanDialog(tk.Toplevel):
 class KkCekimiDialog(tk.Toplevel):
     """Müşteriden tedarikçiye kredi kartı çekim fişi."""
 
-    def __init__(self, parent, belge_no=None):
+    def __init__(self, parent, belge_no=None, *, musteri_id=None, tarih=None, tutar=None):
         super().__init__(parent)
         self.result = None
         self.belge_no = belge_no
+        self._on_deger = {"musteri_id": musteri_id, "tarih": tarih, "tutar": tutar}
         self._mevcut = None
         if belge_no:
             try:
@@ -873,11 +874,12 @@ class KkCekimiDialog(tk.Toplevel):
     def _mevcutu_yukle(self):
         m = self._mevcut
         if not m:
+            self._on_degerleri_yaz()
             return
         self.girdiler["tarih"].delete(0, "end")
         self.girdiler["tarih"].insert(0, m["tarih"].strftime("%d.%m.%Y"))
         self.girdiler["tutar"].delete(0, "end")
-        self.girdiler["tutar"].insert(0, str(m["tutar"]))
+        self.girdiler["tutar"].insert(0, f"{Decimal(str(m['tutar'])):.2f}".replace(".", ","))
         self.girdiler["banka"].delete(0, "end")
         self.girdiler["banka"].insert(0, m["banka"] or "")
         self.girdiler["taksit_sayisi"].delete(0, "end")
@@ -899,6 +901,20 @@ class KkCekimiDialog(tk.Toplevel):
                 if c.id == m.get("tedarikci_id"):
                     self.girdiler["tedarikci"].set(etiket)
                     break
+        self._guncelle()
+
+    def _on_degerleri_yaz(self):
+        on = self._on_deger
+        if on["musteri_id"]:
+            etiket = next((e for e, c in self.musteri_map.items() if c.id == int(on["musteri_id"])), None)
+            if etiket:
+                self.girdiler["musteri"].set(etiket)
+        if on["tarih"]:
+            self.girdiler["tarih"].delete(0, "end")
+            self.girdiler["tarih"].insert(0, on["tarih"].strftime("%d.%m.%Y"))
+        if on["tutar"]:
+            self.girdiler["tutar"].delete(0, "end")
+            self.girdiler["tutar"].insert(0, f"{Decimal(str(on['tutar'])):.2f}".replace(".", ","))
         self._guncelle()
 
     def _guncelle(self, _event=None):

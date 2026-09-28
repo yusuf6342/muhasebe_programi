@@ -671,6 +671,119 @@ class CariVirmanEkranTest(unittest.TestCase):
             next(b for b in bul(root.icerik, ttk.Button) if b.cget("text") == "Yeni KK Çekim Fişi").invoke()
         pencere.assert_called_once()
 
+    def _liste_sayfasi(self):
+        root = self.root
+        root.icerik = tk.Frame(root)
+        root.icerik.pack(fill="both", expand=True)
+        root.menu_dugmeleri = {}
+        root._icerigi_temizle = lambda: [w.destroy() for w in root.icerik.winfo_children()]
+
+        def hemen(_widget, is_, bitti, hata=None):
+            bitti(is_())
+
+        yama = patch("ui_bg.arka_planda", hemen)
+        yama.start()
+        self.addCleanup(yama.stop)
+        self.ui.kasa_makbuzlari_sayfasi(root, makbuz_turu="TAHSILAT")
+        from tkinter import ttk
+
+        def bul(w, sinif):
+            if isinstance(w, sinif):
+                yield w
+            for c in w.winfo_children():
+                yield from bul(c, sinif)
+
+        tablo = next(bul(root.icerik, ttk.Treeview))
+        sekil_cb = next(c for c in bul(root.icerik, ttk.Combobox) if self.ui.KK_ODEME_SEKLI in c.cget("values"))
+        dugmeler = {b.cget("text"): b for b in bul(root.icerik, tk.Button)}
+        return tablo, sekil_cb, dugmeler
+
+    def test_kk_ile_tedarikciye_odeme_makbuzdan_kaydedilir_ve_listede_filtrelenir(self):
+        import app as app_mod
+        from database.kk_cekimi_service import KkCekimiService
+
+        nakit = _servis_testi.TahsilatMakbuzuTest._nakit(self, "50")
+        virman = _virman(self)
+        kayitlar = []
+        d = self.ui.KasaMakbuzDialog(self.root, "TAHSILAT", on_kayit=kayitlar.append)
+        self.assertIn(self.ui.KK_ODEME_SEKLI, d.sekil_cb.cget("values"))
+        self.assertIn("CARİ VİRMAN", d.sekil_cb.cget("values"))
+        d.cari_var.set("çelik")
+        d._cari_arama.sec(0)
+        d.tutar_var.set("300")
+        acilan = {}
+
+        def fisi_doldur(pencere):
+            acilan["musteri"] = pencere.girdiler["musteri"].get()
+            acilan["tutar"] = pencere.girdiler["tutar"].get()
+            t_etiket = next(e for e, c in pencere.tedarikci_map.items() if c.id == self.tedarikci_id)
+            pencere.girdiler["tedarikci"].set(t_etiket)
+            pencere.girdiler["banka"].insert(0, "Garanti")
+            pencere.kaydet()
+
+        with patch.object(app_mod.KkCekimiDialog, "grab_set"), patch.object(
+            app_mod.messagebox, "showinfo"
+        ), patch.object(d, "wait_window", side_effect=fisi_doldur):
+            d.sekil_var.set(self.ui.KK_ODEME_SEKLI)
+            d._sekil_degisti()
+        self.assertIn("M001", acilan["musteri"])
+        self.assertEqual(acilan["tutar"], "300,00")
+        self.assertFalse(d.winfo_exists())
+        belge = kayitlar[0]["belge_no"]
+        self.assertTrue(belge.startswith("KKC-"))
+
+        # Müşteri tahsilatı ile tedarikçi ödemesi aynı belgeyle, karşılıklı bağlı kaydedilir
+        with get_session() as s:
+            islemler = s.scalars(select(CariIslem).where(CariIslem.belge_no == belge)).all()
+            ozet = {(i.cari_id, Decimal(str(i.borc)), Decimal(str(i.alacak)), i.karsi_cari_id) for i in islemler}
+        self.assertEqual(ozet, {
+            (self.musteri_id, Decimal("0"), Decimal("300"), self.tedarikci_id),
+            (self.tedarikci_id, Decimal("300"), Decimal("0"), self.musteri_id),
+        })
+        self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("250"))
+
+        # Kayıtlı fişi güncelle ekranında açıp değiştirmeden kaydetmek tutarı korur
+        with patch.object(app_mod.KkCekimiDialog, "grab_set"), patch.object(app_mod.messagebox, "showinfo"):
+            g = app_mod.KkCekimiDialog(self.root, belge_no=belge)
+            self.assertEqual(g.girdiler["tutar"].get(), "300,00")
+            g.kaydet()
+        self.assertEqual(KkCekimiService.getir(belge)["tutar"], Decimal("300.00"))
+        self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("250"))
+
+        tablo, sekil_cb, dugmeler = self._liste_sayfasi()
+        kk_iid = f"K{belge}"
+        self.assertEqual(set(tablo.get_children()), {str(nakit.id), f"V{virman.id}", kk_iid})
+        self.assertEqual(tablo.set(kk_iid, "odeme"), "MÜŞTERİDEN TEDARİKÇİYE KREDİ KARTI İLE ÖDEME")
+        self.assertIn("YILDIZ AKSESUAR", tablo.set(kk_iid, "hesap"))
+        self.assertIn("Garanti", tablo.set(kk_iid, "hesap"))
+        self.assertEqual(tablo.set(kk_iid, "tutar"), "300,00 TL")
+
+        for secim, beklenen in (
+            (self.ui.KK_ODEME_SEKLI, {kk_iid}),
+            ("CARİ VİRMAN", {f"V{virman.id}"}),
+            ("NAKİT / KASA", {str(nakit.id)}),
+            ("Tümü", {str(nakit.id), f"V{virman.id}", kk_iid}),
+        ):
+            sekil_cb.set(secim)
+            sekil_cb.event_generate("<<ComboboxSelected>>")
+            self.root.update()
+            self.assertEqual(set(tablo.get_children()), beklenen, secim)
+
+        # Listeden iptal: iki cari hareket birlikte geri alınır, fiş İPTAL olarak listede kalır
+        sekil_cb.set(self.ui.KK_ODEME_SEKLI)
+        sekil_cb.event_generate("<<ComboboxSelected>>")
+        tablo.selection_set([kk_iid])
+        with patch.object(self.ui.messagebox, "askyesno", return_value=True):
+            dugmeler["İptal Et"].invoke()
+        self.assertEqual(tablo.set(kk_iid, "durum"), "İPTAL")
+        self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("550"))
+        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("4600"))
+        with get_session() as s:
+            self.assertEqual(s.scalar(select(func.count(CariIslem.id)).where(CariIslem.belge_no == belge)), 0)
+        self.assertEqual(KkCekimiService.makbuz_listesi(durum="IPTAL")[0].belge_no, belge)
+        self.assertIn("Yeni KK ile Tedarikçiye Ödeme", dugmeler)
+        self.assertEqual(self.mesajlar, [])
+
     def test_liste_ve_toplu_cikti(self):
         nakit = _servis_testi.TahsilatMakbuzuTest._nakit(self, "300")
         virman = _virman(self)
