@@ -1,7 +1,20 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -582,5 +595,20 @@ class KasaMakbuzSatiri(Base):
     )
     tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Kart satırları: POS tahsilatı (kart_tipi + taksit) veya şirket kredi kartıyla ödeme
+    kart_tipi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    taksit_sayisi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kredi_karti_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pos_valor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kk_odeme_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     makbuz: Mapped["KasaMakbuzu"] = relationship("KasaMakbuzu", back_populates="satirlar")
     finans_hesap = relationship("FinansHesabi")
+
+
+# Aynı firmada (firma veritabanında) makbuz numarası tekrar edemez; boş numara serbest.
+Index(
+    "ux_kasa_makbuz_no",
+    func.upper(func.trim(KasaMakbuzu.__table__.c.makbuz_no)),
+    unique=True,
+    sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+)

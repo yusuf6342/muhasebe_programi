@@ -5512,29 +5512,28 @@ def _hesap_sayfasi(app, hesap_turu: str, baslik: str):
             hareketleri_goster(hid)
             listeyi_yenile()
 
+    def _makbuz_kaydedildi(hid):
+        def yenile(_makbuz):
+            try:
+                if hid:
+                    hareketleri_goster(hid)
+                listeyi_yenile()
+            except tk.TclError:
+                pass
+
+        return yenile
+
     def tahsilat_makbuzu():
         from kasa_makbuz_ui import KasaMakbuzDialog
 
         hid = secili_id()
-        dialog = KasaMakbuzDialog(app, makbuz_turu="TAHSILAT", finans_hesap_id=hid)
-        app.wait_window(dialog)
-        if dialog.result and hid:
-            hareketleri_goster(hid)
-            listeyi_yenile()
-        elif dialog.result:
-            listeyi_yenile()
+        KasaMakbuzDialog(app, makbuz_turu="TAHSILAT", finans_hesap_id=hid, on_kayit=_makbuz_kaydedildi(hid))
 
     def odeme_makbuzu():
         from kasa_makbuz_ui import KasaMakbuzDialog
 
         hid = secili_id()
-        dialog = KasaMakbuzDialog(app, makbuz_turu="ODEME", finans_hesap_id=hid)
-        app.wait_window(dialog)
-        if dialog.result and hid:
-            hareketleri_goster(hid)
-            listeyi_yenile()
-        elif dialog.result:
-            listeyi_yenile()
+        KasaMakbuzDialog(app, makbuz_turu="ODEME", finans_hesap_id=hid, on_kayit=_makbuz_kaydedildi(hid))
 
     def _secili_hareket():
         secim = hareket_tablo.selection()

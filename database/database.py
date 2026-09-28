@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import sys
@@ -402,6 +403,54 @@ def sistem_altyapisini_baslat() -> dict:
     return sonuc
 
 
+def kasa_makbuz_schemasini_guncelle(hedef_engine) -> None:
+    """Makbuz kart satırı sütunları ve makbuz no benzersizliği (yalnız ekleme; veri değişmez)."""
+    insp = inspect(hedef_engine)
+    if insp.has_table("kasa_makbuz_satirlari"):
+        sutunlar = {s["name"] for s in insp.get_columns("kasa_makbuz_satirlari")}
+        eklenecek = {
+            "kart_tipi": "VARCHAR(20)",
+            "taksit_sayisi": "INTEGER",
+            "kredi_karti_id": "INTEGER",
+            "pos_valor_id": "INTEGER",
+            "kk_odeme_id": "INTEGER",
+        }
+        eksik = [(ad, tip) for ad, tip in eklenecek.items() if ad not in sutunlar]
+        if eksik:
+            with hedef_engine.begin() as connection:
+                for ad, tip in eksik:
+                    connection.execute(
+                        text(f'ALTER TABLE "kasa_makbuz_satirlari" ADD COLUMN "{ad}" {tip}')
+                    )
+    if not insp.has_table("kasa_makbuzlari"):
+        return
+    with hedef_engine.begin() as connection:
+        var = connection.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_kasa_makbuz_no'")
+        ).first()
+        if var:
+            return
+        mukerrer = connection.execute(
+            text(
+                "SELECT upper(trim(makbuz_no)) FROM kasa_makbuzlari "
+                "WHERE makbuz_no IS NOT NULL AND trim(makbuz_no) <> '' "
+                "GROUP BY 1 HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        ).first()
+        if mukerrer:
+            # Eski mükerrer numaralar değiştirilmez; benzersizlik kayıt anında servisçe denetlenir.
+            logging.getLogger(__name__).warning(
+                "ux_kasa_makbuz_no oluşturulmadı: mükerrer makbuz numarası var (%s)", mukerrer[0]
+            )
+            return
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_kasa_makbuz_no ON kasa_makbuzlari "
+                "(upper(trim(makbuz_no))) WHERE makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"
+            )
+        )
+
+
 def cari_kart_schemasini_guncelle() -> None:
     """Eksik cari alanlarını mevcut SQLite tablosuna veri kaybetmeden ekler."""
     from database.models.firma import Firma
@@ -453,6 +502,8 @@ def cari_kart_schemasini_guncelle() -> None:
                         "ON depo_transfer_fisleri (giris_sube_id)"
                     )
                 )
+
+    kasa_makbuz_schemasini_guncelle(engine)
 
     tablo = "cari_kartlar"
     mevcut_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(tablo)}

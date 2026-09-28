@@ -12682,8 +12682,7 @@ class MuhasebeApp(tk.Tk):
             self._busy_bitir()
         from kasa_makbuz_ui import KasaMakbuzDialog
 
-        dialog = KasaMakbuzDialog(self, makbuz_turu="ODEME")
-        self.wait_window(dialog)
+        KasaMakbuzDialog(self, makbuz_turu="ODEME")
 
     def stoklar_menusu_goster(self):
         """Stoklar hub (kurumsal kartlar + özet)."""
@@ -13462,13 +13461,12 @@ class MuhasebeApp(tk.Tk):
         self.wait_window(dialog)
 
     def tahsilat_makbuzu_ac(self):
-        """Hızlı giriş: çok satırlı tahsilat makbuzu (nakit / havale / POS)."""
+        """Yeni ve boş tahsilat makbuzu (nakit / havale / kredi kartı); pencere modal değildir."""
         if getattr(self, "_busy_pending", False):
             self._busy_bitir()
         from kasa_makbuz_ui import KasaMakbuzDialog
 
-        dialog = KasaMakbuzDialog(self, makbuz_turu="TAHSILAT")
-        self.wait_window(dialog)
+        KasaMakbuzDialog(self, makbuz_turu="TAHSILAT")
 
     def satin_alma_menusu_goster(self):
         """Satın Alma hub (kurumsal kartlar + özet)."""

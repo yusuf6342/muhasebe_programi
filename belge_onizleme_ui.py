@@ -130,36 +130,52 @@ def kasa_makbuz_onizle(parent, belge_no: str) -> bool:
     if not makbuz:
         return False
     tahsilat = (makbuz.makbuz_turu or "").upper() == "TAHSILAT"
-    baslik = "Tahsilat Makbuzu" if tahsilat else "Ödeme Makbuzu"
+    no = (makbuz.makbuz_no or "").strip()
+    baslik = ("Tahsilat Makbuzu" if tahsilat else "Ödeme Makbuzu") + (f" — {no}" if no else "")
+    iptal = (makbuz.durum or "") == "IPTAL"
+    if iptal:
+        baslik += " (İPTAL)"
     cari = getattr(makbuz, "cari", None)
     cari_yazi = f"{cari.cari_kodu} — {cari.unvan}" if cari else "—"
     satirlar = list(getattr(makbuz, "satirlar", None) or [])
+    kk_adlari = {}
+    if any(getattr(s, "kredi_karti_id", None) for s in satirlar):
+        kk_adlari = {k["id"]: k["etiket"] for k in FinansService.sirket_kredi_kartlari()}
     alanlar = [
+        ("Makbuz no", no or "—"),
         ("Belge no", makbuz.belge_no),
         ("Tür", "Tahsilat" if tahsilat else "Ödeme"),
         ("Tarih", _tarih(makbuz.tarih)),
         ("Cari", cari_yazi),
         ("Toplam", _para(makbuz.tutar)),
-        ("Makbuz no", makbuz.makbuz_no or "—"),
-        ("Durum", makbuz.durum or "—"),
+        ("Durum", "İPTAL" if iptal else (makbuz.durum or "—")),
         ("Açıklama", makbuz.aciklama or "—"),
     ]
     if satirlar:
         for i, s in enumerate(satirlar, start=1):
             h = getattr(s, "finans_hesap", None)
             hesap_adi = h.hesap_adi if h else "—"
+            kart = ""
+            if getattr(s, "kredi_karti_id", None):
+                hesap_adi = kk_adlari.get(s.kredi_karti_id, hesap_adi)
+                kart = f" | {int(s.taksit_sayisi or 1)} taksit"
+            elif getattr(s, "kart_tipi", None):
+                if s.kart_tipi == "BANKA_KARTI":
+                    kart = " | Banka kartı"
+                else:
+                    kart = f" | Kredi kartı, {int(s.taksit_sayisi or 1)} taksit"
             tarih_yazi = _tarih(s.tarih or makbuz.tarih)
             alanlar.append(
                 (
                     f"Satır {i}",
-                    f"{tarih_yazi} | {s.odeme_sekli or '—'} | {hesap_adi} | {_para(s.tutar)}"
+                    f"{tarih_yazi} | {s.odeme_sekli or '—'} | {hesap_adi}{kart} | {_para(s.tutar)}"
                     + (f" | {s.aciklama}" if s.aciklama else ""),
                 )
             )
     else:
         kasa = makbuz.finans_hesap.hesap_adi if makbuz.finans_hesap else "—"
-        alanlar.insert(4, ("Hesap", kasa))
-    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar, geometry="560x520")
+        alanlar.insert(5, ("Hesap", kasa))
+    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar, geometry="600x560")
     if dialog.winfo_exists():
         parent.wait_window(dialog)
     return True

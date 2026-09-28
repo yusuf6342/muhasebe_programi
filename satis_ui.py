@@ -62,7 +62,12 @@ SATIS_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
 )
 
 CARI_ISLEM_KARTLARI: tuple[tuple[str, str, str], ...] = (
-    ("TAHSİLAT MAKBUZU", "Nakit, havale ve POS tahsilat makbuzları", "tahsilat"),
+    ("TAHSİLAT MAKBUZU", "Yeni ve boş makbuz: nakit, havale ve kredi kartıyla tahsilat", "tahsilat"),
+    (
+        "TAHSİLAT MAKBUZLARI LİSTESİ",
+        "Kayıtlı makbuzları ara, filtrele, görüntüle, yazdır veya iptal et",
+        "tahsilat_liste",
+    ),
     ("CARİ VİRMAN", "Cariler arası borç / alacak virman fişleri", "virman"),
     (
         "MÜŞTERİDEN TEDARİKÇİYE\nKREDİ KARTI ÇEKİM EVRAKI",
@@ -131,6 +136,9 @@ def _hub_komutlar(app) -> dict[str, Callable]:
 
 def _cari_komutlar(app) -> dict[str, Callable]:
     def tahsilat():
+        app.tahsilat_makbuzu_ac()
+
+    def tahsilat_liste():
         from kasa_makbuz_ui import kasa_makbuzlari_sayfasi
 
         kasa_makbuzlari_sayfasi(
@@ -158,6 +166,7 @@ def _cari_komutlar(app) -> dict[str, Callable]:
 
     return {
         "tahsilat": tahsilat,
+        "tahsilat_liste": tahsilat_liste,
         "virman": app.cari_virman_goster,
         "kk": app.kk_cekimi_goster,
         "gelir": gelir,
