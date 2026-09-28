@@ -219,6 +219,11 @@ def gecis_calistir(
         )
         firma.db_path = beklenen
 
+    if not muhasebe_db_path.is_file():
+        # Yeni kurulum: tablolar bu adımdan sonra oluşturulur; geçiş bir sonraki açılışta yapılır
+        sonuc["mesajlar"].append("Yeni kurulum: yedeklenecek veritabanı henüz yok.")
+        return sonuc
+
     onceki_tamam = _ayar_oku(session, GECIS_FLAG) == "1"
     onceki_snap_raw = _ayar_oku(session, GECIS_SNAPSHOT)
     onceki_snap = json.loads(onceki_snap_raw) if onceki_snap_raw else None
