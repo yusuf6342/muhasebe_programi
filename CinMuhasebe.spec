@@ -111,6 +111,7 @@ a = Analysis(
         "pymupdf",
         "makbuz_cikti",
         "makbuz_cikti_ui",
+        "database.cari_virman_makbuz_service",
         "satis_irsaliyesi_ui",
         "kismi_belge_secim_ui",
         "database.kalan_belge_service",

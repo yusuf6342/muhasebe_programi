@@ -612,3 +612,41 @@ Index(
     unique=True,
     sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
 )
+
+
+class CariVirmanMakbuzu(Base):
+    """Tahsilat makbuzu — Cari Virman: müşteriden alacak ve tedarikçiye borç aynı tutarda mahsup edilir.
+
+    Kasa / banka / POS / kart hareketi yoktur. Bağlı iki cari hareket:
+    tahsilat_belge_no (müşteri, alacak) ve odeme_belge_no (tedarikçi, alacak).
+    Makbuz numarası kasa makbuzlarıyla ortak MKB serisindendir.
+    """
+
+    __tablename__ = "cari_virman_makbuzlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
+    belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    tahsilat_belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    odeme_belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    makbuz_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    tarih: Mapped[date] = mapped_column(Date, nullable=False)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    musteri_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tedarikci_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # FIFO ile kapatılan açık borç tutarları — düzenleme/iptalde tam bu kadar geri açılır
+    musteri_kapanan: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tedarikci_kapanan: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|IPTAL
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+    makbuz_turu = "TAHSILAT"
+    virman = True
+
+
+Index(
+    "ux_cari_virman_makbuz_no",
+    func.upper(func.trim(CariVirmanMakbuzu.__table__.c.makbuz_no)),
+    unique=True,
+    sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+)

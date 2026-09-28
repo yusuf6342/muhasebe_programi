@@ -860,15 +860,23 @@ class CariService:
             return sonuc
 
     @staticmethod
-    def _aciklara_geri_al(session, cari_id: int, tutar: Decimal, belge_no: str = "") -> None:
-        """FIFO uygulanan açık bakiyeyi LIFO ile geri açar; fatura tahsilatını senkronlar."""
+    def _aciklara_geri_al(
+        session, cari_id: int, tutar: Decimal, belge_no: str = "", *, yalniz_borc_satirlari: bool = False
+    ) -> None:
+        """FIFO uygulanan açık bakiyeyi LIFO ile geri açar; fatura tahsilatını senkronlar.
+
+        yalniz_borc_satirlari: başka belgelerin alacak (satış tutarı 0, eksi kalan) satırlarına dokunmaz.
+        """
         kalan = tutar
+        kosullar = [
+            SatisHareketi.cari_id == cari_id,
+            SatisHareketi.kalan_acik_tutar < SatisHareketi.satis_tutari,
+        ]
+        if yalniz_borc_satirlari:
+            kosullar.append(SatisHareketi.satis_tutari > 0)
         hareketler = session.scalars(
             select(SatisHareketi)
-            .where(
-                SatisHareketi.cari_id == cari_id,
-                SatisHareketi.kalan_acik_tutar < SatisHareketi.satis_tutari,
-            )
+            .where(*kosullar)
             .order_by(SatisHareketi.satis_tarihi.desc(), SatisHareketi.id.desc())
         ).all()
         for hareket in hareketler:

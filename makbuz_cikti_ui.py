@@ -40,7 +40,7 @@ class MakbuzCiktiDialog(tk.Toplevel):
     def __init__(self, parent, makbuz_ids, yerlesim: str = mc.A5, *, veriler: list[dict] | None = None):
         super().__init__(parent)
         self.withdraw()
-        self.makbuz_ids = [int(i) for i in makbuz_ids]
+        self.makbuz_ids = [i if mc.virman_id_coz(i) is not None else int(i) for i in makbuz_ids]
         if not self.makbuz_ids and not veriler:
             self.destroy()
             raise ValueError("Çıktı için en az bir makbuz seçin.")

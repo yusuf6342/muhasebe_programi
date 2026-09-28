@@ -1,6 +1,7 @@
-"""Tahsilat / ödeme makbuzu çıktısı — A5 dikey makbuz; PDF (PyMuPDF) ve Word (python-docx).
+"""Tahsilat / ödeme / cari virman makbuzu çıktısı — A5 dikey makbuz; PDF (PyMuPDF) ve Word (python-docx).
 
 Yalnız okur: makbuz, cari ve firma bilgisi okunur; hiçbir kayıt oluşturulmaz veya değiştirilmez.
+Makbuz kimliği: kasa makbuzu için sayı (id), cari virman makbuzu için "V{id}".
 PDF ve Word aynı milimetre düzenini (YERLESIM) kullanır:
 - "A5": her makbuz ayrı A5 (148 × 210 mm) dikey sayfa
 - "A4_IKILI": A4 yatay sayfada yan yana iki A5 makbuz (kesim çizgili)
@@ -44,6 +45,10 @@ BOSLUK = 2.0
 IMZA_SUTUN = (48.0, 48.0, 32.0)
 TABLO_SUTUN = (46.0, 52.0, 30.0)
 BILGI_SUTUN = (40.0, 88.0)
+# Cari virman: üç imza + kaşe; bağlı iki evrak satırı; mahsup metinli açıklama
+IMZA_SUTUN_VIRMAN = (33.0, 33.0, 33.0, 29.0)
+H_EVRAK = 7.0
+H_VIRMAN_ACIKLAMA = 18.0
 
 LACIVERT = "102A43"
 SARI = "F4C542"
@@ -123,6 +128,17 @@ def firma_satirlari(b: dict) -> dict:
     }
 
 
+def virman_kimligi(virman_id) -> str:
+    return f"V{int(virman_id)}"
+
+
+def virman_id_coz(kimlik) -> int | None:
+    """"V12" → 12 (cari virman makbuzu); kasa makbuzu kimliğinde None."""
+    if isinstance(kimlik, str) and kimlik[:1].upper() == "V" and kimlik[1:].isdigit():
+        return int(kimlik[1:])
+    return None
+
+
 def makbuz_cikti_verileri(makbuz_ids, firma: dict | None = None) -> list[dict]:
     """Seçilen makbuzların çıktı verisi (sırası korunur). Salt okunur."""
     from database.finans_service import FinansService
@@ -131,6 +147,15 @@ def makbuz_cikti_verileri(makbuz_ids, firma: dict | None = None) -> list[dict]:
     kk_adlari: dict[int, str] | None = None
     sonuc = []
     for makbuz_id in makbuz_ids:
+        virman_id = virman_id_coz(makbuz_id)
+        if virman_id is not None:
+            from database.cari_virman_makbuz_service import CariVirmanMakbuzService
+
+            k = CariVirmanMakbuzService.getir(virman_id)
+            if k is None:
+                raise ValueError(f"Cari virman makbuzu bulunamadı (id={virman_id}).")
+            sonuc.append(_virman_verisi(k, firma))
+            continue
         m = FinansService.kasa_makbuz_getir(int(makbuz_id))
         if m is None:
             raise ValueError(f"Makbuz bulunamadı (id={makbuz_id}).")
@@ -204,6 +229,53 @@ def _makbuz_verisi(m, satirlar, firma: dict, kk_adlari: dict) -> dict:
     }
 
 
+def _virman_verisi(k, firma: dict) -> dict:
+    from database.cari_virman_makbuz_service import VIRMAN_METNI
+
+    musteri, tedarikci = getattr(k, "musteri", None), getattr(k, "tedarikci", None)
+    m_kod, m_ad = getattr(musteri, "cari_kodu", "") or "", getattr(musteri, "unvan", "") or ""
+    t_kod, t_ad = getattr(tedarikci, "cari_kodu", "") or "", getattr(tedarikci, "unvan", "") or ""
+    return {
+        "id": virman_kimligi(k.id),
+        "virman": True,
+        "tahsilat": True,
+        "baslik": "CARİ VİRMAN MAKBUZU",
+        "makbuz_no": (k.makbuz_no or "").strip(),
+        "belge_no": k.belge_no or "",
+        "tarih": k.tarih.strftime("%d.%m.%Y") if k.tarih else "",
+        "iptal": (k.durum or "") == "IPTAL",
+        "cari_kodu": m_kod,
+        "cari_unvan": m_ad,
+        "musteri_kodu": m_kod,
+        "musteri_unvan": m_ad,
+        "tedarikci_kodu": t_kod,
+        "tedarikci_unvan": t_ad,
+        "tutar_etiket": "VİRMAN TUTARI",
+        "tutar": para(k.tutar),
+        "tutar_yaziyla": tutar_yaziyla(k.tutar),
+        "evraklar": [
+            {
+                "evrak": "Tahsilat evrakı",
+                "detay": f"{m_kod} · müşteriden alacak azalır".strip(" ·"),
+                "no": k.tahsilat_belge_no or "",
+                "tutar": para(k.tutar),
+            },
+            {
+                "evrak": "Ödeme evrakı",
+                "detay": f"{t_kod} · tedarikçiye borç azalır".strip(" ·"),
+                "no": k.odeme_belge_no or "",
+                "tutar": para(k.tutar),
+            },
+        ],
+        "odemeler": [],
+        "virman_metni": VIRMAN_METNI,
+        "aciklama": (k.aciklama or "").strip(),
+        "imzalar": ("VİRMANI DÜZENLEYEN", "MÜŞTERİ YETKİLİSİ", "TEDARİKÇİ YETKİLİSİ"),
+        "firma": firma,
+        "olusturma": datetime.now().strftime("%d.%m.%Y %H:%M"),
+    }
+
+
 def _gosterilecek_odemeler(v: dict) -> tuple[list[dict], float, bool]:
     odemeler = list(v["odemeler"])
     adet, rh, sikisik = _satir_duzeni(len(odemeler))
@@ -225,7 +297,10 @@ def _guvenli(metin: str) -> str:
 
 def dosya_adi(veriler: list[dict], yerlesim: str, uzanti: str) -> str:
     """Makbuz numarasıyla dosya adı: Tahsilat_Makbuzu_MKB-00001.pdf / Tahsilat_Makbuzlari_MKB-00001_MKB-00004_3_adet_A4.pdf"""
-    tur = "Tahsilat" if all(v["tahsilat"] for v in veriler) else ("Odeme" if not any(v["tahsilat"] for v in veriler) else "Kasa")
+    if all(v.get("virman") for v in veriler):
+        tur = "Cari_Virman"
+    else:
+        tur = "Tahsilat" if all(v["tahsilat"] for v in veriler) else ("Odeme" if not any(v["tahsilat"] for v in veriler) else "Kasa")
     nolar = [_guvenli(v["makbuz_no"] or v["belge_no"]) for v in veriler]
     ek = "_A4_ikili" if yerlesim == A4_IKILI else ""
     if len(nolar) == 1:
@@ -361,57 +436,20 @@ class _PdfCizici:
 
 
 def _makbuz_ciz(c: _PdfCizici, v: dict) -> None:
+    if v.get("virman"):
+        _virman_ciz(c, v)
+        return
     x0, w = MARJ, ICERIK_GEN
-    y = MARJ
-    f = v["firma"]
-
-    # Firma başlığı
-    logo_w = 34.0 if f.get("logo_yolu") else 0.0
-    if logo_w:
-        c.resim(x0 + w - logo_w, y, logo_w, H_UST - 1, f["logo_yolu"])
-    metin_w = w - logo_w - (3 if logo_w else 0)
-    c.yazi(x0, y, metin_w, 6.2, f.get("unvan") or "", 11, kalin=True, renk=LACIVERT)
-    yy = y + 6.4
-    for satir in f.get("satirlar", [])[:3]:
-        c.yazi(x0, yy, metin_w, 3.6, satir, 7.2, renk=GRI, en_kucuk=5)
-        yy += 3.5
-    y += H_UST
-    c.kutu(x0, y + 0.3, w, 0.9, cizgi=None, dolgu=SARI)
-    y += H_CIZGI
-
-    # Başlık bandı + makbuz no
-    no_w = 44.0
-    c.kutu(x0, y, w - no_w, H_BASLIK, cizgi=None, dolgu=LACIVERT)
-    c.yazi(x0 + 3, y + 2.6, w - no_w - 4, 7, v["baslik"], 14, kalin=True, renk="FFFFFF")
-    c.kutu(x0 + w - no_w, y, no_w, H_BASLIK, cizgi=None, dolgu=SARI)
-    etiket, no = ("MAKBUZ NO", v["makbuz_no"]) if v["makbuz_no"] else ("BELGE NO", v["belge_no"])
-    c.yazi(x0 + w - no_w + 2, y + 0.9, no_w - 4, 3.4, etiket, 6.5, kalin=True, renk=LACIVERT)
-    c.yazi(x0 + w - no_w + 2, y + 4.0, no_w - 4, 6.2, no, 12, kalin=True, renk=LACIVERT)
-    y += H_BASLIK + BOSLUK
-
-    # Tarih / belge no / cari
-    satirlar = (
-        (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
-        (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
+    y = _ust_ciz(c, v)
+    y = _bilgi_ciz(
+        c,
+        y,
+        (
+            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
+        ),
     )
-    for satir in satirlar:
-        xx = x0
-        for (etiket, deger), sw in zip(satir, BILGI_SUTUN):
-            c.kutu(xx, y, sw, H_BILGI)
-            c.yazi(xx + 1.6, y + 0.8, sw - 3, 3.2, etiket, 6.3, kalin=True, renk=GRI)
-            c.yazi(xx + 1.6, y + 3.9, sw - 3, 5.8, deger, 9.5, kalin=True, renk="1F2933", en_kucuk=6)
-            xx += sw
-        y += H_BILGI
-    y += BOSLUK
-
-    # Tutar kutusu
-    c.kutu(x0, y, w, H_TUTAR, cizgi=SARI, dolgu=ACIK_SARI, kalinlik=1)
-    c.yazi(x0 + 2, y + 1.2, 60, 3.6, v["tutar_etiket"], 7, kalin=True, renk=LACIVERT)
-    if v["iptal"]:
-        c.yazi(x0 + 2, y + 5, 50, 5, "İPTAL EDİLMİŞTİR", 10, kalin=True, renk=KIRMIZI)
-    c.yazi(x0 + 50, y + 1.0, w - 52, 8.5, v["tutar"], 17, kalin=True, renk=LACIVERT, hiza="sag")
-    c.yazi(x0 + 2, y + 10.2, w - 4, 6.4, v["tutar_yaziyla"], 7.8, renk="1F2933", en_kucuk=5.5)
-    y += H_TUTAR + BOSLUK
+    y = _tutar_ciz(c, y, v)
 
     # Ödeme tablosu
     odemeler, rh, sikisik = _gosterilecek_odemeler(v)
@@ -450,15 +488,122 @@ def _makbuz_ciz(c: _PdfCizici, v: dict) -> None:
     c.yazi(x0 + 1.6, y + 3.9, w - 3, H_ACIKLAMA - 4.5, v["aciklama"], 8, renk="1F2933", en_kucuk=5.5)
     y += H_ACIKLAMA + 3
 
-    # İmza ve kaşe alanları
+    y = _imza_ciz(c, y, v["imzalar"], IMZA_SUTUN)
+    _alt_ciz(c, y, v)
+
+
+def _virman_ciz(c: _PdfCizici, v: dict) -> None:
+    """Cari virman makbuzu: ödeme yöntemi / kasa-banka-POS alanı yoktur; bağlı iki cari evrakı gösterilir."""
+    x0, w = MARJ, ICERIK_GEN
+    y = _ust_ciz(c, v)
+    y = _bilgi_ciz(
+        c,
+        y,
+        (
+            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("MÜŞTERİ KODU", v["musteri_kodu"]), ("TAHSİLAT YAPILAN MÜŞTERİ", v["musteri_unvan"])),
+            (("TEDARİKÇİ KODU", v["tedarikci_kodu"]), ("ÖDEME YAPILAN TEDARİKÇİ", v["tedarikci_unvan"])),
+        ),
+    )
+    y = _tutar_ciz(c, y, v)
+
+    basliklar = ("BAĞLI EVRAK", "EVRAK NO", "TUTAR")
     xx = x0
-    basliklar = (*v["imzalar"], "FİRMA KAŞESİ")
+    for b, sw in zip(basliklar, TABLO_SUTUN):
+        c.kutu(xx, y, sw, H_TABLO_BAS, dolgu=ACIK_MAVI)
+        c.yazi(xx + 1.6, y + 1.3, sw - 3, 3.8, b, 6.5, kalin=True, renk=LACIVERT, hiza="sag" if b == "TUTAR" else "sol")
+        xx += sw
+    y += H_TABLO_BAS
+    for e in v["evraklar"]:
+        xx = x0
+        for i, sw in enumerate(TABLO_SUTUN):
+            c.kutu(xx, y, sw, H_EVRAK)
+            if i == 0:
+                c.yazi(xx + 1.6, y + 0.6, sw - 3, 3.6, e["evrak"], 7.3, kalin=True, renk="1F2933")
+                c.yazi(xx + 1.6, y + 3.7, sw - 3, 3.2, e["detay"], 6, renk=GRI, en_kucuk=4.8)
+            elif i == 1:
+                c.yazi(xx + 1.6, y + 1.4, sw - 3, 4, e["no"], 7.8, kalin=True, renk="1F2933")
+            else:
+                c.yazi(xx + 1.6, y + 1.4, sw - 3, 4, e["tutar"], 7.8, kalin=True, renk="1F2933", hiza="sag")
+            xx += sw
+        y += H_EVRAK
+    y += BOSLUK
+
+    c.kutu(x0, y, w, H_VIRMAN_ACIKLAMA)
+    c.yazi(x0 + 1.6, y + 0.8, 40, 3.2, "AÇIKLAMA", 6.3, kalin=True, renk=GRI)
+    c.yazi(x0 + 1.6, y + 3.9, w - 3, 7.2, v["virman_metni"], 7.8, kalin=True, renk="1F2933", en_kucuk=6)
+    c.yazi(x0 + 1.6, y + 11.4, w - 3, 5.6, v["aciklama"], 7.3, renk="1F2933", en_kucuk=5)
+    y += H_VIRMAN_ACIKLAMA + 3
+
+    y = _imza_ciz(c, y, v["imzalar"], IMZA_SUTUN_VIRMAN)
+    _alt_ciz(c, y, v)
+
+
+def _ust_ciz(c: _PdfCizici, v: dict) -> float:
+    """Firma başlığı + başlık bandı (makbuz no); sonraki bloğun y'si."""
+    x0, w = MARJ, ICERIK_GEN
+    y = MARJ
+    f = v["firma"]
+
+    # Firma başlığı
+    logo_w = 34.0 if f.get("logo_yolu") else 0.0
+    if logo_w:
+        c.resim(x0 + w - logo_w, y, logo_w, H_UST - 1, f["logo_yolu"])
+    metin_w = w - logo_w - (3 if logo_w else 0)
+    c.yazi(x0, y, metin_w, 6.2, f.get("unvan") or "", 11, kalin=True, renk=LACIVERT)
+    yy = y + 6.4
+    for satir in f.get("satirlar", [])[:3]:
+        c.yazi(x0, yy, metin_w, 3.6, satir, 7.2, renk=GRI, en_kucuk=5)
+        yy += 3.5
+    y += H_UST
+    c.kutu(x0, y + 0.3, w, 0.9, cizgi=None, dolgu=SARI)
+    y += H_CIZGI
+
+    # Başlık bandı + makbuz no
+    no_w = 44.0
+    c.kutu(x0, y, w - no_w, H_BASLIK, cizgi=None, dolgu=LACIVERT)
+    c.yazi(x0 + 3, y + 2.6, w - no_w - 4, 7, v["baslik"], 14, kalin=True, renk="FFFFFF")
+    c.kutu(x0 + w - no_w, y, no_w, H_BASLIK, cizgi=None, dolgu=SARI)
+    etiket, no = ("MAKBUZ NO", v["makbuz_no"]) if v["makbuz_no"] else ("BELGE NO", v["belge_no"])
+    c.yazi(x0 + w - no_w + 2, y + 0.9, no_w - 4, 3.4, etiket, 6.5, kalin=True, renk=LACIVERT)
+    c.yazi(x0 + w - no_w + 2, y + 4.0, no_w - 4, 6.2, no, 12, kalin=True, renk=LACIVERT)
+    return y + H_BASLIK + BOSLUK
+
+
+def _bilgi_ciz(c: _PdfCizici, y: float, satirlar) -> float:
+    x0 = MARJ
+    for satir in satirlar:
+        xx = x0
+        for (etiket, deger), sw in zip(satir, BILGI_SUTUN):
+            c.kutu(xx, y, sw, H_BILGI)
+            c.yazi(xx + 1.6, y + 0.8, sw - 3, 3.2, etiket, 6.3, kalin=True, renk=GRI)
+            c.yazi(xx + 1.6, y + 3.9, sw - 3, 5.8, deger, 9.5, kalin=True, renk="1F2933", en_kucuk=6)
+            xx += sw
+        y += H_BILGI
+    return y + BOSLUK
+
+
+def _tutar_ciz(c: _PdfCizici, y: float, v: dict) -> float:
+    x0, w = MARJ, ICERIK_GEN
+    c.kutu(x0, y, w, H_TUTAR, cizgi=SARI, dolgu=ACIK_SARI, kalinlik=1)
+    c.yazi(x0 + 2, y + 1.2, 60, 3.6, v["tutar_etiket"], 7, kalin=True, renk=LACIVERT)
+    if v["iptal"]:
+        c.yazi(x0 + 2, y + 5, 50, 5, "İPTAL EDİLMİŞTİR", 10, kalin=True, renk=KIRMIZI)
+    c.yazi(x0 + 50, y + 1.0, w - 52, 8.5, v["tutar"], 17, kalin=True, renk=LACIVERT, hiza="sag")
+    c.yazi(x0 + 2, y + 10.2, w - 4, 6.4, v["tutar_yaziyla"], 7.8, renk="1F2933", en_kucuk=5.5)
+    return y + H_TUTAR + BOSLUK
+
+
+def _imza_ciz(c: _PdfCizici, y: float, imzalar, sutunlar) -> float:
+    """Boş ad-soyad / tarih / imza alanları + firma kaşesi yeri (son sütun); imza varmış gibi bir şey çizilmez."""
+    xx = MARJ
+    basliklar = (*imzalar, "FİRMA KAŞESİ")
     imza_h = H_IMZA_BAS + H_IMZA_AD + H_IMZA_TARIH + H_IMZA_ALAN
-    for i, (b, sw) in enumerate(zip(basliklar, IMZA_SUTUN)):
+    for i, (b, sw) in enumerate(zip(basliklar, sutunlar)):
         c.kutu(xx, y, sw, imza_h, cizgi=LACIVERT, kalinlik=0.7)
         c.kutu(xx, y, sw, H_IMZA_BAS, cizgi=LACIVERT, dolgu=ACIK_MAVI, kalinlik=0.7)
         c.yazi(xx + 1, y + 1.0, sw - 2, 3.6, b, 6.3, kalin=True, renk=LACIVERT, hiza="orta")
-        if i < 2:
+        if i < len(imzalar):
             yy = y + H_IMZA_BAS
             for etiket, h in (("Adı Soyadı", H_IMZA_AD), ("Tarih", H_IMZA_TARIH)):
                 c.yazi(xx + 1.6, yy + h - 4.2, 18, 3.4, f"{etiket}:", 6.5, renk=GRI)
@@ -468,8 +613,12 @@ def _makbuz_ciz(c: _PdfCizici, v: dict) -> None:
         else:
             c.kutu(xx + 3, y + H_IMZA_BAS + 3, sw - 6, imza_h - H_IMZA_BAS - 6, cizgi=CIZGI, kesik="[2 2] 0")
         xx += sw
-    y += imza_h + 1.5
+    return y + imza_h + 1.5
 
+
+def _alt_ciz(c: _PdfCizici, y: float, v: dict) -> None:
+    x0, w = MARJ, ICERIK_GEN
+    f = v["firma"]
     alt = f"Belge No: {v['belge_no']}  ·  Oluşturma: {v['olusturma']}"
     if f.get("alt_bilgi"):
         alt = f"{f['alt_bilgi']}  ·  {alt}"
@@ -508,7 +657,11 @@ def pdf_uret(veriler: list[dict], yerlesim: str = A5) -> bytes:
     doc.set_metadata(
         {
             "title": ", ".join(v["makbuz_no"] or v["belge_no"] for v in veriler),
-            "subject": "Tahsilat Makbuzu" if veriler[0]["tahsilat"] else "Ödeme Makbuzu",
+            "subject": (
+                "Cari Virman Makbuzu"
+                if all(v.get("virman") for v in veriler)
+                else ("Tahsilat Makbuzu" if veriler[0]["tahsilat"] else "Ödeme Makbuzu")
+            ),
             "creator": "Cin Muhasebe",
         }
     )
@@ -735,6 +888,100 @@ def _kenarsiz(t):
 
 
 def _docx_makbuz(doc, v: dict) -> None:
+    if v.get("virman"):
+        _docx_virman(doc, v)
+        return
+    _docx_ust(doc, v)
+    _docx_bilgi(
+        doc,
+        (
+            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
+        ),
+    )
+    _docx_tutar(doc, v)
+
+    # Ödeme tablosu
+    odemeler, rh, sikisik = _gosterilecek_odemeler(v)
+    yuk = (H_TABLO_BAS, *([rh] * len(odemeler)), H_TOPLAM)
+    t = _docx_tablo(doc, len(yuk), TABLO_SUTUN, yuk)
+    for c, baslik in enumerate(("ÖDEME YÖNTEMİ", "KASA / BANKA / POS HESABI", "TUTAR")):
+        cell = t.cell(0, c)
+        _hucre_bicim(cell, dolgu=ACIK_MAVI, dikey="center")
+        _yazi(cell, baslik, 6.5, kalin=True, renk=LACIVERT, hiza="sag" if c == 2 else "sol")
+    for r, o in enumerate(odemeler, start=1):
+        for c in range(3):
+            _hucre_bicim(t.cell(r, c), dikey="center" if sikisik else "top")
+        if not o:
+            continue
+        if sikisik:
+            _yazi(t.cell(r, 0), o["yontem"], 7)
+        else:
+            _yazi(t.cell(r, 0), o["yontem"], 7.3, kalin=True)
+            if o["detay"]:
+                _yazi(t.cell(r, 0), o["detay"], 6, renk=GRI, yeni=True)
+        _yazi(t.cell(r, 1), o["hesap"], 7.3)
+        _yazi(t.cell(r, 2), o["tutar"], 7.8, kalin=True, hiza="sag")
+    son = len(yuk) - 1
+    toplam_sol = t.cell(son, 0).merge(t.cell(son, 1))
+    _hucre_bicim(toplam_sol, dolgu=ACIK_MAVI, dikey="center")
+    _yazi(toplam_sol, "TOPLAM", 7.5, kalin=True, renk=LACIVERT)
+    _hucre_bicim(t.cell(son, 2), dolgu=ACIK_MAVI, dikey="center")
+    _yazi(t.cell(son, 2), v["tutar"], 8.5, kalin=True, renk=LACIVERT, hiza="sag")
+    _docx_bosluk(doc, BOSLUK)
+
+    # Açıklama
+    t = _docx_tablo(doc, 1, (ICERIK_GEN,), (H_ACIKLAMA,))
+    _hucre_bicim(t.cell(0, 0))
+    _yazi(t.cell(0, 0), "AÇIKLAMA", 6.3, kalin=True, renk=GRI)
+    if v["aciklama"]:
+        _yazi(t.cell(0, 0), v["aciklama"], 8 if len(v["aciklama"]) < 180 else 6.5, yeni=True)
+    _docx_bosluk(doc, 3)
+
+    _docx_imza(doc, v["imzalar"], IMZA_SUTUN)
+    _docx_alt(doc, v)
+
+
+def _docx_virman(doc, v: dict) -> None:
+    _docx_ust(doc, v)
+    _docx_bilgi(
+        doc,
+        (
+            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("MÜŞTERİ KODU", v["musteri_kodu"]), ("TAHSİLAT YAPILAN MÜŞTERİ", v["musteri_unvan"])),
+            (("TEDARİKÇİ KODU", v["tedarikci_kodu"]), ("ÖDEME YAPILAN TEDARİKÇİ", v["tedarikci_unvan"])),
+        ),
+    )
+    _docx_tutar(doc, v)
+
+    yuk = (H_TABLO_BAS, *([H_EVRAK] * len(v["evraklar"])))
+    t = _docx_tablo(doc, len(yuk), TABLO_SUTUN, yuk)
+    for c, baslik in enumerate(("BAĞLI EVRAK", "EVRAK NO", "TUTAR")):
+        cell = t.cell(0, c)
+        _hucre_bicim(cell, dolgu=ACIK_MAVI, dikey="center")
+        _yazi(cell, baslik, 6.5, kalin=True, renk=LACIVERT, hiza="sag" if c == 2 else "sol")
+    for r, e in enumerate(v["evraklar"], start=1):
+        _hucre_bicim(t.cell(r, 0))
+        _yazi(t.cell(r, 0), e["evrak"], 7.3, kalin=True)
+        _yazi(t.cell(r, 0), e["detay"], 6, renk=GRI, yeni=True)
+        for c, metin, hiza in ((1, e["no"], "sol"), (2, e["tutar"], "sag")):
+            _hucre_bicim(t.cell(r, c), dikey="center")
+            _yazi(t.cell(r, c), metin, 7.8, kalin=True, hiza=hiza)
+    _docx_bosluk(doc, BOSLUK)
+
+    t = _docx_tablo(doc, 1, (ICERIK_GEN,), (H_VIRMAN_ACIKLAMA,))
+    _hucre_bicim(t.cell(0, 0))
+    _yazi(t.cell(0, 0), "AÇIKLAMA", 6.3, kalin=True, renk=GRI)
+    _yazi(t.cell(0, 0), v["virman_metni"], 7.8, kalin=True, yeni=True)
+    if v["aciklama"]:
+        _yazi(t.cell(0, 0), v["aciklama"], 7.3 if len(v["aciklama"]) < 110 else 6, yeni=True)
+    _docx_bosluk(doc, 3)
+
+    _docx_imza(doc, v["imzalar"], IMZA_SUTUN_VIRMAN)
+    _docx_alt(doc, v)
+
+
+def _docx_ust(doc, v: dict) -> None:
     from docx.shared import Mm
 
     f = v["firma"]
@@ -778,14 +1025,10 @@ def _docx_makbuz(doc, v: dict) -> None:
     _yazi(t.cell(0, 1), no, 12, kalin=True, renk=LACIVERT, yeni=True)
     _docx_bosluk(doc, BOSLUK)
 
-    # Bilgi
-    t = _docx_tablo(doc, 2, BILGI_SUTUN, (H_BILGI, H_BILGI))
-    for r, satir in enumerate(
-        (
-            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
-            (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
-        )
-    ):
+
+def _docx_bilgi(doc, satirlar) -> None:
+    t = _docx_tablo(doc, len(satirlar), BILGI_SUTUN, (H_BILGI,) * len(satirlar))
+    for r, satir in enumerate(satirlar):
         for c, (etiket, deger) in enumerate(satir):
             cell = t.cell(r, c)
             _hucre_bicim(cell)
@@ -793,7 +1036,8 @@ def _docx_makbuz(doc, v: dict) -> None:
             _yazi(cell, deger, 9.5 if len(deger) < 44 else 7.5, kalin=True, yeni=True)
     _docx_bosluk(doc, BOSLUK)
 
-    # Tutar
+
+def _docx_tutar(doc, v: dict) -> None:
     t = _docx_tablo(doc, 1, (50.0, ICERIK_GEN - 50.0), (H_TUTAR,))
     for cell in t.rows[0].cells:
         _hucre_bicim(cell, dolgu=ACIK_SARI, cerceve=None)
@@ -808,66 +1052,35 @@ def _docx_makbuz(doc, v: dict) -> None:
     _yazi(birlesik, v["tutar_yaziyla"], 7.8, yeni=True)
     _docx_bosluk(doc, BOSLUK)
 
-    # Ödeme tablosu
-    odemeler, rh, sikisik = _gosterilecek_odemeler(v)
-    yuk = (H_TABLO_BAS, *([rh] * len(odemeler)), H_TOPLAM)
-    t = _docx_tablo(doc, len(yuk), TABLO_SUTUN, yuk)
-    for c, baslik in enumerate(("ÖDEME YÖNTEMİ", "KASA / BANKA / POS HESABI", "TUTAR")):
-        cell = t.cell(0, c)
-        _hucre_bicim(cell, dolgu=ACIK_MAVI, dikey="center")
-        _yazi(cell, baslik, 6.5, kalin=True, renk=LACIVERT, hiza="sag" if c == 2 else "sol")
-    for r, o in enumerate(odemeler, start=1):
-        for c in range(3):
-            _hucre_bicim(t.cell(r, c), dikey="center" if sikisik else "top")
-        if not o:
-            continue
-        if sikisik:
-            _yazi(t.cell(r, 0), o["yontem"], 7)
-        else:
-            _yazi(t.cell(r, 0), o["yontem"], 7.3, kalin=True)
-            if o["detay"]:
-                _yazi(t.cell(r, 0), o["detay"], 6, renk=GRI, yeni=True)
-        _yazi(t.cell(r, 1), o["hesap"], 7.3)
-        _yazi(t.cell(r, 2), o["tutar"], 7.8, kalin=True, hiza="sag")
-    son = len(yuk) - 1
-    toplam_sol = t.cell(son, 0).merge(t.cell(son, 1))
-    _hucre_bicim(toplam_sol, dolgu=ACIK_MAVI, dikey="center")
-    _yazi(toplam_sol, "TOPLAM", 7.5, kalin=True, renk=LACIVERT)
-    _hucre_bicim(t.cell(son, 2), dolgu=ACIK_MAVI, dikey="center")
-    _yazi(t.cell(son, 2), v["tutar"], 8.5, kalin=True, renk=LACIVERT, hiza="sag")
-    _docx_bosluk(doc, BOSLUK)
 
-    # Açıklama
-    t = _docx_tablo(doc, 1, (ICERIK_GEN,), (H_ACIKLAMA,))
-    _hucre_bicim(t.cell(0, 0))
-    _yazi(t.cell(0, 0), "AÇIKLAMA", 6.3, kalin=True, renk=GRI)
-    if v["aciklama"]:
-        _yazi(t.cell(0, 0), v["aciklama"], 8 if len(v["aciklama"]) < 180 else 6.5, yeni=True)
-    _docx_bosluk(doc, 3)
+def _docx_imza(doc, imzalar, sutunlar) -> None:
+    from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
+    from docx.shared import Mm
 
-    # İmza / kaşe
     yuk = (H_IMZA_BAS, H_IMZA_AD, H_IMZA_TARIH, H_IMZA_ALAN)
-    t = _docx_tablo(doc, 4, IMZA_SUTUN, yuk)
-    for c, baslik in enumerate((*v["imzalar"], "FİRMA KAŞESİ")):
+    t = _docx_tablo(doc, 4, sutunlar, yuk)
+    for c, baslik in enumerate((*imzalar, "FİRMA KAŞESİ")):
         _hucre_bicim(t.cell(0, c), dolgu=ACIK_MAVI, cerceve=LACIVERT, kalinlik=6, dikey="center")
         _yazi(t.cell(0, c), baslik, 6.3, kalin=True, renk=LACIVERT, hiza="orta")
-    from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
-
-    for c in range(2):
+    for c in range(len(imzalar)):
         for r, etiket in ((1, "Adı Soyadı:\t"), (2, "Tarih:\t")):
             cizgisiz = ("bottom",) if r == 1 else ("top", "bottom")
             _hucre_bicim(t.cell(r, c), cerceve=LACIVERT, kalinlik=6, dikey="bottom", cizgisiz=cizgisiz)
             p = _yazi(t.cell(r, c), etiket, 6.5, renk=GRI)
             p.paragraph_format.tab_stops.add_tab_stop(
-                Mm(IMZA_SUTUN[c] - 3.5), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
+                Mm(sutunlar[c] - 3.5), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
             )
         _hucre_bicim(t.cell(3, c), cerceve=LACIVERT, kalinlik=6, cizgisiz=("top",))
         _yazi(t.cell(3, c), "İmza:", 6.5, renk=GRI)
+    kase = len(imzalar)
     for r in range(1, 4):
-        _hucre_bicim(t.cell(r, 2), cerceve=LACIVERT, kalinlik=6)
-    t.cell(1, 2).merge(t.cell(3, 2))
+        _hucre_bicim(t.cell(r, kase), cerceve=LACIVERT, kalinlik=6)
+    t.cell(1, kase).merge(t.cell(3, kase))
     _docx_bosluk(doc, 1.5)
 
+
+def _docx_alt(doc, v: dict) -> None:
+    f = v["firma"]
     alt = f"Belge No: {v['belge_no']}  ·  Oluşturma: {v['olusturma']}"
     if f.get("alt_bilgi"):
         alt = f"{f['alt_bilgi']}  ·  {alt}"

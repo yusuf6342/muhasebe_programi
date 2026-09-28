@@ -22,6 +22,7 @@ from database.models.finans import (
     BankaKarti,
     BankaKredisi,
     BankaKrediTaksit,
+    CariVirmanMakbuzu,
     FinansHareketi,
     FinansHesabi,
     GiderFisi,
@@ -3311,30 +3312,48 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             return FinansService._makbuz_no_sonraki(session)
 
     @staticmethod
-    def makbuz_no_kullanimda_mi(makbuz_no: str, haric_makbuz_id=None) -> bool:
+    def makbuz_no_kullanimda_mi(makbuz_no: str, haric_makbuz_id=None, haric_virman_id=None) -> bool:
         with get_session() as session:
-            return FinansService._makbuz_no_var(session, makbuz_no, haric_makbuz_id)
+            return FinansService._makbuz_no_var(session, makbuz_no, haric_makbuz_id, haric_virman_id)
+
+    @staticmethod
+    def _virman_tablosu_var(session) -> bool:
+        from sqlalchemy import inspect as sa_inspect
+
+        return sa_inspect(session.connection()).has_table(CariVirmanMakbuzu.__tablename__)
 
     @staticmethod
     def _makbuz_no_sonraki(session) -> str:
+        """Kasa makbuzları ve cari virman makbuzları ortak MKB serisini kullanır."""
         en_buyuk = 0
-        for no in session.scalars(
-            select(KasaMakbuzu.makbuz_no).where(KasaMakbuzu.makbuz_no.like(f"{MAKBUZ_NO_ONEK}-%"))
-        ).all():
-            eslesme = _MAKBUZ_NO_RE.fullmatch((no or "").strip().upper())
-            if eslesme:
-                en_buyuk = max(en_buyuk, int(eslesme.group(1)))
+        sorgular = [select(KasaMakbuzu.makbuz_no).where(KasaMakbuzu.makbuz_no.like(f"{MAKBUZ_NO_ONEK}-%"))]
+        if FinansService._virman_tablosu_var(session):
+            sorgular.append(
+                select(CariVirmanMakbuzu.makbuz_no).where(CariVirmanMakbuzu.makbuz_no.like(f"{MAKBUZ_NO_ONEK}-%"))
+            )
+        for sorgu in sorgular:
+            for no in session.scalars(sorgu).all():
+                eslesme = _MAKBUZ_NO_RE.fullmatch((no or "").strip().upper())
+                if eslesme:
+                    en_buyuk = max(en_buyuk, int(eslesme.group(1)))
         # 5 hane dolunca biçim kendiliğinden genişler (MKB-100000)
         return f"{MAKBUZ_NO_ONEK}-{en_buyuk + 1:05d}"
 
     @staticmethod
-    def _makbuz_no_var(session, makbuz_no: str, haric_makbuz_id=None) -> bool:
+    def _makbuz_no_var(session, makbuz_no: str, haric_makbuz_id=None, haric_virman_id=None) -> bool:
         anahtar = (makbuz_no or "").strip().upper()
         if not anahtar:
             return False
         q = select(KasaMakbuzu.id).where(func.upper(func.trim(KasaMakbuzu.makbuz_no)) == anahtar)
         if haric_makbuz_id:
             q = q.where(KasaMakbuzu.id != int(haric_makbuz_id))
+        if session.scalar(q.limit(1)) is not None:
+            return True
+        if not FinansService._virman_tablosu_var(session):
+            return False
+        q = select(CariVirmanMakbuzu.id).where(func.upper(func.trim(CariVirmanMakbuzu.makbuz_no)) == anahtar)
+        if haric_virman_id:
+            q = q.where(CariVirmanMakbuzu.id != int(haric_virman_id))
         return session.scalar(q.limit(1)) is not None
 
     @staticmethod

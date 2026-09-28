@@ -135,6 +135,20 @@ def kasa_makbuz_onizle(parent, belge_no: str) -> bool:
     return True
 
 
+def cari_virman_onizle(parent, belge_no: str) -> bool:
+    """CVR-… makbuzu veya bağlı -T / -O cari evrakı: cari virman makbuzu çıktısı."""
+    from database.cari_virman_makbuz_service import CariVirmanMakbuzService
+
+    kayit = CariVirmanMakbuzService.belge_no_ile(belge_no)
+    if not kayit:
+        return False
+    from makbuz_cikti import virman_kimligi
+    from makbuz_cikti_ui import makbuz_ciktisi_ac
+
+    makbuz_ciktisi_ac(parent, [virman_kimligi(kayit.id)], bekle=True)
+    return True
+
+
 def gider_fisi_onizle(parent, belge_no: str) -> bool:
     from database.finans_service import FinansService
     from database.models.hizmet import gider_sinifi_etiket
@@ -295,6 +309,12 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
         dialog = BankalarArasiVirmanDialog(parent, belge_no=belge_no)
         if dialog.winfo_exists():
             parent.wait_window(dialog)
+        return True
+
+    if belge_no.startswith("CVR-"):
+        if cari_virman_onizle(parent, belge_no):
+            return True
+        messagebox.showinfo("Belge", f"{belge_no} cari virman makbuzu bulunamadı.", parent=parent)
         return True
 
     if belge_no.startswith(("TMK-", "OMK-")) or tur.upper() in (
