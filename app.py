@@ -11798,13 +11798,22 @@ class MuhasebeApp(tk.Tk):
                 dugme.pack_forget()
             except tk.TclError:
                 pass
+        yasakli = []
         for anahtar, dugme in self.menu_dugmeleri.items():
             kontrol = esleme.get(anahtar, lambda: True)
             try:
                 if kontrol():
                     dugme.pack(fill="x", pady=1)
+                else:
+                    yasakli.append(anahtar)
             except tk.TclError:
                 pass
+        # Kullanıcı değişince yetkisi olmayan açık ekranlar arkada kalmasın
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        if yon is not None:
+            for anahtar in yasakli:
+                if yon.getir(anahtar) is not None:
+                    yon.kapat(anahtar, sor=False)
 
     def _aktif_donemi_yukle(self):
         try:
@@ -11877,10 +11886,24 @@ class MuhasebeApp(tk.Tk):
                     continue
         return False
 
+    def _acik_ekranlar_kapatilabilir_mi(self) -> bool:
+        """Açık ana menü ekranlarının kapatma kontrolleri (ekran_kapatma_kontrolu_ekle)."""
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        return yon is None or yon.kapatma_onayi()
+
+    def ekran_kapatma_kontrolu_ekle(self, fn):
+        """Öndeki ana menü ekranına kapatma kontrolü ekler; fn False dönerse kapanmaz."""
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        if yon is not None:
+            yon.kapatma_kontrolu_ekle(fn)
+
     def _ekranlari_temizle(self):
         self._nav_gecmis = []
         self._nav_yeniden_ac = None
         self._nav_son_push = False
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        if yon is not None:
+            yon.tumunu_kapat()
         self._nav_geri_gidiyor = True
         try:
             self._icerigi_temizle()
@@ -11935,6 +11958,8 @@ class MuhasebeApp(tk.Tk):
                 parent=self,
             )
             return
+        if not self._acik_ekranlar_kapatilabilir_mi():
+            return
         onceki = oturum.company_id
         secim = FirmaSecimDialog(
             self, yeni_firma_izinli=oturum.has_permission("firma_yonetme")
@@ -11978,7 +12003,15 @@ class MuhasebeApp(tk.Tk):
                 self.sayfa_goster("sistem")
                 from sistem_ui import donemler_yonet_goster
 
-                donemler_yonet_goster(self)
+                def _donemler_ac(deneme=0):
+                    # Sistem ekranı açılıp öne gelince (yükleme bitince) içine çiz
+                    if getattr(self, "_busy_pending", False) or self._aktif_sayfa != "sistem":
+                        if deneme < 100:
+                            self.after(50, lambda: _donemler_ac(deneme + 1))
+                        return
+                    donemler_yonet_goster(self)
+
+                _donemler_ac()
             return
         win = tk.Toplevel(self)
         win.title("Dönem Seç")
@@ -12079,6 +12112,8 @@ class MuhasebeApp(tk.Tk):
                 parent=self,
             ):
                 return
+        if not self._acik_ekranlar_kapatilabilir_mi():
+            return
         try:
             with get_system_session() as session:
                 AuthService.audit(session, "oturum_kapatma", modul="sistem")
@@ -12127,6 +12162,9 @@ class MuhasebeApp(tk.Tk):
             self._nav_push_mevcut()
         self._nav_ileri = False
         self._nav_son_push = False
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        if yon is not None and yon.aktif is not None and not getattr(self, "_sayfa_yukleniyor", False):
+            yon.aktif.kokte = False
         for widget in self.icerik.winfo_children():
             widget.destroy()
         self.geri_cubugu_guncelle()
@@ -12171,7 +12209,7 @@ class MuhasebeApp(tk.Tk):
         try:
             if goster:
                 if not cubuk.winfo_ismapped():
-                    cubuk.pack(fill="x", before=self.icerik)
+                    cubuk.pack(fill="x", before=getattr(self, "ekran_kabi", None) or self.icerik)
             else:
                 cubuk.pack_forget()
         except tk.TclError:
@@ -12188,6 +12226,10 @@ class MuhasebeApp(tk.Tk):
             finally:
                 self._nav_geri_gidiyor = False
                 self.geri_cubugu_guncelle()
+            yon = getattr(self, "_ekran_yoneticisi", None)
+            if yon is not None and yon.aktif is not None and not self._nav_gecmis:
+                # Geçmişin dibi ana menünün kök sayfasıdır
+                yon.aktif.kokte = True
             return True
         aktif = getattr(self, "_aktif_sayfa", "giris")
         if aktif and aktif != "giris":
@@ -12228,6 +12270,8 @@ class MuhasebeApp(tk.Tk):
             "Uygulamadan çıkmak istiyor musunuz?",
             parent=self,
         ):
+            return
+        if not self._acik_ekranlar_kapatilabilir_mi():
             return
         try:
             self.destroy()
@@ -12425,25 +12469,25 @@ class MuhasebeApp(tk.Tk):
     def ana_sayfa_goster(self):
         self.sayfa_goster("giris")
 
-    def sayfa_goster(self, anahtar):
+    def sayfa_goster(self, anahtar, ust_duzey=False):
+        """Ana menü ekranını açar veya açıksa öne getirir.
+
+        Her ana menü kendi kalıcı çerçevesinde yaşar; başka menüye geçmek önceki ekranı
+        (girilmiş veriyle birlikte) yok etmez. ``ust_duzey`` sol menü / şerit / kısayol
+        çağrılarıdır: ekran öndeyse alt sayfasına dokunulmaz. Modül içi «← X Menüsü»
+        çağrıları (ust_duzey=False) öndeki ekranı kök sayfasına döndürür.
+        """
         from database.access import yetki_var
 
-        # Sol menüden üst düzey geçiş: geçmişi sıfırla (geri ile dönüşte koru)
-        if not getattr(self, "_nav_geri_gidiyor", False):
-            self._nav_gecmis = []
-            self._nav_son_push = False
-
-        # Aynı ekranın mükerrer açılmasını engelle (giriş hariç yenilenebilir)
-        if (
-            anahtar == getattr(self, "_aktif_sayfa", None)
-            and anahtar not in ("giris",)
-            and getattr(self, "_sayfa_yukleniyor", False) is False
-            and not getattr(self, "_nav_geri_gidiyor", False)
-        ):
-            # İçerik zaten bu sayfa — tekrar çizme
-            if self.icerik.winfo_children():
-                self.geri_cubugu_guncelle()
-                return
+        yon = getattr(self, "_ekran_yoneticisi", None)
+        geri = getattr(self, "_nav_geri_gidiyor", False)
+        if yon is not None and getattr(self, "_busy_pending", False):
+            # Yükleme sürerken ekran değişirse yarım çizim yanlış ekrana düşer
+            try:
+                self.after(60, lambda: self.sayfa_goster(anahtar, ust_duzey=ust_duzey))
+            except tk.TclError:
+                pass
+            return
 
         gerekli = {
             "satislar": ("satis_goruntuleme", "goruntuleme"),
@@ -12463,7 +12507,59 @@ class MuhasebeApp(tk.Tk):
         if kodlar and not yetki_var(*kodlar):
             messagebox.showwarning("Yetki", "Bu bölüme erişim yetkiniz yok.", parent=self)
             return
-        self._menu_islemi(lambda: self._sayfa_goster_icerik(anahtar))
+
+        if yon is None:
+            if not geri:
+                self._nav_gecmis = []
+                self._nav_son_push = False
+            self._menu_islemi(lambda: self._sayfa_goster_icerik(anahtar))
+            return
+
+        ekran = yon.getir(anahtar)
+        if ekran is None:
+            self._menu_islemi(lambda: self._ekran_ac_ve_ciz(anahtar))
+            return
+        if yon.aktif is not ekran:
+            yon.one_getir(anahtar)
+            if anahtar == "hizli_satis":
+                # POS penceresi eskisi gibi öne gelsin / yeniden açılsın
+                from hizli_satis_ui import _pencere_ac
+
+                _pencere_ac(self)
+            return
+        # Ekran zaten önde
+        yenile = anahtar == "giris" or geri or not ekran.kokte
+        if ust_duzey and anahtar != "giris":
+            yenile = False
+        if not yenile:
+            self.geri_cubugu_guncelle()
+            yon.odakla(ekran)
+            return
+        if not geri:
+            self._nav_gecmis = []
+            self._nav_son_push = False
+
+        def _koke_don():
+            if yon.aktif is ekran and ekran.var_mi():
+                self._sayfa_goster_icerik(anahtar)
+
+        self._menu_islemi(_koke_don)
+
+    def _ekran_ac_ve_ciz(self, anahtar):
+        yon = self._ekran_yoneticisi
+        if yon.getir(anahtar) is not None:
+            yon.one_getir(anahtar)
+            return
+        ekran = yon.olustur(anahtar)
+        self._sayfa_goster_icerik(anahtar)
+        if not ekran.var_mi():
+            return
+        if not ekran.cerceve.winfo_children():
+            # Modül açılmadı (yetki / hata) — boş ekranı şeritte bırakma
+            yon.kapat(anahtar, sor=False)
+            return
+        if yon.aktif is ekran:
+            yon.odakla(ekran)
 
     def _sayfa_goster_icerik(self, anahtar):
         self._sayfa_yukleniyor = True
@@ -12573,6 +12669,9 @@ class MuhasebeApp(tk.Tk):
                     kabuk.durum_guncelle()
                 except Exception:
                     pass
+            yon = getattr(self, "_ekran_yoneticisi", None)
+            if yon is not None and yon.aktif is not None and yon.aktif.anahtar == anahtar:
+                yon.aktif.kokte = True
             self.geri_cubugu_guncelle()
         finally:
             self._sayfa_yukleniyor = False

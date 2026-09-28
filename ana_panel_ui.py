@@ -564,15 +564,18 @@ class AnaPanelKabuk:
                 anahtar=anahtar,
                 simge=simge,
                 vurgulu=vurgulu,
-                komut=lambda a=anahtar: app.sayfa_goster(a),
+                komut=lambda a=anahtar: app.sayfa_goster(a, ust_duzey=True),
             )
             dugme.pack(fill="x", pady=1, padx=0)
             app.menu_dugmeleri[anahtar] = dugme
             self._menu_sirasi.append(anahtar)
 
-        # Sağ alan: geri çubuğu (kalıcı) + içerik (modüller buraya çizilir)
+        # Sağ alan: açık ekranlar şeridi + geri çubuğu + ekran kabı
         sag = tk.Frame(govde, bg=ACIK_BG)
         sag.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+
+        app.ekran_seridi = tk.Frame(sag, bg=ACIK_BG)
+        app.ekran_seridi.pack(side="top", fill="x")
 
         app.geri_cubugu = tk.Frame(sag, bg=ACIK_BG)
         # pack/unpack geri_cubugu_guncelle ile yönetilir
@@ -602,8 +605,13 @@ class AnaPanelKabuk:
         )
         app.geri_ipucu.pack(side="left", padx=10, pady=(0, 6))
 
-        app.icerik = tk.Frame(sag, bg=ACIK_BG)
-        app.icerik.pack(fill="both", expand=True)
+        # Her ana menü bu kabın içinde kendi çerçevesinde yaşar; app.icerik öndekini gösterir
+        app.ekran_kabi = tk.Frame(sag, bg=ACIK_BG)
+        app.ekran_kabi.pack(fill="both", expand=True)
+        app.icerik = app.ekran_kabi
+        from ekran_yigini import EkranYoneticisi
+
+        app._ekran_yoneticisi = EkranYoneticisi(app, app.ekran_kabi, app.ekran_seridi)
 
         app._aktif_sayfa = None
         app._nav_gecmis = []
@@ -623,15 +631,24 @@ class AnaPanelKabuk:
         app = self.app
 
         def hizli_satis(_e=None):
-            app.sayfa_goster("hizli_satis")
+            app.sayfa_goster("hizli_satis", ust_duzey=True)
             return "break"
 
         def esc_yut(_e=None):
             # Esc uygulama kapatmasın
             return "break"
 
+        def ekran_kapat(_e=None):
+            yon = getattr(app, "_ekran_yoneticisi", None)
+            if yon is not None:
+                yon.aktif_ekrani_kapat()
+            return "break"
+
         app.bind_all("<Control-Shift-H>", hizli_satis)
         app.bind("<Escape>", esc_yut)
+        # Yalnız ana pencerede; belge pencerelerinin (Toplevel) kendi bağları etkilenmez
+        app.bind("<Control-w>", ekran_kapat)
+        app.bind("<Control-W>", ekran_kapat)
 
         def menu_ok(delta):
             sirali = [k for k in self._menu_sirasi if app.menu_dugmeleri.get(k) and app.menu_dugmeleri[k].winfo_ismapped()]
@@ -643,7 +660,7 @@ class AnaPanelKabuk:
             except ValueError:
                 idx = 0
             idx = (idx + delta) % len(sirali)
-            app.sayfa_goster(sirali[idx])
+            app.sayfa_goster(sirali[idx], ust_duzey=True)
 
         app.bind("<Alt-Down>", lambda e: menu_ok(1) or "break")
         app.bind("<Alt-Up>", lambda e: menu_ok(-1) or "break")
@@ -727,6 +744,9 @@ def giris_dashboard_goster(app) -> None:
     vsb.pack(side="right", fill="y")
 
     def _tekerlek(event):
+        # Giriş ekranı arka plandayken başka ekranın tekerleğini çalmasın
+        if not canvas.winfo_ismapped():
+            return
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _tekerlek_bagla(_e=None):
@@ -831,7 +851,7 @@ def giris_dashboard_goster(app) -> None:
         mod_f.columnconfigure(c, weight=1, uniform="mod")
 
     def _modul_tikla(anahtar):
-        app.sayfa_goster(anahtar)
+        app.sayfa_goster(anahtar, ust_duzey=True)
 
     for i, (baslik, anahtar, simge, aciklama) in enumerate(MODUL_KARTLARI):
         r, c = divmod(i, 4)
@@ -987,8 +1007,17 @@ def _hizli_islem_calistir(app, kod: str) -> None:
             _hazirlaniyor(app, "Müşteri Kartı")
     elif kod == "stok_sorgula":
         if hasattr(app, "stok_kartlari_goster"):
-            app.sayfa_goster("stoklar")
-            app.after(50, lambda: app._menu_islemi(app.stok_kartlari_goster))
+            app.sayfa_goster("stoklar", ust_duzey=True)
+
+            def _kartlar(deneme=0):
+                # Stoklar ekranı öne gelip yüklemesi bitince onun içinde aç
+                if getattr(app, "_busy_pending", False) or getattr(app, "_aktif_sayfa", None) != "stoklar":
+                    if deneme < 100:
+                        app.after(50, lambda: _kartlar(deneme + 1))
+                    return
+                app._menu_islemi(app.stok_kartlari_goster)
+
+            app.after(50, _kartlar)
         else:
             _hazirlaniyor(app, "Stok Sorgula")
     elif kod == "fiyat_gor":
