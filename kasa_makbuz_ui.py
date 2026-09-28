@@ -44,6 +44,7 @@ _KART_TIPI_ETIKET = {v: k for k, v in KART_TIPLERI.items()}
 DURUM_FILTRELERI = {"Tümü": None, "Açık": "AÇIK", "İptal": "IPTAL"}
 ISLEM_TAHSILAT = "Tahsilat"
 ISLEM_VIRMAN = "Cari Virman"
+CARI_VIRMAN_SEKLI = "CARİ VİRMAN"
 VIRMAN_BILGI = (
     "Kasa, banka, POS veya kredi kartı hareketi oluşmaz. Müşteri ve tedarikçi cari hesaplarına aynı tutarda "
     "alacak yazılır: müşterinin borcu ve tedarikçiye olan borcunuz birlikte azalır. İki hareket tek işlemde kaydedilir."
@@ -399,6 +400,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         if (virman_id or islem_turu == "VIRMAN") and not self.tahsilat:
             raise ValueError("Cari virman yalnız tahsilat makbuzunda seçilebilir.")
         self.virman = False
+        self._son_sekil: str | None = None
         self._virman_once: dict[str, Decimal | None] = {"musteri": None, "tedarikci": None}
 
         stil_uygula(root=self)
@@ -768,7 +770,7 @@ class KasaMakbuzDialog(tk.Toplevel):
 
         self._etiket(p, "Ödeme yöntemi", 0, 0)
         self.sekil_var = tk.StringVar()
-        self.sekil_cb = ttk.Combobox(p, textvariable=self.sekil_var, values=self._odeme_sekilleri, state="readonly", width=24)
+        self.sekil_cb = ttk.Combobox(p, textvariable=self.sekil_var, values=self._sekil_listesi(), state="readonly", width=24)
         self.sekil_cb.grid(row=0, column=1, sticky="ew", pady=5, padx=(0, 12))
         self.sekil_cb.bind("<<ComboboxSelected>>", lambda _e: self._sekil_degisti(), add="+")
 
@@ -892,32 +894,39 @@ class KasaMakbuzDialog(tk.Toplevel):
             arama = _CariAramaKutusu(self, entry, var, liste, on_secim)
             return var, entry, arama, bakiye, etiket_lbl
 
+        self._etiket(p, "Ödeme yöntemi", 0, 0)
+        self.v_sekil_var = tk.StringVar(value=CARI_VIRMAN_SEKLI)
+        self.v_sekil_cb = ttk.Combobox(
+            p, textvariable=self.v_sekil_var, values=self._sekil_listesi(), state="readonly", width=24, takefocus=0
+        )
+        self.v_sekil_cb.grid(row=0, column=1, sticky="w", pady=5)
+        self.v_sekil_cb.bind("<<ComboboxSelected>>", lambda _e: self._virmandan_cik(), add="+")
         (
             self.v_musteri_var,
             self.v_musteri_entry,
             self._v_musteri_arama,
             self.v_musteri_bakiye_lbl,
             self.v_musteri_bakiye_etiket,
-        ) = cari_alani(0, "Tahsilat yapılan müşteri *", self._musteri_kayitlari, lambda _i: self._virman_cari_degisti())
+        ) = cari_alani(1, "Tahsilat yapılan müşteri *", self._musteri_kayitlari, lambda _i: self._virman_cari_degisti())
         (
             self.v_tedarikci_var,
             self.v_tedarikci_entry,
             self._v_tedarikci_arama,
             self.v_tedarikci_bakiye_lbl,
             self.v_tedarikci_bakiye_etiket,
-        ) = cari_alani(1, "Ödeme yapılan tedarikçi *", self._tedarikci_kayitlari, lambda _i: self._virman_cari_degisti())
+        ) = cari_alani(2, "Ödeme yapılan tedarikçi *", self._tedarikci_kayitlari, lambda _i: self._virman_cari_degisti())
 
-        self._etiket(p, "Virman tutarı (TL) *", 2, 0)
+        self._etiket(p, "Virman tutarı (TL) *", 3, 0)
         self.v_tutar_var = tk.StringVar()
         self.v_tutar_entry = ttk.Entry(p, textvariable=self.v_tutar_var, width=16, justify="right")
-        self.v_tutar_entry.grid(row=2, column=1, sticky="w", pady=5)
-        self._etiket(p, "Virman sonrası", 2, 2)
+        self.v_tutar_entry.grid(row=3, column=1, sticky="w", pady=5)
+        self._etiket(p, "Virman sonrası", 3, 2)
         self.v_sonra_lbl = tk.Label(p, text="—", bg=BEYAZ, fg=IKINCIL, font=font(10, "bold", self), anchor="w", justify="left")
-        self.v_sonra_lbl.grid(row=2, column=3, sticky="w", pady=5)
+        self.v_sonra_lbl.grid(row=3, column=3, sticky="w", pady=5)
         self.v_bilgi_lbl = tk.Label(
             p, text=VIRMAN_BILGI, bg=BEYAZ, fg=LACIVERT, font=font(9, root=self), anchor="w", justify="left"
         )
-        self.v_bilgi_lbl.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        self.v_bilgi_lbl.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         p.bind("<Configure>", lambda e: self.v_bilgi_lbl.configure(wraplength=max(300, e.width - 20)), add="+")
 
         self.v_tutar_var.trace_add("write", lambda *_: (self._virman_onizleme(), self._kirlet()))
@@ -925,6 +934,38 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._virman_dis.pack_forget()
 
     # ─── Cari virman ────────────────────────────────────────────
+    def _sekil_listesi(self) -> tuple:
+        if self.tahsilat and not self._fatura_ozet:
+            return tuple(self._odeme_sekilleri) + (CARI_VIRMAN_SEKLI,)
+        return tuple(self._odeme_sekilleri)
+
+    def _virmana_gec(self):
+        """Ödeme yöntemi listesinden CARİ VİRMAN seçildi."""
+        self.sekil_var.set(self._son_sekil or self._odeme_sekilleri[0])
+        self._sekil_degisti()
+        if self.mod != "yeni" or self._fatura_ozet:
+            return
+        if self.satirlar:
+            messagebox.showinfo(
+                "Cari Virman",
+                "Cari virmana geçmek için önce eklenen tahsilat satırlarını kaldırın.",
+                parent=self,
+            )
+            return
+        self.islem_turu_var.set(ISLEM_VIRMAN)
+        self._islem_turu_degisti()
+
+    def _virmandan_cik(self):
+        """Virman panelindeki Ödeme yöntemi listesinden başka bir yöntem seçildi."""
+        secim = self.v_sekil_var.get()
+        self.v_sekil_var.set(CARI_VIRMAN_SEKLI)
+        if secim == CARI_VIRMAN_SEKLI or self.mod != "yeni":
+            return
+        self.islem_turu_var.set(ISLEM_TAHSILAT)
+        self._islem_turu_degisti()
+        self.sekil_var.set(secim)
+        self._sekil_degisti()
+
     def _islem_turu_degisti(self):
         virman = self.islem_turu_var.get() == ISLEM_VIRMAN
         if virman == self.virman:
@@ -1111,9 +1152,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if acik:
             self._kart_alanlarini_ayarla()
         if self.tahsilat:
-            self.islem_turu_cb.configure(
-                state="readonly" if self.mod == "yeni" and not self._fatura_ozet else "disabled"
-            )
+            tur_durumu = "readonly" if self.mod == "yeni" and not self._fatura_ozet else "disabled"
+            self.islem_turu_cb.configure(state=tur_durumu)
+            self.v_sekil_cb.configure(state=tur_durumu)
             for w in (self.v_musteri_entry, self.v_tedarikci_entry, self.v_tutar_entry):
                 w.configure(state=durum)
 
@@ -1502,6 +1543,10 @@ class KasaMakbuzDialog(tk.Toplevel):
     # ─── Satır paneli ───────────────────────────────────────────
     def _sekil_degisti(self):
         sekil = self.sekil_var.get()
+        if sekil == CARI_VIRMAN_SEKLI:
+            self._virmana_gec()
+            return
+        self._son_sekil = sekil
         tur = _sekil_turu(sekil)
         self._hesap_secenekleri = {}
         if not self.tahsilat and tur == "KART":

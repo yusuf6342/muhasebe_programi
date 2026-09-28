@@ -570,6 +570,107 @@ class CariVirmanEkranTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.ui.KasaMakbuzDialog(self.root, "ODEME", islem_turu="VIRMAN")
 
+    def test_odeme_yontemi_listesinden_cari_virman(self):
+        d = self.ui.KasaMakbuzDialog(self.root, "TAHSILAT")
+        self.assertIn("CARİ VİRMAN", d.sekil_cb.cget("values"))
+        d.sekil_var.set("CARİ VİRMAN")
+        d._sekil_degisti()
+        self.root.update_idletasks()
+        self.assertTrue(d.virman)
+        self.assertEqual(d._virman_dis.winfo_manager(), "pack")
+        self.assertEqual(d.v_sekil_var.get(), "CARİ VİRMAN")
+        self.assertNotEqual(d.sekil_var.get(), "CARİ VİRMAN")
+        self._carileri_sec(d)
+        d.v_tutar_var.set("300")
+        self.assertTrue(d.kaydet(), self.mesajlar)
+        self.assertEqual((d.mod, d.virman), ("goruntule", True))
+        self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("700"))
+        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("4700"))
+        self.assertEqual(str(d.v_sekil_cb.cget("state")), "disabled")
+        d.destroy()
+
+        # Virman panelindeki listeden başka yöntem seçilince normal tahsilata dönülür
+        d = self.ui.KasaMakbuzDialog(self.root, "TAHSILAT")
+        d.sekil_var.set("CARİ VİRMAN")
+        d._sekil_degisti()
+        d.v_sekil_var.set("GELEN HAVALE")
+        d._virmandan_cik()
+        self.root.update_idletasks()
+        self.assertFalse(d.virman)
+        self.assertEqual(d.sekil_var.get(), "GELEN HAVALE")
+        self.assertEqual(d._satir_dis.winfo_manager(), "pack")
+
+        # Eklenmiş tahsilat satırı varken virmana geçilmez
+        d.satirlar.append({"tutar": Decimal("1")})
+        d.sekil_var.set("CARİ VİRMAN")
+        d._sekil_degisti()
+        self.assertFalse(d.virman)
+        self.assertIn("satırlarını kaldırın", self.mesajlar[-1][1][1])
+        d.satirlar.clear()
+        d._kirli = False
+        d.destroy()
+
+        o = self.ui.KasaMakbuzDialog(self.root, "ODEME")
+        self.assertNotIn("CARİ VİRMAN", o.sekil_cb.cget("values"))
+        o.destroy()
+
+    def test_musteriden_tedarikciye_kk_cekimi_ekrandan_kaydedilir(self):
+        import app as app_mod
+        import finans_ui
+        import satis_ui
+        from database.kk_cekimi_service import KkCekimiService
+
+        self.assertIn("kkc", [k for _b, k in finans_ui.BANKA_ISLEM_EVRAKLARI])
+        self.assertIn("MÜŞTERİDEN TEDARİKÇİYE KREDİ KARTI ÇEKİMİ", [b for b, _k in finans_ui.BANKA_ISLEM_EVRAKLARI])
+        self.assertIn("kk", [k for _b, _a, k in satis_ui.CARI_ISLEM_KARTLARI])
+
+        with patch.object(app_mod.KkCekimiDialog, "grab_set"), patch.object(
+            app_mod.messagebox, "showinfo"
+        ) as bilgi:
+            d = app_mod.KkCekimiDialog(self.root)
+            m_etiket = next(e for e, c in d.musteri_map.items() if c.id == self.musteri_id)
+            t_etiket = next(e for e, c in d.tedarikci_map.items() if c.id == self.tedarikci_id)
+            d.girdiler["musteri"].set(m_etiket)
+            d.girdiler["tedarikci"].set(t_etiket)
+            d.girdiler["tutar"].insert(0, "300")
+            d.girdiler["banka"].insert(0, "Ziraat")
+            d.girdiler["taksit_sayisi"].delete(0, "end")
+            d.girdiler["taksit_sayisi"].insert(0, "3")
+            d._guncelle()
+            self.assertIn("ALACAK", d.onizleme.cget("text"))
+            d.kaydet()
+        belge = d.result["belge_no"]
+        self.assertIn(belge, bilgi.call_args.args[1])
+        self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("700"))
+        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("5300"))
+        kayit = KkCekimiService.getir(belge)
+        self.assertEqual((kayit["banka"], kayit["taksit_sayisi"]), ("Ziraat", 3))
+        with get_session() as s:
+            self.assertEqual(s.scalar(select(func.count(CariIslem.id)).where(CariIslem.belge_no == belge)), 2)
+
+        # Finans → Banka İşlemleri → KK çekimi sayfası listeler ve yeni fiş düğmesi pencereyi açar
+        root = self.root
+        root.icerik = tk.Frame(root)
+        root.icerik.pack(fill="both", expand=True)
+        root.menu_dugmeleri = {}
+        root._icerigi_temizle = lambda: [w.destroy() for w in root.icerik.winfo_children()]
+        finans_ui.kk_cekimi_sayfasi_goster(root)
+        from tkinter import ttk
+
+        def bul(w, sinif):
+            if isinstance(w, sinif):
+                yield w
+            for c in w.winfo_children():
+                yield from bul(c, sinif)
+
+        tablo = next(bul(root.icerik, ttk.Treeview))
+        self.assertIn(belge, tablo.get_children())
+        with patch.object(app_mod, "KkCekimiDialog") as pencere:
+            pencere.return_value.winfo_exists.return_value = False
+            pencere.return_value.result = None
+            next(b for b in bul(root.icerik, ttk.Button) if b.cget("text") == "Yeni KK Çekim Fişi").invoke()
+        pencere.assert_called_once()
+
     def test_liste_ve_toplu_cikti(self):
         nakit = _servis_testi.TahsilatMakbuzuTest._nakit(self, "300")
         virman = _virman(self)

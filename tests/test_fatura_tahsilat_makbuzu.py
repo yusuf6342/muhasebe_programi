@@ -358,6 +358,7 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
 
     def test_kismi_tahsilat_kaydi_ve_asim_onayi(self):
         d = self._dialog(fatura_id=self.fatura_id)
+        self.assertNotIn("CARİ VİRMAN", d.sekil_cb.cget("values"))
         d.tutar_var.set("250")
         d.sekil_var.set("NAKİT / KASA")
         d._sekil_degisti()
