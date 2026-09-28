@@ -33,6 +33,7 @@ from database.models.finans import (
     KrediKartiTanimi,
     PosTaksitKomisyon,
     PosValorKaydi,
+    SatisFaturaMakbuzBagi,
 )
 
 HESAP_TURLERI = ("KASA", "BANKA", "KREDİ KARTI")
@@ -974,14 +975,23 @@ class FinansService:
             raise ValueError("Bu belge türü banka işlem menüsünden güncellenemez.")
 
     @staticmethod
-    def _cari_tahsilat_satiri(session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama):
+    def _cari_tahsilat_satiri(session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama, oncelikli=None):
+        """oncelikli: bağlı fatura hedefi — tutar önce o faturanın açığına, kalanı FIFO ile uygulanır."""
         from database.cari_service import CariService
         from database.models.cari import Cari, CariIslem
 
         cari = session.get(Cari, int(cari_id))
         if cari is None:
             raise ValueError("Cari bulunamadı.")
-        CariService._aciklara_uygula(session, cari.id, tutar)
+        kalan = Decimal(str(tutar))
+        if oncelikli is not None and oncelikli["butce"] > 0:
+            pay = min(kalan, oncelikli["butce"])
+            FinansService._faturaya_uygula(oncelikli["fatura"], oncelikli["hareket"], pay)
+            oncelikli["butce"] -= pay
+            oncelikli["uygulanan"] += pay
+            kalan -= pay
+        if kalan > 0:
+            CariService._aciklara_uygula(session, cari.id, kalan)
         session.add(
             CariIslem(
                 cari_id=cari.id,
@@ -3117,6 +3127,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             )
             if makbuz:
                 makbuz.cari = session.get(Cari, makbuz.cari_id)
+                bag = FinansService._fatura_bagi(session, makbuz.id)
+                makbuz.bagli_fatura_id = int(bag.fatura_id) if bag else None
+                makbuz.bagli_fatura_no = bag.fatura_no if bag else None
             return makbuz
 
     @staticmethod
@@ -3391,6 +3404,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
     @staticmethod
     def _kasa_makbuz_kaydet(veriler: dict, makbuz_turu: str, makbuz_id=None) -> KasaMakbuzu:
         yazma_zorunlu("finans_duzenleme")
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
         otomatik = bool(veriler.get("makbuz_no_otomatik"))
         son_hata = None
         for deneme in range(8):
@@ -3466,6 +3480,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 FinansService._makbuz_etkilerini_geri_al(session, mevcut, iptal=False)
                 mevcut.satirlar.clear()
                 session.flush()
+
+            fatura_hedefi, bag = (
+                FinansService._makbuz_fatura_hedefi(session, veriler.get("fatura_id"), mevcut, cari_id)
+                if tur == "TAHSILAT"
+                else (None, None)
+            )
 
             if otomatik:
                 makbuz_no = FinansService._makbuz_no_sonraki(session)
@@ -3559,6 +3579,17 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             else:
                 on_ek = "TMK" if tur == "TAHSILAT" else "OMK"
                 belge_no = FinansService._finans_belge_no(session, on_ek)
+                # İptal edilen makbuzun finans hareketi silinir ama belge numarası makbuzda kalır
+                kullanilan = set(
+                    session.scalars(
+                        select(KasaMakbuzu.belge_no).where(
+                            KasaMakbuzu.belge_no.like(belge_no.rsplit("-", 1)[0] + "-%")
+                        )
+                    ).all()
+                )
+                while belge_no in kullanilan:
+                    kok, sira = belge_no.rsplit("-", 1)
+                    belge_no = f"{kok}-{int(sira) + 1:04d}"
             hareket_turu = "TAHSİLAT MAKBUZU" if tur == "TAHSILAT" else "ÖDEME MAKBUZU"
             varsayilan = "Tahsilat makbuzu" if tur == "TAHSILAT" else "Ödeme makbuzu"
             ust_acik = aciklama or varsayilan
@@ -3633,7 +3664,8 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     )
                 if tur == "TAHSILAT":
                     FinansService._cari_tahsilat_satiri(
-                        session, cari_id, s["tarih"], s["tutar"], belge_no, hesap.hesap_adi, satir_acik
+                        session, cari_id, s["tarih"], s["tutar"], belge_no, hesap.hesap_adi, satir_acik,
+                        oncelikli=fatura_hedefi,
                     )
                 else:
                     FinansService._cari_odeme_satiri(
@@ -3641,8 +3673,246 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     )
                 session.add(satir)
 
+            if fatura_hedefi is not None:
+                if bag is None:
+                    bag = SatisFaturaMakbuzBagi(
+                        makbuz_id=makbuz.id,
+                        fatura_id=fatura_hedefi["fatura"].id,
+                        fatura_no=fatura_hedefi["fatura"].fatura_no,
+                    )
+                    session.add(bag)
+                bag.fatura_kapanan = fatura_hedefi["uygulanan"]
+
             session.flush()
             return makbuz.id
+
+    # --- Satış faturasına bağlı tahsilat makbuzu ---
+    _bag_hazir_motor = None
+
+    @classmethod
+    def fatura_makbuz_bag_tablosu_hazirla(cls) -> None:
+        """Eski firma veritabanlarında bağ tablosu yoksa ekler (yalnız CREATE TABLE; mevcut veriye dokunmaz)."""
+        import database.database as veritabani
+
+        motor = veritabani.engine
+        if motor is None or motor is cls._bag_hazir_motor:
+            return
+        SatisFaturaMakbuzBagi.__table__.create(bind=motor, checkfirst=True)
+        cls._bag_hazir_motor = motor
+
+    @staticmethod
+    def _bag_tablosu_var(session) -> bool:
+        from sqlalchemy import inspect as sa_inspect
+
+        return sa_inspect(session.connection()).has_table(SatisFaturaMakbuzBagi.__tablename__)
+
+    @staticmethod
+    def _fatura_bagi(session, makbuz_id) -> SatisFaturaMakbuzBagi | None:
+        if not makbuz_id or not FinansService._bag_tablosu_var(session):
+            return None
+        return session.scalar(
+            select(SatisFaturaMakbuzBagi).where(SatisFaturaMakbuzBagi.makbuz_id == int(makbuz_id))
+        )
+
+    @staticmethod
+    def _fatura_genel_toplami(fatura) -> Decimal:
+        """Onayda cari borca yazılan tutarla aynı kaynak (satırların genel toplamı)."""
+        from database.satis_faturasi_service import SatisFaturasiService
+
+        return Decimal(str(SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]))
+
+    @staticmethod
+    def _fatura_cari_hareketi(session, fatura):
+        """Onaylı faturanın açık borç satırı (onaysız / iptal faturada yoktur)."""
+        from database.models.cari import SatisHareketi
+
+        if not fatura.onaylandi or (fatura.durum or "") == "İPTAL":
+            return None
+        return session.scalar(
+            select(SatisHareketi).where(
+                SatisHareketi.belge_no == fatura.fatura_no,
+                SatisHareketi.cari_id == fatura.cari_id,
+            )
+        )
+
+    @staticmethod
+    def _fatura_acik_tutari(session, fatura) -> tuple[Decimal, object]:
+        """(faturanın ödenmemiş kalanı, açık borç satırı). Onaysız faturada kalan = toplam − tahsil edilen."""
+        if (fatura.durum or "") == "İPTAL":
+            return Decimal("0"), None
+        hareket = FinansService._fatura_cari_hareketi(session, fatura)
+        if hareket is not None:
+            return max(Decimal("0"), Decimal(str(hareket.kalan_acik_tutar or 0))), hareket
+        toplam = FinansService._fatura_genel_toplami(fatura)
+        return max(Decimal("0"), toplam - Decimal(str(fatura.tahsilat_tutari or 0))), None
+
+    @staticmethod
+    def _fatura_odeme_durumu(fatura) -> None:
+        """Yalnız ödeme durumu (AÇIK/KAPALI); onaysız ve iptal faturanın durumu ve içeriği değişmez."""
+        if not fatura.onaylandi or (fatura.durum or "") == "İPTAL":
+            return
+        toplam = FinansService._fatura_genel_toplami(fatura)
+        fatura.durum = "KAPALI" if Decimal(str(fatura.tahsilat_tutari or 0)) >= toplam else "AÇIK"
+
+    @staticmethod
+    def _faturaya_uygula(fatura, hareket, tutar: Decimal) -> None:
+        if hareket is not None:
+            hareket.kalan_acik_tutar = Decimal(str(hareket.kalan_acik_tutar or 0)) - tutar
+        fatura.tahsilat_tutari = Decimal(str(fatura.tahsilat_tutari or 0)) + tutar
+        FinansService._fatura_odeme_durumu(fatura)
+
+    @staticmethod
+    def _faturadan_geri_al(session, fatura, tutar: Decimal) -> None:
+        hareket = FinansService._fatura_cari_hareketi(session, fatura)
+        if hareket is not None:
+            kapasite = Decimal(str(hareket.satis_tutari or 0)) - Decimal(str(hareket.kalan_acik_tutar or 0))
+            hareket.kalan_acik_tutar = Decimal(str(hareket.kalan_acik_tutar or 0)) + min(
+                max(kapasite, Decimal("0")), tutar
+            )
+        fatura.tahsilat_tutari = max(Decimal("0"), Decimal(str(fatura.tahsilat_tutari or 0)) - tutar)
+        FinansService._fatura_odeme_durumu(fatura)
+
+    @staticmethod
+    def _makbuz_fatura_hedefi(session, fatura_id, mevcut, cari_id):
+        """Bağlı fatura hedefi (öncelikli uygulama bütçesi) ve varsa mevcut bağ kaydı."""
+        from database.models.satis_faturasi import SatisFaturasi
+
+        bag = FinansService._fatura_bagi(session, mevcut.id) if mevcut is not None else None
+        if bag is not None and fatura_id and int(fatura_id) != int(bag.fatura_id):
+            raise ValueError("Makbuzun bağlı olduğu fatura değiştirilemez.")
+        hedef_id = int(bag.fatura_id) if bag is not None else (int(fatura_id) if fatura_id else None)
+        if hedef_id is None:
+            return None, None
+        fatura = session.get(SatisFaturasi, hedef_id)
+        if fatura is None or getattr(fatura, "is_deleted", False):
+            raise ValueError("Bağlı satış faturası bulunamadı.")
+        if int(fatura.cari_id) != int(cari_id):
+            raise ValueError(
+                f"Makbuz {fatura.fatura_no} numaralı faturaya bağlı; cari hesap faturanın müşterisi olmalıdır."
+            )
+        if bag is None and (fatura.durum or "") == "İPTAL":
+            raise ValueError("İptal edilmiş faturaya tahsilat makbuzu bağlanamaz.")
+        butce, hareket = FinansService._fatura_acik_tutari(session, fatura)
+        return {"fatura": fatura, "hareket": hareket, "butce": butce, "uygulanan": Decimal("0")}, bag
+
+    @staticmethod
+    def _fatura_bagli_cari_geri_al(session, makbuz, bag) -> None:
+        """Bağlı makbuzun cari etkisi: faturaya uygulanan kısım faturaya, kalanı LIFO ile geri açılır."""
+        from database.cari_service import CariService
+        from database.models.cari import CariIslem
+        from database.models.satis_faturasi import SatisFaturasi
+
+        islemler = list(session.scalars(select(CariIslem).where(CariIslem.belge_no == makbuz.belge_no)).all())
+        toplam = sum(
+            (Decimal(str(i.alacak or 0)) + Decimal(str(i.borc or 0)) for i in islemler), Decimal("0")
+        )
+        geri = min(Decimal(str(bag.fatura_kapanan or 0)), toplam)
+        if geri > 0:
+            fatura = session.get(SatisFaturasi, int(bag.fatura_id))
+            if fatura is not None:
+                FinansService._faturadan_geri_al(session, fatura, geri)
+        if toplam - geri > 0:
+            CariService._aciklara_geri_al(session, makbuz.cari_id, toplam - geri, makbuz.belge_no)
+        for islem in islemler:
+            session.delete(islem)
+        bag.fatura_kapanan = Decimal("0")
+
+    @staticmethod
+    def makbuz_fatura_bagi(makbuz_id) -> dict | None:
+        """Makbuzun bağlı olduğu satış faturası (yoksa None)."""
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
+        with get_session() as session:
+            bag = FinansService._fatura_bagi(session, makbuz_id)
+            if bag is None:
+                return None
+            return {
+                "fatura_id": int(bag.fatura_id),
+                "fatura_no": bag.fatura_no,
+                "fatura_kapanan": Decimal(str(bag.fatura_kapanan or 0)),
+            }
+
+    @staticmethod
+    def fatura_tahsilat_ozeti(fatura_id) -> dict:
+        """Satış faturası tahsilat özeti: toplam, tahsil edilen, kalan ve bağlı tahsilat makbuzları."""
+        from database.models.cari import Cari
+        from database.models.satis_faturasi import SatisFaturasi
+
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
+        with get_session() as session:
+            fatura = session.scalar(
+                select(SatisFaturasi)
+                .options(selectinload(SatisFaturasi.satirlar))
+                .where(SatisFaturasi.id == int(fatura_id))
+            )
+            if fatura is None or getattr(fatura, "is_deleted", False):
+                raise ValueError("Satış faturası bulunamadı.")
+            hareket = FinansService._fatura_cari_hareketi(session, fatura)
+            genel = (
+                Decimal(str(hareket.satis_tutari or 0))
+                if hareket is not None
+                else FinansService._fatura_genel_toplami(fatura)
+            )
+            kalan, _ = FinansService._fatura_acik_tutari(session, fatura)
+            makbuzlar = []
+            baglar = list(
+                session.scalars(
+                    select(SatisFaturaMakbuzBagi)
+                    .where(SatisFaturaMakbuzBagi.fatura_id == fatura.id)
+                    .order_by(SatisFaturaMakbuzBagi.id)
+                ).all()
+            )
+            if baglar:
+                kayitlar = {
+                    m.id: m
+                    for m in session.scalars(
+                        select(KasaMakbuzu).where(KasaMakbuzu.id.in_([b.makbuz_id for b in baglar]))
+                    ).all()
+                }
+                for b in baglar:
+                    m = kayitlar.get(b.makbuz_id)
+                    if m is None:
+                        continue
+                    makbuzlar.append(
+                        {
+                            "makbuz_id": int(m.id),
+                            "makbuz_no": (m.makbuz_no or "").strip(),
+                            "belge_no": m.belge_no,
+                            "tarih": m.tarih,
+                            "tutar": Decimal(str(m.tutar or 0)),
+                            "fatura_kapanan": Decimal(str(b.fatura_kapanan or 0)),
+                            "durum": m.durum or "AÇIK",
+                        }
+                    )
+            acik = [m for m in makbuzlar if m["durum"] != "IPTAL"]
+            cari = session.get(Cari, int(fatura.cari_id))
+            return {
+                "fatura_id": int(fatura.id),
+                "fatura_no": fatura.fatura_no,
+                "cari_id": int(fatura.cari_id),
+                "cari_kodu": getattr(cari, "cari_kodu", "") or "",
+                "cari_unvan": getattr(cari, "unvan", "") or "",
+                "sube_id": fatura.sube_id,
+                "onayli": bool(fatura.onaylandi),
+                "iptal": (fatura.durum or "") == "İPTAL",
+                "durum": fatura.durum or "",
+                "genel_toplam": genel,
+                "tahsil_edilen": max(Decimal("0"), genel - kalan),
+                "kalan": kalan,
+                "makbuzlar": makbuzlar,
+                "makbuz_tahsilati": sum((m["fatura_kapanan"] for m in acik), Decimal("0")),
+            }
+
+    @staticmethod
+    def fatura_bagli_makbuz_toplami(session, fatura_id) -> Decimal:
+        """Açık bağlı makbuzların bu faturaya uyguladığı toplam (iptal edilmişlerde 0)."""
+        if not fatura_id or not FinansService._bag_tablosu_var(session):
+            return Decimal("0")
+        toplam = session.scalar(
+            select(func.coalesce(func.sum(SatisFaturaMakbuzBagi.fatura_kapanan), 0)).where(
+                SatisFaturaMakbuzBagi.fatura_id == int(fatura_id)
+            )
+        )
+        return Decimal(str(toplam or 0))
 
     @staticmethod
     def _makbuz_hesap_uyumu(s: dict, hesap: FinansHesabi, tur: str) -> None:
@@ -3845,7 +4115,11 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         kilit = FinansService._makbuz_kilit_metni(pos_kayitlari, kk_odemeleri)
         if kilit:
             raise ValueError(kilit)
-        FinansService._havale_cari_geri_al(session, makbuz.belge_no)
+        bag = FinansService._fatura_bagi(session, makbuz.id) if makbuz.makbuz_turu == "TAHSILAT" else None
+        if bag is not None:
+            FinansService._fatura_bagli_cari_geri_al(session, makbuz, bag)
+        else:
+            FinansService._havale_cari_geri_al(session, makbuz.belge_no)
         FinansService._finans_hareketlerini_sil(session, makbuz.belge_no)
         for pv in pos_kayitlari:
             if iptal:
@@ -3862,6 +4136,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
     @staticmethod
     def kasa_makbuz_iptal(makbuz_id):
         yazma_zorunlu("finans_duzenleme", "iptal")
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
         with get_session() as session:
             makbuz = session.get(KasaMakbuzu, int(makbuz_id))
             if not makbuz:

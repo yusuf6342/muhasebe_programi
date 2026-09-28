@@ -581,9 +581,17 @@ class SatisFaturasiService:
                         )
                         doviz_ara += brut
                 fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if tahsilat_toplam > toplam:
+            makbuz_tahsilati = (
+                Decimal("0") if yeni else FinansService.fatura_bagli_makbuz_toplami(session, fatura.id)
+            )
+            if tahsilat_toplam + makbuz_tahsilati > toplam:
+                if makbuz_tahsilati > 0:
+                    raise ValueError(
+                        "Toplam tahsilat fatura tutarını aşamaz: faturaya bağlı tahsilat makbuzlarıyla "
+                        f"{makbuz_tahsilati:.2f} TL tahsil edilmiş."
+                    )
                 raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
-            fatura.tahsilat_tutari = tahsilat_toplam
+            fatura.tahsilat_tutari = tahsilat_toplam + makbuz_tahsilati
             ilk = fatura.tahsilatlar[0] if fatura.tahsilatlar else None
             fatura.tahsilat_sekli = ilk.odeme_sekli if ilk else None
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None

@@ -345,6 +345,7 @@ class KasaMakbuzDialog(tk.Toplevel):
 
     makbuz_id verilmezse her açılışta yeni ve boş makbuz; verilirse kayıtlı makbuz görüntülenir.
     virman_id: kayıtlı cari virman makbuzu; islem_turu="VIRMAN": yeni tahsilat makbuzu Cari Virman ile açılır.
+    fatura_id: yeni tahsilat makbuzu satış faturasına bağlı açılır (müşteri sabit, kalan tutar önerilir).
     Pencere modal değildir: simge durumuna küçültülebilir, büyütülebilir, ana ekranla birlikte kullanılır.
     """
 
@@ -359,13 +360,22 @@ class KasaMakbuzDialog(tk.Toplevel):
         *,
         virman_id=None,
         islem_turu=None,
+        fatura_id=None,
     ):
-        super().__init__(parent)
-        self.result = None
         self.makbuz_turu = (makbuz_turu or "").strip().upper()
         if self.makbuz_turu not in ("TAHSILAT", "ODEME"):
             raise ValueError("makbuz_turu TAHSILAT veya ODEME olmalıdır.")
         self.tahsilat = self.makbuz_turu == "TAHSILAT"
+        self._fatura_ozet: dict | None = None
+        if fatura_id:
+            if not self.tahsilat or virman_id or makbuz_id or islem_turu == "VIRMAN":
+                raise ValueError("Satış faturasına yalnız yeni tahsilat makbuzu bağlanabilir.")
+            self._fatura_ozet = FinansService.fatura_tahsilat_ozeti(int(fatura_id))
+            if self._fatura_ozet["iptal"]:
+                raise ValueError("İptal edilmiş faturaya tahsilat makbuzu bağlanamaz.")
+            cari_id = self._fatura_ozet["cari_id"]
+        super().__init__(parent)
+        self.result = None
         self._odeme_sekilleri = TAHSILAT_MAKBUZ_SEKILLERI if self.tahsilat else ODEME_MAKBUZ_SEKILLERI
         self._varsayilan_hesap_id = finans_hesap_id
         self._sabit_cari_id = int(cari_id) if cari_id else None
@@ -732,7 +742,18 @@ class KasaMakbuzDialog(tk.Toplevel):
 
         self.kilit_lbl = tk.Label(p, bg=BEYAZ, fg=UYARI, font=font(9, "bold", self), anchor="w", justify="left")
         self.kilit_lbl.grid(row=4, column=0, columnspan=4, sticky="ew")
-        p.bind("<Configure>", lambda e: self.kilit_lbl.configure(wraplength=max(300, e.width - 20)), add="+")
+        self.fatura_bilgi_lbl = tk.Label(
+            p, bg=ACIK_SARI, fg=KOYU_LACIVERT, font=font(9, "bold", self), anchor="w", justify="left", padx=8, pady=4
+        )
+        self.fatura_bilgi_lbl.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        self.fatura_bilgi_lbl.grid_remove()
+        p.bind(
+            "<Configure>",
+            lambda e: [
+                w.configure(wraplength=max(300, e.width - 20)) for w in (self.kilit_lbl, self.fatura_bilgi_lbl)
+            ],
+            add="+",
+        )
 
         for var in (self.tarih_var, self.aciklama_var):
             var.trace_add("write", lambda *_: self._kirlet())
@@ -1076,7 +1097,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         durum = "normal" if acik else "disabled"
         for w in (self.tarih_entry, self.aciklama_entry, self.satir_tarih_entry, self.tutar_entry, self.satir_aciklama_entry):
             w.configure(state=durum)
-        self.cari_entry.configure(state="disabled" if (not acik or self._sabit_cari_id) else "normal")
+        self.cari_entry.configure(
+            state="disabled" if (not acik or self._sabit_cari_id or self._fatura_ozet) else "normal"
+        )
         for cb in (self.sekil_cb, self.hesap_cb, self.kart_tipi_cb, self.sube):
             cb.configure(state="readonly" if acik else "disabled")
         self.taksit_sb.configure(state="normal" if acik else "disabled")
@@ -1088,7 +1111,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if acik:
             self._kart_alanlarini_ayarla()
         if self.tahsilat:
-            self.islem_turu_cb.configure(state="readonly" if self.mod == "yeni" else "disabled")
+            self.islem_turu_cb.configure(
+                state="readonly" if self.mod == "yeni" and not self._fatura_ozet else "disabled"
+            )
             for w in (self.v_musteri_entry, self.v_tedarikci_entry, self.v_tutar_entry):
                 w.configure(state=durum)
 
@@ -1134,6 +1159,63 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.no_ipucu_lbl.configure(text="Elle değiştirildi" if self._makbuz_no_manuel else "Kayıtlı numara")
         else:
             self.no_ipucu_lbl.configure(text="")
+        self._fatura_bilgisini_yaz()
+
+    def fatura_bilgi_metni(self) -> str:
+        oz = self._fatura_ozet
+        if not oz:
+            return ""
+        durum = "İptal edilmiş fatura" if oz["iptal"] else ("Onaylı" if oz["onayli"] else "Onaysız (taslak)")
+        try:
+            from makbuz_cikti import firma_bilgisi
+
+            firma = (firma_bilgisi().get("unvan") or "").strip()
+        except Exception:
+            firma = ""
+        satirlar = [
+            f"Bağlı satış faturası: {oz['fatura_no']} ({durum})" + (f" · Firma: {firma}" if firma else ""),
+            f"Müşteri: {oz['cari_kodu']} — {oz['cari_unvan']}",
+            f"Fatura toplamı {_para(oz['genel_toplam'])} · Tahsil edilen {_para(oz['tahsil_edilen'])} · "
+            f"Faturanın kalan ödenmemiş tutarı {_para(oz['kalan'])}",
+        ]
+        return "\n".join(satirlar)
+
+    def _fatura_bilgisini_yaz(self):
+        metin = self.fatura_bilgi_metni()
+        if metin:
+            self.fatura_bilgi_lbl.configure(text=metin)
+            self.fatura_bilgi_lbl.grid()
+        else:
+            self.fatura_bilgi_lbl.grid_remove()
+
+    def _fatura_ozetini_yenile(self, fatura_id):
+        try:
+            self._fatura_ozet = FinansService.fatura_tahsilat_ozeti(int(fatura_id)) if fatura_id else None
+        except ValueError:
+            self._fatura_ozet = None
+
+    def _fatura_kalan_izni(self) -> Decimal:
+        """Bu makbuzun faturaya uygulayabileceği en yüksek tutar (düzenlemede kendi payı geri eklenir)."""
+        oz = self._fatura_ozet
+        izin = oz["kalan"]
+        if self.makbuz_id:
+            izin += sum(
+                (m["fatura_kapanan"] for m in oz["makbuzlar"] if m["makbuz_id"] == self.makbuz_id), Decimal("0")
+            )
+        return izin
+
+    def _fatura_asim_onayi(self, toplam: Decimal) -> bool:
+        izin = self._fatura_kalan_izni()
+        if toplam <= izin:
+            return True
+        return messagebox.askyesno(
+            "Fatura kalanı aşılıyor",
+            f"Tahsilat tutarı {_para(toplam)}, {self._fatura_ozet['fatura_no']} faturasının kalan tutarı "
+            f"{_para(izin)}.\n\nFaturaya {_para(izin)} işlenir; fazla {_para(toplam - izin)} müşterinin diğer "
+            "açık borçlarına, yoksa alacak olarak işlenir.\n\nDevam edilsin mi?",
+            icon="warning",
+            parent=self,
+        )
 
     def _kirlet(self):
         if self._yukleniyor or not self._duzenlenebilir():
@@ -1167,8 +1249,29 @@ class KasaMakbuzDialog(tk.Toplevel):
             self._v_tedarikci_arama.secimi_ayarla(None)
             self.v_tutar_var.set("")
             self._virman_bakiyelerini_guncelle()
+        oz = self._fatura_ozet
+        if oz:
+            self.cari_ipucu_lbl.configure(
+                text=f"{oz['fatura_no']} numaralı satış faturasından açıldı; cari değiştirilemez."
+            )
+            self.aciklama_var.set(f"{oz['fatura_no']} numaralı satış faturası tahsilatı")
+            if oz["kalan"] > 0:
+                self.tutar_var.set(f"{oz['kalan']:.2f}".replace(".", ","))
+            if oz.get("sube_id"):
+                etiket = next((k for k, v in self._sube_map.items() if v == int(oz["sube_id"])), None)
+                if etiket:
+                    self.sube.set(etiket)
         self._mod_uygula()
         self._kirli = False
+        if oz:
+            self._mesaj(
+                "Tutar faturanın kalanı olarak önerildi; kısmi tahsilat için değiştirebilirsiniz. Ödeme yöntemini "
+                "ve hesabı seçip satırı ekleyin. Makbuz kaydedilene kadar hiçbir cari, kasa, banka veya POS "
+                "hareketi oluşmaz."
+                if oz["kalan"] > 0
+                else "Bu faturanın ödenmemiş kalanı yok; girilen tutar müşterinin diğer açık borçlarına işlenir.",
+                LACIVERT,
+            )
         if self.tahsilat and self._sabit_cari_id:
             self.after(200, self._cari_uyari_goster)
 
@@ -1205,6 +1308,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.makbuz = makbuz
             self.makbuz_id = int(makbuz.id)
             self.mod = "goruntule"
+            self._fatura_ozetini_yenile(getattr(makbuz, "bagli_fatura_id", None))
             self._makbuz_no_manuel = False
             self._kayitli_no = (makbuz.makbuz_no or "").strip() or None
             self.makbuz_no_var.set(self._kayitli_no or "")
@@ -1624,6 +1728,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             "aciklama": self.aciklama_var.get().strip() or None,
             "sube_id": self._sube_map.get(self.sube.get()),
             "satirlar": satirlar,
+            "fatura_id": self._fatura_ozet["fatura_id"] if self._fatura_ozet else None,
         }
 
     def kaydet(self) -> bool:
@@ -1655,6 +1760,10 @@ class KasaMakbuzDialog(tk.Toplevel):
                     makbuz = CariVirmanMakbuzService.guncelle(self.makbuz_id, veriler)
                 else:
                     makbuz = CariVirmanMakbuzService.kaydet(veriler)
+            elif self._fatura_ozet and not self._fatura_asim_onayi(
+                sum((Decimal(str(s["tutar"])) for s in veriler["satirlar"]), Decimal("0"))
+            ):
+                return False
             elif onceki_mod == "duzenle":
                 makbuz = FinansService.kasa_makbuz_guncelle(self.makbuz_id, veriler)
             elif self.tahsilat:
@@ -1679,8 +1788,14 @@ class KasaMakbuzDialog(tk.Toplevel):
                 BASARI,
             )
         else:
+            fatura = (
+                f" · {self._fatura_ozet['fatura_no']} faturasının kalanı {_para(self._fatura_ozet['kalan'])}"
+                if self._fatura_ozet
+                else ""
+            )
             self._mesaj(
-                f"Kaydedildi: {no} · {makbuz.belge_no} · {_para(makbuz.tutar)} · güncel bakiye {self.bakiye_metni()}",
+                f"Kaydedildi: {no} · {makbuz.belge_no} · {_para(makbuz.tutar)} · güncel bakiye "
+                f"{self.bakiye_metni()}{fatura}",
                 BASARI,
             )
         if veriler.get("makbuz_no_otomatik") and oneri and makbuz.makbuz_no != oneri:
@@ -1775,6 +1890,13 @@ class KasaMakbuzDialog(tk.Toplevel):
         return makbuz_ciktisi_ac(self, [virman_kimligi(self.makbuz_id) if self.virman else self.makbuz_id])
 
     def _yeni_pencere(self):
+        oz = self._fatura_ozet
+        if oz and not oz["iptal"]:
+            try:
+                KasaMakbuzDialog(self.master, self.makbuz_turu, on_kayit=self._on_kayit, fatura_id=oz["fatura_id"])
+            except ValueError as hata:
+                messagebox.showerror("Yeni Makbuz", str(hata), parent=self)
+            return
         KasaMakbuzDialog(
             self.master, self.makbuz_turu, on_kayit=self._on_kayit, islem_turu="VIRMAN" if self.virman else None
         )

@@ -650,3 +650,21 @@ Index(
     unique=True,
     sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
 )
+
+
+class SatisFaturaMakbuzBagi(Base):
+    """Satış faturasından açılan tahsilat makbuzu ↔ fatura bağı (bir makbuz yalnız bir faturaya bağlanır).
+
+    fatura_kapanan: makbuz tutarının bu faturanın açığına uygulanan kısmı; düzenleme/iptalde tam bu
+    kadar faturaya geri açılır. Kalanı müşterinin diğer açık borçlarına (FIFO) uygulanmıştır.
+    """
+
+    __tablename__ = "satis_fatura_makbuz_baglari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    makbuz_id: Mapped[int] = mapped_column(
+        ForeignKey("kasa_makbuzlari.id"), unique=True, nullable=False, index=True
+    )
+    fatura_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    fatura_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    fatura_kapanan: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

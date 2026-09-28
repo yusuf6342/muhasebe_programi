@@ -3060,6 +3060,8 @@ class SatisSiparisiDialog(tk.Toplevel):
         )
         self.tahsilat_ozet = ttk.Label(cerceve, text=ozet_yazi)
         self.tahsilat_ozet.pack(anchor="w")
+        if not getattr(self, "_siparis_karti_mi", False) and hasattr(self, "_bagli_makbuz_paneli_kur"):
+            self._bagli_makbuz_paneli_kur(cerceve)
 
     def _doldur(self):
         musteri = next((m for m in self.musteriler if m.id == self.siparis.cari_id), None)
@@ -4733,6 +4735,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         )
         ftema.tk_buton(sag, "PDF", self._fatura_pdf_kaydet, rol="yazdir").pack(
             side="left", padx=3
+        )
+        self._tahsilat_makbuzu_btn = ftema.tk_buton(
+            sag, "Tahsilat Makbuzu", self._fatura_tahsilat_makbuzu_ac, rol="vurgu"
+        )
+        self._tahsilat_makbuzu_btn.pack(side="left", padx=3)
+        self._tooltip_bagla(
+            self._tahsilat_makbuzu_btn,
+            "Bu faturaya bağlı yeni tahsilat makbuzu (kalan tutar önerilir)",
         )
 
         self._analiz_menu_kur(sag)
@@ -8250,7 +8260,161 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.tahsilat_tablosu.pack(fill="both", expand=True)
         if hasattr(self, "tahsilat_ozet"):
             self.tahsilat_ozet.pack(anchor="w", pady=(2, 0))
+        kutu = getattr(self, "_bagli_makbuz_kutu", None)
+        if kutu is not None:
+            kutu.pack_forget()
+            kutu.pack(fill="x", pady=(6, 0))
         self._tahsilat_yesil_butonlar_hazir = True
+
+    # ─── Faturaya bağlı tahsilat makbuzları ─────────────────────
+    def _bagli_makbuz_paneli_kur(self, cerceve):
+        if getattr(self, "_bagli_makbuz_kutu", None) is not None:
+            return
+        kutu = ttk.Frame(cerceve)
+        kutu.pack(fill="x", pady=(6, 0))
+        self._bagli_makbuz_kutu = kutu
+        ttk.Label(kutu, text="Bağlı tahsilat makbuzları", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tablo = ttk.Treeview(
+            kutu,
+            columns=("makbuz_no", "tarih", "tutar", "faturaya", "durum"),
+            show="headings",
+            height=3,
+            selectmode="browse",
+            style="FaturaTahsilat.Treeview",
+        )
+        for kolon, baslik, genislik, hiza in (
+            ("makbuz_no", "Makbuz No (tıklayın)", 150, "w"),
+            ("tarih", "Tarih", 90, "center"),
+            ("tutar", "Makbuz Tutarı", 110, "e"),
+            ("faturaya", "Bu Faturaya", 110, "e"),
+            ("durum", "Durum", 80, "center"),
+        ):
+            tablo.heading(kolon, text=baslik, anchor=hiza)
+            tablo.column(kolon, width=genislik, minwidth=50, anchor=hiza, stretch=(kolon == "makbuz_no"))
+        tablo.tag_configure("iptal", foreground="#9e9e9e")
+        tablo.pack(fill="x")
+        tablo.bind("<ButtonRelease-1>", self._bagli_makbuz_tiklandi)
+        tablo.bind("<Return>", lambda _e: self._bagli_makbuzu_ac())
+        self._bagli_makbuz_tablo = tablo
+        self._bagli_makbuz_ozet_lbl = ttk.Label(kutu, text="", foreground="#1B2A4A")
+        self._bagli_makbuz_ozet_lbl.pack(anchor="w", pady=(2, 0))
+        self._bagli_makbuz_panelini_ciz()
+
+    def _bagli_makbuz_ozeti_getir(self):
+        fid = getattr(self.fatura, "id", None) if self.fatura is not None else None
+        self._bagli_makbuz_ozet = None
+        if fid:
+            try:
+                self._bagli_makbuz_ozet = FinansService.fatura_tahsilat_ozeti(int(fid))
+            except Exception:
+                self._bagli_makbuz_ozet = None
+        return self._bagli_makbuz_ozet
+
+    def _bagli_makbuz_tahsilati(self) -> Decimal:
+        oz = getattr(self, "_bagli_makbuz_ozet", None)
+        return oz["makbuz_tahsilati"] if oz else Decimal("0")
+
+    def _bagli_makbuz_panelini_ciz(self):
+        tablo = getattr(self, "_bagli_makbuz_tablo", None)
+        if tablo is None:
+            return
+        try:
+            tablo.delete(*tablo.get_children())
+            oz = getattr(self, "_bagli_makbuz_ozet", None)
+            if not oz:
+                self._bagli_makbuz_ozet_lbl.configure(
+                    text="Fatura kaydedildikten sonra Tahsilat Makbuzu düğmesiyle alınan tahsilatlar burada görünür."
+                )
+                return
+            for m in oz["makbuzlar"]:
+                iptal = m["durum"] == "IPTAL"
+                tablo.insert(
+                    "",
+                    "end",
+                    iid=str(m["makbuz_id"]),
+                    tags=("iptal",) if iptal else (),
+                    values=(
+                        m["makbuz_no"] or m["belge_no"],
+                        tarih_goster(m["tarih"]) if m["tarih"] else "",
+                        para_goster(m["tutar"]),
+                        para_goster(m["fatura_kapanan"]),
+                        "İPTAL" if iptal else "AÇIK",
+                    ),
+                )
+            acik = sum(1 for m in oz["makbuzlar"] if m["durum"] != "IPTAL")
+            self._bagli_makbuz_ozet_lbl.configure(
+                text=(
+                    f"Makbuzlarla tahsil edilen: {para_goster(oz['makbuz_tahsilati'])} ({acik} makbuz) | "
+                    f"Toplam tahsil edilen: {para_goster(oz['tahsil_edilen'])} | "
+                    f"Faturanın kalan tutarı: {para_goster(oz['kalan'])}"
+                )
+            )
+        except tk.TclError:
+            pass
+
+    def _bagli_makbuzlari_yenile(self, _makbuz=None):
+        """Makbuz kaydı/iptali sonrası panel ve tahsilat özeti; fatura formunun kirli durumu korunur."""
+        self._bagli_makbuz_ozeti_getir()
+        self._bagli_makbuz_panelini_ciz()
+        kirli = getattr(self, "_fatura_form_kirli", False)
+        try:
+            self._toplamlari_guncelle()
+        finally:
+            self._fatura_form_kirli = kirli
+
+    def _bagli_makbuz_tiklandi(self, event):
+        tablo = self._bagli_makbuz_tablo
+        if tablo.identify_region(event.x, event.y) != "cell":
+            return
+        if tablo.identify_column(event.x) != "#1":
+            return
+        satir = tablo.identify_row(event.y)
+        if satir:
+            self._bagli_makbuzu_ac(int(satir))
+
+    def _bagli_makbuzu_ac(self, makbuz_id=None):
+        if makbuz_id is None:
+            secim = self._bagli_makbuz_tablo.selection()
+            if not secim:
+                return
+            makbuz_id = int(secim[0])
+        from kasa_makbuz_ui import KasaMakbuzDialog
+
+        try:
+            KasaMakbuzDialog(self, "TAHSILAT", makbuz_id=makbuz_id, on_kayit=self._bagli_makbuzlari_yenile)
+        except ValueError as hata:
+            messagebox.showerror("Tahsilat Makbuzu", str(hata), parent=self)
+
+    def _fatura_tahsilat_makbuzu_ac(self):
+        """Kayıtlı faturaya bağlı yeni tahsilat makbuzu; kaydedilmemiş faturada önce kayıt istenir."""
+        if self.fatura is not None and (self.fatura.durum or "") == "İPTAL":
+            messagebox.showerror(
+                "Tahsilat Makbuzu", "İptal edilmiş faturaya tahsilat makbuzu bağlanamaz.", parent=self
+            )
+            return
+        onayli = self.fatura is not None and bool(getattr(self.fatura, "onaylandi", False))
+        if self.fatura is None or not getattr(self.fatura, "id", None) or (
+            not onayli and self._fatura_kirli_mi()
+        ):
+            ne = "henüz kaydedilmedi" if self.fatura is None else "kaydedilmemiş değişiklikler içeriyor"
+            if not messagebox.askyesno(
+                "Önce faturayı kaydedin",
+                f"Fatura {ne}.\n\nTahsilat makbuzu yalnız kayıtlı faturaya bağlanabilir. "
+                "Fatura şimdi kaydedilsin mi?\n\nEvet: kaydet ve makbuzu aç\nHayır: faturaya dön",
+                icon="warning",
+                parent=self,
+            ):
+                return
+            if not self._kaydet_kapatmadan() or self.fatura is None:
+                return
+        from kasa_makbuz_ui import KasaMakbuzDialog
+
+        try:
+            KasaMakbuzDialog(
+                self, "TAHSILAT", fatura_id=int(self.fatura.id), on_kayit=self._bagli_makbuzlari_yenile
+            )
+        except ValueError as hata:
+            messagebox.showerror("Tahsilat Makbuzu", str(hata), parent=self)
 
     def _fatura_yesil_oval_buton(self, parent, text, command, padx=4):
         """Yeşil zemin, beyaz yazı, oval 3D tahsilat butonu."""
@@ -10212,9 +10376,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             sum((decimal(t["tutar"], "Tahsilat") for t in self.tahsilatlar), Decimal("0")),
             yon,
         )
-        kalan = kurus_yuvarla(net_toplam - tahsilat, yon)
         acik = kurus_yuvarla(max(Decimal("0"), net_toplam - tahsilat), yon)
         tahmini_bakiye = kurus_yuvarla(self.mevcut_borc + acik, yon)
+        # Bağlı makbuzların cari etkisi mevcut bakiyede zaten var; yalnız tahsilat özetine eklenir
+        tahsilat = kurus_yuvarla(tahsilat + self._bagli_makbuz_tahsilati(), yon)
+        kalan = kurus_yuvarla(net_toplam - tahsilat, yon)
 
         if hasattr(self, "fatura_toplam_degerleri"):
             goster = {
@@ -10396,6 +10562,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         try:
             self.satirlar.clear()
             fatura = self.fatura
+            self._bagli_makbuz_ozeti_getir()
+            self._bagli_makbuz_panelini_ciz()
             if fatura is None:
                 return
             self._fatura_musteriyi_sec(fatura.cari)
@@ -10460,10 +10628,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     }
                     for th in fatura.tahsilatlar
                 ]
-            elif fatura.tahsilat_tutari:
+            elif Decimal(str(fatura.tahsilat_tutari or 0)) > self._bagli_makbuz_tahsilati():
+                # Bağlı makbuzların payı faturanın kendi tahsilatı değildir (yeniden kayıtta çift sayılmasın)
                 self.tahsilatlar[:] = [{
                     "tahsilat_tarihi": fatura.fatura_tarihi,
-                    "tutar": fatura.tahsilat_tutari,
+                    "tutar": Decimal(str(fatura.tahsilat_tutari)) - self._bagli_makbuz_tahsilati(),
                     "odeme_sekli": fatura.tahsilat_sekli or ODEME_SEKILLERI[0],
                     "hesap": fatura.tahsilat_hesabi or "",
                     "aciklama": "Fatura tahsilatı",
@@ -10547,6 +10716,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             if haric_index is not None and sira == haric_index:
                 continue
             tahsil_edilen += decimal(t["tutar"], "Tahsilat")
+        tahsil_edilen += self._bagli_makbuz_tahsilati()
         kalan = self._fatura_genel_toplam() - kurus_yuvarla(tahsil_edilen, yon)
         return kurus_yuvarla(kalan, yon)
 
@@ -11080,6 +11250,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._onay_butonu_guncelle()
         self._musteri_bakiyeleri = {}
         self._bakiye_guncelle()
+        self._bagli_makbuzlari_yenile()
         try:
             ana = self.master
             while ana is not None and not hasattr(ana, "cari_listesini_yenile"):

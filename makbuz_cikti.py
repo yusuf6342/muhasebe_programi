@@ -204,12 +204,18 @@ def _makbuz_verisi(m, satirlar, firma: dict, kk_adlari: dict) -> dict:
             }
         )
     cari = getattr(m, "cari", None)
+    fatura_no = getattr(m, "bagli_fatura_no", None)
     return {
         "id": int(m.id),
         "tahsilat": tahsilat,
         "baslik": "TAHSİLAT MAKBUZU" if tahsilat else "ÖDEME MAKBUZU",
         "makbuz_no": (m.makbuz_no or "").strip(),
         "belge_no": m.belge_no or "",
+        "belge_bilgi": (
+            ("BELGE NO · BAĞLI SATIŞ FATURASI", f"{m.belge_no or ''} · {fatura_no}")
+            if fatura_no
+            else ("BELGE NO", m.belge_no or "")
+        ),
         "tarih": tarih,
         "iptal": (m.durum or "") == "IPTAL",
         "cari_kodu": getattr(cari, "cari_kodu", "") or "",
@@ -445,7 +451,7 @@ def _makbuz_ciz(c: _PdfCizici, v: dict) -> None:
         c,
         y,
         (
-            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("TARİH", v["tarih"]), v["belge_bilgi"]),
             (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
         ),
     )
@@ -895,7 +901,7 @@ def _docx_makbuz(doc, v: dict) -> None:
     _docx_bilgi(
         doc,
         (
-            (("TARİH", v["tarih"]), ("BELGE NO", v["belge_no"])),
+            (("TARİH", v["tarih"]), v["belge_bilgi"]),
             (("CARİ KODU", v["cari_kodu"]), ("CARİ ADI / ÜNVANI", v["cari_unvan"])),
         ),
     )
