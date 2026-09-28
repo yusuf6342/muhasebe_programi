@@ -2096,7 +2096,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         ("belge", "Belge No", 110, "w"),
         ("tarih", "Tarih", 85, "w"),
         ("cari", "Cari", 230, "w"),
-        ("odeme", "Ödeme yöntemi", 170, "w"),
+        ("odeme", "Ödeme yöntemi", 300, "w"),
         ("hesap", "Hesap", 150, "w"),
         ("tutar", "Tutar", 110, "e"),
         ("durum", "Durum", 70, "w"),
