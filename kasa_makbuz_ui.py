@@ -373,6 +373,7 @@ class KasaMakbuzDialog(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self.kapat)
         self.bind("<Control-s>", lambda _e: (self.kaydet(), "break")[1])
+        self.bind("<Control-p>", lambda _e: (self.yazdir(), "break")[1])
         self.bind("<Escape>", self._esc_kapat)
         self.bind("<MouseWheel>", self._tekerlek, add="+")
         self._son_geometri = None
@@ -515,7 +516,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.btn_duzenle = tk_buton(self._dugme_kutusu, "Düzenle", self.duzenlemeye_gec, rol="duzenle")
         self.btn_vazgec = tk_buton(self._dugme_kutusu, "Vazgeç", self._vazgec, rol="geri")
         self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="iptal")
-        self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF", self.yazdir, rol="yazdir")
+        self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF / Word", self.yazdir, rol="yazdir")
         self.btn_yeni = tk_buton(self._dugme_kutusu, "Yeni Makbuz", self._yeni_pencere, rol="yeni")
         self.btn_kapat = tk_buton(self._dugme_kutusu, "Kapat", self.kapat, rol="geri")
 
@@ -823,10 +824,10 @@ class KasaMakbuzDialog(tk.Toplevel):
             b.pack_forget()
         gorunen = []
         if self.mod == "yeni":
-            gorunen = [self.btn_kaydet]
+            gorunen = [self.btn_kaydet, self.btn_yazdir]
             self.btn_kaydet.configure(text="Kaydet  (Ctrl+S)")
         elif self.mod == "duzenle":
-            gorunen = [self.btn_kaydet, self.btn_vazgec]
+            gorunen = [self.btn_kaydet, self.btn_vazgec, self.btn_yazdir]
             self.btn_kaydet.configure(text="Değişiklikleri Kaydet")
         else:
             if not iptal and not self._kilit_nedeni and yazabilir:
@@ -1383,12 +1384,22 @@ class KasaMakbuzDialog(tk.Toplevel):
                 pass
 
     def yazdir(self):
-        if self.makbuz is None:
-            messagebox.showinfo("Yazdır", "Önce makbuzu kaydedin.", parent=self)
-            return
-        from belge_onizleme_ui import kasa_makbuz_onizle
+        kaydedilmemis = self.makbuz_id is None or (self._duzenlenebilir() and self._kirli)
+        if kaydedilmemis:
+            ne = "henüz kaydedilmedi" if self.makbuz_id is None else "kaydedilmemiş değişiklikler içeriyor"
+            if not messagebox.askyesno(
+                "Yazdır / PDF / Word",
+                f"Makbuz {ne}.\n\nÇıktı yalnız kayıtlı makbuzdan alınabilir. Makbuz şimdi kaydedilsin mi?\n\n"
+                "Evet: kaydet ve çıktı önizlemesini aç\nHayır: makbuza dön",
+                icon="warning",
+                parent=self,
+            ):
+                return None
+            if not self.kaydet() or self.makbuz_id is None:
+                return None
+        from makbuz_cikti_ui import makbuz_ciktisi_ac
 
-        kasa_makbuz_onizle(self, self.makbuz.belge_no)
+        return makbuz_ciktisi_ac(self, [self.makbuz_id])
 
     def _yeni_pencere(self):
         KasaMakbuzDialog(self.master, self.makbuz_turu, on_kayit=self._on_kayit)
@@ -1461,7 +1472,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     cerceve = ttk.Frame(govde)
     cerceve.pack(fill="both", expand=True)
     sutunlar = ("makbuz_no", "belge", "tarih", "cari", "odeme", "hesap", "tutar", "durum", "aciklama")
-    tablo = ttk.Treeview(cerceve, columns=sutunlar, show="headings", selectmode="browse")
+    tablo = ttk.Treeview(cerceve, columns=sutunlar, show="headings", selectmode="extended")
     _tablo_stili(tablo)
     tablo.tag_configure("iptal", foreground=UYARI)
     for k, b, w, a in (
@@ -1545,11 +1556,14 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
                         (m.aciklama or "")[:80],
                     ),
                 )
-            if secili and tablo.exists(secili[0]):
-                tablo.selection_set(secili[0])
-                tablo.see(secili[0])
+            kalan = [i for i in secili if tablo.exists(i)]
+            if kalan:
+                tablo.selection_set(kalan)
+                tablo.see(kalan[0])
             ozet_lbl.configure(
-                text=f"{len(makbuzlar)} makbuz · Toplam (iptaller hariç): {_para(toplam)}", fg=IKINCIL
+                text=f"{len(makbuzlar)} makbuz · Toplam (iptaller hariç): {_para(toplam)} · "
+                "Toplu çıktı için Ctrl veya Shift ile birden fazla makbuz seçin (Ctrl+A: tümü).",
+                fg=IKINCIL,
             )
 
         def hata(exc):
@@ -1583,7 +1597,14 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         if not secim:
             messagebox.showinfo("Seçim", "Bir makbuz seçin.", parent=app)
             return None
+        if len(secim) > 1:
+            messagebox.showinfo("Seçim", "Bu işlem için tek bir makbuz seçin.", parent=app)
+            return None
         return secim[0]
+
+    def secili_makbuzlar() -> list[int]:
+        secim = set(tablo.selection())
+        return [int(i) for i in tablo.get_children() if i in secim]
 
     def yeni(tur):
         KasaMakbuzDialog(app, makbuz_turu=tur, on_kayit=lambda _m: yenile())
@@ -1599,12 +1620,17 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
             messagebox.showerror("Makbuz", str(hata), parent=app)
 
     def yazdir():
-        iid = _secili()
-        if not iid:
-            return
-        from belge_onizleme_ui import kasa_makbuz_onizle
+        idler = secili_makbuzlar()
+        if not idler:
+            messagebox.showinfo("Seçim", "Çıktı almak için bir veya daha fazla makbuz seçin.", parent=app)
+            return None
+        from makbuz_cikti_ui import makbuz_ciktisi_ac
 
-        kasa_makbuz_onizle(app, tablo.set(iid, "belge"))
+        return makbuz_ciktisi_ac(app, idler)
+
+    def tumunu_sec(_e=None):
+        tablo.selection_set(tablo.get_children())
+        return "break"
 
     def iptal():
         iid = _secili()
@@ -1631,11 +1657,13 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     if makbuz_turu in (None, "ODEME"):
         tk_buton(butonlar, "Yeni Ödeme Makbuzu", lambda: yeni("ODEME"), rol="yeni").pack(side="left", padx=(0, 6))
     tk_buton(butonlar, "Görüntüle", goruntule, rol="duzenle").pack(side="left", padx=6)
-    tk_buton(butonlar, "Yazdır / PDF", yazdir, rol="yazdir").pack(side="left", padx=6)
+    tk_buton(butonlar, "Yazdır / PDF / Word", yazdir, rol="yazdir").pack(side="left", padx=6)
     tk_buton(butonlar, "İptal Et", iptal, rol="iptal").pack(side="left", padx=6)
     tk_buton(butonlar, "Yenile", yenile, rol="geri").pack(side="left", padx=6)
     tablo.bind("<Double-1>", goruntule)
     tablo.bind("<Return>", goruntule)
+    tablo.bind("<Control-a>", tumunu_sec)
+    tablo.bind("<Control-p>", lambda _e: (yazdir(), "break")[1])
 
     yenile()
     arama.focus_set()

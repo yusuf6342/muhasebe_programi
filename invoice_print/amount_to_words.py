@@ -87,6 +87,15 @@ def _tam_sayi_yazi(n: int) -> str:
     return " ".join(reversed(parcalar))
 
 
+def _ek_dir(kelime: str) -> str:
+    """Bildirme eki (-dır/-dir/-dur/-dür, sert ünsüzden sonra -tır…): Lirası→dır, Kuruş→tur."""
+    kucuk = kelime.replace("I", "ı").replace("İ", "i").lower()
+    unlu = next((h for h in reversed(kucuk) if h in "aıeioöuü"), "a")
+    ek_unlu = {"a": "ı", "ı": "ı", "e": "i", "i": "i", "o": "u", "u": "u", "ö": "ü", "ü": "ü"}[unlu]
+    ek_unsuz = "t" if kucuk[-1:] in "fstkçşhp" else "d"
+    return f"{ek_unsuz}{ek_unlu}r"
+
+
 def amount_to_words(
     amount,
     currency: str = "TRY",
@@ -111,4 +120,4 @@ def amount_to_words(
         govde = f"{yazi} {ana}"
     if negatif:
         govde = f"Eksi {govde}"
-    return f"Yalnız {govde}tur."
+    return f"Yalnız {govde}{_ek_dir(govde)}."
