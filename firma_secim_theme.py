@@ -7,6 +7,8 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any, Sequence
 
+from database.turkce_normalize import turkce_normalize
+
 # Ray Mobilya tarzı kurumsal palet (sarı yalnızca vurgu)
 COLOR_NAVY = "#102A43"
 COLOR_NAVY_DEEP = "#081B2C"
@@ -21,24 +23,9 @@ COLOR_DANGER = "#D64545"
 
 FONT_CANDIDATES = ("Segoe UI", "Aptos", "Calibri", "Arial")
 
-_TR_MAP = str.maketrans(
-    {
-        "I": "ı",
-        "İ": "i",
-        "Ş": "ş",
-        "Ğ": "ğ",
-        "Ü": "ü",
-        "Ö": "ö",
-        "Ç": "ç",
-    }
-)
-
-
 def tr_normalize(metin: str | None) -> str:
-    """Türkçe-duyarlı küçük harf (casefold) — arama için."""
-    if not metin:
-        return ""
-    return str(metin).translate(_TR_MAP).casefold()
+    """Arama anahtarı — büyük/küçük ve ı/i/İ/I farkı yok sayılır."""
+    return turkce_normalize(metin)
 
 
 def resolve_ui_font(root: tk.Misc | None = None) -> str:

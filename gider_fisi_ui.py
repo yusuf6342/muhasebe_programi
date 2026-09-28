@@ -11,6 +11,7 @@ from database.finans_service import FinansService
 from database.models.hizmet import gider_sinifi_etiket
 from database.satis_siparisi_service import decimal
 from ui_takvim import tarih_alani
+from database.turkce_normalize import turkce_normalize
 
 
 def _para(tutar):
@@ -133,11 +134,11 @@ class GiderFisiDialog(tk.Toplevel):
         if len(metin) < 3:
             self.hesap_combo["values"] = ()
             return
-        ara = metin.casefold()
+        ara = turkce_normalize(metin)
         bulunan = []
         for etiket, h in self.hesap_map.items():
-            ad = (h.hesap_adi or "").casefold()
-            if ara in ad or ara in etiket.casefold():
+            ad = turkce_normalize(h.hesap_adi or "")
+            if ara in ad or ara in turkce_normalize(etiket):
                 bulunan.append(etiket)
         self.hesap_combo["values"] = bulunan
 

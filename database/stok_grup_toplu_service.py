@@ -22,6 +22,7 @@ from database.models.stok import (
     StokLotu,
 )
 from database.session_manager import oturum
+from database.sqlite_funcs import tr_icerir
 from database.stok_grup_service import StokGrupService
 from database.user_audit import audit_document
 
@@ -158,17 +159,18 @@ class StokGrupTopluService:
 
             marka_n = (marka or "").strip()
             if marka_n:
-                q = q.where(StokKarti.marka.ilike(f"%{marka_n}%"))
+                q = q.where(tr_icerir(StokKarti.marka, marka_n))
 
             hizli = (arama or "").strip()
             if hizli:
-                ifade = f"%{hizli}%"
-                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                barkod_alt = select(StokBarkod.stok_id).where(
+                    tr_icerir(StokBarkod.barkod, hizli)
+                )
                 q = q.where(
                     or_(
-                        StokKarti.stok_kodu.ilike(ifade),
-                        StokKarti.barkod.ilike(ifade),
-                        StokKarti.stok_adi.ilike(ifade),
+                        tr_icerir(StokKarti.stok_kodu, hizli),
+                        tr_icerir(StokKarti.barkod, hizli),
+                        tr_icerir(StokKarti.stok_adi, hizli),
                         StokKarti.id.in_(barkod_alt),
                     )
                 )
@@ -176,7 +178,7 @@ class StokGrupTopluService:
             kelimeler = [k.strip() for k in (ad_kelimeleri or []) if (k or "").strip()]
             if kelimeler:
                 # OR: herhangi bir kelime ada uysun (sıra şart değil)
-                kosullar = [StokKarti.stok_adi.ilike(f"%{k}%") for k in kelimeler]
+                kosullar = [tr_icerir(StokKarti.stok_adi, k) for k in kelimeler]
                 q = q.where(or_(*kosullar))
 
             sd = (stok_durumu or "tumu").lower()

@@ -16,15 +16,25 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from database.database import Base, _aktif_engine_bagla, company_db, get_session
 from database.models.donem import Donem
 from database.models.firma import Firma
-from database.models.stok import Depo, StokBirim, StokHareketi, StokKarti, StokLotu
+from database.models.stok import (
+    Depo,
+    DepoTransferFisi,
+    StokBirim,
+    StokHareketi,
+    StokKarti,
+    StokLotu,
+)
+from database.models.stok_sayim import StokSayimFisi
+from database.models.sube import Sube
 from database.session_manager import oturum
 from database.stok_service import CIKIS_HAREKETLERI, GIRIS_HAREKETLERI, StokService
+from database.stok_sayim_service import StokSayimService
 from stok_ui import (
     _ALIS_ETIKET_FG,
     _SATIS_ETIKET_FG,
@@ -61,6 +71,23 @@ class StokKartiDepoBirimTest(unittest.TestCase):
             firma = Firma(firma_kodu="SDK", unvan="Stok Depo Test", aktif=True)
             s.add(firma)
             s.flush()
+            merkez = Sube(
+                firma_id=firma.id,
+                sube_kodu="MERKEZ",
+                sube_adi="Merkez",
+                merkez=True,
+                aktif=True,
+            )
+            diger_sube = Sube(
+                firma_id=firma.id,
+                sube_kodu="SUBE2",
+                sube_adi="İkinci Şube",
+                aktif=True,
+            )
+            s.add_all([merkez, diger_sube])
+            s.flush()
+            self.merkez_sube_id = int(merkez.id)
+            self.diger_sube_id = int(diger_sube.id)
             s.add(
                 Donem(
                     firma_id=firma.id,
@@ -250,6 +277,93 @@ class StokKartiDepoBirimTest(unittest.TestCase):
         yenilenmis = StokService.depo_getir(int(d.id))
         self.assertIsNotNone(yenilenmis)
         self.assertFalse(yenilenmis.aktif)
+
+    def test_10_sayim_hareketi_secilen_subeyi_tasiyor(self):
+        depo = StokService.depo_ekle("Sayım Deposu", kod="SAY")
+        with get_session() as s:
+            stok = StokKarti(stok_kodu="SAY1", stok_adi="Sayım Ürünü", birim="Adet", aktif=True)
+            s.add(stok)
+            s.flush()
+            stok_id = int(stok.id)
+            s.add(
+                StokLotu(
+                    stok_id=stok.id,
+                    depo_id=depo.id,
+                    lot_no="SAY-LOT",
+                    giris_tarihi=date(2026, 1, 1),
+                    kalan_miktar=Decimal("5"),
+                    birim_maliyet=Decimal("2"),
+                )
+            )
+            s.commit()
+
+        fis_id = StokSayimService.kaydet_ve_onayla(
+            int(depo.id),
+            date(2026, 1, 2),
+            [{"stok_id": stok_id, "sistem_miktar": Decimal("5"), "sayilan_miktar": Decimal("7")}],
+            sube_id=self.merkez_sube_id,
+        )
+
+        with get_session() as s:
+            fis = s.get(StokSayimFisi, fis_id)
+            hareket = s.scalar(
+                select(StokHareketi).where(StokHareketi.belge_no == fis.fis_no)
+            )
+            self.assertEqual(fis.sube_id, self.merkez_sube_id)
+            self.assertEqual(hareket.sube_id, self.merkez_sube_id)
+
+    def test_11_depolar_arasi_sube_transferi_korumali_kayit(self):
+        cikis_depo = StokService.depo_ekle("Kaynak Depo", kod="KAY")
+        giris_depo = StokService.depo_ekle("Hedef Depo", kod="HEDEF")
+        with get_session() as s:
+            stok = StokKarti(stok_kodu="TRF1", stok_adi="Transfer Ürünü", birim="Adet", aktif=True)
+            s.add(stok)
+            s.flush()
+            s.add(
+                StokLotu(
+                    stok_id=stok.id,
+                    depo_id=cikis_depo.id,
+                    lot_no="KAY-LOT",
+                    giris_tarihi=date(2026, 1, 1),
+                    kalan_miktar=Decimal("10"),
+                    birim_maliyet=Decimal("3"),
+                )
+            )
+            s.commit()
+
+        fis_id = StokService.depo_transfer_kaydet(
+            {
+                "fis_no": "DTF-BRANCH-01",
+                "fis_tarihi": date(2026, 1, 2),
+                "cikis_depo": cikis_depo.ad,
+                "giris_depo": giris_depo.ad,
+                "sube_id": self.merkez_sube_id,
+                "giris_sube_id": self.diger_sube_id,
+            },
+            [{"urun_kodu": "TRF1", "urun_adi": "Transfer Ürünü", "miktar": Decimal("3")}],
+        )
+
+        with get_session() as s:
+            fis = s.get(DepoTransferFisi, fis_id)
+            hareketler = list(
+                s.scalars(
+                    select(StokHareketi)
+                    .where(StokHareketi.belge_no == "DTF-BRANCH-01")
+                    .order_by(StokHareketi.id)
+                ).all()
+            )
+            cikis_bakiye = s.scalar(
+                select(func.sum(StokLotu.kalan_miktar)).where(StokLotu.depo_id == cikis_depo.id)
+            )
+            giris_bakiye = s.scalar(
+                select(func.sum(StokLotu.kalan_miktar)).where(StokLotu.depo_id == giris_depo.id)
+            )
+            self.assertEqual(fis.sube_id, self.merkez_sube_id)
+            self.assertEqual(fis.giris_sube_id, self.diger_sube_id)
+            self.assertEqual([h.sube_id for h in hareketler], [self.merkez_sube_id, self.diger_sube_id])
+            self.assertEqual(cikis_bakiye, Decimal("7"))
+            self.assertEqual(giris_bakiye, Decimal("3"))
+            self.assertEqual(cikis_bakiye + giris_bakiye, Decimal("10"))
 
 
 if __name__ == "__main__":

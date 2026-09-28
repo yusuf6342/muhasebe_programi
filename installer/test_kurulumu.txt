@@ -1,0 +1,4 @@
+# Cin Muhasebe TEST kurulumu isareti.
+# Bu dosya EXE'nin yanindayken veri_konumu.txt silinse/bozulsa bile program
+# gercek veri klasorune (%LOCALAPPDATA%\MuhasebeProgrami\data) DUSMEZ;
+# %LOCALAPPDATA%\CinMuhasebeTest\data kullanilir.

@@ -14,6 +14,7 @@ from database.database import get_session
 from database.models.tedarikci_fiyat import TedarikciFiyat
 from database.satis_siparisi_service import decimal
 from database.satin_alma_hub_service import SatinAlmaHubService
+from database.sqlite_funcs import tr_herhangi_icerir
 
 
 class TedarikciFiyatService:
@@ -31,11 +32,9 @@ class TedarikciFiyatService:
             if cari_id:
                 q = q.where(TedarikciFiyat.cari_id == int(cari_id))
             if arama.strip():
-                ifade = f"%{arama.strip()}%"
                 q = q.where(
-                    or_(
-                        TedarikciFiyat.urun_kodu.ilike(ifade),
-                        TedarikciFiyat.urun_adi.ilike(ifade),
+                    tr_herhangi_icerir(
+                        (TedarikciFiyat.urun_kodu, TedarikciFiyat.urun_adi), arama
                     )
                 )
             q = q.order_by(TedarikciFiyat.urun_kodu, TedarikciFiyat.gecerlilik_baslangic.desc())

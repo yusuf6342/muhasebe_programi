@@ -15,6 +15,7 @@ import tkinter as tk
 
 from database.cari_service import CariService
 from database.stok_service import ALIŞ_FIYAT_ADLARI, SATIS_FIYAT_ADLARI
+from database.turkce_normalize import turkce_normalize
 from ui_tablo_siralama import (
     dogal_belge_anahtar,
     liste_sirala,
@@ -1736,7 +1737,7 @@ class CariDialog(tk.Toplevel):
     def _hareket_filtreli_satirlar(self):
         tur = (self.hareket_tur_filtre.get() or "Tümü").strip()
         ara_ham = (self.hareket_arama.get() or "").strip()
-        ara = ara_ham.casefold()
+        ara = turkce_normalize(ara_ham)
         baslangic, bitis, tarih_ok = self._hareket_tarih_araligi()
         if not tarih_ok:
             return False, [], [], [], {}
@@ -1749,13 +1750,13 @@ class CariDialog(tk.Toplevel):
             if bitis and h_tarih and h_tarih > bitis:
                 continue
             if ara:
-                metin = " ".join(
+                metin = turkce_normalize(" ".join(
                     [
                         str(hareket.get("tur") or ""),
                         str(hareket.get("belge_no") or ""),
                         str(hareket.get("aciklama") or ""),
                     ]
-                ).casefold()
+                ))
                 if ara not in metin:
                     continue
             genel_set.append(hareket)

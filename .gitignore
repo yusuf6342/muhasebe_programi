@@ -20,3 +20,34 @@ entegrasyon/_check_*.py
 dist/
 build/
 
+# --- Veri ve yedekler (gerçek müşteri verisi; asla commit edilmez) ---
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.zip
+backup/
+yedek/
+_guvenli_yedek_*/
+invoice_imports/
+
+# --- Derleme / kurulum çıktıları (installer/ ve scripts/ commit edilir) ---
+build_*/
+dist_*/
+Output/
+*.spec.bak
+
+# --- Geçici / yama dosyaları ---
+_tmp_*
+_patch_*.py
+*.bak
+*.bak_*
+.pytest_cache/
+
+# --- Loglar ve çalışma çıktıları ---
+*.log
+*.pid
+entegrasyon/_*_talimat.txt
+entegrasyon/_banka_*.txt
+

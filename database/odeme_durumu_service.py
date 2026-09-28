@@ -17,6 +17,7 @@ from typing import Any
 
 from database.access import yetki_var
 from database.session_manager import oturum
+from database.turkce_normalize import turkce_normalize
 
 SIFIR = Decimal("0.00")
 KURUS = Decimal("0.01")
@@ -439,7 +440,7 @@ class OdemeDurumuService:
         banka: str | None = None,
     ) -> list[dict]:
         sonuc = []
-        banka_f = (banka or "").strip().casefold()
+        banka_f = turkce_normalize((banka or "").strip())
         for s in satirlar:
             durum = s.get("durum") or ""
             if sadece_geciken and durum != DURUM_GECIKMIS:
@@ -455,7 +456,7 @@ class OdemeDurumuService:
                 continue
             if max_tutar is not None and kalan > max_tutar:
                 continue
-            if banka_f and banka_f not in (s.get("banka_adi") or "").casefold():
+            if banka_f and banka_f not in turkce_normalize(s.get("banka_adi") or ""):
                 continue
             sonuc.append(s)
         return sonuc

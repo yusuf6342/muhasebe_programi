@@ -1,0 +1,5 @@
+# Cin Muhasebe TEST kurulumu - veri klasoru.
+# Bos olmayan ve # ile baslamayan ilk satir kullanilir; %DEGISKEN% acilir.
+# MUHASEBE_DB_DIR ortam degiskeni tanimliysa bu dosyadan once gelir.
+# Gelistirme verisi (%LOCALAPPDATA%\MuhasebeProgrami\data) ile karismaz.
+%LOCALAPPDATA%\CinMuhasebeTest\data

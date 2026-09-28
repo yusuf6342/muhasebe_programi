@@ -224,13 +224,17 @@ class DeletedRecordRepository:
         if bitis:
             kosullar.append(DeletedRecordLog.deleted_at <= datetime.combine(bitis, datetime.max.time()))
         if q:
-            ifade = f"%{q.strip()}%"
+            from database.sqlite_funcs import tr_herhangi_icerir
+
             kosullar.append(
-                or_(
-                    DeletedRecordLog.record_code.ilike(ifade),
-                    DeletedRecordLog.record_title.ilike(ifade),
-                    DeletedRecordLog.deletion_note.ilike(ifade),
-                    DeletedRecordLog.deleted_by_username.ilike(ifade),
+                tr_herhangi_icerir(
+                    (
+                        DeletedRecordLog.record_code,
+                        DeletedRecordLog.record_title,
+                        DeletedRecordLog.deletion_note,
+                        DeletedRecordLog.deleted_by_username,
+                    ),
+                    q,
                 )
             )
         where = and_(*kosullar)

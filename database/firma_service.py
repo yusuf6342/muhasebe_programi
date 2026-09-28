@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database.database import get_session
 from database.models.firma import Firma
+from database.sqlite_funcs import tr_herhangi_icerir
 
 
 class FirmaService:
@@ -14,13 +15,8 @@ class FirmaService:
             statement = select(Firma).order_by(Firma.firma_kodu)
             arama = arama.strip()
             if arama:
-                ifade = f"%{arama}%"
                 statement = statement.where(
-                    or_(
-                        Firma.firma_kodu.ilike(ifade),
-                        Firma.unvan.ilike(ifade),
-                        Firma.vergi_no.ilike(ifade),
-                    )
+                    tr_herhangi_icerir((Firma.firma_kodu, Firma.unvan, Firma.vergi_no), arama)
                 )
             return session.scalars(statement).all()
 

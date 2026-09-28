@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
 from database.rapor_service import RaporService
+from database.turkce_normalize import turkce_normalize
 from ui_takvim import takvim_butonu
 
 STOKLU_TURLER = (
@@ -467,7 +468,7 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                 return
 
         rapor = self._ham
-        stok_filtre = (self.stok_ara.get() or "").strip().casefold()
+        stok_filtre = turkce_normalize((self.stok_ara.get() or "").strip())
 
         for item in self.tablo.get_children():
             self.tablo.delete(item)
@@ -491,8 +492,8 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                 stok_satirlari = [
                     s
                     for s in stok_satirlari
-                    if stok_filtre in (s.get("urun_kodu") or "").casefold()
-                    or stok_filtre in (s.get("urun_adi") or "").casefold()
+                    if stok_filtre in turkce_normalize(s.get("urun_kodu") or "")
+                    or stok_filtre in turkce_normalize(s.get("urun_adi") or "")
                 ]
                 if stoklu and not stok_satirlari:
                     continue
@@ -564,7 +565,7 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         baslangic, bitis, ok = self._tarih_araligi()
         if not ok:
             return None
-        stok_filtre = (self.stok_ara.get() or "").strip().casefold()
+        stok_filtre = turkce_normalize((self.stok_ara.get() or "").strip())
         belgeler = list(reversed(self._ham.get("belgeler") or []))
         sonuc = []
         for belge in belgeler:
@@ -579,8 +580,8 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                 stok_satirlari = [
                     s
                     for s in stok_satirlari
-                    if stok_filtre in (s.get("urun_kodu") or "").casefold()
-                    or stok_filtre in (s.get("urun_adi") or "").casefold()
+                    if stok_filtre in turkce_normalize(s.get("urun_kodu") or "")
+                    or stok_filtre in turkce_normalize(s.get("urun_adi") or "")
                 ]
                 if stoklu and not stok_satirlari:
                     continue

@@ -1,11 +1,14 @@
 import os
 import shutil
+import sys
 from pathlib import Path
 from contextlib import contextmanager
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from database import sqlite_funcs as _sqlite_funcs  # noqa: F401  — tr_norm() (tüm motorlar)
 
 
 # Proje ana klasörü
@@ -16,26 +19,92 @@ PROJE_DATA_DIR = BASE_DIR / "data"
 PROJE_DATA_DIR.mkdir(exist_ok=True)
 
 
-def _db_dir_sec() -> Path:
-    """SQLite'ı OneDrive dışında tut (LOCALAPPDATA); aksi halde proje data/.
+VERI_KONUMU_DOSYA_ADI = "veri_konumu.txt"
 
-    MUHASEBE_DB_DIR ile özel klasör verilebilir.
+
+def program_klasoru() -> Path:
+    """EXE ise EXE'nin bulunduğu klasör; kaynak koddan çalışıyorsa proje kökü."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return BASE_DIR
+
+
+def _veri_konumu_dosyasi_oku() -> Path | None:
+    """Program klasöründeki veri_konumu.txt → ilk dolu satır (%DEGISKEN% açılır)."""
+    dosya = program_klasoru() / VERI_KONUMU_DOSYA_ADI
+    if not dosya.is_file():
+        return None
+    try:
+        satirlar = dosya.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return None
+    for satir in satirlar:
+        satir = satir.strip()
+        if not satir or satir.startswith("#"):
+            continue
+        return Path(os.path.expandvars(satir))
+    return None
+
+
+TEST_KURULUMU_ISARET_DOSYASI = "test_kurulumu.txt"
+
+
+def _gercek_veri_klasoru() -> Path | None:
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    return Path(local) / "MuhasebeProgrami" / "data" if local else None
+
+
+def _test_kurulumu_mu() -> bool:
+    """Test kurulum paketiyle kurulan EXE: veri_konumu.txt silinse/bozulsa da
+    gerçek veri klasörüne düşmemeli."""
+    if not getattr(sys, "frozen", False):
+        return False
+    klasor = program_klasoru()
+    if (klasor / TEST_KURULUMU_ISARET_DOSYASI).is_file():
+        return True
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if not local:
+        return False
+    kurulum = Path(local) / "Programs" / "CinMuhasebe"
+    return os.path.normcase(str(klasor)) == os.path.normcase(str(kurulum.resolve()))
+
+
+def _db_dir_sec() -> tuple[Path, str]:
+    """SQLite veri klasörü ve nereden seçildiği.
+
+    Sıra: MUHASEBE_DB_DIR > program klasöründeki veri_konumu.txt >
+    (test kurulumu) %LOCALAPPDATA%\\CinMuhasebeTest\\data >
+    %LOCALAPPDATA%\\MuhasebeProgrami\\data > proje data/.
     """
     env = (os.environ.get("MUHASEBE_DB_DIR") or "").strip()
     if env:
         yol = Path(env)
         yol.mkdir(parents=True, exist_ok=True)
-        return yol
+        return yol, "MUHASEBE_DB_DIR"
+    dosyadan = _veri_konumu_dosyasi_oku()
+    if dosyadan is not None:
+        dosyadan.mkdir(parents=True, exist_ok=True)
+        return dosyadan, VERI_KONUMU_DOSYA_ADI
     local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local and _test_kurulumu_mu():
+        yol = Path(local) / "CinMuhasebeTest" / "data"
+        yol.mkdir(parents=True, exist_ok=True)
+        return yol, "test_kurulumu"
     if local:
         yol = Path(local) / "MuhasebeProgrami" / "data"
         yol.mkdir(parents=True, exist_ok=True)
-        return yol
-    return PROJE_DATA_DIR
+        return yol, "varsayilan"
+    return PROJE_DATA_DIR, "proje"
 
 
 def _eski_db_tasi(hedef_dir: Path) -> None:
-    """İlk açılışta proje data/muhasebe.db → yeni konuma kopyala."""
+    """İlk açılışta proje data/muhasebe.db → yeni konuma kopyala.
+
+    Yalnızca kaynak koddan çalışırken ve varsayılan konuma; EXE veya özel
+    konumda eski/bayat proje DB'si sessizce kopyalanmaz.
+    """
+    if getattr(sys, "frozen", False) or DB_DIR_KAYNAGI != "varsayilan":
+        return
     hedef = hedef_dir / "muhasebe.db"
     if hedef.exists():
         return
@@ -63,13 +132,78 @@ def _konum_dosyasi_yaz(db_yolu: Path) -> None:
         pass
 
 
-DB_DIR = _db_dir_sec()
+DB_DIR, DB_DIR_KAYNAGI = _db_dir_sec()
 _eski_db_tasi(DB_DIR)
 DB_PATH = (DB_DIR / "muhasebe.db").resolve()
 SYSTEM_DB_PATH = (DB_DIR / "system.db").resolve()
 COMPANIES_DIR = (DB_DIR / "companies").resolve()
+# Başlangıç öncesi durum: bootstrap eksik dosyaları boş oluşturmadan önce uyarı için
+SYSTEM_DB_ONCEDEN_VAR = SYSTEM_DB_PATH.is_file()
+MUHASEBE_DB_ONCEDEN_VAR = DB_PATH.is_file()
 COMPANIES_DIR.mkdir(parents=True, exist_ok=True)
 _konum_dosyasi_yaz(DB_PATH)
+
+
+def firma_db_yolu_coz(kayitli_yol: str | Path | None) -> Path | None:
+    """system.db'deki mutlak firma DB yolunu güncel veri klasörüne göre çözer.
+
+    Aynı dosya adı güncel klasörde varsa o kullanılır: başka PC'den ya da başka
+    veri klasöründen taşınan system.db, eski konumdaki (ör. geliştirme) DB'ye
+    yazmasın. Yoksa kayıtlı yol döner; hiçbir dosya oluşturulmaz."""
+    if not kayitli_yol:
+        return None
+    yol = Path(kayitli_yol)
+    for aday in (COMPANIES_DIR / yol.name, DB_DIR / yol.name):
+        if aday.is_file():
+            return aday
+    gercek = _gercek_veri_klasoru()
+    if gercek is not None and not _klasor_altinda(DB_DIR, gercek) and _klasor_altinda(yol, gercek):
+        # Başka veri klasörü (test) gerçek veriyi asla açmamalı: yerel (olmayan) yol döner
+        return (COMPANIES_DIR if yol.parent.name.lower() == "companies" else DB_DIR) / yol.name
+    return yol
+
+
+def _klasor_altinda(yol: Path, klasor: Path) -> bool:
+    a = os.path.normcase(os.path.abspath(str(yol)))
+    k = os.path.normcase(os.path.abspath(str(klasor)))
+    return a == k or a.startswith(k.rstrip("\\/") + os.sep)
+
+
+def veri_konumu_ozeti() -> str:
+    """Arayüzde gösterilecek kısa veri klasörü bilgisi."""
+    etiket = {
+        "MUHASEBE_DB_DIR": "ortam değişkeni",
+        VERI_KONUMU_DOSYA_ADI: VERI_KONUMU_DOSYA_ADI,
+        "varsayilan": "varsayılan",
+        "test_kurulumu": "test kurulumu",
+        "proje": "proje klasörü",
+    }.get(DB_DIR_KAYNAGI, DB_DIR_KAYNAGI)
+    return f"{DB_DIR} ({etiket})"
+
+
+def baslangic_veri_uyarisi() -> str | None:
+    """Veri klasöründe gerçek veri yoksa, boş DB oluşturulmadan önce gösterilecek metin."""
+    if MUHASEBE_DB_ONCEDEN_VAR:
+        return None
+    if SYSTEM_DB_ONCEDEN_VAR:
+        return (
+            "DİKKAT: Bu veri klasöründe system.db var ama firma veritabanı "
+            f"(muhasebe.db) YOK:\n{DB_PATH}\n\n"
+            "Devam ederseniz Ray Mobilya için BOŞ bir veritabanı oluşturulur ve "
+            "müşteri/stok/fatura listeleri boş görünür.\n\n"
+            "Gerçek veriyi aktarmak için programı kapatıp "
+            "veri_geri_yukle.ps1 ile veri paketini bu klasöre yükleyin.\n\n"
+            "Yine de boş veritabanı ile devam edilsin mi?"
+        )
+    return (
+        "Bu veri klasöründe henüz veri yok:\n"
+        f"{DB_DIR}\n\n"
+        "Devam ederseniz YENİ ve BOŞ bir veritabanı oluşturulur "
+        "(firma adı görünür ama müşteri/stok/fatura boş olur).\n\n"
+        "Gerçek veriyi görmek için programı kapatıp veri paketini "
+        "veri_geri_yukle.ps1 ile bu klasöre yükleyin.\n\n"
+        "Boş veritabanı ile devam edilsin mi?"
+    )
 
 # SQLite veritabanı (firma operasyon DB — varsayılan: mevcut muhasebe.db)
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
@@ -247,7 +381,8 @@ def sistem_altyapisini_baslat() -> dict:
     )
 
     company_id = sonuc["company_id"]
-    company_path = Path(sonuc["company_db"])
+    company_path = firma_db_yolu_coz(sonuc["company_db"]) or Path(sonuc["company_db"])
+    sonuc["company_db"] = str(company_path)
     if company_id is not None:
         firma_db_ac(int(company_id), company_path)
         from database.system.models import Company
@@ -260,7 +395,7 @@ def sistem_altyapisini_baslat() -> dict:
                     firma_kodu=firma.firma_kodu,
                     firma_unvan=firma.unvan,
                     firma_uid=firma.firma_uid,
-                    db_path=firma.db_path,
+                    db_path=str(company_path),
                 )
 
     _konum_dosyasi_yaz(Path(sonuc["company_db"]))

@@ -15,6 +15,7 @@ from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.satis_siparisi import SatisSiparisi  # noqa: F401
 from database.models.satis_irsaliyesi import SatisIrsaliyesi  # noqa: F401
 from database.models.satis_faturasi import SatisFaturasi
+from database.turkce_normalize import turkce_normalize
 
 
 class CariService:
@@ -848,11 +849,11 @@ class CariService:
                     "hedef_unvan": hedef.unvan if hedef else "",
                 }
                 if arama:
-                    ifade = arama.casefold()
-                    metin = " ".join([
+                    ifade = turkce_normalize(arama)
+                    metin = turkce_normalize(" ".join([
                         kayit["belge_no"], kayit["kaynak_kodu"], kayit["kaynak_unvan"],
                         kayit["hedef_kodu"], kayit["hedef_unvan"], kayit["aciklama"],
-                    ]).casefold()
+                    ]))
                     if ifade not in metin:
                         continue
                 sonuc.append(kayit)

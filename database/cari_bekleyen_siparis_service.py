@@ -18,6 +18,7 @@ from database.kalan_belge_service import IPTAL_DURUMLARI, _satir_net_tutar
 from database.models.alis_siparisi import AlisSiparisi
 from database.models.satis_siparisi import SatisSiparisi
 from database.satis_siparisi_service import decimal, satir_kalanlari
+from database.turkce_normalize import turkce_normalize
 
 SiparisYon = Literal["satis", "alis"]
 
@@ -151,7 +152,7 @@ def _listele_yon(
 ) -> list[dict[str, Any]]:
     cid = int(cari_id)
     dahil_kapali = bool(dahil_tamamlanan or dahil_iptal)
-    ara_f = (ara or "").strip().casefold()
+    ara_f = turkce_normalize((ara or "").strip())
 
     if yon == "satis":
         model = SatisSiparisi
@@ -184,7 +185,7 @@ def _listele_yon(
             if not dahil_iptal and durum_u in IPTAL_DURUMLARI:
                 continue
             if ara_f:
-                metin = " ".join(
+                metin = turkce_normalize(" ".join(
                     [
                         ozet["siparis_no"],
                         ozet["cari_kodu"],
@@ -192,7 +193,7 @@ def _listele_yon(
                         ozet["durum"],
                         ozet["para_birimi"],
                     ]
-                ).casefold()
+                ))
                 if ara_f not in metin:
                     continue
             sonuc.append(ozet)

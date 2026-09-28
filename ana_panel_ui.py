@@ -498,6 +498,15 @@ class AnaPanelKabuk:
             app.durum_cubugu, text="Dönem: —", bg=KOYU_LACIVERT, fg=METIN_ACIK, font=FONT_KUCUK
         )
         app.status_donem_label.pack(side="left", padx=8)
+        try:
+            from database.database import veri_konumu_ozeti
+
+            veri_metni = f"Veri: {veri_konumu_ozeti()}"
+        except Exception:
+            veri_metni = "Veri: —"
+        app.status_veri_label = tk.Label(
+            app.durum_cubugu, text=veri_metni, bg=KOYU_LACIVERT, fg=METIN_ACIK, font=FONT_KUCUK
+        )
         app.status_surum_label = tk.Label(
             app.durum_cubugu, text="v—", bg=KOYU_LACIVERT, fg=METIN_ACIK, font=FONT_KUCUK
         )
@@ -506,6 +515,8 @@ class AnaPanelKabuk:
             app.durum_cubugu, text="Yedek: —", bg=KOYU_LACIVERT, fg=METIN_ACIK, font=FONT_KUCUK
         )
         app.status_yedek_label.pack(side="right", padx=8)
+        # Sağdaki sürüm/yedek etiketlerinden sonra: uzun yol onları sıkıştırmasın
+        app.status_veri_label.pack(side="left", padx=8)
 
         # —— Gövde: sol menü + içerik ——
         govde = tk.Frame(app, bg=ACIK_BG)

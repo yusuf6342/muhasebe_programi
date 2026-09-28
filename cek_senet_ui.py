@@ -33,6 +33,7 @@ from database.models.cek_senet import (
     ISLEM_YONU_ALINAN,
     ISLEM_YONU_VERILEN,
 )
+from database.turkce_normalize import turkce_normalize
 from ui_takvim import tarih_alani
 
 # Liste sütunları (plan §12 — alt küme)
@@ -474,8 +475,8 @@ def _cari_combo_filtrele(dialog) -> str:
     if len(metin) < 3:
         _cari_combo_degerlerini_ayarla(dialog, ())
         return metin
-    ara = metin.casefold()
-    bulunan = [e for e in etiketler if ara in e.casefold()]
+    ara = turkce_normalize(metin)
+    bulunan = [e for e in etiketler if ara in turkce_normalize(e)]
     _cari_combo_degerlerini_ayarla(dialog, bulunan)
     return metin
 

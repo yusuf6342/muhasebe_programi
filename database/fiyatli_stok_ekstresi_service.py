@@ -18,6 +18,7 @@ from database.database import get_session
 from database.models.stok import Depo, StokHareketi, StokKarti, StokLotu
 from database.session_manager import oturum
 from database.stok_service import CIKIS_HAREKETLERI, GIRIS_HAREKETLERI, StokService
+from database.turkce_normalize import turkce_normalize
 
 _LOG = logging.getLogger(__name__)
 
@@ -512,7 +513,7 @@ class FiyatliStokEkstreService:
             toplam_cikis_maliyet = Decimal("0")
             toplam_cikis_satis = Decimal("0")
 
-            belge_filtre = (belge_no or "").strip().casefold()
+            belge_filtre = turkce_normalize((belge_no or "").strip())
             pb_filtre = (para_birimi or "").strip().upper()
             if pb_filtre in ("", "TÜMÜ", "TUMU", "(TÜMÜ)"):
                 pb_filtre = ""
@@ -536,7 +537,7 @@ class FiyatliStokEkstreService:
                     meta = belge_map.get((tur, bn), {})
                     if hareket_turu and hareket_turu not in ("", "(Tümü)") and tur != hareket_turu:
                         continue
-                    if belge_filtre and belge_filtre not in bn.casefold():
+                    if belge_filtre and belge_filtre not in turkce_normalize(bn):
                         continue
                     if belge_turu and belge_turu not in ("", "(Tümü)"):
                         bt = meta.get("belge_turu") or ""

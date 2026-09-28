@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 import tkinter as tk
 
 from database.cari_bekleyen_siparis_service import cari_bekleyen_siparisleri
+from database.turkce_normalize import turkce_normalize
 
 
 def _para(tutar) -> str:
@@ -126,20 +127,20 @@ class FaturaSiparisSecimDialog(tk.Toplevel):
         self._filtrele()
 
     def _filtrele(self):
-        ara = (self.ara.get() or "").strip().casefold()
+        ara = turkce_normalize((self.ara.get() or "").strip())
         satirlar = self._kayitlar
         if ara:
             satirlar = [
                 k
                 for k in satirlar
                 if ara
-                in " ".join(
+                in turkce_normalize(" ".join(
                     [
                         str(k.get("siparis_no") or ""),
                         str(k.get("durum") or ""),
                         str(k.get("para_birimi") or ""),
                     ]
-                ).casefold()
+                ))
             ]
         satirlar = self._siralanmis(satirlar)
         self.tablo.delete(*self.tablo.get_children())

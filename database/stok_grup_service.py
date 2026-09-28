@@ -12,6 +12,7 @@ from sqlalchemy import func, or_, select
 from database.access import yazma_zorunlu, yetki_zorunlu
 from database.database import get_session
 from database.models.stok import StokGrubu, StokKarti, StokSecenek
+from database.turkce_normalize import tr_iceriyor
 from database.user_audit import audit_document
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,8 @@ class StokGrupService:
             arama_n = _norm(arama)
             kayitlar = list(session.scalars(q).all())
             if arama_n:
-                a = arama_n.casefold()
                 kayitlar = [
-                    g
-                    for g in kayitlar
-                    if a in (g.kod or "").casefold()
-                    or a in (g.ad or "").casefold()
-                    or a in (g.aciklama or "").casefold()
+                    g for g in kayitlar if tr_iceriyor(arama_n, g.kod, g.ad, g.aciklama)
                 ]
             return [_grup_dict(g, yol=StokGrupService._yol_session(session, g)) for g in kayitlar]
 
@@ -145,16 +141,12 @@ class StokGrupService:
             for g in tum:
                 by_parent.setdefault(g.parent_id, []).append(g)
 
-            arama_n = _norm(arama).casefold()
+            arama_n = _norm(arama)
 
             def eslesir(g: StokGrubu) -> bool:
                 if not arama_n:
                     return True
-                return (
-                    arama_n in (g.kod or "").casefold()
-                    or arama_n in (g.ad or "").casefold()
-                    or arama_n in (g.aciklama or "").casefold()
-                )
+                return tr_iceriyor(arama_n, g.kod, g.ad, g.aciklama)
 
             def cocuk_eslesir(g: StokGrubu) -> bool:
                 if eslesir(g):

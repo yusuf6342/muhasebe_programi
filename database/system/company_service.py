@@ -14,9 +14,11 @@ from database.database import (
     COMPANIES_DIR,
     Base,
     company_db,
+    firma_db_yolu_coz,
     get_system_session,
 )
 from database.session_manager import oturum
+from database.sqlite_funcs import tr_herhangi_icerir
 from database.system.auth_service import AuthService
 from database.system.models import Company, UserCompany
 
@@ -34,12 +36,9 @@ class CompanyMgmtService:
             statement = select(Company).order_by(Company.unvan)
             arama = (arama or "").strip()
             if arama:
-                ifade = f"%{arama}%"
                 statement = statement.where(
-                    or_(
-                        Company.firma_kodu.ilike(ifade),
-                        Company.unvan.ilike(ifade),
-                        Company.vergi_no.ilike(ifade),
+                    tr_herhangi_icerir(
+                        (Company.firma_kodu, Company.unvan, Company.vergi_no), arama
                     )
                 )
             return [
@@ -286,9 +285,9 @@ class CompanyMgmtService:
             f = session.get(Company, company_id)
             if f is None:
                 raise ValueError("Firma bulunamadı.")
-            kaynak = Path(f.db_path)
+            kaynak = firma_db_yolu_coz(f.db_path) or Path(f.db_path)
             if not kaynak.is_file():
-                raise FileNotFoundError("Firma veritabanı dosyası yok.")
+                raise FileNotFoundError(f"Firma veritabanı dosyası yok: {kaynak}")
             klasor = Path(hedef_klasor)
             klasor.mkdir(parents=True, exist_ok=True)
             damga = datetime.now().strftime("%Y%m%d_%H%M%S")

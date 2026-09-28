@@ -13,7 +13,8 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
-from database.turkce_normalize import arama_like_varyantlari, turkce_normalize
+from database.sqlite_funcs import tr_herhangi_icerir, tr_icerir
+from database.turkce_normalize import arama_like_varyantlari, turkce_normalize  # noqa: F401
 
 
 def _get_session():
@@ -176,52 +177,44 @@ def _blok_sql_kosullari_stok(blok: str):
     """Tek blok için parametreli OR alan koşulları."""
     from database.models.stok import StokBarkod, StokKarti
 
-    patterns = arama_like_varyantlari(blok, max_n=12) or [f"%{blok}%"]
-    kosullar = []
-    for v in patterns:
-        kosullar.extend(
-            [
-                StokKarti.stok_kodu.ilike(v),
-                StokKarti.stok_adi.ilike(v),
-                StokKarti.barkod.ilike(v),
-                StokKarti.marka.ilike(v),
-                StokKarti.rapor_grubu.ilike(v),
-                StokKarti.birim.ilike(v),
-                StokKarti.aciklama.ilike(v),
-                StokKarti.model.ilike(v),
-                StokKarti.raf_yeri.ilike(v),
-            ]
-        )
-    # Ek barkod tablosu
-    barkod_alt = select(StokBarkod.stok_id).where(
-        or_(*[StokBarkod.barkod.ilike(v) for v in patterns])
+    alanlar = tr_herhangi_icerir(
+        (
+            StokKarti.stok_kodu,
+            StokKarti.stok_adi,
+            StokKarti.barkod,
+            StokKarti.marka,
+            StokKarti.rapor_grubu,
+            StokKarti.birim,
+            StokKarti.aciklama,
+            StokKarti.model,
+            StokKarti.raf_yeri,
+        ),
+        blok,
     )
-    kosullar.append(StokKarti.id.in_(barkod_alt))
-    return or_(*kosullar)
+    # Ek barkod tablosu
+    barkod_alt = select(StokBarkod.stok_id).where(tr_icerir(StokBarkod.barkod, blok))
+    return or_(alanlar, StokKarti.id.in_(barkod_alt))
 
 
 def _blok_sql_kosullari_cari(blok: str):
     from database.models.cari import Cari
 
-    patterns = arama_like_varyantlari(blok, max_n=24) or [f"%{blok}%"]
-    kosullar = []
-    for v in patterns:
-        kosullar.extend(
-            [
-                Cari.cari_kodu.ilike(v),
-                Cari.unvan.ilike(v),
-                Cari.telefon.ilike(v),
-                Cari.telefon2.ilike(v),
-                Cari.telefon3.ilike(v),
-                Cari.vergi_numarasi.ilike(v),
-                Cari.tc_kimlik.ilike(v),
-                Cari.il.ilike(v),
-                Cari.ilce.ilike(v),
-                Cari.adres.ilike(v),
-                Cari.email.ilike(v),
-            ]
-        )
-    return or_(*kosullar)
+    return tr_herhangi_icerir(
+        (
+            Cari.cari_kodu,
+            Cari.unvan,
+            Cari.telefon,
+            Cari.telefon2,
+            Cari.telefon3,
+            Cari.vergi_numarasi,
+            Cari.tc_kimlik,
+            Cari.il,
+            Cari.ilce,
+            Cari.adres,
+            Cari.email,
+        ),
+        blok,
+    )
 
 
 def _cari_relevance(

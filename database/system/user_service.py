@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from database.database import get_system_session
 from database.session_manager import oturum
+from database.sqlite_funcs import tr_herhangi_icerir
 from database.system.auth_service import AuthService
 from database.system.models import Role, User, UserCompany
 from database.system.password import guvenli_parola_uret, hash_parola
@@ -32,12 +33,9 @@ class UserService:
             )
             arama = (arama or "").strip()
             if arama:
-                ifade = f"%{arama}%"
                 statement = statement.where(
-                    or_(
-                        User.kullanici_adi.ilike(ifade),
-                        User.ad_soyad.ilike(ifade),
-                        User.kullanici_kodu.ilike(ifade),
+                    tr_herhangi_icerir(
+                        (User.kullanici_adi, User.ad_soyad, User.kullanici_kodu), arama
                     )
                 )
             sonuc = []

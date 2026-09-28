@@ -10,6 +10,7 @@ from database.database import get_session
 from database.access import yazma_zorunlu
 from database.models.cari import Cari, CariIslem, SatisHareketi
 from database.models.kk_cekimi import KkCekimi
+from database.turkce_normalize import tr_iceriyor
 
 
 class KkCekimiService:
@@ -41,15 +42,13 @@ class KkCekimiService:
                     "tedarikci_kodu": fis.tedarikci.cari_kodu if fis.tedarikci else "",
                     "tedarikci_unvan": fis.tedarikci.unvan if fis.tedarikci else "",
                 }
-                if arama:
-                    ifade = arama.casefold()
-                    metin = " ".join([
-                        kayit["belge_no"], kayit["musteri_kodu"], kayit["musteri_unvan"],
-                        kayit["tedarikci_kodu"], kayit["tedarikci_unvan"], kayit["banka"],
-                        kayit["cekim_turu"], kayit["aciklama"],
-                    ]).casefold()
-                    if ifade not in metin:
-                        continue
+                if arama and not tr_iceriyor(
+                    arama,
+                    kayit["belge_no"], kayit["musteri_kodu"], kayit["musteri_unvan"],
+                    kayit["tedarikci_kodu"], kayit["tedarikci_unvan"], kayit["banka"],
+                    kayit["cekim_turu"], kayit["aciklama"],
+                ):
+                    continue
                 sonuc.append(kayit)
             return sonuc
 

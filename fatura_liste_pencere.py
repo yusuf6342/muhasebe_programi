@@ -14,6 +14,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tkinter import messagebox, ttk
+from database.turkce_normalize import turkce_normalize
 
 SAYFA_BOYUTU = 100
 DOC_SATIS = "SALES_INVOICE"
@@ -326,10 +327,10 @@ class FaturaListePencere(tk.Toplevel):
             return None
 
     def _filtre_uygula(self):
-        no_q = (self.no_ara.get() or "").strip().lower()
-        cari_q = (self.cari_ara.get() or "").strip().lower()
+        no_q = turkce_normalize((self.no_ara.get() or "").strip())
+        cari_q = turkce_normalize((self.cari_ara.get() or "").strip())
         durum_q = (self.durum.get() or "").strip().upper()
-        personel_q = (self.personel_ara.get() or "").strip().lower()
+        personel_q = turkce_normalize((self.personel_ara.get() or "").strip())
         tmin = self._tutar_oku(self.tutar_min)
         tmax = self._tutar_oku(self.tutar_max)
         sonuc = []
@@ -337,19 +338,19 @@ class FaturaListePencere(tk.Toplevel):
             # Tür güvenliği
             if r.get("document_type") != self.document_type:
                 continue
-            if no_q and no_q not in (r.get("fatura_no") or "").lower():
+            if no_q and no_q not in turkce_normalize(r.get("fatura_no") or ""):
                 continue
             if cari_q:
-                blob = f"{r.get('cari_kodu') or ''} {r.get('cari_ad') or r.get('musteri') or ''}".lower()
+                blob = turkce_normalize(f"{r.get('cari_kodu') or ''} {r.get('cari_ad') or r.get('musteri') or ''}")
                 if cari_q not in blob:
                     continue
             if durum_q and (r.get("durum") or "").upper() != durum_q:
                 continue
             if personel_q:
-                pblob = (
+                pblob = turkce_normalize((
                     f"{r.get('sales_person_full_name') or ''} "
                     f"{r.get('created_by_full_name') or ''}"
-                ).lower()
+                ))
                 if personel_q not in pblob:
                     continue
             try:

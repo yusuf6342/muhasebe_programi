@@ -62,7 +62,7 @@ class BackupService:
             raise ValueError("Aktif firma seçili değil; servis öncesi yedek alınamaz.")
 
         from database.system.models import Company
-        from database.database import get_system_session
+        from database.database import firma_db_yolu_coz, get_system_session
 
         company_id = int(oturum.company_id)
         klasor = Path(hedef_klasor) if hedef_klasor else BackupService.yedek_klasoru_onerisi()
@@ -72,7 +72,7 @@ class BackupService:
             f = session.get(Company, company_id)
             if f is None:
                 raise ValueError("Firma bulunamadı; yedek alınamaz.")
-            kaynak = Path(f.db_path)
+            kaynak = firma_db_yolu_coz(f.db_path) or Path(f.db_path)
             if not kaynak.is_file():
                 raise FileNotFoundError(f"Firma veritabanı dosyası yok: {kaynak}")
 

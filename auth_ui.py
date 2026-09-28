@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from database.database import firma_db_ac, get_system_session
+from database.database import firma_db_ac, firma_db_yolu_coz, get_system_session
 from database.session_manager import oturum
 from database.system.auth_service import AuthService
 from database.system.models import AppSetting, Company, User
@@ -58,13 +58,14 @@ class FirmaOzet:
 
 
 def firma_ozet(f: Company, *, donem_yukle: bool = True) -> FirmaOzet:
-    donem = aktif_donem_oku(f.db_path) if donem_yukle else None
+    db_yolu = str(firma_db_yolu_coz(f.db_path) or f.db_path)
+    donem = aktif_donem_oku(db_yolu) if donem_yukle else None
     return FirmaOzet(
         id=f.id,
         firma_uid=f.firma_uid,
         firma_kodu=f.firma_kodu,
         unvan=f.unvan,
-        db_path=f.db_path,
+        db_path=db_yolu,
         aktif=bool(f.aktif),
         varsayilan_para_birimi=f.varsayilan_para_birimi or "TRY",
         kisa_ad=f.kisa_ad,
@@ -141,7 +142,7 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
             if firma.id not in yetkili:
                 raise PermissionError("Bu firmaya erişim yetkiniz yok.")
 
-    yol = Path(firma.db_path)
+    yol = firma_db_yolu_coz(firma.db_path) or Path(firma.db_path)
     if not yol.is_file():
         raise FileNotFoundError(f"Firma veritabanı bulunamadı:\n{yol}")
 

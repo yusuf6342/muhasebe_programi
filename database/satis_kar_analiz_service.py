@@ -22,6 +22,7 @@ from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
 from database.models.satis_iade_faturasi import SatisIadeFaturasi
 from database.models.stok import StokKarti
 from database.satis_faturasi_service import SatisFaturasiService
+from database.turkce_normalize import turkce_normalize
 
 MALIYET_YONTEMLERI = (
     "FIFO",
@@ -206,12 +207,12 @@ class SatisKarAnalizService:
     @staticmethod
     def _satirlari_yukle(filtre: KarAnalizFiltre) -> list[SatirAnaliz]:
         alan = _MALIYET_ALAN[filtre.maliyet_yontemi]
-        urun_f = (filtre.urun or "").strip().casefold()
-        depo_f = (filtre.depo or "").strip().casefold()
-        marka_f = (filtre.marka or "").strip().casefold()
-        grup_f = (filtre.rapor_grubu or "").strip().casefold()
-        mgrup_f = (filtre.musteri_grubu or "").strip().casefold()
-        personel_f = (filtre.personel or "").strip().casefold()
+        urun_f = turkce_normalize((filtre.urun or "").strip())
+        depo_f = turkce_normalize((filtre.depo or "").strip())
+        marka_f = turkce_normalize((filtre.marka or "").strip())
+        grup_f = turkce_normalize((filtre.rapor_grubu or "").strip())
+        mgrup_f = turkce_normalize((filtre.musteri_grubu or "").strip())
+        personel_f = turkce_normalize((filtre.personel or "").strip())
 
         out: list[SatirAnaliz] = []
         with get_session() as session:
@@ -238,7 +239,7 @@ class SatisKarAnalizService:
             faturalar = list(session.scalars(fq).all())
 
             for fatura in faturalar:
-                if depo_f and depo_f not in (fatura.depo or "").casefold():
+                if depo_f and depo_f not in turkce_normalize(fatura.depo or ""):
                     continue
                 personel = (
                     getattr(fatura, "sales_person_full_name", None)
@@ -246,23 +247,23 @@ class SatisKarAnalizService:
                     or fatura.created_by_username
                     or ""
                 )
-                if personel_f and personel_f not in personel.casefold():
+                if personel_f and personel_f not in turkce_normalize(personel):
                     continue
                 cari = fatura.cari
                 mgrup = (cari.musteri_grubu if cari else "") or ""
-                if mgrup_f and mgrup_f not in mgrup.casefold():
+                if mgrup_f and mgrup_f not in turkce_normalize(mgrup):
                     continue
                 for satir in fatura.satirlar:
-                    if urun_f and urun_f not in (satir.urun_kodu or "").casefold() and urun_f not in (
+                    if urun_f and urun_f not in turkce_normalize(satir.urun_kodu or "") and urun_f not in turkce_normalize((
                         satir.urun_adi or ""
-                    ).casefold():
+                    )):
                         continue
                     stok = stok_map.get(satir.urun_kodu)
                     marka = (stok.marka if stok else "") or ""
                     rgrup = (stok.rapor_grubu if stok else "") or ""
-                    if marka_f and marka_f not in marka.casefold():
+                    if marka_f and marka_f not in turkce_normalize(marka):
                         continue
-                    if grup_f and grup_f not in rgrup.casefold():
+                    if grup_f and grup_f not in turkce_normalize(rgrup):
                         continue
                     out.append(
                         SatisKarAnalizService._satir_analiz(
@@ -299,7 +300,7 @@ class SatisKarAnalizService:
                 if filtre.cari_id:
                     iq = iq.where(SatisIadeFaturasi.cari_id == int(filtre.cari_id))
                 for iade in session.scalars(iq).all():
-                    if depo_f and depo_f not in (iade.depo or "").casefold():
+                    if depo_f and depo_f not in turkce_normalize(iade.depo or ""):
                         continue
                     kaynak = getattr(iade, "kaynak_fatura", None)
                     personel = ""
@@ -309,23 +310,23 @@ class SatisKarAnalizService:
                             or getattr(kaynak, "created_by_full_name", None)
                             or ""
                         )
-                    if personel_f and personel_f not in personel.casefold():
+                    if personel_f and personel_f not in turkce_normalize(personel):
                         continue
                     cari = iade.cari
                     mgrup = (cari.musteri_grubu if cari else "") or ""
-                    if mgrup_f and mgrup_f not in mgrup.casefold():
+                    if mgrup_f and mgrup_f not in turkce_normalize(mgrup):
                         continue
                     for satir in iade.satirlar:
-                        if urun_f and urun_f not in (satir.urun_kodu or "").casefold() and urun_f not in (
+                        if urun_f and urun_f not in turkce_normalize(satir.urun_kodu or "") and urun_f not in turkce_normalize((
                             satir.urun_adi or ""
-                        ).casefold():
+                        )):
                             continue
                         stok = stok_map.get(satir.urun_kodu)
                         marka = (stok.marka if stok else "") or ""
                         rgrup = (stok.rapor_grubu if stok else "") or ""
-                        if marka_f and marka_f not in marka.casefold():
+                        if marka_f and marka_f not in turkce_normalize(marka):
                             continue
-                        if grup_f and grup_f not in rgrup.casefold():
+                        if grup_f and grup_f not in turkce_normalize(rgrup):
                             continue
                         # İade: satış ve maliyeti ters çevir (negatif miktar/tutar)
                         out.append(

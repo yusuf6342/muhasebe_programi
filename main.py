@@ -184,6 +184,20 @@ def main():
     set_windows_app_user_model_id()
     install_toplevel_icon_hook()
 
+    print(f"Veri klasörü: {db.veri_konumu_ozeti()}")
+    veri_uyarisi = db.baslangic_veri_uyarisi()
+    if veri_uyarisi:
+        import tkinter as tk
+
+        gecici = tk.Tk()
+        gecici.withdraw()
+        try:
+            devam = messagebox.askyesno(APP_NAME, veri_uyarisi, icon="warning", parent=gecici)
+        finally:
+            gecici.destroy()
+        if not devam:
+            return
+
     try:
         app = MuhasebeApp(startup_bootstrap=baslatma_adimlari)
     except Exception as exc:

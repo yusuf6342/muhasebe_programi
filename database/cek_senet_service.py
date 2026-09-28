@@ -36,6 +36,7 @@ from database.models.cek_senet import (
     CekSenetEvrak,
     CekSenetHareket,
 )
+from database.turkce_normalize import turkce_normalize
 
 # Düzenleme / iptal için izinli durumlar (Aşama 2)
 DUZENLENEBILIR_DURUMLAR = frozenset({DURUM_PORTFOYDE, DURUM_TEDARIKCIYE_VERILDI})
@@ -1549,7 +1550,7 @@ class CekSenetService:
             durum_filtre = {DURUM_IADE}
         # "tum" / None → filtre yok
 
-        arama = (arama or "").strip().casefold()
+        arama = turkce_normalize((arama or "").strip())
         bugun = date.today()
         try:
             with get_session() as session:
@@ -1578,7 +1579,7 @@ class CekSenetService:
                         pass
                     satir = CekSenetService._satir_dict(e, bugun)
                     if arama:
-                        metin = " ".join(
+                        metin = turkce_normalize(" ".join(
                             str(satir.get(k) or "")
                             for k in (
                                 "portfoy_no",
@@ -1590,7 +1591,7 @@ class CekSenetService:
                                 "aciklama",
                                 "durum_etiket",
                             )
-                        ).casefold()
+                        ))
                         if arama not in metin:
                             continue
                     sonuc.append(satir)

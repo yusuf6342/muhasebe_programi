@@ -236,9 +236,10 @@ class HesapPlanService:
             if sadece_aktif:
                 q = q.where(HesapPlani.aktif.is_(True))
             if arama.strip():
-                a = f"%{arama.strip()}%"
+                from database.sqlite_funcs import tr_herhangi_icerir
+
                 q = q.where(
-                    or_(HesapPlani.hesap_kodu.ilike(a), HesapPlani.hesap_adi.ilike(a))
+                    tr_herhangi_icerir((HesapPlani.hesap_kodu, HesapPlani.hesap_adi), arama)
                 )
             q = q.order_by(HesapPlani.hesap_kodu)
             satirlar = []

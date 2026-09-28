@@ -13,6 +13,7 @@ from database.satis_personeli import (
     personel_listesini_etiketle,
     satis_personeli_degistirme_yetkisi,
 )
+from database.turkce_normalize import turkce_normalize
 
 
 def satis_ve_kayit_paneli(
@@ -96,11 +97,11 @@ def satis_ve_kayit_paneli(
     tum_values = list(values)
 
     def _filtrele(_event=None):
-        yazi = (combo.get() or "").strip().casefold()
+        yazi = turkce_normalize((combo.get() or "").strip())
         if not yazi:
             combo.configure(values=tum_values)
             return
-        filt = [v for v in tum_values if yazi in v.casefold()]
+        filt = [v for v in tum_values if yazi in turkce_normalize(v)]
         combo.configure(values=filt or tum_values)
 
     combo.bind("<KeyRelease>", _filtrele)

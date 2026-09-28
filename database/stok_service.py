@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from database.database import BASE_DIR, get_session
+from database.sqlite_funcs import tr_esit, tr_herhangi_icerir, tr_icerir
 from database.access import yazma_zorunlu, maliyet_zorunlu
 from database.models.stok import (
     VARSAYILAN_KDV_ORANI,
@@ -1537,17 +1538,23 @@ class StokService:
                 kosullar.append(func.lower(StokKarti.marka) == marka_f.casefold())
 
             if qmetin:
-                ifade = f"%{qmetin}%"
-                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                barkod_alt = select(StokBarkod.stok_id).where(
+                    tr_icerir(StokBarkod.barkod, qmetin)
+                )
                 kosullar.append(
                     or_(
-                        StokKarti.stok_kodu.ilike(ifade),
-                        StokKarti.stok_adi.ilike(ifade),
-                        StokKarti.barkod.ilike(ifade),
+                        tr_herhangi_icerir(
+                            (
+                                StokKarti.stok_kodu,
+                                StokKarti.stok_adi,
+                                StokKarti.barkod,
+                                StokKarti.marka,
+                                StokKarti.rapor_grubu,
+                                StokKarti.raf_yeri,
+                            ),
+                            qmetin,
+                        ),
                         StokKarti.id.in_(barkod_alt),
-                        StokKarti.marka.ilike(ifade),
-                        StokKarti.rapor_grubu.ilike(ifade),
-                        StokKarti.raf_yeri.ilike(ifade),
                     )
                 )
 
@@ -1713,26 +1720,20 @@ class StokService:
             )
 
             if hizli:
-                ifade = f"%{hizli}%"
-                barkod_alt = select(StokBarkod.stok_id).where(StokBarkod.barkod.ilike(ifade))
+                barkod_alt = select(StokBarkod.stok_id).where(
+                    tr_icerir(StokBarkod.barkod, hizli)
+                )
                 hizli_kosul = [
-                    StokKarti.stok_kodu.ilike(ifade),
-                    StokKarti.barkod.ilike(ifade),
+                    tr_icerir(StokKarti.stok_kodu, hizli),
+                    tr_icerir(StokKarti.barkod, hizli),
                     StokKarti.id.in_(barkod_alt),
                 ]
                 if len(hizli) >= 2:
-                    hizli_kosul.append(StokKarti.stok_adi.ilike(ifade))
+                    hizli_kosul.append(tr_icerir(StokKarti.stok_adi, hizli))
                 q = q.where(or_(*hizli_kosul))
 
             # OR yolu: her kelime ürün adında (eski davranış)
-            kelime_kosullari = []
-            for kelime in temiz:
-                patterns = arama_like_varyantlari(kelime, max_n=16)
-                if not patterns:
-                    patterns = [f"%{kelime}%"]
-                kelime_kosullari.append(
-                    or_(*[StokKarti.stok_adi.ilike(p) for p in patterns])
-                )
+            kelime_kosullari = [tr_icerir(StokKarti.stok_adi, kelime) for kelime in temiz]
 
             if kelime_kosullari:
                 q = q.where(or_(*kelime_kosullari))
@@ -1951,12 +1952,9 @@ class StokService:
                 q = q.where(StokKarti.id == -1)
             elif temiz:
                 # OR yolu (veya AND olmadan kalan kelimeler)
-                kelime_kosullari = []
-                for kelime in temiz:
-                    patterns = arama_like_varyantlari(kelime, max_n=16) or [f"%{kelime}%"]
-                    kelime_kosullari.append(
-                        or_(*[StokKarti.stok_adi.ilike(p) for p in patterns])
-                    )
+                kelime_kosullari = [
+                    tr_icerir(StokKarti.stok_adi, kelime) for kelime in temiz
+                ]
                 if kelime_kosullari:
                     q = q.where(
                         or_(*kelime_kosullari) if yontem == "or" else and_(*kelime_kosullari)
@@ -2234,11 +2232,11 @@ class StokService:
                 .order_by(StokKarti.stok_adi)
             )
             if kod:
-                q = q.where(StokKarti.stok_kodu.ilike(f"%{kod}%"))
+                q = q.where(tr_icerir(StokKarti.stok_kodu, kod))
             if ad:
                 if len(ad) < min_ad_harf:
                     return []
-                q = q.where(StokKarti.stok_adi.ilike(f"%{ad}%"))
+                q = q.where(tr_icerir(StokKarti.stok_adi, ad))
             if sadece_stokta:
                 stoklu = select(StokLotu.stok_id).where(StokLotu.kalan_miktar > 0)
                 if depo_ad:
@@ -2259,7 +2257,7 @@ class StokService:
                     select(StokKarti)
                     .where(
                         StokKarti.aktif.is_(True),
-                        StokKarti.stok_kodu.ilike(f"%{metin}%"),
+                        tr_icerir(StokKarti.stok_kodu, metin),
                     )
                     .order_by(StokKarti.stok_kodu)
                     .limit(limit)
@@ -2277,7 +2275,7 @@ class StokService:
                     select(StokKarti)
                     .where(
                         StokKarti.aktif.is_(True),
-                        StokKarti.stok_adi.ilike(f"%{metin}%"),
+                        tr_icerir(StokKarti.stok_adi, metin),
                     )
                     .order_by(StokKarti.stok_adi)
                     .limit(limit)
@@ -2352,24 +2350,24 @@ class StokService:
 
         with get_session() as session:
             kosullar = list(StokService._aktif_stok_kosulu())
-            alan_or = []
-            for p in patterns:
-                alan_or.extend(
-                    [
-                        StokKarti.stok_adi.ilike(p),
-                        StokKarti.stok_kodu.ilike(p),
-                        StokKarti.barkod.ilike(p),
-                        StokKarti.marka.ilike(p),
-                        StokKarti.model.ilike(p),
-                        StokKarti.aciklama.ilike(p),
-                        StokKarti.muhasebe_stok_kodu.ilike(p),
-                    ]
+            barkod_alt = select(StokBarkod.stok_id).where(tr_icerir(StokBarkod.barkod, q))
+            kosullar.append(
+                or_(
+                    tr_herhangi_icerir(
+                        (
+                            StokKarti.stok_adi,
+                            StokKarti.stok_kodu,
+                            StokKarti.barkod,
+                            StokKarti.marka,
+                            StokKarti.model,
+                            StokKarti.aciklama,
+                            StokKarti.muhasebe_stok_kodu,
+                        ),
+                        q,
+                    ),
+                    StokKarti.id.in_(barkod_alt),
                 )
-            barkod_alt = select(StokBarkod.stok_id).where(
-                or_(*[StokBarkod.barkod.ilike(p) for p in patterns])
             )
-            alan_or.append(StokKarti.id.in_(barkod_alt))
-            kosullar.append(or_(*alan_or))
 
             # Fazla çek, Python filtre + sıralama sonra limit
             aday_limit = min(250, max(limit * 5, 80))

@@ -62,6 +62,7 @@ from urun_sec_ui import UrunSecDialog
 from ui_bg import arka_planda
 import fatura_tema as ftema
 from fatura_onizleme import fatura_onizle, fatura_pdf_kaydet, fatura_yazdir
+from database.turkce_normalize import turkce_normalize
 
 # Geriye dönük uyumluluk
 ProductSelectionDialog = UrunSecDialog
@@ -689,11 +690,11 @@ class CariVirmanDialog(tk.Toplevel):
         self._tum_etiketler = etiketler
 
     def _filtrele(self, widget, metin):
-        metin = metin.casefold()
+        metin = turkce_normalize(metin)
         if not metin:
             widget["values"] = self._tum_etiketler
             return
-        widget["values"] = [e for e in self._tum_etiketler if metin in e.casefold()]
+        widget["values"] = [e for e in self._tum_etiketler if metin in turkce_normalize(e)]
 
     def _kaynak_filtrele(self, _event=None):
         self._filtrele(self.girdiler["kaynak"], self.girdiler["kaynak"].get())
@@ -11635,10 +11636,10 @@ class TreeviewKolonFiltrePopup(tk.Toplevel):
         self.arama.focus_set()
 
     def _ara(self, _event=None):
-        q = self.arama.get().strip().casefold()
+        q = turkce_normalize(self.arama.get().strip())
         for deger, satir in self._satirlar:
             etiket = self.BOS_ETIKET if deger == "" else str(deger)
-            if not q or q in etiket.casefold():
+            if not q or q in turkce_normalize(etiket):
                 satir.pack(fill="x", anchor="w")
             else:
                 satir.pack_forget()
@@ -14100,7 +14101,7 @@ class MuhasebeApp(tk.Tk):
             messagebox.showwarning("Tarih", "Başlangıç bitişten sonra olamaz.", parent=self)
             return
 
-        belge_filtre = self.ekstre_belge.get().strip().casefold()
+        belge_filtre = turkce_normalize(self.ekstre_belge.get().strip())
         tur_filtre = self.ekstre_tur.get().strip()
         satirlar = []
         for s in rapor["satirlar"]:
@@ -14108,7 +14109,7 @@ class MuhasebeApp(tk.Tk):
                 continue
             if bitis and s["tarih"] > bitis:
                 continue
-            if belge_filtre and belge_filtre not in (s["belge_no"] or "").casefold():
+            if belge_filtre and belge_filtre not in turkce_normalize(s["belge_no"] or ""):
                 continue
             if tur_filtre and tur_filtre != "Tümü" and s.get("tur") != tur_filtre:
                 continue
@@ -14257,7 +14258,7 @@ class MuhasebeApp(tk.Tk):
             messagebox.showwarning("Tarih", "Başlangıç bitişten sonra olamaz.", parent=self)
             return
 
-        stok_filtre = self.stok_ekstre_stok.get().strip().casefold()
+        stok_filtre = turkce_normalize(self.stok_ekstre_stok.get().strip())
         tur_filtre = self.stok_ekstre_tur.get().strip()
 
         for item in self.stok_ekstre_tablo.get_children():
@@ -14279,8 +14280,8 @@ class MuhasebeApp(tk.Tk):
             if stok_filtre:
                 stok_satirlari = [
                     s for s in stok_satirlari
-                    if stok_filtre in (s["urun_kodu"] or "").casefold()
-                    or stok_filtre in (s["urun_adi"] or "").casefold()
+                    if stok_filtre in turkce_normalize(s["urun_kodu"] or "")
+                    or stok_filtre in turkce_normalize(s["urun_adi"] or "")
                 ]
                 # Stok filtresi varken tahsilat vb. gizlenir; stoklu belgede eşleşme yoksa belge de gizlenir.
                 if stoklu_tur and not stok_satirlari:

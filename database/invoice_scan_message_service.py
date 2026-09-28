@@ -320,14 +320,16 @@ def gecmis_listele(
         if ara:
             a = ara.strip()
             if a:
-                like = f"%{a}%"
-                from sqlalchemy import or_
+                from database.sqlite_funcs import tr_herhangi_icerir
 
                 q = q.where(
-                    or_(
-                        InvoiceScanMessage.barcode.ilike(like),
-                        InvoiceScanMessage.message_text.ilike(like),
-                        InvoiceScanMessage.invoice_no.ilike(like),
+                    tr_herhangi_icerir(
+                        (
+                            InvoiceScanMessage.barcode,
+                            InvoiceScanMessage.message_text,
+                            InvoiceScanMessage.invoice_no,
+                        ),
+                        a,
                     )
                 )
         q = q.order_by(InvoiceScanMessage.created_at.desc()).limit(max(1, min(int(limit), 2000)))

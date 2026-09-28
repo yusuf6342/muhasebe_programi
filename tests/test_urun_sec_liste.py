@@ -47,7 +47,10 @@ class UrunSecListeTest(unittest.TestCase):
         self.assertEqual(degerler[2], "Adet")
         self.assertEqual(degerler[3], "3.5")
         self.assertTrue(degerler[4].startswith("199"))
-        self.assertEqual(len(degerler), 7)
+        self.assertEqual(degerler[5], "Stok Kartı")
+        # (kod, ad, birim, stok, fiyat, kaynak, kdv, product_id); id yoksa None
+        self.assertEqual(len(degerler), 8)
+        self.assertIsNone(degerler[7])
 
     def test_filtre_kelime_sirasiz_imza(self):
         from database.stok_service import StokService

@@ -18,6 +18,7 @@ from database.models.satis_faturasi import SatisFaturasiSatiri
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
 from database.satis_siparisi_service import bos_metin, decimal, satir_kalanlari
+from database.turkce_normalize import turkce_normalize
 
 
 IPTAL_DURUMLARI = frozenset({"İPTAL", "IPTAL"})
@@ -439,23 +440,23 @@ def kalan_siparisler(
             stmt = stmt.where(SatisSiparisi.siparis_no.contains(siparis_no.strip()))
         siparisler = list(session.scalars(stmt).all())
         satirlar: list[dict[str, Any]] = []
-        urun_f = (urun or "").strip().casefold()
+        urun_f = turkce_normalize((urun or "").strip())
         durum_f = (durum or "").strip()
-        musteri_f = (musteri or "").strip().casefold()
+        musteri_f = turkce_normalize((musteri or "").strip())
         for siparis in siparisler:
             if (siparis.durum or "").upper() in IPTAL_DURUMLARI:
                 continue
             musteri_obj = siparis.cari
             if musteri_f:
-                aday = (
+                aday = turkce_normalize((
                     f"{getattr(musteri_obj, 'cari_kodu', '') or ''} "
                     f"{getattr(musteri_obj, 'unvan', '') or ''}"
-                ).casefold()
+                ))
                 if musteri_f not in aday:
                     continue
             for satir in siparis.satirlar or []:
                 if urun_f and urun_f not in (
-                    (satir.urun_kodu or "").casefold() + " " + (satir.urun_adi or "").casefold()
+                    turkce_normalize(satir.urun_kodu or "") + " " + turkce_normalize(satir.urun_adi or "")
                 ):
                     continue
                 kalanlar = satir_kalanlari(
@@ -539,24 +540,24 @@ def kalan_irsaliyeler(
             stmt = stmt.where(SatisIrsaliyesi.cari_id == int(cari_id))
         irsaliyeler = list(session.scalars(stmt).all())
         satirlar: list[dict[str, Any]] = []
-        urun_f = (urun or "").strip().casefold()
+        urun_f = turkce_normalize((urun or "").strip())
         durum_f = (durum or "").strip()
-        musteri_f = (musteri or "").strip().casefold()
+        musteri_f = turkce_normalize((musteri or "").strip())
         for ir in irsaliyeler:
             if (ir.durum or "").upper() in IPTAL_DURUMLARI:
                 continue
             musteri_obj = ir.cari
             if musteri_f:
-                aday = (
+                aday = turkce_normalize((
                     f"{getattr(musteri_obj, 'cari_kodu', '') or ''} "
                     f"{getattr(musteri_obj, 'unvan', '') or ''}"
-                ).casefold()
+                ))
                 if musteri_f not in aday:
                     continue
             siparis = ir.siparis
             for satir in ir.satirlar or []:
                 if urun_f and urun_f not in (
-                    (satir.urun_kodu or "").casefold() + " " + (satir.urun_adi or "").casefold()
+                    turkce_normalize(satir.urun_kodu or "") + " " + turkce_normalize(satir.urun_adi or "")
                 ):
                     continue
                 sevk = decimal(satir.miktar or 0, "Miktar", Decimal("0"))

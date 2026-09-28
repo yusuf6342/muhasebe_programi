@@ -23,6 +23,7 @@ from doviz_fatura_panel import (
 from product_provider import search_prices, search_products
 from ui_takvim import saat_dogrula, saat_varsayilan, tarih_alani
 from urun_sec_ui import UrunSecDialog
+from database.turkce_normalize import turkce_normalize
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 
@@ -382,14 +383,14 @@ class AlisSiparisiDialog(tk.Toplevel):
         self._bakiye_guncelle()
 
     def _tedarikci_arama_filtrele(self, _event=None):
-        sorgu = self.tedarikci.get().strip().casefold()
+        sorgu = turkce_normalize(self.tedarikci.get().strip())
         if len(sorgu) < 2:
             self.tedarikci_combo.configure(values=())
             return
         eslesenler = [
             etiket
             for etiket, cari in self.tedarikci_map.items()
-            if sorgu in (cari.unvan or "").casefold() or sorgu in (cari.cari_kodu or "").casefold()
+            if sorgu in turkce_normalize(cari.unvan or "") or sorgu in turkce_normalize(cari.cari_kodu or "")
         ]
         self.tedarikci_combo.configure(values=eslesenler)
         if eslesenler:

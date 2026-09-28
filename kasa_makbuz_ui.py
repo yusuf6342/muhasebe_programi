@@ -11,6 +11,7 @@ from database.cari_service import CariService
 from database.finans_service import FinansService
 from database.satis_siparisi_service import ODEME_SEKILLERI, decimal
 from ui_takvim import tarih_alani
+from database.turkce_normalize import turkce_normalize
 
 TAHSILAT_MAKBUZ_SEKILLERI = ODEME_SEKILLERI  # NAKİT / KASA, GELEN HAVALE, KREDİ KARTIYLA TAHSİLAT
 ODEME_MAKBUZ_SEKILLERI = ("NAKİT / KASA", "GÖNDERİLEN HAVALE")
@@ -258,9 +259,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if len(metin) < 3:
             self.cari_combo["values"] = ()
             return
-        ara = metin.casefold()
+        ara = turkce_normalize(metin)
         self.cari_combo["values"] = [
-            e for e in self._tum_cari_etiketleri if ara in e.casefold()
+            e for e in self._tum_cari_etiketleri if ara in turkce_normalize(e)
         ]
 
     def _satir_listesini_yenile(self):

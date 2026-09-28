@@ -19,6 +19,7 @@ from database.satis_faturasi_service import SatisFaturasiService
 from database.satis_iade_faturasi_service import SatisIadeFaturasiService
 from database.alis_faturasi_service import AlisFaturasiService
 from database.alis_iade_faturasi_service import AlisIadeFaturasiService
+from database.turkce_normalize import turkce_normalize
 
 MALIYET_YONTEMLERI_RAPOR = (
     "FIFO",
@@ -432,7 +433,7 @@ class RaporService:
     ) -> dict[str, Any]:
         """Müşteri bazlı kar/zarar (FIFO maliyet). Tarih ve stok (kod/ad) filtresi destekler."""
         kar_zorunlu()
-        stok_filtre = (stok or "").strip().casefold()
+        stok_filtre = turkce_normalize((stok or "").strip())
         with get_session() as session:
             cari = session.get(Cari, cari_id)
             if cari is None:
@@ -453,8 +454,8 @@ class RaporService:
                     continue
                 for satir in fatura.satirlar:
                     if stok_filtre and (
-                        stok_filtre not in (satir.urun_kodu or "").casefold()
-                        and stok_filtre not in (satir.urun_adi or "").casefold()
+                        stok_filtre not in turkce_normalize(satir.urun_kodu or "")
+                        and stok_filtre not in turkce_normalize(satir.urun_adi or "")
                     ):
                         continue
                     net = satir.miktar * satir.birim_fiyat * (
@@ -537,7 +538,7 @@ class RaporService:
         as_of = tarih or date.today()
         yontem = maliyet_yontemi if maliyet_yontemi in _MALIYET_ANAHTAR else "FIFO"
         anahtar = _MALIYET_ANAHTAR[yontem]
-        filtre = (stok_filtre or "").strip().casefold()
+        filtre = turkce_normalize((stok_filtre or "").strip())
         depo_filtre = (depo_adi or "").strip()
 
         with get_session() as session:
@@ -566,8 +567,8 @@ class RaporService:
             toplam_tutar = Decimal("0")
             for stok in stoklar:
                 if filtre and (
-                    filtre not in (stok.stok_kodu or "").casefold()
-                    and filtre not in (stok.stok_adi or "").casefold()
+                    filtre not in turkce_normalize(stok.stok_kodu or "")
+                    and filtre not in turkce_normalize(stok.stok_adi or "")
                 ):
                     continue
                 for depo_id, ad in depolar.items():
@@ -614,9 +615,9 @@ class RaporService:
         maliyet_yontemi: str = "FIFO",
     ) -> dict[str, Any]:
         """Satış faturalarından stok kar/zarar; çoklu filtre."""
-        stok_f = (stok or "").strip().casefold()
-        lot_f = (lot or "").strip().casefold()
-        tedarikci_f = (tedarikci or "").strip().casefold()
+        stok_f = turkce_normalize((stok or "").strip())
+        lot_f = turkce_normalize((lot or "").strip())
+        tedarikci_f = turkce_normalize((tedarikci or "").strip())
         alan = _MALIYET_ALAN.get(maliyet_yontemi, "fifo_birim_maliyeti")
 
         with get_session() as session:
@@ -637,7 +638,7 @@ class RaporService:
             lot_tedarikci = {}
             if tedarikci_f:
                 for l in session.scalars(select(StokLotu)).all():
-                    lot_tedarikci[(l.stok_id, (l.lot_no or "").casefold())] = (l.tedarikci or "").casefold()
+                    lot_tedarikci[(l.stok_id, turkce_normalize(l.lot_no or ""))] = turkce_normalize(l.tedarikci or "")
 
             satirlar = []
             toplam_satis = toplam_maliyet = Decimal("0")
@@ -649,11 +650,11 @@ class RaporService:
                 cari = fatura.cari
                 for satir in fatura.satirlar:
                     if stok_f and (
-                        stok_f not in (satir.urun_kodu or "").casefold()
-                        and stok_f not in (satir.urun_adi or "").casefold()
+                        stok_f not in turkce_normalize(satir.urun_kodu or "")
+                        and stok_f not in turkce_normalize(satir.urun_adi or "")
                     ):
                         continue
-                    lot_metin = f"{satir.lot_no or ''} {satir.lot_cikisi or ''}".casefold()
+                    lot_metin = turkce_normalize(f"{satir.lot_no or ''} {satir.lot_cikisi or ''}")
                     if lot_f and lot_f not in lot_metin:
                         continue
                     if tedarikci_f:
@@ -663,7 +664,7 @@ class RaporService:
                         ok = False
                         if stok_kart:
                             for parca in (satir.lot_cikisi or satir.lot_no or "").split(","):
-                                lot_no = parca.split(":")[0].strip().casefold()
+                                lot_no = turkce_normalize(parca.split(":")[0].strip())
                                 if lot_tedarikci.get((stok_kart.id, lot_no), "").find(tedarikci_f) >= 0:
                                     ok = True
                                     break
@@ -715,7 +716,7 @@ class RaporService:
         """Son satış (FATURA ÇIKIŞ) üzerinden X gündür satılmayan ürünler."""
         bugun = date.today()
         min_gun = max(0, int(min_gun))
-        filtre = (stok_filtre or "").strip().casefold()
+        filtre = turkce_normalize((stok_filtre or "").strip())
         with get_session() as session:
             stoklar = list(
                 session.scalars(
@@ -736,8 +737,8 @@ class RaporService:
             satirlar = []
             for stok in stoklar:
                 if filtre and (
-                    filtre not in (stok.stok_kodu or "").casefold()
-                    and filtre not in (stok.stok_adi or "").casefold()
+                    filtre not in turkce_normalize(stok.stok_kodu or "")
+                    and filtre not in turkce_normalize(stok.stok_adi or "")
                 ):
                     continue
                 mevcut = sum((lot.kalan_miktar for lot in stok.lotlar), Decimal("0"))
@@ -811,7 +812,7 @@ class RaporService:
         kodlar = set(bas_map) | set(son_map)
 
         # Dönem COGS: FATURA ÇIKIŞ maliyetleri
-        filtre = (stok_filtre or "").strip().casefold()
+        filtre = turkce_normalize((stok_filtre or "").strip())
         cogs: dict[str, Decimal] = {}
         cogs_miktar: dict[str, Decimal] = {}
         with get_session() as session:
@@ -827,8 +828,8 @@ class RaporService:
                 if not stok:
                     continue
                 if filtre and (
-                    filtre not in (stok.stok_kodu or "").casefold()
-                    and filtre not in (stok.stok_adi or "").casefold()
+                    filtre not in turkce_normalize(stok.stok_kodu or "")
+                    and filtre not in turkce_normalize(stok.stok_adi or "")
                 ):
                     continue
                 kod = stok.stok_kodu
@@ -894,11 +895,11 @@ class RaporService:
         lot: str | None = None,
     ) -> dict[str, Any]:
         """Stok hareketleri — çoklu filtre."""
-        stok_f = (stok or "").strip().casefold()
+        stok_f = turkce_normalize((stok or "").strip())
         depo_f = (depo_adi or "").strip()
         tur_f = (hareket_turu or "").strip()
-        belge_f = (belge_no or "").strip().casefold()
-        lot_f = (lot or "").strip().casefold()
+        belge_f = turkce_normalize((belge_no or "").strip())
+        lot_f = turkce_normalize((lot or "").strip())
 
         with get_session() as session:
             depolar = {d.id: d.ad for d in session.scalars(select(Depo)).all()}
@@ -919,18 +920,18 @@ class RaporService:
                 if not stok_k:
                     continue
                 if stok_f and (
-                    stok_f not in (stok_k.stok_kodu or "").casefold()
-                    and stok_f not in (stok_k.stok_adi or "").casefold()
+                    stok_f not in turkce_normalize(stok_k.stok_kodu or "")
+                    and stok_f not in turkce_normalize(stok_k.stok_adi or "")
                 ):
                     continue
                 depo = depolar.get(h.depo_id, "")
                 if depo_f and depo != depo_f:
                     continue
-                if belge_f and belge_f not in (h.belge_no or "").casefold():
+                if belge_f and belge_f not in turkce_normalize(h.belge_no or ""):
                     continue
                 lot_obj = lotlar.get(h.lot_id) if h.lot_id else None
                 lot_no = lot_obj.lot_no if lot_obj else ""
-                if lot_f and lot_f not in lot_no.casefold():
+                if lot_f and lot_f not in turkce_normalize(lot_no):
                     continue
                 yon = "+" if h.hareket_turu in GIRIS_HAREKETLERI else "−"
                 satirlar.append({

@@ -67,13 +67,12 @@ class HizmetService:
                 q = q.where(HizmetKarti.aktif.is_(True))
             satirlar = list(session.scalars(q).all())
             if arama:
-                a = arama.strip().lower()
+                from database.turkce_normalize import tr_iceriyor
+
                 satirlar = [
                     h
                     for h in satirlar
-                    if a in (h.hizmet_kodu or "").lower()
-                    or a in (h.hizmet_adi or "").lower()
-                    or a in (h.gider_sinifi or "").lower()
+                    if tr_iceriyor(arama, h.hizmet_kodu, h.hizmet_adi, h.gider_sinifi)
                 ]
             return satirlar
 

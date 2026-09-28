@@ -17,6 +17,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from database import sqlite_funcs as _sqlite_funcs  # noqa: F401  — tr_norm() (sistem motoru)
+
 
 class SystemBase(DeclarativeBase):
     pass

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 # Arama için katlanmış biçim: İ/I/ı → i, Ş→s, Ğ→g, Ü→u, Ö→o, Ç→c
 _TR_FOLD = str.maketrans(
     {
@@ -39,11 +41,20 @@ _EXPAND: dict[str, tuple[str, ...]] = {
 }
 
 
+@lru_cache(maxsize=65536)
+def _normalize_str(metin: str) -> str:
+    # 'I' + U+0307 (ayrışık İ) ve casefold'un bıraktığı birleşik nokta atılır
+    return metin.translate(_TR_FOLD).casefold().replace("\u0307", "")
+
+
 def turkce_normalize(metin: str | None) -> str:
-    """Büyük/küçük ve Türkçe karakter farklarını yok sayan arama anahtarı."""
+    """Büyük/küçük ve Türkçe karakter farklarını yok sayan arama anahtarı.
+
+    İ, I, ı, i → 'i' (ayrıca Ş/ş→s, Ğ/ğ→g, Ü/ü→u, Ö/ö→o, Ç/ç→c).
+    """
     if not metin:
         return ""
-    return str(metin).translate(_TR_FOLD).casefold()
+    return _normalize_str(metin if isinstance(metin, str) else str(metin))
 
 
 def arama_like_varyantlari(metin: str, max_n: int = 20) -> list[str]:
@@ -120,6 +131,17 @@ def arama_like_varyantlari(metin: str, max_n: int = 20) -> list[str]:
                 break
 
     return [f"%{a}%" for a in sirali[:max_n]]
+
+
+def tr_iceriyor(arama: str | None, *alanlar) -> bool:
+    """Bellek içi filtre: arama metni alanlardan herhangi birinde geçiyor mu?
+
+    Türkçe duyarsız (İ/I/ı/i eşdeğer); boş arama her kaydı eşleştirir.
+    """
+    n_ara = turkce_normalize((arama or "").strip())
+    if not n_ara:
+        return True
+    return any(n_ara in turkce_normalize(a) for a in alanlar if a)
 
 
 def kelime_basi_eslesme(alan: str, arama: str) -> bool:
