@@ -9,7 +9,8 @@ from typing import Any
 
 from sqlalchemy import inspect, select
 
-from database.database import engine, get_session
+from database import database as _db
+from database.database import get_session
 from database.servis_sistem.models import ServiceIssue, ServiceRepair
 from database.session_manager import oturum
 
@@ -66,7 +67,7 @@ class ErrorLogService:
         """service_issues / service_repairs tablolarını oluştur (checkfirst, non-destructive)."""
         import database.servis_sistem.models  # noqa: F401
 
-        eng = engine
+        eng = _db.engine
         if eng is None:
             return
         ServiceIssue.__table__.create(eng, checkfirst=True)
@@ -74,7 +75,7 @@ class ErrorLogService:
 
     @staticmethod
     def tablolar_hazir_mi() -> bool:
-        eng = engine
+        eng = _db.engine
         if eng is None:
             return False
         insp = inspect(eng)

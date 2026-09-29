@@ -89,6 +89,7 @@ class TestSevkEtStok(unittest.TestCase):
         satir = SimpleNamespace(
             urun_kodu="U1",
             miktar=Decimal("5"),
+            birim="Adet",
             depo="ANA DEPO",
             lot_no="",
         )

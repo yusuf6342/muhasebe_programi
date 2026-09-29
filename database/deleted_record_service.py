@@ -17,7 +17,8 @@ from sqlalchemy import and_, func, inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database.access import yazma_zorunlu, yetki_zorunlu
-from database.database import engine, get_session
+from database import database as _db
+from database.database import get_session
 from database.models.deleted_record import DeletedRecordLog
 from database.session_manager import oturum
 
@@ -262,7 +263,7 @@ class AuditDeleteService:
         import database.models.satis_faturasi  # noqa: F401
         import database.models.deleted_record  # noqa: F401
 
-        eng = engine
+        eng = _db.engine
         if eng is None:
             return
         DeletedRecordLog.__table__.create(eng, checkfirst=True)

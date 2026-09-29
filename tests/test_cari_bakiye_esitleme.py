@@ -3,7 +3,19 @@
 from decimal import Decimal
 from datetime import date, timedelta
 
+import pytest
+
 from database.cari_bakiye_service import fatura_eski_yeni_bakiye, net_bakiye
+from tests import test_tahsilat_makbuzu as _kurulum
+
+
+@pytest.fixture(autouse=True)
+def _gecici_firma_db():
+    """Yalnız geçici test firma veritabanı kullanılır."""
+    kurulum = _kurulum.TahsilatMakbuzuTest()
+    kurulum.setUp()
+    yield
+    kurulum.tearDown()
 
 
 def test_net_bakiye_sifir_musteri_yoksa():
