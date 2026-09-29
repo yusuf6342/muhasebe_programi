@@ -459,18 +459,27 @@ class SiparisTahsilatiDialog(tk.Toplevel):
             ("Hesap", "hesap"),
             ("Açıklama", "aciklama"),
         )
+        from satis_tema import font as sfont
+        from tutar_bicim import tr_tutar, tutar_alani
+
+        self.columnconfigure(1, weight=1)
         self.girdiler = {}
         for satir, (baslik, alan) in enumerate(alanlar):
-            ttk.Label(self, text=baslik).grid(row=satir, column=0, padx=8, pady=5, sticky="w")
+            tk.Label(self, text=baslik, font=sfont(11, "bold", self), anchor="w").grid(
+                row=satir, column=0, padx=12, pady=6, sticky="w"
+            )
             if alan == "odeme_sekli":
                 widget = ttk.Combobox(
-                    self, values=self._odeme_sekilleri, state="readonly", width=30
+                    self, values=self._odeme_sekilleri, state="readonly", width=30, font=sfont(11, root=self)
                 )
             elif alan == "hesap":
-                widget = ttk.Combobox(self, values=(), state="readonly", width=30)
+                widget = ttk.Combobox(self, values=(), state="readonly", width=30, font=sfont(11, root=self))
+            elif alan == "tutar":
+                widget = ttk.Entry(self, width=18)
+                tutar_alani(widget)
             else:
-                widget = ttk.Entry(self, width=32)
-            widget.grid(row=satir, column=1, padx=8, pady=5)
+                widget = ttk.Entry(self, width=32, font=sfont(11, root=self))
+            widget.grid(row=satir, column=1, padx=12, pady=6, sticky="w" if alan == "tutar" else "ew")
             self.girdiler[alan] = widget
         self.girdiler["tahsilat_tarihi"].insert(0, date.today().strftime("%d.%m.%Y"))
         self.girdiler["odeme_sekli"].set(self._odeme_sekilleri[0])
@@ -480,6 +489,11 @@ class SiparisTahsilatiDialog(tk.Toplevel):
                 deger = veri.get(alan, "")
                 if alan == "tahsilat_tarihi" and hasattr(deger, "strftime"):
                     deger = deger.strftime("%d.%m.%Y")
+                elif alan == "tutar" and deger not in (None, ""):
+                    try:
+                        deger = tr_tutar(decimal(deger, "Tutar"))
+                    except ValueError:
+                        pass
                 if isinstance(widget, ttk.Combobox):
                     widget.set("" if deger is None else str(deger))
                 else:
@@ -495,27 +509,34 @@ class SiparisTahsilatiDialog(tk.Toplevel):
             try:
                 onerilen = decimal(varsayilan_tutar, "Tahsilat", Decimal("0"))
                 if onerilen > 0:
-                    self.girdiler["tutar"].insert(0, f"{onerilen:.2f}".replace(".", ","))
+                    self.girdiler["tutar"].insert(0, tr_tutar(onerilen))
             except ValueError:
                 pass
         self._hesaplari_guncelle(koru_secim=bool(veri))
         bilgi_satir = 5
         if self._max_tutar is not None:
-            ttk.Label(
+            tk.Label(
                 self,
                 text=f"En fazla: {para_goster(self._max_tutar)}",
-                foreground="#1565c0",
-            ).grid(row=bilgi_satir, column=0, columnspan=2, padx=8, pady=(0, 2), sticky="w")
+                fg="#1565c0",
+                font=sfont(11, "bold", self),
+            ).grid(row=bilgi_satir, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="w")
             bilgi_satir += 1
-        ttk.Button(self, text="İptal", command=self.destroy).grid(row=bilgi_satir, column=0, padx=8, pady=10)
+        ttk.Button(self, text="İptal", command=self.destroy).grid(row=bilgi_satir, column=0, padx=12, pady=12)
         ttk.Button(self, text="Ekle", command=self.kaydet).grid(
-            row=bilgi_satir, column=1, padx=8, pady=10, sticky="e"
+            row=bilgi_satir, column=1, padx=12, pady=12, sticky="e"
         )
         try:
-            from ui_pencere import popup_ortala
+            from ui_pencere import evrak_penceresi_boyutlandir
 
             self.update_idletasks()
-            popup_ortala(self, parent)
+            evrak_penceresi_boyutlandir(
+                self,
+                genislik=max(620, self.winfo_reqwidth() + 20),
+                yukseklik=max(380, self.winfo_reqheight() + 20),
+                min_genislik=520,
+                min_yukseklik=320,
+            )
         except Exception:
             pass
 
@@ -545,8 +566,10 @@ class SiparisTahsilatiDialog(tk.Toplevel):
             )
             return
         try:
+            from tutar_bicim import tutar_coz
+
             veri["tahsilat_tarihi"] = datetime.strptime(veri["tahsilat_tarihi"], "%d.%m.%Y").date()
-            tutar = decimal(veri["tutar"], "Tahsilat tutarı", Decimal("0.01"))
+            tutar = decimal(tutar_coz(veri["tutar"]), "Tahsilat tutarı", Decimal("0.01"))
             if self._max_tutar is not None and tutar > self._max_tutar:
                 raise ValueError(
                     f"Tahsilat tutarı kalan tutarı ({para_goster(self._max_tutar)}) aşamaz."
@@ -568,46 +591,76 @@ class CariTahsilatOdemeDialog(tk.Toplevel):
         self.title("Tahsilat Gir" if tur == "tahsilat" else "Ödeme Gir")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
-        ttk.Label(self, text=f"{cari.cari_kodu} - {cari.unvan}", font=("Segoe UI", 10, "bold")).grid(
-            row=0, column=0, columnspan=2, padx=12, pady=(12, 4), sticky="w"
+        from satis_tema import font as sfont
+        from tutar_bicim import baslik_isim_fontu, tutar_alani
+        from ui_pencere import evrak_penceresi_boyutlandir, kaydirilabilir_govde
+
+        butonlar = ttk.Frame(self, padding=(16, 8, 16, 14))
+        butonlar.pack(side="bottom", fill="x")
+        govde = kaydirilabilir_govde(self)
+        govde.columnconfigure(1, weight=1)
+        tk.Label(
+            govde,
+            text="TAHSİLAT GİR" if tur == "tahsilat" else "ÖDEME GİR",
+            font=sfont(11, "bold", self),
+            fg="#1a237e",
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 0), sticky="w")
+        self.cari_lbl = tk.Label(
+            govde,
+            text=f"{cari.cari_kodu} - {cari.unvan}",
+            font=baslik_isim_fontu(self),
+            fg="#0d1b4c",
+            anchor="w",
+            justify="left",
         )
-        alanlar = (("Tarih", "tarih"), ("Tutar", "tutar"), ("Ödeme Şekli", "odeme_sekli"), ("Hesap", "hesap"), ("Açıklama", "aciklama"))
+        self.cari_lbl.grid(row=1, column=0, columnspan=2, padx=16, pady=(4, 10), sticky="ew")
+        govde.bind("<Configure>", lambda e: self.cari_lbl.configure(wraplength=max(300, e.width - 40)), add="+")
+        alanlar = (("Tarih", "tarih"), ("Tutar (TL)", "tutar"), ("Ödeme Şekli", "odeme_sekli"), ("Hesap", "hesap"), ("Açıklama", "aciklama"))
         self.girdiler = {}
-        for satir, (baslik, alan) in enumerate(alanlar, start=1):
-            ttk.Label(self, text=baslik).grid(row=satir, column=0, padx=12, pady=5, sticky="w")
+        f_alan = sfont(11, root=self)
+        for satir, (baslik, alan) in enumerate(alanlar, start=2):
+            tk.Label(govde, text=baslik, font=sfont(11, "bold", self), anchor="w").grid(
+                row=satir, column=0, padx=16, pady=6, sticky="w"
+            )
             if alan == "odeme_sekli":
-                widget = ttk.Combobox(self, values=ODEME_SEKILLERI, state="readonly", width=32)
+                widget = ttk.Combobox(govde, values=ODEME_SEKILLERI, state="readonly", width=32, font=f_alan)
             elif alan == "hesap":
-                widget = ttk.Combobox(self, values=tuple(h.hesap_adi for h in FinansService.hesaplar()), state="readonly", width=32)
+                widget = ttk.Combobox(govde, values=tuple(h.hesap_adi for h in FinansService.hesaplar()), state="readonly", width=32, font=f_alan)
+            elif alan == "tutar":
+                widget = ttk.Entry(govde, width=18)
+                tutar_alani(widget)
             else:
-                widget = ttk.Entry(self, width=34)
-            widget.grid(row=satir, column=1, padx=12, pady=5)
+                widget = ttk.Entry(govde, width=34, font=f_alan)
+            widget.grid(row=satir, column=1, padx=16, pady=6, sticky="w" if alan == "tutar" else "ew")
             self.girdiler[alan] = widget
         self.girdiler["tarih"].insert(0, date.today().strftime("%d.%m.%Y"))
         self.girdiler["odeme_sekli"].set(ODEME_SEKILLERI[0])
         hesaplar = FinansService.hesaplar()
         if hesaplar:
             self.girdiler["hesap"].set(hesaplar[0].hesap_adi)
-        butonlar = ttk.Frame(self)
-        butonlar.grid(row=6, column=0, columnspan=2, padx=12, pady=12, sticky="e")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
+        evrak_penceresi_boyutlandir(self, genislik=720, yukseklik=440, min_genislik=560, min_yukseklik=340)
+        self.girdiler["tutar"].focus_set()
 
     def kaydet(self):
+        from tutar_bicim import servis_metni
+
         veri = {alan: widget.get().strip() for alan, widget in self.girdiler.items()}
         if not veri["hesap"]:
             messagebox.showwarning("Eksik hesap", "Kasa/banka hesabı seçin.", parent=self)
             return
         try:
             tarih = datetime.strptime(veri["tarih"], "%d.%m.%Y").date()
+            tutar = servis_metni(veri["tutar"])
             if self.tur == "tahsilat":
                 self.result = CariService.tahsilat_yap(
-                    self.cari.id, tarih, veri["tutar"], veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
+                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
                 )
             else:
                 self.result = CariService.odeme_yap(
-                    self.cari.id, tarih, veri["tutar"], veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
+                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
                 )
         except ValueError as hata:
             messagebox.showerror("Kayıt yapılamadı", str(hata), parent=self)
@@ -618,24 +671,42 @@ class CariTahsilatOdemeDialog(tk.Toplevel):
 class CariVirmanDialog(tk.Toplevel):
     """Herhangi iki cari hesap arasında virman fişi oluşturur."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, *, kaynak_id=None, hedef_id=None):
         super().__init__(parent)
         self.result = None
         self.title("Yeni Cari Virman Fişi")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
         self.cari_map = {}
         self._olustur()
+        for alan, cari_id in (("kaynak", kaynak_id), ("hedef", hedef_id)):
+            if cari_id:
+                etiket = next((e for e, c in self.cari_map.items() if c.id == int(cari_id)), None)
+                if etiket:
+                    self.girdiler[alan].set(etiket)
+        self._bakiye_goster()
+        from ui_pencere import evrak_penceresi_boyutlandir
+
+        evrak_penceresi_boyutlandir(self, genislik=900, yukseklik=560, min_genislik=640, min_yukseklik=400)
 
     def _olustur(self):
-        ttk.Label(self, text="CARİ VİRMAN FİŞİ", font=("Segoe UI", 11, "bold")).grid(
-            row=0, column=0, columnspan=2, padx=12, pady=(12, 4), sticky="w"
+        from satis_tema import font as sfont
+        from tutar_bicim import isim_fontu, tutar_alani
+        from ui_pencere import kaydirilabilir_govde
+
+        butonlar = ttk.Frame(self, padding=(16, 8, 16, 14))
+        butonlar.pack(side="bottom", fill="x")
+        govde = kaydirilabilir_govde(self)
+        govde.columnconfigure(1, weight=1)
+        tk.Label(govde, text="CARİ VİRMAN FİŞİ", font=sfont(13, "bold", self), fg="#1a237e", anchor="w").grid(
+            row=0, column=0, columnspan=2, padx=16, pady=(14, 4), sticky="w"
         )
-        ttk.Label(
-            self,
+        tk.Label(
+            govde,
             text="Alacak yazılan tutar, seçilen karşı cariye aynı miktarda otomatik borç yazılır.",
-        ).grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="w")
+            font=sfont(10, root=self),
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, padx=16, pady=(0, 10), sticky="w")
 
         cariler = CariService.aktif_cariler()
         etiketler = [f"{c.cari_kodu} - {c.unvan} ({c.cari_turu})" for c in cariler]
@@ -649,42 +720,52 @@ class CariVirmanDialog(tk.Toplevel):
             ("Alacak yazılacak cari", "kaynak"),
             ("Borç yazılacak karşı cari", "hedef"),
             ("Tarih", "tarih"),
-            ("Tutar", "tutar"),
+            ("Tutar (TL)", "tutar"),
             ("Açıklama", "aciklama"),
         ):
-            ttk.Label(self, text=baslik).grid(row=satir, column=0, padx=12, pady=5, sticky="w")
+            tk.Label(govde, text=baslik, font=sfont(11, "bold", self), anchor="w").grid(
+                row=satir, column=0, padx=16, pady=6, sticky="w"
+            )
             if alan in ("kaynak", "hedef"):
-                widget = ttk.Combobox(self, values=etiketler, width=48)
+                widget = ttk.Combobox(govde, values=etiketler, width=52, font=isim_fontu(self))
+                sticky = "ew"
+            elif alan == "tutar":
+                widget = ttk.Entry(govde, width=18)
+                tutar_alani(widget)
+                sticky = "w"
             else:
-                widget = ttk.Entry(self, width=50)
-            widget.grid(row=satir, column=1, padx=12, pady=5, sticky="w")
+                widget = ttk.Entry(govde, width=50, font=sfont(11, root=self))
+                sticky = "ew"
+            widget.grid(row=satir, column=1, padx=16, pady=6, sticky=sticky)
             self.girdiler[alan] = widget
             satir += 1
 
         self.girdiler["tarih"].insert(0, date.today().strftime("%d.%m.%Y"))
-        self.kaynak_bakiye = ttk.Label(self, text="Alacak cari bakiyesi: -")
-        self.kaynak_bakiye.grid(row=satir, column=0, columnspan=2, padx=12, pady=(2, 0), sticky="w")
+        f_bakiye = sfont(11, "bold", self)
+        self.kaynak_bakiye = tk.Label(govde, text="Alacak cari bakiyesi: -", font=f_bakiye, anchor="w")
+        self.kaynak_bakiye.grid(row=satir, column=0, columnspan=2, padx=16, pady=(4, 0), sticky="w")
         satir += 1
-        self.hedef_bakiye = ttk.Label(self, text="Borç (karşı) cari bakiyesi: -")
-        self.hedef_bakiye.grid(row=satir, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="w")
+        self.hedef_bakiye = tk.Label(govde, text="Borç (karşı) cari bakiyesi: -", font=f_bakiye, anchor="w")
+        self.hedef_bakiye.grid(row=satir, column=0, columnspan=2, padx=16, pady=(0, 2), sticky="w")
         satir += 1
-        self.onizleme = ttk.Label(
-            self,
+        self.onizleme = tk.Label(
+            govde,
             text="Önizleme: —",
-            font=("Segoe UI", 9, "bold"),
-            foreground="#1f6aa5",
+            font=sfont(11, "bold", self),
+            fg="#1f6aa5",
+            anchor="w",
+            justify="left",
         )
-        self.onizleme.grid(row=satir, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="w")
-        satir += 1
+        self.onizleme.grid(row=satir, column=0, columnspan=2, padx=16, pady=(6, 8), sticky="ew")
+        govde.bind("<Configure>", lambda e: self.onizleme.configure(wraplength=max(300, e.width - 40)), add="+")
 
         self.girdiler["kaynak"].bind("<<ComboboxSelected>>", self._bakiye_goster)
         self.girdiler["hedef"].bind("<<ComboboxSelected>>", self._bakiye_goster)
         self.girdiler["kaynak"].bind("<KeyRelease>", self._kaynak_filtrele)
         self.girdiler["hedef"].bind("<KeyRelease>", self._hedef_filtrele)
         self.girdiler["tutar"].bind("<KeyRelease>", self._bakiye_goster)
+        self.girdiler["tutar"].bind("<FocusOut>", self._bakiye_goster, add="+")
 
-        butonlar = ttk.Frame(self)
-        butonlar.grid(row=satir, column=0, columnspan=2, padx=12, pady=12, sticky="e")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Fişi Kaydet", command=self.kaydet).pack(side="right")
         self._tum_etiketler = etiketler
@@ -715,9 +796,11 @@ class CariVirmanDialog(tk.Toplevel):
             self.hedef_bakiye.configure(
                 text=f"Borç (karşı) cari bakiyesi: {para_goster(self.bakiyeler.get(hedef.id, Decimal('0')))} ({hedef.cari_turu})"
             )
+        from tutar_bicim import tutar_coz
+
         tutar_metin = self.girdiler["tutar"].get().strip()
         try:
-            tutar = CariService._tutar(tutar_metin) if tutar_metin else Decimal("0")
+            tutar = tutar_coz(tutar_metin) if tutar_metin else Decimal("0")
         except ValueError:
             tutar = Decimal("0")
         if kaynak and hedef and tutar > 0:
@@ -739,9 +822,11 @@ class CariVirmanDialog(tk.Toplevel):
         if kaynak.id == hedef.id:
             messagebox.showwarning("Geçersiz seçim", "Kaynak ve hedef cari aynı olamaz.", parent=self)
             return
+        from tutar_bicim import servis_metni, tutar_coz
+
         tutar_metin = self.girdiler["tutar"].get().strip()
         try:
-            tutar = CariService._tutar(tutar_metin)
+            tutar = tutar_coz(tutar_metin)
         except ValueError as hata:
             messagebox.showerror("Geçersiz tutar", str(hata), parent=self)
             return
@@ -754,7 +839,7 @@ class CariVirmanDialog(tk.Toplevel):
                 kaynak.id,
                 hedef.id,
                 tarih,
-                tutar_metin,
+                servis_metni(tutar),
                 self.girdiler["aciklama"].get().strip() or None,
             )
         except ValueError as hata:
@@ -773,11 +858,11 @@ class CariVirmanDialog(tk.Toplevel):
 class KkCekimiDialog(tk.Toplevel):
     """Müşteriden tedarikçiye kredi kartı çekim fişi."""
 
-    def __init__(self, parent, belge_no=None, *, musteri_id=None, tarih=None, tutar=None):
+    def __init__(self, parent, belge_no=None, *, musteri_id=None, tedarikci_id=None, tarih=None, tutar=None):
         super().__init__(parent)
         self.result = None
         self.belge_no = belge_no
-        self._on_deger = {"musteri_id": musteri_id, "tarih": tarih, "tutar": tutar}
+        self._on_deger = {"musteri_id": musteri_id, "tedarikci_id": tedarikci_id, "tarih": tarih, "tutar": tutar}
         self._mevcut = None
         if belge_no:
             try:
@@ -791,20 +876,34 @@ class KkCekimiDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
         self.musteri_map = {}
         self.tedarikci_map = {}
         self._olustur()
         self._mevcutu_yukle()
+        from ui_pencere import evrak_penceresi_boyutlandir
+
+        evrak_penceresi_boyutlandir(self, genislik=920, yukseklik=640, min_genislik=640, min_yukseklik=420)
 
     def _olustur(self):
-        ttk.Label(self, text="KREDİ KARTI ÇEKİM FİŞİ", font=("Segoe UI", 11, "bold")).grid(
-            row=0, column=0, columnspan=2, padx=12, pady=(12, 4), sticky="w"
+        from satis_tema import font as sfont
+        from tutar_bicim import isim_fontu, tutar_alani
+        from ui_pencere import kaydirilabilir_govde
+
+        butonlar = ttk.Frame(self, padding=(16, 8, 16, 14))
+        butonlar.pack(side="bottom", fill="x")
+        govde = kaydirilabilir_govde(self)
+        govde.columnconfigure(1, weight=1)
+        tk.Label(govde, text="KREDİ KARTI ÇEKİM FİŞİ", font=sfont(13, "bold", self), fg="#1a237e", anchor="w").grid(
+            row=0, column=0, columnspan=2, padx=16, pady=(14, 4), sticky="w"
         )
-        ttk.Label(
-            self,
+        aciklama_lbl = tk.Label(
+            govde,
             text="Müşteriye alacak, tedarikçiye borç yazılır. Banka adı ve taksit serbest girilir; kasa/banka hesabına işlem düşmez.",
-        ).grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="w")
+            font=sfont(10, root=self),
+            anchor="w",
+            justify="left",
+        )
+        aciklama_lbl.grid(row=1, column=0, columnspan=2, padx=16, pady=(0, 10), sticky="ew")
 
         musteriler = list(CariService.aktif_musteriler())
         ekstra = [
@@ -829,12 +928,20 @@ class KkCekimiDialog(tk.Toplevel):
             ("Taksit Sayısı", "taksit_sayisi", None),
             ("Açıklama", "aciklama", None),
         ):
-            ttk.Label(self, text=baslik).grid(row=satir, column=0, padx=12, pady=5, sticky="w")
+            tk.Label(govde, text=baslik, font=sfont(11, "bold", self), anchor="w").grid(
+                row=satir, column=0, padx=16, pady=6, sticky="w"
+            )
             if degerler is not None:
-                widget = ttk.Combobox(self, values=degerler, width=48, state="readonly")
+                widget = ttk.Combobox(govde, values=degerler, width=52, state="readonly", font=isim_fontu(self))
+                sticky = "ew"
+            elif alan == "tutar":
+                widget = ttk.Entry(govde, width=18)
+                tutar_alani(widget)
+                sticky = "w"
             else:
-                widget = ttk.Entry(self, width=50)
-            widget.grid(row=satir, column=1, padx=12, pady=5, sticky="w")
+                widget = ttk.Entry(govde, width=50, font=sfont(11, root=self))
+                sticky = "ew"
+            widget.grid(row=satir, column=1, padx=16, pady=6, sticky=sticky)
             self.girdiler[alan] = widget
             satir += 1
 
@@ -845,24 +952,30 @@ class KkCekimiDialog(tk.Toplevel):
         if self.tedarikci_map:
             self.girdiler["tedarikci"].set(next(iter(self.tedarikci_map)))
 
-        self.musteri_bakiye = ttk.Label(self, text="Müşteri bakiyesi: -")
-        self.musteri_bakiye.grid(row=satir, column=0, columnspan=2, padx=12, pady=(2, 0), sticky="w")
+        f_bakiye = sfont(11, "bold", self)
+        self.musteri_bakiye = tk.Label(govde, text="Müşteri bakiyesi: -", font=f_bakiye, anchor="w")
+        self.musteri_bakiye.grid(row=satir, column=0, columnspan=2, padx=16, pady=(4, 0), sticky="w")
         satir += 1
-        self.tedarikci_bakiye = ttk.Label(self, text="Tedarikçi bakiyesi: -")
-        self.tedarikci_bakiye.grid(row=satir, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="w")
+        self.tedarikci_bakiye = tk.Label(govde, text="Tedarikçi bakiyesi: -", font=f_bakiye, anchor="w")
+        self.tedarikci_bakiye.grid(row=satir, column=0, columnspan=2, padx=16, pady=(0, 2), sticky="w")
         satir += 1
-        self.onizleme = ttk.Label(self, text="Önizleme: —", font=("Segoe UI", 9, "bold"), foreground="#1f6aa5")
-        self.onizleme.grid(row=satir, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="w")
-        satir += 1
+        self.onizleme = tk.Label(
+            govde, text="Önizleme: —", font=sfont(11, "bold", self), fg="#1f6aa5", anchor="w", justify="left"
+        )
+        self.onizleme.grid(row=satir, column=0, columnspan=2, padx=16, pady=(6, 8), sticky="ew")
+        govde.bind(
+            "<Configure>",
+            lambda e: [w.configure(wraplength=max(300, e.width - 40)) for w in (self.onizleme, aciklama_lbl)],
+            add="+",
+        )
 
         self.girdiler["musteri"].bind("<<ComboboxSelected>>", self._guncelle)
         self.girdiler["tedarikci"].bind("<<ComboboxSelected>>", self._guncelle)
         self.girdiler["tutar"].bind("<KeyRelease>", self._guncelle)
+        self.girdiler["tutar"].bind("<FocusOut>", self._guncelle, add="+")
         self.girdiler["banka"].bind("<KeyRelease>", self._guncelle)
         self.girdiler["taksit_sayisi"].bind("<KeyRelease>", self._guncelle)
 
-        butonlar = ttk.Frame(self)
-        butonlar.grid(row=satir, column=0, columnspan=2, padx=12, pady=12, sticky="e")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(
             butonlar,
@@ -878,8 +991,10 @@ class KkCekimiDialog(tk.Toplevel):
             return
         self.girdiler["tarih"].delete(0, "end")
         self.girdiler["tarih"].insert(0, m["tarih"].strftime("%d.%m.%Y"))
+        from tutar_bicim import tr_tutar
+
         self.girdiler["tutar"].delete(0, "end")
-        self.girdiler["tutar"].insert(0, f"{Decimal(str(m['tutar'])):.2f}".replace(".", ","))
+        self.girdiler["tutar"].insert(0, tr_tutar(m["tutar"]))
         self.girdiler["banka"].delete(0, "end")
         self.girdiler["banka"].insert(0, m["banka"] or "")
         self.girdiler["taksit_sayisi"].delete(0, "end")
@@ -904,20 +1019,26 @@ class KkCekimiDialog(tk.Toplevel):
         self._guncelle()
 
     def _on_degerleri_yaz(self):
+        from tutar_bicim import tr_tutar
+
         on = self._on_deger
-        if on["musteri_id"]:
-            etiket = next((e for e, c in self.musteri_map.items() if c.id == int(on["musteri_id"])), None)
-            if etiket:
-                self.girdiler["musteri"].set(etiket)
+        for alan, harita in (("musteri", self.musteri_map), ("tedarikci", self.tedarikci_map)):
+            cari_id = on.get(f"{alan}_id")
+            if cari_id:
+                etiket = next((e for e, c in harita.items() if c.id == int(cari_id)), None)
+                if etiket:
+                    self.girdiler[alan].set(etiket)
         if on["tarih"]:
             self.girdiler["tarih"].delete(0, "end")
             self.girdiler["tarih"].insert(0, on["tarih"].strftime("%d.%m.%Y"))
         if on["tutar"]:
             self.girdiler["tutar"].delete(0, "end")
-            self.girdiler["tutar"].insert(0, f"{Decimal(str(on['tutar'])):.2f}".replace(".", ","))
+            self.girdiler["tutar"].insert(0, tr_tutar(on["tutar"]))
         self._guncelle()
 
     def _guncelle(self, _event=None):
+        from tutar_bicim import tutar_coz
+
         musteri = self.musteri_map.get(self.girdiler["musteri"].get())
         tedarikci = self.tedarikci_map.get(self.girdiler["tedarikci"].get())
         if musteri:
@@ -930,7 +1051,7 @@ class KkCekimiDialog(tk.Toplevel):
             )
         tutar_metin = self.girdiler["tutar"].get().strip()
         try:
-            tutar = CariService._tutar(tutar_metin) if tutar_metin else Decimal("0")
+            tutar = tutar_coz(tutar_metin) if tutar_metin else Decimal("0")
         except ValueError:
             tutar = Decimal("0")
         banka = self.girdiler["banka"].get().strip() or "?"
@@ -964,13 +1085,15 @@ class KkCekimiDialog(tk.Toplevel):
         if not banka:
             messagebox.showwarning("Eksik banka", "Kartın ait olduğu banka adını yazın.", parent=self)
             return
+        from tutar_bicim import servis_metni
+
         try:
             tarih = datetime.strptime(self.girdiler["tarih"].get().strip(), "%d.%m.%Y").date()
             self.result = KkCekimiService.kaydet(
                 musteri.id,
                 tedarikci.id,
                 tarih,
-                self.girdiler["tutar"].get().strip(),
+                servis_metni(self.girdiler["tutar"].get().strip()),
                 banka,
                 self.girdiler["taksit_sayisi"].get().strip(),
                 self.girdiler["aciklama"].get().strip() or None,
@@ -8802,6 +8925,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         if not hasattr(self, "satir_tablosu"):
             return
         tablo = self.satir_tablosu
+        # Açık hücre editörünün üstüne yeni etiket çizilmesin; kapanınca liste yenilenir
+        editor = getattr(self, "_satir_hucre_editor", None)
+        if editor is not None:
+            try:
+                if editor.winfo_exists():
+                    return
+            except tk.TclError:
+                pass
         self._fatura_satir_vurgulu_overlay_temizle()
         kolonlar = ("urun_adi", "miktar", "birim", "toplam")
         anchor = {
@@ -8859,28 +8990,44 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 )
                 lbl.place(x=x, y=y, width=w, height=h)
 
-                def _sec(_e=None, _iid=iid):
+                def _duzenle(_iid, _kolon):
+                    if getattr(self, "_fatura_kilitli", False):
+                        return
+                    if getattr(self, "_satir_hucre_editor", None) is not None:
+                        return
+                    try:
+                        from fatura_satir_hucre_edit import (
+                            hucre_duzenle,
+                            kolon_duzenlenebilir_mi,
+                        )
+
+                        if kolon_duzenlenebilir_mi(self, int(_iid), _kolon):
+                            hucre_duzenle(self, idx=int(_iid), kolon=_kolon)
+                    except (TypeError, ValueError, tk.TclError):
+                        pass
+
+                def _sec(_e=None, _iid=iid, _kolon=kolon):
                     try:
                         tablo.selection_set(_iid)
                         tablo.focus(_iid)
                         tablo.see(_iid)
                     except tk.TclError:
-                        pass
+                        return "break"
+                    if _e is not None and _kolon in ("miktar", "birim"):
+
+                        def _ac():
+                            if not getattr(self, "_satir_cift_tik_engel", False):
+                                _duzenle(_iid, _kolon)
+
+                        self.after(180, _ac)
                     return "break"
 
                 def _cift(_e=None, _iid=iid, _kolon=kolon):
+                    self._satir_cift_tik_engel = True
+                    self.after(250, lambda: setattr(self, "_satir_cift_tik_engel", False))
                     _sec()
-                    try:
-                        # Hücre düzenleme (miktar vb.) tetiklensin
-                        bb = tablo.bbox(_iid, _kolon)
-                        if bb:
-                            tablo.event_generate(
-                                "<Double-1>",
-                                x=bb[0] + 2,
-                                y=bb[1] + 2,
-                            )
-                    except tk.TclError:
-                        pass
+                    if _kolon in ("miktar", "birim"):
+                        _duzenle(_iid, _kolon)
                     return "break"
 
                 lbl.bind("<Button-1>", _sec)
@@ -16257,12 +16404,28 @@ class MuhasebeApp(tk.Tk):
             self.cari_tablosu.heading(
                 kolon, text=baslik_metni(kolon, etiket=etiket), anchor=ank
             )
-            self.cari_tablosu.column(kolon, width=w, anchor=ank, minwidth=60)
+            self.cari_tablosu.column(kolon, width=w, anchor=ank, minwidth=60, stretch=False)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.cari_tablosu.yview)
-        self.cari_tablosu.configure(yscrollcommand=kaydirma.set)
-        self.cari_tablosu.pack(side="left", fill="both", expand=True)
-        kaydirma.pack(side="right", fill="y")
+        kaydirma_x = ttk.Scrollbar(cerceve, orient="horizontal", command=self.cari_tablosu.xview)
+        self.cari_tablosu.configure(yscrollcommand=kaydirma.set, xscrollcommand=kaydirma_x.set)
+        self.cari_tablosu.grid(row=0, column=0, sticky="nsew")
+        kaydirma.grid(row=0, column=1, sticky="ns")
+        kaydirma_x.grid(row=1, column=0, sticky="ew")
+        cerceve.rowconfigure(0, weight=1)
+        cerceve.columnconfigure(0, weight=1)
         self.cari_tablosu.bind("<Double-1>", lambda _event: self.cari_detay())
+
+        def _genislik_kaydet(event):
+            if self.cari_tablosu.identify_region(event.x, event.y) not in ("separator", "heading"):
+                return
+            from cari_liste_ui import tablo_genisliklerini_kaydet
+
+            try:
+                tablo_genisliklerini_kaydet(self.cari_tablosu, self._cari_liste_ayar)
+            except OSError:
+                pass
+
+        self.cari_tablosu.bind("<ButtonRelease-1>", _genislik_kaydet, add="+")
 
         alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=(10, 0))

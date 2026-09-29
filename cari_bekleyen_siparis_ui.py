@@ -23,19 +23,29 @@ def _tarih(t) -> str:
 
 
 KOLONLAR = (
-    ("siparis_no", "Sipariş No", 110),
-    ("tarih", "Tarih", 90),
-    ("cari", "Cari", 180),
-    ("termin", "Termin", 90),
-    ("durum", "Durum", 120),
-    ("pb", "PB", 50),
-    ("brut", "Brüt", 100),
-    ("net", "Net", 100),
-    ("sevk", "Sevk tutar", 100),
-    ("fatura", "Fatura tutar", 100),
-    ("iptal", "İptal tutar", 90),
-    ("kalan", "Kalan tutar", 110),
+    ("siparis_no", "Sipariş No", 130),
+    ("tarih", "Tarih", 105),
+    ("cari", "Cari", 300),
+    ("termin", "Termin", 105),
+    ("durum", "Durum", 150),
+    ("pb", "PB", 55),
+    ("brut", "Brüt", 125),
+    ("net", "Net", 125),
+    ("sevk", "Sevk tutar", 125),
+    ("fatura", "Fatura tutar", 125),
+    ("iptal", "İptal tutar", 115),
+    ("kalan", "Kalan tutar", 135),
 )
+_GENISLEYEN = frozenset({"cari"})
+
+
+def _tablo_stili(tablo: ttk.Treeview) -> None:
+    from satis_tema import font
+
+    stil = ttk.Style(tablo)
+    stil.configure("Bekleyen.Treeview", font=font(11, "bold", tablo), rowheight=30)
+    stil.configure("Bekleyen.Treeview.Heading", font=font(11, "bold", tablo), foreground="#1a237e")
+    tablo.configure(style="Bekleyen.Treeview")
 
 
 class CariBekleyenSiparislerDialog(tk.Toplevel):
@@ -57,18 +67,19 @@ class CariBekleyenSiparislerDialog(tk.Toplevel):
             else "Bekleyen Satın Alma Siparişleri"
         )
         self.title(f"{baslik} — {cari.cari_kodu} {cari.unvan}")
-        self.geometry("1100x520")
-        self.minsize(900, 400)
-        self.transient(parent)
+        # transient pencerede Windows büyüt düğmesi olmaz; kullanıcı boyutlandırabilsin
+        from ui_pencere import evrak_penceresi_boyutlandir
+
+        evrak_penceresi_boyutlandir(self, genislik=1400, yukseklik=640, min_genislik=720, min_yukseklik=360)
         self.grab_set()
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 6))
         ust.pack(fill="x")
-        ttk.Label(ust, text=baslik, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(ust, text=baslik, font=("Segoe UI", 14, "bold")).pack(anchor="w")
         ttk.Label(
             ust,
             text=f"{cari.cari_kodu} — {cari.unvan}",
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 12, "bold"),
             foreground="#1a237e",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -100,10 +111,11 @@ class CariBekleyenSiparislerDialog(tk.Toplevel):
         tablo_f.pack(fill="both", expand=True)
         ids = [k[0] for k in KOLONLAR]
         self.tablo = ttk.Treeview(tablo_f, columns=ids, show="headings", selectmode="browse")
+        _tablo_stili(self.tablo)
         for kid, bas, gen in KOLONLAR:
             anchor = "e" if kid in ("brut", "net", "sevk", "fatura", "iptal", "kalan") else "w"
             self.tablo.heading(kid, text=bas, command=lambda c=kid: self._sirala(c))
-            self.tablo.column(kid, width=gen, anchor=anchor, stretch=True)
+            self.tablo.column(kid, width=gen, minwidth=50, anchor=anchor, stretch=kid in _GENISLEYEN)
         sy = ttk.Scrollbar(tablo_f, orient="vertical", command=self.tablo.yview)
         sx = ttk.Scrollbar(tablo_f, orient="horizontal", command=self.tablo.xview)
         self.tablo.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
@@ -118,9 +130,9 @@ class CariBekleyenSiparislerDialog(tk.Toplevel):
 
         alt = ttk.Frame(self, padding=(12, 4, 12, 10))
         alt.pack(fill="x")
-        self.durum_lbl = ttk.Label(alt, text="", foreground="#455a64")
+        self.durum_lbl = ttk.Label(alt, text="", foreground="#455a64", font=("Segoe UI", 11))
         self.durum_lbl.pack(side="left")
-        self.toplam_lbl = ttk.Label(alt, text="", font=("Segoe UI", 10, "bold"))
+        self.toplam_lbl = ttk.Label(alt, text="", font=("Segoe UI", 12, "bold"))
         self.toplam_lbl.pack(side="right")
 
         self.after(50, self.yenile)

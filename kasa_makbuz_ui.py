@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
 
 from database.cari_service import CariService
@@ -35,6 +35,7 @@ from satis_tema import (
     tk_buton,
     treeview_stil,
 )
+from tutar_bicim import isim_fontu, tr_tutar, tutar_alani, tutar_coz
 from ui_takvim import takvim_butonu
 
 TAHSILAT_MAKBUZ_SEKILLERI = ODEME_SEKILLERI  # NAKİT / KASA, GELEN HAVALE, KREDİ KARTIYLA TAHSİLAT
@@ -79,15 +80,7 @@ def _tarih_oku(metin: str, alan: str = "Tarih") -> date:
 
 
 def _tutar_oku(metin: str) -> Decimal:
-    ham = (metin or "").strip().replace(" ", "").replace("TL", "")
-    if "," in ham and "." in ham:
-        ham = ham.replace(".", "").replace(",", ".")
-    elif "," in ham:
-        ham = ham.replace(",", ".")
-    try:
-        tutar = Decimal(ham)
-    except InvalidOperation as hata:
-        raise ValueError("Tutar geçerli bir sayı olmalıdır (ör. 1.250,00).") from hata
+    tutar = tutar_coz(metin)
     if tutar <= 0:
         raise ValueError("Tutar sıfırdan büyük olmalıdır.")
     return tutar.quantize(Decimal("0.01"))
@@ -231,7 +224,7 @@ class _CariAramaKutusu:
                 cerceve,
                 activestyle="dotbox",
                 exportselection=False,
-                font=font(10, root=self.sahibi),
+                font=font(11, "bold", self.sahibi),
                 selectbackground=SARI,
                 selectforeground=KOYU_LACIVERT,
                 relief="flat",
@@ -255,7 +248,7 @@ class _CariAramaKutusu:
         x = self.entry.winfo_rootx()
         y = self.entry.winfo_rooty() + self.entry.winfo_height()
         genislik = max(self.entry.winfo_width(), 320)
-        yukseklik = min(8, len(self.eslesen)) * 20 + 6
+        yukseklik = min(8, len(self.eslesen)) * 24 + 6
         self.popup.geometry(f"{genislik}x{yukseklik}+{x}+{y}")
         self.popup.deiconify()
         self.popup.lift()
@@ -472,8 +465,8 @@ class KasaMakbuzDialog(tk.Toplevel):
             x, y, gen, yuk = calisma_alani(self)
         except Exception:
             x, y, gen, yuk = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
-        genislik = max(640, min(1080, gen - 40))
-        yukseklik = max(420, min(800, yuk - 40))
+        genislik = max(640, min(1240, gen - 40))
+        yukseklik = max(420, min(900, yuk - 40))
         self.minsize(min(640, gen), min(420, yuk))
         self.geometry(f"{genislik}x{yukseklik}+{x + (gen - genislik) // 2}+{y + max(0, (yuk - yukseklik) // 2)}")
         self.resizable(True, True)
@@ -712,7 +705,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._cari_kutu = cari_kutu
         cari_kutu.columnconfigure(0, weight=1)
         self.cari_var = tk.StringVar()
-        self.cari_entry = ttk.Entry(cari_kutu, textvariable=self.cari_var)
+        self.cari_entry = ttk.Entry(cari_kutu, textvariable=self.cari_var, font=isim_fontu(self))
         self.cari_entry.grid(row=0, column=0, sticky="ew")
         self.cari_ipucu_lbl = tk.Label(
             cari_kutu,
@@ -816,6 +809,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.tutar_var = tk.StringVar()
         self.tutar_entry = ttk.Entry(p, textvariable=self.tutar_var, width=16, justify="right")
         self.tutar_entry.grid(row=2, column=3, sticky="w", pady=5)
+        tutar_alani(self.tutar_entry, self.tutar_var)
 
         self._etiket(p, "Satır açıklaması", 2, 4)
         self.satir_aciklama_var = tk.StringVar()
@@ -842,6 +836,13 @@ class KasaMakbuzDialog(tk.Toplevel):
             takefocus=0,
         )
         _tablo_stili(self.tablo)
+        stil = ttk.Style(self.tablo)
+        stil.configure("MakbuzSatir.Treeview", font=font(11, "bold", self), rowheight=30)
+        stil.configure("MakbuzSatir.Treeview.Heading", font=font(10, "bold", self), foreground=LACIVERT)
+        stil.map(
+            "MakbuzSatir.Treeview", background=[("selected", ACIK_SARI)], foreground=[("selected", KOYU_LACIVERT)]
+        )
+        self.tablo.configure(style="MakbuzSatir.Treeview")
         for k, b, w, a in (
             ("tarih", "Tarih", 90, "w"),
             ("sekil", "Ödeme yöntemi", 170, "w"),
@@ -865,7 +866,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.btn_satir_duzenle.pack(side="left")
         self.btn_satir_sil = ttk.Button(tablo_alt, text="Seçili Satırı Sil", command=self.satir_sil, takefocus=0)
         self.btn_satir_sil.pack(side="left", padx=6)
-        self.toplam_lbl = tk.Label(tablo_alt, text="Toplam: 0,00 TL", bg=BEYAZ, fg=LACIVERT, font=font(13, "bold", self))
+        self.toplam_lbl = tk.Label(tablo_alt, text="Toplam: 0,00 TL", bg=BEYAZ, fg=LACIVERT, font=font(15, "bold", self))
         self.toplam_lbl.pack(side="right")
         tk.Frame(parent, bg=ACIK_BG, height=10).pack(fill="x")
 
@@ -888,7 +889,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             kutu.grid(row=satir, column=1, sticky="ew", pady=5)
             kutu.columnconfigure(0, weight=1)
             var = tk.StringVar()
-            entry = ttk.Entry(kutu, textvariable=var)
+            entry = ttk.Entry(kutu, textvariable=var, font=isim_fontu(self))
             entry.grid(row=0, column=0, sticky="ew")
             tk.Label(kutu, text=ipucu, bg=BEYAZ, fg=IKINCIL, font=font(8, root=self), anchor="w").grid(
                 row=1, column=0, sticky="w", pady=(2, 0)
@@ -926,6 +927,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.v_tutar_var = tk.StringVar()
         self.v_tutar_entry = ttk.Entry(p, textvariable=self.v_tutar_var, width=16, justify="right")
         self.v_tutar_entry.grid(row=3, column=1, sticky="w", pady=5)
+        tutar_alani(self.v_tutar_entry, self.v_tutar_var)
         self._etiket(p, "Virman sonrası", 3, 2)
         self.v_sonra_lbl = tk.Label(p, text="—", bg=BEYAZ, fg=IKINCIL, font=font(10, "bold", self), anchor="w", justify="left")
         self.v_sonra_lbl.grid(row=3, column=3, sticky="w", pady=5)
@@ -1346,7 +1348,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             )
             self.aciklama_var.set(f"{oz['fatura_no']} numaralı satış faturası tahsilatı")
             if oz["kalan"] > 0:
-                self.tutar_var.set(f"{oz['kalan']:.2f}".replace(".", ","))
+                self.tutar_var.set(tr_tutar(oz["kalan"]))
             if oz.get("sube_id"):
                 etiket = next((k for k, v in self._sube_map.items() if v == int(oz["sube_id"])), None)
                 if etiket:
@@ -1445,7 +1447,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             self._cari_ekle_yoksa(int(kayit.tedarikci_id), self._tedarikci_kayitlari)
             self._v_musteri_arama.secimi_ayarla(int(kayit.musteri_id))
             self._v_tedarikci_arama.secimi_ayarla(int(kayit.tedarikci_id))
-            self.v_tutar_var.set(f"{Decimal(str(kayit.tutar)):.2f}".replace(".", ","))
+            self.v_tutar_var.set(tr_tutar(kayit.tutar))
             self._kilit_nedeni = None
             self._virman_bakiyelerini_guncelle()
             self._mod_uygula()
@@ -1724,7 +1726,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._sekil_degisti()
         self.hesap_var.set(s.get("etiket") or s.get("hesap") or "")
         self.satir_tarih_var.set(_tarih_yazi(s.get("tarih")))
-        self.tutar_var.set(f"{Decimal(str(s['tutar'])):.2f}".replace(".", ","))
+        self.tutar_var.set(tr_tutar(s["tutar"]))
         self.satir_aciklama_var.set(s.get("aciklama") or "")
         self.kart_tipi_var.set(_KART_TIPI_ETIKET.get(s.get("kart_tipi") or "", "Kredi Kartı"))
         self.taksit_var.set(str(s.get("taksit_sayisi") or 1))

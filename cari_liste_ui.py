@@ -54,7 +54,7 @@ CARI_LISTE_KOLONLARI = (
     ("yetkili_telefon", "Yetkili Telefonu", 120, False),
     ("yaklasan_dogum", "Yaklaşan Doğum Günü", 130, False),
     ("bakiye", "Yekûn Bakiye", 140, True),
-    ("agirlikli", "Ağırlıklı Ortalama Geçen Gün", 180, True),
+    ("agirlikli", "Valör", 110, True),
     ("durum", "Durum", 75, True),
 )
 
@@ -179,68 +179,136 @@ def baslik_metni(anahtar: str, *, etiket: str = "Cari") -> str:
     return anahtar
 
 
+def tablo_genisliklerini_kaydet(tablo: ttk.Treeview, ayarlar: dict) -> dict:
+    """Kullanıcının başlıktan sürüklediği kolon genişliklerini ayara yazar ve kaydeder."""
+    kolonlar = ayarlar.setdefault("kolonlar", {})
+    degisti = False
+    for anahtar in tablo["columns"]:
+        try:
+            w = int(tablo.column(anahtar, "width"))
+        except (tk.TclError, TypeError, ValueError):
+            continue
+        cfg = kolonlar.setdefault(anahtar, {})
+        if int(cfg.get("genislik") or 0) != w:
+            cfg["genislik"] = max(40, min(w, 600))
+            degisti = True
+    if degisti:
+        cari_liste_ayarlari_kaydet(ayarlar)
+    return ayarlar
+
+
 class CariListeKolonAyarDialog(tk.Toplevel):
-    """Kolon göster/gizle + genişlik."""
+    """Kolon göster/gizle, genişlik ve sıra."""
 
     def __init__(self, parent, ayarlar: dict, *, on_uygula: Callable[[dict], None] | None = None):
         super().__init__(parent)
         self.title("Cari Liste Kolon Ayarları")
-        self.geometry("480x420")
+        self.geometry("560x480")
+        self.minsize(480, 360)
         self.transient(parent)
-        self.grab_set()
         self._on_uygula = on_uygula
         self.ayarlar = deepcopy(ayarlar or cari_liste_varsayilan_ayarlari())
         self._vars: dict[str, tk.BooleanVar] = {}
+        self._genislik: dict[str, tk.StringVar] = {}
+        self._sira: list[str] = list(self.ayarlar.get("sira") or [])
+        for k, _b, _w, _g in CARI_LISTE_KOLONLARI:
+            if k not in self._sira:
+                self._sira.append(k)
 
         govde = ttk.Frame(self, padding=10)
         govde.pack(fill="both", expand=True)
-        ttk.Label(govde, text="Görünür kolonlar", font=font(10, "bold", self)).pack(anchor="w")
+        ttk.Label(
+            govde,
+            text="Görünür kolonlar, genişlik (piksel) ve sıra",
+            font=font(10, "bold", self),
+        ).pack(anchor="w", pady=(0, 6))
 
         canvas = tk.Canvas(govde, highlightthickness=0)
         scroll = ttk.Scrollbar(govde, orient="vertical", command=canvas.yview)
-        ic = ttk.Frame(canvas)
-        ic.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=ic, anchor="nw")
+        self._ic = ttk.Frame(canvas)
+        self._ic.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self._ic, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        for anahtar, baslik, _w, _g in CARI_LISTE_KOLONLARI:
+        basliklar = {k: b for k, b, _w, _g in CARI_LISTE_KOLONLARI}
+        for anahtar, _baslik, varsayilan_w, _g in CARI_LISTE_KOLONLARI:
             cfg = (self.ayarlar.get("kolonlar") or {}).get(anahtar) or {}
             var = tk.BooleanVar(value=bool(cfg.get("gorunur", True)))
             if anahtar in CARI_LISTE_ZORUNLU:
                 var.set(True)
             self._vars[anahtar] = var
-            satir = ttk.Frame(ic)
-            satir.pack(fill="x", pady=2)
-            cb = ttk.Checkbutton(satir, text=baslik, variable=var)
-            cb.pack(side="left")
-            if anahtar in CARI_LISTE_ZORUNLU:
-                cb.state(["disabled"])
+            self._genislik[anahtar] = tk.StringVar(value=str(cfg.get("genislik") or varsayilan_w))
+        self._basliklar = basliklar
+        self._satirlari_ciz()
 
         alt = ttk.Frame(self, padding=10)
         alt.pack(fill="x")
         ttk.Button(alt, text="Varsayılan", command=self._varsayilan).pack(side="left")
         ttk.Button(alt, text="Uygula", command=self._uygula).pack(side="right", padx=(6, 0))
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        self.grab_set()
+
+    def _satirlari_ciz(self):
+        for w in self._ic.winfo_children():
+            w.destroy()
+        for i, anahtar in enumerate(self._sira):
+            satir = ttk.Frame(self._ic)
+            satir.pack(fill="x", pady=2)
+            cb = ttk.Checkbutton(
+                satir, text=self._basliklar[anahtar], variable=self._vars[anahtar], width=26
+            )
+            cb.pack(side="left")
+            if anahtar in CARI_LISTE_ZORUNLU:
+                cb.state(["disabled"])
+            ttk.Spinbox(
+                satir,
+                from_=40,
+                to=600,
+                increment=10,
+                width=6,
+                textvariable=self._genislik[anahtar],
+            ).pack(side="left", padx=(6, 6))
+            yukari = ttk.Button(satir, text="▲", width=3, command=lambda a=anahtar: self._tasi(a, -1))
+            yukari.pack(side="left")
+            asagi = ttk.Button(satir, text="▼", width=3, command=lambda a=anahtar: self._tasi(a, 1))
+            asagi.pack(side="left", padx=(2, 0))
+            if i == 0:
+                yukari.state(["disabled"])
+            if i == len(self._sira) - 1:
+                asagi.state(["disabled"])
+
+    def _tasi(self, anahtar: str, yon: int):
+        i = self._sira.index(anahtar)
+        j = i + yon
+        if not 0 <= j < len(self._sira):
+            return
+        self._sira[i], self._sira[j] = self._sira[j], self._sira[i]
+        self._satirlari_ciz()
 
     def _varsayilan(self):
         self.ayarlar = cari_liste_varsayilan_ayarlari()
-        for anahtar, _b, _w, g in CARI_LISTE_KOLONLARI:
+        self._sira = [k for k, _b, _w, _g in CARI_LISTE_KOLONLARI]
+        for anahtar, _b, w, g in CARI_LISTE_KOLONLARI:
             self._vars[anahtar].set(True if anahtar in CARI_LISTE_ZORUNLU else g)
+            self._genislik[anahtar].set(str(w))
+        self._satirlari_ciz()
 
     def _uygula(self):
+        kolonlar = self.ayarlar.setdefault("kolonlar", {})
+        varsayilan_w = {k: w for k, _b, w, _g in CARI_LISTE_KOLONLARI}
         for anahtar, var in self._vars.items():
-            if anahtar not in self.ayarlar.setdefault("kolonlar", {}):
-                self.ayarlar["kolonlar"][anahtar] = {}
-            g = True if anahtar in CARI_LISTE_ZORUNLU else bool(var.get())
-            self.ayarlar["kolonlar"][anahtar]["gorunur"] = g
-            if "genislik" not in self.ayarlar["kolonlar"][anahtar]:
-                for k, _b, w, _g in CARI_LISTE_KOLONLARI:
-                    if k == anahtar:
-                        self.ayarlar["kolonlar"][anahtar]["genislik"] = w
-                        break
+            cfg = kolonlar.setdefault(anahtar, {})
+            cfg["gorunur"] = True if anahtar in CARI_LISTE_ZORUNLU else bool(var.get())
+            try:
+                w = int(str(self._genislik[anahtar].get()).strip())
+            except (TypeError, ValueError):
+                w = int(cfg.get("genislik") or varsayilan_w[anahtar])
+            cfg["genislik"] = max(40, min(w, 600))
+        self.ayarlar["sira"] = list(self._sira)
         cari_liste_ayarlari_kaydet(self.ayarlar)
+        self.ayarlar = cari_liste_ayarlari_yukle()
         if self._on_uygula:
             self._on_uygula(self.ayarlar)
         self.destroy()

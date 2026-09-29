@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import weakref
 import webbrowser
 from datetime import date, datetime
 from decimal import Decimal
@@ -66,6 +67,152 @@ def _izin_var(*kodlar: str) -> bool:
         return any(oturum.has_permission(k) for k in kodlar)
     except Exception:
         return True
+
+
+class UnvanAramaKutusu:
+    """Ünvan alanına yazarken adın içinde geçen carileri açılır listede önerir."""
+
+    AZAMI_SONUC = 50
+    GECIKME_MS = 250
+
+    def __init__(self, kart: tk.Toplevel, entry: ttk.Entry, *, cari_turu: str, on_secim):
+        self.kart = kart
+        self.entry = entry
+        self.cari_turu = cari_turu
+        self.on_secim = on_secim
+        self.sonuclar: list = []
+        self.popup: tk.Toplevel | None = None
+        self.liste: tk.Listbox | None = None
+        self._zamanlayici = None
+        self._son_sorgu = ""
+        entry.bind("<KeyRelease>", self._tus, add="+")
+        entry.bind("<Down>", self._asagi, add="+")
+        entry.bind("<Escape>", self._esc, add="+")
+        entry.bind("<FocusOut>", lambda _e: self.kart.after(180, self._odak_kontrol), add="+")
+
+    def acik_mi(self) -> bool:
+        return self.popup is not None and self.popup.winfo_exists()
+
+    def _tus(self, event):
+        if event.keysym in ("Down", "Up", "Escape", "Return", "Tab", "KP_Enter"):
+            return
+        if self._zamanlayici is not None:
+            try:
+                self.kart.after_cancel(self._zamanlayici)
+            except tk.TclError:
+                pass
+        self._zamanlayici = self.kart.after(self.GECIKME_MS, self.ara)
+
+    def ara(self, metin: str | None = None) -> list:
+        self._zamanlayici = None
+        sorgu = (self.entry.get() if metin is None else metin).strip()
+        if len(sorgu) < 2:
+            self.sonuclar = []
+            self._son_sorgu = sorgu
+            self.gizle()
+            return []
+        if sorgu == self._son_sorgu and self.acik_mi():
+            return self.sonuclar
+        self._son_sorgu = sorgu
+        haric = getattr(getattr(self.kart, "cari", None), "id", None)
+        try:
+            self.sonuclar = CariService.unvan_ara(
+                sorgu, cari_turu=self.cari_turu, limit=self.AZAMI_SONUC, haric_id=haric
+            )
+        except Exception:
+            self.sonuclar = []
+        if self.sonuclar:
+            self._goster()
+        else:
+            self.gizle()
+        return self.sonuclar
+
+    def _goster(self):
+        if not self.acik_mi():
+            self.popup = tk.Toplevel(self.kart)
+            self.popup.withdraw()
+            self.popup.overrideredirect(True)
+            self.popup.transient(self.kart)
+            cerceve = tk.Frame(self.popup, bg=LACIVERT, bd=1)
+            cerceve.pack(fill="both", expand=True)
+            self.liste = tk.Listbox(
+                cerceve,
+                activestyle="dotbox",
+                exportselection=False,
+                font=font(10, root=self.kart),
+                selectbackground=SARI,
+                relief="flat",
+                highlightthickness=0,
+            )
+            kaydir = ttk.Scrollbar(cerceve, orient="vertical", command=self.liste.yview)
+            self.liste.configure(yscrollcommand=kaydir.set)
+            self.liste.pack(side="left", fill="both", expand=True)
+            kaydir.pack(side="right", fill="y")
+            self.liste.bind("<Return>", lambda _e: self._listeden_sec())
+            self.liste.bind("<Double-Button-1>", lambda _e: self._listeden_sec())
+            self.liste.bind("<ButtonRelease-1>", lambda _e: self._listeden_sec())
+            self.liste.bind("<Escape>", lambda _e: (self.gizle(), self.entry.focus_set()))
+            self.liste.bind("<FocusOut>", lambda _e: self.kart.after(180, self._odak_kontrol))
+        self.liste.delete(0, "end")
+        for c in self.sonuclar:
+            self.liste.insert("end", f"{c.unvan}   ·   {c.cari_kodu or ''}")
+        if len(self.sonuclar) >= self.AZAMI_SONUC:
+            self.liste.insert("end", "… daha fazla sonuç var, aramayı daraltın")
+        satir = min(10, self.liste.size())
+        self.liste.configure(height=satir)
+        self.entry.update_idletasks()
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height()
+        genislik = max(self.entry.winfo_width(), 420)
+        self.popup.geometry(f"{genislik}x{satir * 22 + 6}+{x}+{y}")
+        self.popup.deiconify()
+        self.popup.lift()
+
+    def gizle(self):
+        if self.acik_mi():
+            self.popup.destroy()
+        self.popup = None
+        self.liste = None
+
+    def sec(self, indeks: int) -> None:
+        if not (0 <= indeks < len(self.sonuclar)):
+            return
+        cari = self.sonuclar[indeks]
+        self.gizle()
+        self.on_secim(cari)
+
+    def _listeden_sec(self):
+        if self.liste is None:
+            return
+        secim = self.liste.curselection()
+        if secim:
+            self.sec(int(secim[0]))
+
+    def _asagi(self, _event=None):
+        if not self.acik_mi():
+            self.ara()
+        if self.acik_mi() and self.liste is not None:
+            self.liste.focus_set()
+            self.liste.selection_clear(0, "end")
+            self.liste.selection_set(0)
+            self.liste.activate(0)
+            return "break"
+        return None
+
+    def _esc(self, _event=None):
+        if self.acik_mi():
+            self.gizle()
+            return "break"
+        return None
+
+    def _odak_kontrol(self):
+        try:
+            odak = self.kart.focus_get()
+        except (tk.TclError, KeyError):
+            odak = None
+        if odak is self.entry or (self.liste is not None and odak is self.liste):
+            return
+        self.gizle()
 
 
 class NotlarDialog(tk.Toplevel):
@@ -292,11 +439,20 @@ class CariDialog(tk.Toplevel):
     )
     SAYISAL_GUN_ALANLARI = ("satis_vade_gunu", "alis_vade_gunu")
     MUHASEBE_ALANLARI = tuple(alan for _etiket, alan in CariMuhasebeDialog.ALANLAR)
+    _acik_kartlar: "weakref.WeakSet[CariDialog]" = weakref.WeakSet()
 
     def __init__(self, parent: tk.Misc, cari=None, cari_turu: str = "Müşteri"):
         super().__init__(parent)
         self.cari = cari
         self.result = None
+        self._vazgecildi = False
+        if not self._onceki_kartlari_kapat(parent):
+            # Kullanıcı eski kartta kalmayı seçti; çağıranın wait_window'u için pencere kısa süre yaşar
+            self._vazgecildi = True
+            self.withdraw()
+            self.after(0, self.destroy)
+            return
+        CariDialog._acik_kartlar.add(self)
         self.cari_turu = (cari.cari_turu if cari else cari_turu) or "Müşteri"
         self.tedarikci_modu = self.cari_turu == "Tedarikçi"
         self.etiket = "Tedarikçi" if self.tedarikci_modu else "Müşteri"
@@ -571,6 +727,14 @@ class CariDialog(tk.Toplevel):
             self._cariye_gec(dlg.result)
         return "break"
 
+    def _unvandan_cariye_gec(self, cari):
+        """Ünvan aramasından seçim: aranan metin karta ait değişiklik sayılmaz."""
+        w = self.degerler.get("unvan")
+        if w is not None:
+            w.delete(0, "end")
+            w.insert(0, (getattr(self.cari, "unvan", None) or "") if self.cari else "")
+        self._cariye_gec(cari)
+
     def _cariye_gec(self, cari):
         """Seçilen kaydı bu kart penceresine yükler (aynı diyalog yeniden açılır)."""
         if cari is None:
@@ -583,6 +747,38 @@ class CariDialog(tk.Toplevel):
         tur = (getattr(cari, "cari_turu", None) or self.cari_turu) or "Müşteri"
         self.destroy()
         CariDialog(parent, cari=cari, cari_turu=tur)
+
+    def _onceki_kartlari_kapat(self, parent) -> bool:
+        """Açık başka cari kart varsa kapatır; kaydedilmemiş değişiklikte kullanıcıya sorar.
+
+        Yeni kartın üst penceresi olan kart (iç içe açılış) kapatılmaz.
+        """
+        atalar: set[int] = set()
+        w = parent
+        while w is not None:
+            atalar.add(id(w))
+            w = getattr(w, "master", None)
+        for kart in list(CariDialog._acik_kartlar):
+            if kart is self or id(kart) in atalar:
+                continue
+            try:
+                if not kart.winfo_exists():
+                    CariDialog._acik_kartlar.discard(kart)
+                    continue
+                # Karttan açılmış belge penceresi varsa kapatmak o belgeyi de yok eder
+                if any(
+                    isinstance(c, tk.Toplevel) and c.winfo_viewable()
+                    for c in kart.winfo_children()
+                ):
+                    continue
+                kart.lift()
+            except tk.TclError:
+                CariDialog._acik_kartlar.discard(kart)
+                continue
+            if not kart._kapatmadan_once_onay():
+                return False
+            kart.destroy()
+        return True
 
     # ─── Ana kolonlar ─────────────────────────────────────────────
     def _ana_kolonlari_olustur(self):
@@ -680,8 +876,12 @@ class CariDialog(tk.Toplevel):
             w.pack(fill="x")
             if alan == "vergi_numarasi":
                 w.bind("<FocusOut>", self._vergi_no_kontrol)
-            elif alan == "tc_kimlik":
-                w.bind("<FocusOut>", self._tc_kimlik_kontrol)
+        self._unvan_arama = UnvanAramaKutusu(
+            self,
+            self.degerler["unvan"],
+            cari_turu=self.cari_turu,
+            on_secim=self._unvandan_cariye_gec,
+        )
 
         grup_sag = self._form_satiri(parent, "Grup")
         grup_widget = ttk.Combobox(grup_sag, state="readonly", width=10)
@@ -954,6 +1154,8 @@ class CariDialog(tk.Toplevel):
                 ("Yeni Fatura", self.yeni_alis_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
                 ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
+                ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
+                ("Müşteriden Tedarikçiye", self.kk_cekimi_ac, ("finans_duzenleme", "cari_duzenleme")),
             )
         else:
             komutlar = (
@@ -962,6 +1164,8 @@ class CariDialog(tk.Toplevel):
                 ("Yeni Fatura", self.yeni_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
                 ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
+                ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
+                ("Müşteriden Tedarikçiye", self.kk_cekimi_ac, ("finans_duzenleme", "cari_duzenleme")),
             )
         # Sağda: stok detaylı ekstre + bekleyenler — aynı orantılı şeritte
         sag_ekler = (
@@ -2524,6 +2728,31 @@ class CariDialog(tk.Toplevel):
             if dialog.result:
                 self.yenile()
 
+    def cari_virman_ac(self):
+        """Cari Virman fişi: müşteri alacak (kaynak), tedarikçi borç (karşı) tarafına gelir."""
+        if not self.cari:
+            return
+        from app import CariVirmanDialog
+
+        taraf = {"hedef_id": self.cari.id} if self.tedarikci_modu else {"kaynak_id": self.cari.id}
+        dialog = CariVirmanDialog(self, **taraf)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.yenile()
+
+    def kk_cekimi_ac(self):
+        """Müşteriden tedarikçiye kredi kartı çekim fişi; seçili cari kendi alanına gelir."""
+        if not self.cari:
+            return
+        from app import KkCekimiDialog
+
+        taraf = {"tedarikci_id": self.cari.id} if self.tedarikci_modu else {"musteri_id": self.cari.id}
+        dialog = KkCekimiDialog(self, **taraf)
+        if dialog.winfo_exists():
+            self.wait_window(dialog)
+        if dialog.result:
+            self.yenile()
+
     # ─── Doğrulama / kayıt ────────────────────────────────────────
     def _vergi_no_kontrol(self, _event=None):
         deger = self.degerler["vergi_numarasi"].get().strip()
@@ -2533,15 +2762,6 @@ class CariDialog(tk.Toplevel):
             CariService.vergi_no_dogrula(deger)
         except ValueError as hata:
             messagebox.showwarning("Vergi no", str(hata), parent=self)
-
-    def _tc_kimlik_kontrol(self, _event=None):
-        deger = self.degerler["tc_kimlik"].get().strip()
-        if not deger:
-            return
-        try:
-            CariService.tc_kimlik_dogrula(deger)
-        except ValueError as hata:
-            messagebox.showwarning("TC kimlik no", str(hata), parent=self)
 
     def kaydet(self, kapat: bool = False) -> bool:
         if not _izin_var("cari_duzenleme", "yeni_kayit"):
@@ -2561,9 +2781,8 @@ class CariDialog(tk.Toplevel):
             return False
         try:
             CariService.vergi_no_dogrula(veriler.get("vergi_numarasi"))
-            CariService.tc_kimlik_dogrula(veriler.get("tc_kimlik"))
         except ValueError as hata:
-            messagebox.showerror("Vergi / TC no", str(hata), parent=self)
+            messagebox.showerror("Vergi no", str(hata), parent=self)
             return False
         tutar_etiketleri = {
             "acik_hesap_risk_limiti": "Açık hesap risk limiti",
@@ -2820,6 +3039,10 @@ class CariDialog(tk.Toplevel):
         return "break"
 
     def destroy(self):
+        CariDialog._acik_kartlar.discard(self)
+        if getattr(self, "_vazgecildi", False):
+            super().destroy()
+            return
         try:
             self._clear_invoice_detail_cache()
         except Exception:

@@ -361,6 +361,7 @@ def _overlay_entry(dialog, tablo, iid, kolon, metin, *, justify="right"):
     var = tk.StringVar(value=metin)
     editor = ttk.Entry(tablo, textvariable=var, justify=justify, font=("Segoe UI", 10))
     editor.place(x=bx, y=by, width=max(bw, 50), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
+    editor.lift()
     editor.focus_set()
     editor.selection_range(0, "end")
     dialog._satir_hucre_editor = editor
@@ -1113,6 +1114,9 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
         return "break"
 
     def _kapanista_temizle(_e=None):
+        # Toplevel <Destroy> bağı her alt widget yok edildiğinde de tetiklenir
+        if _e is not None and getattr(_e, "widget", dialog) is not dialog:
+            return
         _tooltip_gizle()
         _editor_kapat(dialog)
         dialog._satir_hucre_etkilesim_kurulu = False

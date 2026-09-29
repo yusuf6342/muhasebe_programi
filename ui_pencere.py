@@ -113,6 +113,61 @@ def belge_penceresini_hazirla(
     }
 
 
+def evrak_penceresi_boyutlandir(
+    win: tk.Toplevel,
+    *,
+    genislik: int,
+    yukseklik: int,
+    min_genislik: int = 560,
+    min_yukseklik: int = 360,
+) -> None:
+    """Küçük evrak penceresi: büyütülebilir, iş alanına sığar, ortalanır."""
+    x, y, aw, ah = calisma_alani(win)
+    g = max(320, min(int(genislik), aw - 20))
+    h = max(240, min(int(yukseklik), ah - 40))
+    try:
+        win.resizable(True, True)
+        win.minsize(min(int(min_genislik), g), min(int(min_yukseklik), h))
+        win.geometry(f"{g}x{h}+{x + (aw - g) // 2}+{y + max(0, (ah - h) // 2)}")
+    except tk.TclError:
+        pass
+
+
+def kaydirilabilir_govde(win: tk.Misc, *, bg: str | None = None) -> tk.Frame:
+    """Pencereye dikey kaydırmalı gövde ekler; içerik sığmazsa kaydırma çubuğu görünür."""
+    dis = tk.Frame(win, bg=bg) if bg else tk.Frame(win)
+    dis.pack(side="top", fill="both", expand=True)
+    kanvas = tk.Canvas(dis, highlightthickness=0, bd=0, bg=bg) if bg else tk.Canvas(dis, highlightthickness=0, bd=0)
+    dikey = tk.Scrollbar(dis, orient="vertical", command=kanvas.yview)
+    kanvas.configure(yscrollcommand=dikey.set)
+    kanvas.pack(side="left", fill="both", expand=True)
+    ic = tk.Frame(kanvas, bg=bg) if bg else tk.Frame(kanvas)
+    ic_id = kanvas.create_window((0, 0), window=ic, anchor="nw")
+
+    def _guncelle(_e=None):
+        kanvas.configure(scrollregion=kanvas.bbox("all"))
+        gerekli = ic.winfo_reqheight() > kanvas.winfo_height() > 1
+        if gerekli and not dikey.winfo_ismapped():
+            dikey.pack(side="right", fill="y", before=kanvas)
+        elif not gerekli and dikey.winfo_ismapped():
+            dikey.pack_forget()
+            kanvas.yview_moveto(0)
+
+    def _kanvas_boyut(event):
+        kanvas.itemconfigure(ic_id, width=max(event.width, ic.winfo_reqwidth()))
+        _guncelle()
+
+    def _tekerlek(event):
+        if dikey.winfo_ismapped():
+            kanvas.yview_scroll(int(-event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+
+    ic.bind("<Configure>", _guncelle)
+    kanvas.bind("<Configure>", _kanvas_boyut)
+    kanvas.bind("<MouseWheel>", _tekerlek)
+    ic.bind("<MouseWheel>", _tekerlek)
+    return ic
+
+
 def popup_ortala(
     popup: tk.Toplevel,
     parent: tk.Misc | None = None,

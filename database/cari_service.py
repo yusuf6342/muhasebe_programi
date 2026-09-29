@@ -267,23 +267,18 @@ class CariService:
                 cari_turu=cari_turu,
                 sadece_aktif=False,
             )
-            cariler = [h["cari"] for h in hits]
+            ids = [int(h["cari"].id) for h in hits if getattr(h["cari"], "id", None)]
+            if not ids:
+                return []
             with get_session() as session:
-                if hizli:
-                    return CariService._toplu_liste_ozet(session, cariler)
-                # Session dışı nesneler için yeniden yükle (hareketler)
-                ids = [int(c.id) for c in cariler if getattr(c, "id", None)]
-                if not ids:
-                    return []
-                statement = (
-                    select(Cari)
-                    .where(Cari.id.in_(ids))
-                    .order_by(Cari.cari_kodu)
-                )
+                # Arama sonuçları başka oturumdan gelir; bu oturumda yeniden yüklenmeli
+                statement = select(Cari).where(Cari.id.in_(ids))
                 if not hizli:
                     statement = statement.options(selectinload(Cari.satis_hareketleri))
                 yuklenen = {c.id: c for c in session.scalars(statement).all()}
                 sirali = [yuklenen[i] for i in ids if i in yuklenen]
+                if hizli:
+                    return CariService._toplu_liste_ozet(session, sirali)
                 return [CariService._ozet(cari, session=session) for cari in sirali]
 
         with get_session() as session:
@@ -1053,6 +1048,35 @@ class CariService:
         return SearchService.search_customers(
             ara, limit=limit, cari_turu="Müşteri", sadece_aktif=sadece_aktif
         )
+
+    @staticmethod
+    def unvan_ara(
+        arama: str = "",
+        *,
+        cari_turu: str | None = None,
+        limit: int = 50,
+        haric_id: int | None = None,
+    ) -> list[Cari]:
+        """Ünvanın herhangi bir yerinde geçen cariler (Türkçe / büyük-küçük duyarsız).
+
+        2 karakterden kısa sorguda veritabanına gidilmez.
+        """
+        from database.sqlite_funcs import tr_icerir
+
+        ara = (arama or "").strip()
+        if len(ara) < 2:
+            return []
+        limit = max(1, min(int(limit or 50), 200))
+        with get_session() as session:
+            statement = select(Cari).where(
+                tr_icerir(Cari.unvan, ara),
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)),
+            )
+            statement = CariService._cari_turu_filtresi(statement, cari_turu)
+            if haric_id:
+                statement = statement.where(Cari.id != int(haric_id))
+            statement = statement.order_by(Cari.unvan).limit(limit)
+            return list(session.scalars(statement).all())
 
     @staticmethod
     def tedarikci_ara_hizli(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
