@@ -302,8 +302,9 @@ class CariVirmanMakbuzService:
         if kayit.aciklama:
             metin = f"{metin} · {kayit.aciklama}"
 
-        kalan = CariService._aciklara_uygula(session, musteri.id, tutar)
-        kayit.musteri_kapanan = tutar - kalan
+        kayit.musteri_kapanan = CariService._alacak_uygula(
+            session, musteri.id, tutar, kayit.tahsilat_belge_no, kayit.tarih, kaynak_tur="VIRMAN"
+        )["kapanan"]
         session.add(
             CariIslem(
                 cari_id=musteri.id,
@@ -318,19 +319,9 @@ class CariVirmanMakbuzService:
             )
         )
 
-        kalan = CariService._aciklara_uygula(session, tedarikci.id, tutar)
-        kayit.tedarikci_kapanan = tutar - kalan
-        if kalan > 0:
-            session.add(
-                SatisHareketi(
-                    cari_id=tedarikci.id,
-                    satis_tarihi=kayit.tarih,
-                    belge_no=kayit.odeme_belge_no,
-                    satis_tutari=Decimal("0"),
-                    kalan_acik_tutar=-kalan,
-                    para_birimi=_TL,
-                )
-            )
+        kayit.tedarikci_kapanan = CariService._alacak_uygula(
+            session, tedarikci.id, tutar, kayit.odeme_belge_no, kayit.tarih, kaynak_tur="VIRMAN"
+        )["kapanan"]
         session.add(
             CariIslem(
                 cari_id=tedarikci.id,
@@ -347,12 +338,20 @@ class CariVirmanMakbuzService:
 
     @staticmethod
     def _cari_etkilerini_geri_al(session, kayit: CariVirmanMakbuzu) -> None:
+        from database.acik_kalem_service import AcikKalemService
         from database.cari_service import CariService
 
         for belge_no, cari_id, kapanan in (
             (kayit.tahsilat_belge_no, kayit.musteri_id, kayit.musteri_kapanan),
             (kayit.odeme_belge_no, kayit.tedarikci_id, kayit.tedarikci_kapanan),
         ):
+            if AcikKalemService.belge_kayitli_mi(session, cari_id, belge_no):
+                # Tahsis kayıtlı belge: kapattıkları ve avansı denetim iziyle geri alınır
+                CariService._aciklara_geri_al(session, cari_id, Decimal(str(kayit.tutar)), belge_no)
+                for islem in session.scalars(select(CariIslem).where(CariIslem.belge_no == belge_no)).all():
+                    session.delete(islem)
+                session.flush()
+                continue
             for sh in session.scalars(
                 select(SatisHareketi).where(SatisHareketi.cari_id == cari_id, SatisHareketi.belge_no == belge_no)
             ).all():

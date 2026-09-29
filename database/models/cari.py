@@ -168,3 +168,38 @@ class CariIslem(Base):
     borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
 
     cari: Mapped["Cari"] = relationship("Cari", foreign_keys=[cari_id])
+
+
+class CariKapatma(Base):
+    """Açık kalem tahsisi: bir kaynak evrakın (tahsilat/ödeme/iade/avans) hedef açık kalemi kapatması.
+
+    Hedef/kaynak kalem kimlikleri bilinçli olarak FK değildir: eski akışlar açık kalem satırını
+    silebilir; tahsis kaydı denetim izi olarak kalır (iptal edilir, silinmez).
+    """
+
+    __tablename__ = "cari_kapatmalar"
+    __table_args__ = (
+        Index("ix_cari_kapatma_kaynak", "kaynak_belge_no", "iptal"),
+        Index("ix_cari_kapatma_hedef", "hedef_hareket_id", "iptal"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    islem_kimligi: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    cari_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    kaynak_belge_no: Mapped[str] = mapped_column(String(50), nullable=False)
+    kaynak_tur: Mapped[str] = mapped_column(String(30), nullable=False)
+    kaynak_hareket_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    hedef_hareket_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    hedef_belge_no: Mapped[str] = mapped_column(String(50), nullable=False)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    para_birimi: Mapped[str] = mapped_column(String(3), nullable=False, default="TRY")
+    tarih: Mapped[date] = mapped_column(Date, nullable=False)
+    yontem: Mapped[str] = mapped_column(String(10), nullable=False, default="FIFO")
+    kullanici_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kullanici_adi: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    iptal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    iptal_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    iptal_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    iptal_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    iptal_islem_kimligi: Mapped[str | None] = mapped_column(String(36), nullable=True)

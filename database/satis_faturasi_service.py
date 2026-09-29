@@ -20,8 +20,24 @@ from database.finans_service import FinansService
 # Sipariş → fatura: kalan = sipariş miktarı − faturalanan_miktar (sevk zorunlu değil).
 # İrsaliye → fatura: kalan = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
 # satırının faturalanan_miktar'ı da artar. Kaynak: FATURA_KAYNAK_KURALI.
-FATURA_DURUMLARI = ("TASLAK", "AÇIK", "KAPALI", "İPTAL")
+# Evrak durumu: TASLAK → (onay) AÇIK → İPTAL. Ödenme ayrı alanda (odeme_durumu).
+# "KAPALI" yalnız eski kayıtlarda okunur; ekranda AÇIK gösterilir.
+FATURA_DURUMLARI = ("TASLAK", "AÇIK", "İPTAL")
 TAHSILAT_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
+
+
+def evrak_durumu(durum: str | None, onaylandi: bool | None = None) -> str:
+    """Ekranda gösterilecek evrak durumu (eski KAPALI kayıtları AÇIK)."""
+    d = (durum or "").strip()
+    if d == "KAPALI":
+        return "AÇIK"
+    return d
+
+
+def odeme_durumu(toplam, kapanan) -> str:
+    from database.acik_kalem_service import odeme_durumu as _od
+
+    return _od(toplam, kapanan)
 
 
 class SatisFaturasiService:
@@ -251,13 +267,42 @@ class SatisFaturasiService:
                 except Exception:
                     pass
 
+            acik_map: dict[tuple[int, str], Decimal] = {}
+            onayli_nolar = [f.fatura_no for f in faturalar if f.onaylandi and f.fatura_no]
+            for i in range(0, len(onayli_nolar), 500):
+                for cid, bno, kalan in session.execute(
+                    select(
+                        SatisHareketi.cari_id, SatisHareketi.belge_no, SatisHareketi.kalan_acik_tutar
+                    ).where(
+                        SatisHareketi.belge_no.in_(onayli_nolar[i:i + 500]),
+                        SatisHareketi.satis_tutari > 0,
+                    )
+                ).all():
+                    acik_map[(int(cid), bno)] = Decimal(str(kalan or 0))
+
             sonuc = []
             for f in faturalar:
                 genel = Decimal(str(getattr(f, "tl_genel_toplam", 0) or 0))
                 if genel <= 0:
                     genel = toplam_map.get(f.id, Decimal("0"))
                 tahsilat = Decimal(str(f.tahsilat_tutari or 0))
+                if (f.durum or "") == "İPTAL":
+                    acik = Decimal("0")
+                elif f.onaylandi and (int(f.cari_id), f.fatura_no) in acik_map:
+                    acik = max(Decimal("0"), acik_map[(int(f.cari_id), f.fatura_no)])
+                else:
+                    acik = max(Decimal("0"), genel - tahsilat)
+                kapanan = max(Decimal("0"), genel - acik) if (f.durum or "") != "İPTAL" else Decimal("0")
                 sonuc.append({
+                    "kapanan_tutar": kapanan,
+                    "acik_tutar": acik,
+                    "odeme_durumu": (
+                        odeme_durumu(genel, kapanan)
+                        if f.onaylandi and (f.durum or "") != "İPTAL"
+                        else ""
+                    ),
+                    "evrak_durumu": evrak_durumu(f.durum, f.onaylandi),
+                    "cari_id": f.cari_id,
                     "id": f.id,
                     "fatura_no": f.fatura_no or "",
                     "fatura_tarihi": f.fatura_tarihi,
@@ -827,10 +872,14 @@ class SatisFaturasiService:
                     th.hesap,
                 )
 
-            fatura.durum = "KAPALI" if tahsilat_toplam >= toplam else "AÇIK"
+            # Evrak durumu onayla AÇIK olur; ödenme ayrı izlenir (tahsilat_tutari / açık kalem).
+            fatura.durum = "AÇIK"
             fatura.onaylandi = True
             stamp_approve(fatura)
             SatisFaturasiService._durumlari_guncelle(session, fatura)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
             except IntegrityError as hata:
@@ -874,8 +923,10 @@ class SatisFaturasiService:
             from database.doviz_service import DovizService
 
             DovizService.kur_farki_fislerini_sil(session, fatura.fatura_no)
-            session.execute(
-                delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.belge_kalemlerini_sil(
+                session, fatura.fatura_no, fatura.cari_id, neden=f"Fatura onayı kaldırıldı {fatura.fatura_no}"
             )
             fatura.onaylandi = False
             fatura.durum = "TASLAK"
@@ -925,8 +976,10 @@ class SatisFaturasiService:
                 if onayliydi:
                     StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
                     FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
-                    session.execute(
-                        delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+                    from database.acik_kalem_service import AcikKalemService
+
+                    AcikKalemService.belge_kalemlerini_sil(
+                        session, fatura.fatura_no, fatura.cari_id, neden=f"Fatura iptal {fatura.fatura_no}"
                     )
                 fatura.onaylandi = False
                 fatura.durum = "İPTAL"

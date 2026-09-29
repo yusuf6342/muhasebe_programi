@@ -181,14 +181,14 @@ class HizliSatisServiceTest(unittest.TestCase):
             idempotency_token=token,
         )
         self.assertTrue(sonuc["onaylandi"])
-        self.assertEqual(sonuc["durum"], "KAPALI")
+        self.assertEqual(sonuc["durum"], "AÇIK")
         self.assertEqual(sonuc["genel_toplam"], Decimal("24.00"))
         self.assertEqual(sonuc["tahsilat_tutari"], Decimal("24.00"))
         with get_session() as s:
             f = s.get(SatisFaturasi, sonuc["fatura_id"])
             self.assertIsNotNone(f)
             self.assertTrue(f.onaylandi)
-            self.assertEqual(f.durum, "KAPALI")
+            self.assertEqual(f.durum, "AÇIK")
 
     def test_kdv_sifir_satirda_korunur(self):
         """POS satırında seçilen %0 KDV fatura satırına yazılır (or 20 ile ezilmez)."""
@@ -558,7 +558,7 @@ class HizliSatisServiceTest(unittest.TestCase):
             aciklama="Hızlı Satış",
         )
         self.assertTrue(sonuc["onaylandi"])
-        self.assertEqual(sonuc["durum"], "KAPALI")
+        self.assertEqual(sonuc["durum"], "AÇIK")
         with get_session() as s:
             f = s.get(SatisFaturasi, sonuc["fatura_id"])
             self.assertEqual(f.tahsilat_sekli, "KREDİ KARTIYLA TAHSİLAT")
@@ -667,7 +667,7 @@ class HizliSatisServiceTest(unittest.TestCase):
             f = s.get(SatisFaturasi, fid)
             self.assertIsNotNone(f)
             self.assertTrue(f.onaylandi)
-            self.assertEqual(f.durum, "KAPALI")
+            self.assertEqual(f.durum, "AÇIK")
 
 
 def main():

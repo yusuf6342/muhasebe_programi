@@ -12,6 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
 
+from database.acik_kalem_service import AcikKalemDegisti
 from database.cari_service import CariService
 from database.cari_virman_makbuz_service import CariVirmanMakbuzService, musteri_mi, tedarikci_mi
 from database.finans_service import FinansService
@@ -1830,6 +1831,25 @@ class KasaMakbuzDialog(tk.Toplevel):
             "fatura_id": self._fatura_ozet["fatura_id"] if self._fatura_ozet else None,
         }
 
+    def _kapatma_secimi_ekle(self, veriler: dict) -> None:
+        """Yeni makbuzda açık kalem seçim penceresi; kapatılırsa seçim eklenmez (servis FIFO uygular)."""
+        cari_id = veriler.get("cari_id")
+        if not cari_id or veriler.get("fatura_id"):
+            return
+        if not self.tahsilat and not tedarikci_mi(self._cari_turleri.get(cari_id)):
+            return
+        from acik_kalem_secim_ui import kapatma_plani_sor
+
+        toplam = sum((Decimal(str(s["tutar"])) for s in veriler["satirlar"]), Decimal("0"))
+        cari = CariService.getir(int(cari_id))
+        _acildi, sonuc = kapatma_plani_sor(
+            self, int(cari_id), toplam, cari_adi=getattr(cari, "unvan", "") or "",
+            baslik="Tahsilat Makbuzu — Açık Kalem Seçimi" if self.tahsilat else "Ödeme Makbuzu — Açık Kalem Seçimi",
+        )
+        if sonuc:
+            veriler["kapatma_dagitimi"] = [{"hareket_id": h, "tutar": t} for h, t in sonuc["dagitim"]]
+            veriler["kapatma_fazla"] = sonuc["fazla"]
+
     def kaydet(self) -> bool:
         if not self._duzenlenebilir() or self._kaydediliyor:
             return False
@@ -1865,10 +1885,22 @@ class KasaMakbuzDialog(tk.Toplevel):
                 return False
             elif onceki_mod == "duzenle":
                 makbuz = FinansService.kasa_makbuz_guncelle(self.makbuz_id, veriler)
-            elif self.tahsilat:
-                makbuz = FinansService.kasa_tahsilat_makbuzu_kaydet(veriler)
             else:
-                makbuz = FinansService.kasa_odeme_makbuzu_kaydet(veriler)
+                self._kapatma_secimi_ekle(veriler)
+                if not self.winfo_exists():
+                    return False
+                if self.tahsilat:
+                    makbuz = FinansService.kasa_tahsilat_makbuzu_kaydet(veriler)
+                else:
+                    makbuz = FinansService.kasa_odeme_makbuzu_kaydet(veriler)
+        except AcikKalemDegisti as hata:
+            messagebox.showerror(
+                self._pencere_basligi(),
+                f"{hata}\n\nSeçtiğiniz açık kalemler başka bir işlemle değişti. Kaydı yeniden deneyin ve kalemleri "
+                "yeniden seçin.",
+                parent=self,
+            )
+            return False
         except (ValueError, PermissionError) as hata:
             messagebox.showerror(self._pencere_basligi(), str(hata), parent=self)
             return False

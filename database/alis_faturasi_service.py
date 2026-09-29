@@ -375,6 +375,9 @@ class AlisFaturasiService:
                 fatura.odeme_hesabi,
             )
             AlisFaturasiService._durumlari_guncelle(session, fatura)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
             except IntegrityError as hata:
@@ -401,7 +404,11 @@ class AlisFaturasiService:
                 AlisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
                 StokService.fatura_girislerini_geri_al(session, fatura.fatura_no)
                 FinansService.fatura_odemesini_geri_al(session, fatura.fatura_no)
-                session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
+                from database.acik_kalem_service import AcikKalemService
+
+                AcikKalemService.belge_kalemlerini_sil(
+                    session, fatura.fatura_no, fatura.cari_id, neden=f"Alış faturası iptal {fatura.fatura_no}"
+                )
                 fatura.durum = "İPTAL"
                 AlisFaturasiService._durumlari_guncelle(session, fatura)
                 fid = int(fatura.id)

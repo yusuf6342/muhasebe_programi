@@ -1162,6 +1162,7 @@ class CariDialog(tk.Toplevel):
                 ("Yeni Sipariş", self.yeni_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
                 ("Yeni İrsaliye", self.yeni_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
                 ("Yeni Fatura", self.yeni_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Satış İade Faturaları", self.satis_iade_faturalari_ac, None),
                 ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
@@ -2652,6 +2653,18 @@ class CariDialog(tk.Toplevel):
         dialog = CariBekleyenSiparislerDialog(self, self.cari, yon=yon)
         self.wait_window(dialog)
         self._bekleyen_siparis_ozetini_guncelle()
+
+    def satis_iade_faturalari_ac(self):
+        """Bu müşterinin satış iade faturaları (yalnız bu cari; yeni iade bu cari ile açılır)."""
+        cari_id = getattr(self.cari, "id", None) if self.cari else None
+        if not cari_id:
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from app import CariSatisIadeListesiDialog
+
+        dialog = CariSatisIadeListesiDialog(self, int(cari_id))
+        self.wait_window(dialog)
+        self.yenile()
 
     def yeni_siparis_ac(self):
         if not self.cari:

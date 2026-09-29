@@ -169,9 +169,8 @@ class FaturaListePencere(tk.Toplevel):
         self.cari_ara = ttk.Entry(ust, width=18)
         self.cari_ara.pack(side="left")
         ttk.Label(ust, text="Durum:").pack(side="left", padx=(10, 2))
-        self.durum = ttk.Combobox(
-            ust, values=("", "TASLAK", "AÇIK", "KAPALI", "İPTAL"), width=10, state="readonly"
-        )
+        durumlar = ("", "TASLAK", "AÇIK", "İPTAL") if satis else ("", "AÇIK", "KAPALI", "İPTAL")
+        self.durum = ttk.Combobox(ust, values=durumlar, width=10, state="readonly")
         self.durum.set("")
         self.durum.pack(side="left")
 
@@ -210,28 +209,41 @@ class FaturaListePencere(tk.Toplevel):
             "matrah",
             "kdv",
             "toplam",
+            "kapanan",
+            "acik",
+            "odeme",
             "pb",
             "personel",
             "olusturma",
         )
         basliklar = (
-            "Fatura No",
+            "Evrak No",
             "Tarih",
             "Cari Kod",
-            cari_baslik,
+            f"{cari_baslik} Ünvanı",
             "Vergi No",
-            "Durum",
+            "Evrak Durumu",
             "KDV Hariç",
             "KDV",
-            "Genel Toplam",
+            "Toplam",
+            "Kapanan Tutar",
+            "Açık Tutar",
+            "Ödeme Durumu",
             "Döviz",
             "Satış Personeli" if satis else "Kullanıcı",
             "Oluşturma",
         )
         self.tablo = ttk.Treeview(orta, columns=self.kolonlar, show="headings", selectmode="browse")
+        para_kolonlari = {"matrah", "kdv", "toplam", "kapanan", "acik"}
         for k, b in zip(self.kolonlar, basliklar):
             self.tablo.heading(k, text=b, command=lambda c=k: self._sirala(c))
-            self.tablo.column(k, width=90 if k != "cari_ad" else 180, anchor="center")
+            self.tablo.column(
+                k,
+                width=180 if k == "cari_ad" else (100 if k in para_kolonlari or k == "odeme" else 90),
+                minwidth=60,
+                anchor="e" if k in para_kolonlari else ("w" if k == "cari_ad" else "center"),
+                stretch=(k == "cari_ad"),
+            )
         dikey = ttk.Scrollbar(orta, orient="vertical", command=self.tablo.yview)
         self.tablo.configure(yscrollcommand=dikey.set)
         self.tablo.pack(side="left", fill="both", expand=True)
@@ -344,7 +356,7 @@ class FaturaListePencere(tk.Toplevel):
                 blob = turkce_normalize(f"{r.get('cari_kodu') or ''} {r.get('cari_ad') or r.get('musteri') or ''}")
                 if cari_q not in blob:
                     continue
-            if durum_q and (r.get("durum") or "").upper() != durum_q:
+            if durum_q and (r.get("evrak_durumu") or r.get("durum") or "").upper() != durum_q:
                 continue
             if personel_q:
                 pblob = turkce_normalize((
@@ -367,7 +379,7 @@ class FaturaListePencere(tk.Toplevel):
             v = row.get(kolon)
             if kolon == "fatura_tarihi" and v is None:
                 return date.min
-            if kolon in ("matrah", "kdv", "genel_toplam", "toplam"):
+            if kolon in ("matrah", "kdv", "genel_toplam", "toplam", "kapanan_tutar", "acik_tutar"):
                 try:
                     return Decimal(str(row.get("genel_toplam") if kolon == "toplam" else row.get(kolon) or 0))
                 except Exception:
@@ -400,6 +412,9 @@ class FaturaListePencere(tk.Toplevel):
             "matrah": "matrah",
             "kdv": "kdv",
             "toplam": "genel_toplam",
+            "kapanan": "kapanan_tutar",
+            "acik": "acik_tutar",
+            "odeme": "odeme_durumu",
             "pb": "para_birimi",
             "personel": "sales_person_full_name",
             "olusturma": "olusturma_tarihi",
@@ -428,10 +443,13 @@ class FaturaListePencere(tk.Toplevel):
                     r.get("cari_kodu") or "",
                     r.get("cari_ad") or r.get("musteri") or "",
                     r.get("vergi_no") or "",
-                    r.get("durum") or "",
+                    r.get("evrak_durumu") or r.get("durum") or "",
                     _para(r.get("matrah")),
                     _para(r.get("kdv")),
                     _para(r.get("genel_toplam")),
+                    _para(r.get("kapanan_tutar")) if "kapanan_tutar" in r else "",
+                    _para(r.get("acik_tutar")) if "acik_tutar" in r else "",
+                    r.get("odeme_durumu") or "",
                     r.get("para_birimi") or "TRY",
                     personel,
                     _tarih_goster(r.get("olusturma_tarihi")),

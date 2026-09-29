@@ -399,7 +399,7 @@ class CekSenetService:
         if cari is None:
             raise ValueError("Cari bulunamadı.")
         belge_no = CariService._belge_no(session, belge_onek)
-        CariService._aciklara_uygula(session, cari.id, tutar)
+        CariService._alacak_uygula(session, cari.id, tutar, belge_no, tarih, kaynak_tur="TAHSILAT")
         islem = CariIslem(
             cari_id=cari.id,
             tarih=tarih,
@@ -435,18 +435,10 @@ class CekSenetService:
         if cari is None:
             raise ValueError("Cari bulunamadı.")
         belge_no = CariService._belge_no(session, belge_onek)
+        from database.acik_kalem_service import AcikKalemService
+
         if (cari.cari_turu or "") == "Tedarikçi":
-            kalan = CariService._aciklara_uygula(session, cari.id, tutar)
-            if kalan > 0:
-                session.add(
-                    SatisHareketi(
-                        cari_id=cari.id,
-                        satis_tarihi=tarih,
-                        belge_no=belge_no,
-                        satis_tutari=Decimal("0"),
-                        kalan_acik_tutar=-kalan,
-                    )
-                )
+            CariService._alacak_uygula(session, cari.id, tutar, belge_no, tarih, kaynak_tur="ODEME")
             islem = CariIslem(
                 cari_id=cari.id,
                 tarih=tarih,
@@ -458,15 +450,7 @@ class CekSenetService:
                 hesap_adi=hesap_adi,
             )
         else:
-            session.add(
-                SatisHareketi(
-                    cari_id=cari.id,
-                    satis_tarihi=tarih,
-                    belge_no=belge_no,
-                    satis_tutari=tutar,
-                    kalan_acik_tutar=tutar,
-                )
-            )
+            AcikKalemService.borc_etkisi(session, cari.id, tutar, belge_no=belge_no, tarih=tarih)
             islem = CariIslem(
                 cari_id=cari.id,
                 tarih=tarih,
@@ -508,7 +492,10 @@ class CekSenetService:
         if cari is None:
             raise ValueError("Cari bulunamadı.")
         belge_no = CariService._belge_no(session, belge_onek)
-        CariService._aciklara_geri_al(session, cari.id, tutar, belge_no)
+        # İade/karşılıksız: cariye yeni borç açık kalemi (varsa avansı kapatır)
+        from database.acik_kalem_service import AcikKalemService
+
+        AcikKalemService.borc_etkisi(session, cari.id, tutar, belge_no=belge_no, tarih=tarih)
         islem = CariIslem(
             cari_id=cari.id,
             tarih=tarih,

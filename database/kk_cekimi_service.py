@@ -204,26 +204,19 @@ class KkCekimiService:
                 SatisHareketi.cari_id == tedarikci_islem.cari_id,
             )
         )
+        from database.acik_kalem_service import AcikKalemService
+
         if tedarikci_hareket is not None:
+            AcikKalemService.kalem_kaldir(session, tedarikci_hareket, neden=f"KK çekimi geri alındı {belge_no}")
             if tedarikci_hareket.kalan_acik_tutar < tedarikci_hareket.satis_tutari:
                 raise ValueError(
                     "Tedarikçi bakiyesinde bu çekimin bir kısmı kapanmış; güncellenemez/iptal edilemez."
                 )
             session.delete(tedarikci_hareket)
+            session.flush()
 
-        musteri_kredi = KkCekimiService._musteri_kredi_satiri(
-            session, musteri_islem.cari_id, belge_no
-        )
-        residual = Decimal("0")
-        if musteri_kredi is not None:
-            kalan = Decimal(str(musteri_kredi.kalan_acik_tutar or 0))
-            if kalan < 0:
-                residual = -kalan
-            session.delete(musteri_kredi)
-
-        uygulanan = tutar - residual
-        if uygulanan > 0:
-            CariService._aciklara_geri_al(session, musteri_islem.cari_id, uygulanan, belge_no)
+        # Müşteri: tahsisler + kalan alacak (avans) satırı merkezde; eski fişlerde LIFO
+        CariService._aciklara_geri_al(session, musteri_islem.cari_id, tutar, belge_no)
 
         for islem in islemler:
             session.delete(islem)
@@ -294,27 +287,12 @@ class KkCekimiService:
                 tam_aciklama = detay
 
             # Açık borçlara FIFO; kalan müşteri alacağı SatisHareketi'nde (negatif) tutulur → listede bakiye görünür.
-            kalan = CariService._aciklara_uygula(session, musteri_id, tutar)
-            if kalan > 0:
-                session.add(
-                    SatisHareketi(
-                        cari_id=musteri_id,
-                        satis_tarihi=tarih,
-                        belge_no=belge_no,
-                        satis_tutari=Decimal("0"),
-                        kalan_acik_tutar=-kalan,
-                    )
-                )
+            from database.acik_kalem_service import AcikKalemService
 
-            session.add(
-                SatisHareketi(
-                    cari_id=tedarikci_id,
-                    satis_tarihi=tarih,
-                    belge_no=belge_no,
-                    satis_tutari=tutar,
-                    kalan_acik_tutar=tutar,
-                )
-            )
+            kalan = CariService._alacak_uygula(
+                session, musteri_id, tutar, belge_no, tarih, kaynak_tur="KK_CEKIMI"
+            )["avans"]
+            AcikKalemService.borc_etkisi(session, tedarikci_id, tutar, belge_no=belge_no, tarih=tarih)
             session.add(
                 CariIslem(
                     cari_id=musteri_id,

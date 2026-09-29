@@ -30,17 +30,21 @@ class SatisIadeFaturasiService:
         return f"IAD-{datetime.now():%Y%m%d%H%M%S%f}"
 
     @staticmethod
-    def listele() -> list[dict[str, Any]]:
+    def listele(cari_id: int | None = None) -> list[dict[str, Any]]:
+        """cari_id verilirse yalnız o müşterinin iadeleri."""
         with get_session() as session:
-            kayitlar = session.scalars(
+            sorgu = (
                 select(SatisIadeFaturasi)
                 .options(
                     selectinload(SatisIadeFaturasi.cari),
                     selectinload(SatisIadeFaturasi.kaynak_fatura),
                     selectinload(SatisIadeFaturasi.satirlar),
                 )
-                .order_by(SatisIadeFaturasi.id.desc())
-            ).all()
+                .order_by(SatisIadeFaturasi.iade_tarihi.desc(), SatisIadeFaturasi.id.desc())
+            )
+            if cari_id is not None:
+                sorgu = sorgu.where(SatisIadeFaturasi.cari_id == int(cari_id))
+            kayitlar = session.scalars(sorgu).all()
             return [{"iade": i, **SatisIadeFaturasiService.toplam(i.satirlar)} for i in kayitlar]
 
     @staticmethod
@@ -57,26 +61,78 @@ class SatisIadeFaturasiService:
             )
 
     @staticmethod
-    def musteri_urun_gecmisi(cari_id: int, urun_kodu: str) -> dict[str, Any]:
-        """Müşterinin bu ürünü daha önce alıp almadığını ve kaçtan aldığını döner."""
+    def _temel(miktar, birim, urun_kodu) -> Decimal:
+        try:
+            from fatura_satir_birim_service import temel_miktar
+
+            return Decimal(str(temel_miktar(miktar, birim or "Adet", urun_kodu)))
+        except Exception:
+            return Decimal(str(miktar or 0))
+
+    @staticmethod
+    def _onceki_iadeler(session, satir_idleri: list[int], haric_iade_id=None) -> dict[int, list[dict]]:
+        """Satış satırı → bu satıra bağlı (iptal olmayan) iade satırları."""
+        if not satir_idleri:
+            return {}
+        sorgu = (
+            select(SatisIadeFaturasiSatiri, SatisIadeFaturasi)
+            .join(SatisIadeFaturasi, SatisIadeFaturasiSatiri.iade_id == SatisIadeFaturasi.id)
+            .where(
+                SatisIadeFaturasiSatiri.kaynak_fatura_satiri_id.in_(satir_idleri),
+                SatisIadeFaturasi.durum != "İPTAL",
+            )
+        )
+        if haric_iade_id:
+            sorgu = sorgu.where(SatisIadeFaturasi.id != int(haric_iade_id))
+        sonuc: dict[int, list[dict]] = {}
+        for satir, iade in session.execute(sorgu).all():
+            sonuc.setdefault(int(satir.kaynak_fatura_satiri_id), []).append({
+                "iade_no": iade.iade_no,
+                "tarih": iade.iade_tarihi,
+                "miktar": Decimal(str(satir.miktar or 0)),
+                "birim": satir.birim,
+                "temel_miktar": SatisIadeFaturasiService._temel(satir.miktar, satir.birim, satir.urun_kodu),
+            })
+        return sonuc
+
+    @staticmethod
+    def musteri_urun_gecmisi(cari_id: int, urun_kodu: str, *, haric_iade_id=None) -> dict[str, Any]:
+        """Aynı müşterinin bu ürüne ait ONAYLI satış satırları (yeniden eskiye) ve iade durumu.
+
+        Tutarlar: net birim fiyat / net satır tutarı iskonto sonrası ve KDV HARİÇ;
+        satir_kdv_dahil ayrıca verilir. Kalan iade edilebilir miktar stok temel biriminde hesaplanır.
+        Başka carinin satışları hiçbir koşulda dönmez.
+        """
+        from database.satis_faturasi_service import SatisFaturasiService
+
         urun_kodu = (urun_kodu or "").strip()
+        if not cari_id or not urun_kodu:
+            return {"aldi": False, "adet": 0, "son_fiyat": None, "ortalama_fiyat": None, "gecmis": []}
         with get_session() as session:
             satirlar = session.scalars(
                 select(SatisFaturasiSatiri)
                 .join(SatisFaturasi)
                 .where(
-                    SatisFaturasi.cari_id == cari_id,
+                    SatisFaturasi.cari_id == int(cari_id),
+                    SatisFaturasi.onaylandi.is_(True),
                     SatisFaturasi.durum != "İPTAL",
+                    SatisFaturasi.is_deleted.is_not(True),
                     SatisFaturasiSatiri.urun_kodu == urun_kodu,
                 )
                 .options(selectinload(SatisFaturasiSatiri.fatura))
-                .order_by(SatisFaturasi.fatura_tarihi.desc(), SatisFaturasiSatiri.id.desc())
+                .order_by(
+                    SatisFaturasi.fatura_tarihi.desc(),
+                    SatisFaturasi.id.desc(),
+                    SatisFaturasiSatiri.id.desc(),
+                )
             ).all()
+            iadeler = SatisIadeFaturasiService._onceki_iadeler(
+                session, [int(s.id) for s in satirlar], haric_iade_id
+            )
             gecmis = []
             for satir in satirlar:
                 miktar = Decimal(str(satir.miktar or 0))
                 fiyat = Decimal(str(satir.birim_fiyat or 0))
-                from database.satis_faturasi_service import SatisFaturasiService
                 _, _, net_toplam = SatisFaturasiService._satir_net(
                     miktar,
                     fiyat,
@@ -84,17 +140,37 @@ class SatisIadeFaturasiService:
                     getattr(satir, "iskonto_orani_2", 0) or 0,
                     getattr(satir, "iskonto_orani_3", 0) or 0,
                 )
+                kdv = Decimal(str(satir.kdv_orani or 0))
                 net_fiyat = (net_toplam / miktar) if miktar else Decimal("0")
+                satilan_temel = SatisIadeFaturasiService._temel(miktar, satir.birim, urun_kodu)
+                onceki = iadeler.get(int(satir.id), [])
+                iade_temel = sum((i["temel_miktar"] for i in onceki), Decimal("0"))
+                kalan_temel = max(Decimal("0"), satilan_temel - iade_temel)
+                oran = (miktar / satilan_temel) if satilan_temel else Decimal("1")
                 gecmis.append({
                     "fatura_no": satir.fatura.fatura_no,
+                    "fatura_id": satir.fatura_id,
                     "tarih": satir.fatura.fatura_tarihi,
-                    "miktar": satir.miktar,
+                    "miktar": miktar,
                     "birim": satir.birim,
                     "birim_fiyat": satir.birim_fiyat,
                     "iskonto_orani": satir.iskonto_orani,
+                    "iskonto_orani_2": getattr(satir, "iskonto_orani_2", 0) or 0,
+                    "iskonto_orani_3": getattr(satir, "iskonto_orani_3", 0) or 0,
+                    "kdv_orani": kdv,
                     "net_fiyat": net_fiyat,
+                    "net_satir_tutari": net_toplam,
+                    "satir_kdv_dahil": (net_toplam * (Decimal("1") + kdv / Decimal("100"))).quantize(
+                        Decimal("0.01")
+                    ),
                     "fifo_birim_maliyeti": satir.fifo_birim_maliyeti,
                     "satir_id": satir.id,
+                    "satilan_temel": satilan_temel,
+                    "iade_edilen_temel": iade_temel,
+                    "kalan_iade_temel": kalan_temel,
+                    "kalan_iade_miktar": (kalan_temel * oran).quantize(Decimal("0.0001")),
+                    "onceki_iadeler": onceki,
+                    "tamamen_iade": kalan_temel <= 0,
                 })
             aldi = bool(gecmis)
             son_fiyat = gecmis[0]["net_fiyat"] if gecmis else None
@@ -111,14 +187,55 @@ class SatisIadeFaturasiService:
             }
 
     @staticmethod
+    def iade_satiri_uyarilari(cari_id: int, satir: dict, *, haric_iade_id=None, diger_satirlar=()) -> list[str]:
+        """Kaynak satış satırına bağlı iade satırı için miktar aşımı / birim farkı uyarıları."""
+        kaynak_id = satir.get("kaynak_fatura_satiri_id")
+        if not kaynak_id:
+            return []
+        kod = (satir.get("urun_kodu") or "").strip()
+        gecmis = SatisIadeFaturasiService.musteri_urun_gecmisi(cari_id, kod, haric_iade_id=haric_iade_id)
+        kaynak = next((g for g in gecmis["gecmis"] if int(g["satir_id"]) == int(kaynak_id)), None)
+        if kaynak is None:
+            return ["Seçilen kaynak satış satırı bu müşteriye ait onaylı bir satış değil."]
+        uyarilar = []
+        birim = satir.get("birim") or "Adet"
+        if (kaynak["birim"] or "Adet") != birim:
+            uyarilar.append(
+                f"Birim farkı: satış {kaynak['birim']} ile yapılmış, iade {birim} olarak giriliyor "
+                "(miktar stok temel birimine çevrilerek karşılaştırıldı)."
+            )
+        istenen = SatisIadeFaturasiService._temel(satir.get("miktar") or 0, birim, kod)
+        ayni_kaynak = sum(
+            (
+                SatisIadeFaturasiService._temel(d.get("miktar") or 0, d.get("birim") or "Adet", kod)
+                for d in diger_satirlar
+                if d is not satir and d.get("kaynak_fatura_satiri_id")
+                and int(d["kaynak_fatura_satiri_id"]) == int(kaynak_id)
+            ),
+            Decimal("0"),
+        )
+        if istenen + ayni_kaynak > kaynak["kalan_iade_temel"]:
+            uyarilar.append(
+                f"Miktar aşımı: {kaynak['fatura_no']} satışından kalan iade edilebilir miktar "
+                f"{kaynak['kalan_iade_temel']:f} (temel birim); bu iadede toplam "
+                f"{(istenen + ayni_kaynak):f} isteniyor."
+            )
+        return uyarilar
+
+    @staticmethod
     def musteri_satislari(cari_id: int) -> list[SatisFaturasi]:
         with get_session() as session:
             return list(
                 session.scalars(
                     select(SatisFaturasi)
-                    .where(SatisFaturasi.cari_id == cari_id, SatisFaturasi.durum != "İPTAL")
+                    .where(
+                        SatisFaturasi.cari_id == cari_id,
+                        SatisFaturasi.durum != "İPTAL",
+                        SatisFaturasi.onaylandi.is_(True),
+                        SatisFaturasi.is_deleted.is_not(True),
+                    )
                     .options(selectinload(SatisFaturasi.satirlar), selectinload(SatisFaturasi.cari))
-                    .order_by(SatisFaturasi.fatura_tarihi.desc())
+                    .order_by(SatisFaturasi.fatura_tarihi.desc(), SatisFaturasi.id.desc())
                 ).all()
             )
 
@@ -253,8 +370,23 @@ class SatisIadeFaturasiService:
                     raise ValueError("İptal edilmiş iade düzenlenemez.")
                 SatisIadeFaturasiService._iade_girislerini_geri_al(session, iade.iade_no)
                 session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
+                eski_alacak = sum(
+                    (
+                        Decimal(str(i.alacak or 0))
+                        for i in session.scalars(
+                            select(CariIslem).where(CariIslem.belge_no == iade.iade_no)
+                        ).all()
+                    ),
+                    Decimal("0"),
+                )
+                if eski_alacak > 0:
+                    # Önce eski iadenin kapattığı açık kalemler geri açılır (çift mahsup olmasın)
+                    CariService._aciklara_geri_al(session, iade.cari_id, eski_alacak, iade.iade_no)
                 session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
-                session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
+                from database.acik_kalem_service import AcikKalemService
+
+                AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
+                                                      neden=f"İade düzeltme {iade.iade_no}")
                 iade.satirlar.clear()
             else:
                 ozel_no = (veriler.get("iade_no") or "").strip()
@@ -301,6 +433,18 @@ class SatisIadeFaturasiService:
                     birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
                     birim_fiyat_doviz = Decimal("0")
                 onceki = veri.get("onceki_alis_fiyati")
+                if veri.get("kaynak_fatura_satiri_id"):
+                    kaynak_kontrol = session.get(SatisFaturasiSatiri, int(veri["kaynak_fatura_satiri_id"]))
+                    kf = kaynak_kontrol.fatura if kaynak_kontrol is not None else None
+                    if (
+                        kf is None
+                        or int(kf.cari_id) != int(iade.cari_id)
+                        or not kf.onaylandi
+                        or (kf.durum or "") == "İPTAL"
+                    ):
+                        raise ValueError(
+                            f"{veri.get('urun_kodu')}: kaynak satış satırı bu müşterinin onaylı bir satışı değil."
+                        )
                 fifo_maliyet, kaynak_satiri = SatisIadeFaturasiService._fifo_maliyet_coz(
                     session, veri, iade.depo
                 )
@@ -324,6 +468,10 @@ class SatisIadeFaturasiService:
                     fifo_birim_maliyeti=stok_sonuc["fifo_birim_maliyeti"],
                     lot_no=stok_sonuc["lot_girisi"],
                     birim_fiyat_doviz=birim_fiyat_doviz,
+                    kaynak_yok_onay=bool(veri.get("kaynak_yok_onay")) or None,
+                    kaynak_yok_gerekce=(veri.get("kaynak_yok_gerekce") or None),
+                    kaynak_yok_kullanici=(veri.get("kaynak_yok_kullanici") or None),
+                    kaynak_yok_tarih=veri.get("kaynak_yok_tarih"),
                 ))
 
             iade.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
@@ -343,7 +491,7 @@ class SatisIadeFaturasiService:
                 kur=kur if pb != "TRY" else Decimal("1"),
                 borc_esasi=iade.borc_esasi or "TL_SABIT",
             ))
-            CariService._aciklara_uygula(session, iade.cari_id, toplam)
+            CariService._alacak_uygula(session, iade.cari_id, toplam, iade.iade_no, tarih, kaynak_tur="IADE")
             if iade.iade_odeme_tutari > 0:
                 FinansService.hareket_ekle(
                     session, iade.iade_no, tarih, iade.iade_odeme_tutari,
@@ -379,7 +527,10 @@ class SatisIadeFaturasiService:
             SatisIadeFaturasiService._iade_girislerini_geri_al(session, iade.iade_no)
             session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
             session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
-            session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
+                                                  neden=f"İade iptal {iade.iade_no}")
             iade.durum = "İPTAL"
 
         from database.muhasebe_entegrasyon import muhasebe_hook

@@ -130,8 +130,22 @@ class AlisIadeFaturasiService:
                     raise ValueError("İptal edilmiş iade düzenlenemez.")
                 StokService.fatura_cikislarini_geri_al(session, iade.iade_no)
                 session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
+                eski_alacak = sum(
+                    (
+                        Decimal(str(i.alacak or 0))
+                        for i in session.scalars(
+                            select(CariIslem).where(CariIslem.belge_no == iade.iade_no)
+                        ).all()
+                    ),
+                    Decimal("0"),
+                )
+                if eski_alacak > 0:
+                    CariService._aciklara_geri_al(session, iade.cari_id, eski_alacak, iade.iade_no)
                 session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
-                session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
+                from database.acik_kalem_service import AcikKalemService
+
+                AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
+                                                      neden=f"Alış iade düzeltme {iade.iade_no}")
                 iade.satirlar.clear()
             else:
                 ozel_no = (veriler.get("iade_no") or "").strip()
@@ -239,7 +253,7 @@ class AlisIadeFaturasiService:
                 alacak=toplam,
                 hesap_adi=iade.iade_odeme_hesabi,
             ))
-            CariService._aciklara_uygula(session, iade.cari_id, toplam)
+            CariService._alacak_uygula(session, iade.cari_id, toplam, iade.iade_no, tarih, kaynak_tur="IADE")
             if iade.iade_odeme_tutari > 0:
                 FinansService.hareket_ekle(
                     session,
@@ -280,7 +294,10 @@ class AlisIadeFaturasiService:
             StokService.fatura_cikislarini_geri_al(session, iade.iade_no)
             session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
             session.execute(delete(CariIslem).where(CariIslem.belge_no == iade.iade_no))
-            session.execute(delete(SatisHareketi).where(SatisHareketi.belge_no == iade.iade_no))
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
+                                                  neden=f"Alış iade iptal {iade.iade_no}")
             iade.durum = "İPTAL"
 
         from database.muhasebe_entegrasyon import muhasebe_hook

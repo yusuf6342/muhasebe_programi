@@ -209,8 +209,10 @@ class HizmetFaturasiService:
                     HizmetFaturasiService._finans_geri_al(session, fatura)
                 HizmetFaturasiService._hareketleri_sil(session, fatura.fatura_no)
                 if cari_etkisi:
-                    session.execute(
-                        delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+                    from database.acik_kalem_service import AcikKalemService
+
+                    AcikKalemService.belge_kalemlerini_sil(
+                        session, fatura.fatura_no, fatura.cari_id, neden=f"Hizmet faturası düzeltme {fatura.fatura_no}"
                     )
                 fatura.satirlar.clear()
             else:
@@ -349,6 +351,9 @@ class HizmetFaturasiService:
                 hareket.kur = kur if pb != "TRY" else Decimal("1")
                 hareket.borc_esasi = fatura.borc_esasi or "TL_SABIT"
                 hareket.doviz_tutari = fatura.doviz_ara_toplam if pb != "TRY" else Decimal("0")
+                from database.acik_kalem_service import AcikKalemService
+
+                AcikKalemService.avanslari_uygula(session, fatura.cari_id)
 
             if finans_yaz:
                 HizmetFaturasiService._finans_yaz(session, fatura)
@@ -378,8 +383,10 @@ class HizmetFaturasiService:
                 return
             HizmetFaturasiService._finans_geri_al(session, fatura)
             HizmetFaturasiService._hareketleri_sil(session, fatura.fatura_no)
-            session.execute(
-                delete(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.belge_kalemlerini_sil(
+                session, fatura.fatura_no, fatura.cari_id, neden=f"Hizmet faturası iptal {fatura.fatura_no}"
             )
             fatura.durum = "İPTAL"
 

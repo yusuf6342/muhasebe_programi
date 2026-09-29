@@ -626,10 +626,13 @@ class HizliSatisService:
                     th.hesap,
                 )
 
-            fatura.durum = "KAPALI" if tahsilat_toplam >= toplam else "AÇIK"
+            fatura.durum = "AÇIK"
             fatura.onaylandi = True
             stamp_approve(fatura)
             SatisFaturasiService._durumlari_guncelle(session, fatura)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
             except IntegrityError as hata:

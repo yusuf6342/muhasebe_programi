@@ -59,5 +59,10 @@ class SatisIadeFaturasiSatiri(Base):
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     lot_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # Kayıtlı satış bulunamadan devam kararı (satır kaynaksız olduğu açıkça işaretlenir)
+    kaynak_yok_onay: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    kaynak_yok_gerekce: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    kaynak_yok_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    kaynak_yok_tarih: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     iade: Mapped["SatisIadeFaturasi"] = relationship("SatisIadeFaturasi", back_populates="satirlar")

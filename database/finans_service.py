@@ -803,32 +803,35 @@ class FinansService:
         )
         if not islemler:
             return
+        from database.acik_kalem_service import AcikKalemService
+
         for islem in islemler:
             tutar = Decimal(str(islem.alacak or 0)) + Decimal(str(islem.borc or 0))
             if (islem.islem_turu or "") == "Tahsilat":
                 CariService._aciklara_geri_al(session, islem.cari_id, tutar, belge_no)
             elif (islem.islem_turu or "") == "Ödeme":
-                from database.models.cari import Cari as CariModel
-
-                cari = session.get(CariModel, islem.cari_id)
-                sh = session.scalar(
-                    select(SatisHareketi).where(
-                        SatisHareketi.belge_no == belge_no,
-                        SatisHareketi.cari_id == islem.cari_id,
-                    )
-                )
-                if (cari is not None) and (cari.cari_turu or "") == "Tedarikçi":
-                    # Fazla-ödeme kredi satırı varsa sil; FIFO uygulanan kısmı geri aç.
-                    if sh is not None:
-                        session.delete(sh)
-                    CariService._aciklara_geri_al(session, islem.cari_id, tutar, belge_no)
-                elif sh is not None:
-                    if Decimal(str(sh.kalan_acik_tutar)) < Decimal(str(sh.satis_tutari)):
-                        raise ValueError(
-                            "Bu havaleye bağlı cari açık kısmen kapanmış; güncellenemez."
+                borc_kalemleri = list(
+                    session.scalars(
+                        select(SatisHareketi).where(
+                            SatisHareketi.belge_no == belge_no,
+                            SatisHareketi.cari_id == islem.cari_id,
+                            SatisHareketi.satis_tutari > 0,
                         )
-                    session.delete(sh)
+                    ).all()
+                )
+                if Decimal(str(islem.borc or 0)) > 0 and borc_kalemleri:
+                    # Müşteriye ödeme: açık kalemi aldığı tahsisleri kaynaklarına iade ederek kaldır
+                    for sh in borc_kalemleri:
+                        AcikKalemService.kalem_kaldir(session, sh, neden=f"Belge geri alındı {belge_no}")
+                        if Decimal(str(sh.kalan_acik_tutar)) < Decimal(str(sh.satis_tutari)):
+                            raise ValueError(
+                                "Bu havaleye bağlı cari açık kısmen kapanmış; güncellenemez."
+                            )
+                        session.delete(sh)
+                    session.flush()
+                    AcikKalemService.avanslari_uygula(session, islem.cari_id)
                 else:
+                    # Tedarikçi ödemesi: tahsisler ve fazla-ödeme avansı merkezde geri alınır
                     CariService._aciklara_geri_al(session, islem.cari_id, tutar, belge_no)
             session.delete(islem)
 
@@ -975,9 +978,63 @@ class FinansService:
             raise ValueError("Bu belge türü banka işlem menüsünden güncellenemez.")
 
     @staticmethod
-    def _cari_tahsilat_satiri(session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama, oncelikli=None):
-        """oncelikli: bağlı fatura hedefi — tutar önce o faturanın açığına, kalanı FIFO ile uygulanır."""
+    @staticmethod
+    def _kapatma_plani_hazirla(veriler: dict, toplam: Decimal) -> dict | None:
+        """Kullanıcının açık kalem seçimi: veriler["kapatma_dagitimi"] = [{hareket_id, tutar}],
+        veriler["kapatma_fazla"] = "FIFO" | "AVANS". Seçim yoksa None (kayıtta FIFO)."""
+        secim = veriler.get("kapatma_dagitimi")
+        if not secim:
+            return None
+        dagitim: dict[int, Decimal] = {}
+        for s in secim:
+            hid = int(s["hareket_id"])
+            t = Decimal(str(s["tutar"])).quantize(Decimal("0.01"))
+            if t < 0:
+                raise ValueError("Dağıtım tutarı negatif olamaz.")
+            if t > 0:
+                dagitim[hid] = dagitim.get(hid, Decimal("0")) + t
+        if sum(dagitim.values(), Decimal("0")) > toplam:
+            raise ValueError("Açık kalem dağıtım toplamı belge tutarını aşamaz.")
+        fazla = (veriler.get("kapatma_fazla") or "FIFO").upper()
+        if fazla not in ("FIFO", "AVANS"):
+            raise ValueError("Kalan tutar için FIFO veya AVANS seçilmelidir.")
+        return {"dagitim": dagitim, "fazla": fazla}
+
+    @staticmethod
+    def _kapatma_plani_uygula(session, cari_id, tutar, belge_no, tarih, kaynak_tur, plan) -> None:
+        """Alacak etkisini açık kalemlere uygular; artanı avans.
+
+        plan (makbuz başına paylaşılan): {"dagitim": {hareket_id: kalan tahsis}, "fazla": "FIFO"|"AVANS"}.
+        Satırlar sırayla işlenir; kullanıcı dağıtımı önce tüketilir.
+        """
         from database.cari_service import CariService
+
+        tutar = Decimal(str(tutar))
+        if tutar <= 0:
+            return
+        dagitim = []
+        fazla = "FIFO"
+        if plan:
+            fazla = plan.get("fazla") or "FIFO"
+            kalan_butce = tutar
+            for hid, ayrilan in list((plan.get("dagitim") or {}).items()):
+                if kalan_butce <= 0:
+                    break
+                pay = min(Decimal(str(ayrilan)), kalan_butce)
+                if pay > 0:
+                    dagitim.append((int(hid), pay))
+                    plan["dagitim"][hid] = Decimal(str(ayrilan)) - pay
+                    kalan_butce -= pay
+        CariService._alacak_uygula(
+            session, cari_id, tutar, belge_no, tarih, kaynak_tur=kaynak_tur,
+            dagitim=dagitim or None, fazla=fazla,
+        )
+
+    @staticmethod
+    def _cari_tahsilat_satiri(
+        session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama, oncelikli=None, plan=None
+    ):
+        """oncelikli: bağlı fatura hedefi — tutar önce o faturanın açığına, kalanı açık kalemlere uygulanır."""
         from database.models.cari import Cari, CariIslem
 
         cari = session.get(Cari, int(cari_id))
@@ -991,7 +1048,7 @@ class FinansService:
             oncelikli["uygulanan"] += pay
             kalan -= pay
         if kalan > 0:
-            CariService._aciklara_uygula(session, cari.id, kalan)
+            FinansService._kapatma_plani_uygula(session, cari.id, kalan, belge_no, tarih, "TAHSILAT", plan)
         session.add(
             CariIslem(
                 cari_id=cari.id,
@@ -1006,26 +1063,16 @@ class FinansService:
         )
 
     @staticmethod
-    def _cari_odeme_satiri(session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama):
-        from database.cari_service import CariService
-        from database.models.cari import Cari, CariIslem, SatisHareketi
+    def _cari_odeme_satiri(session, cari_id, tarih, tutar, belge_no, hesap_adi, aciklama, plan=None):
+        from database.acik_kalem_service import AcikKalemService
+        from database.models.cari import Cari, CariIslem
 
         cari = session.get(Cari, int(cari_id))
         if cari is None:
             raise ValueError("Cari bulunamadı.")
         if (cari.cari_turu or "") == "Tedarikçi":
-            # Tedarikçi ödemesi defterde ALACAK (borç azaltır); fazlası açık alacak (negatif kalan).
-            kalan = CariService._aciklara_uygula(session, cari.id, tutar)
-            if kalan > 0:
-                session.add(
-                    SatisHareketi(
-                        cari_id=cari.id,
-                        satis_tarihi=tarih,
-                        belge_no=belge_no,
-                        satis_tutari=Decimal("0"),
-                        kalan_acik_tutar=-kalan,
-                    )
-                )
+            # Tedarikçi ödemesi defterde ALACAK (borç azaltır); fazlası açık alacak (avans).
+            FinansService._kapatma_plani_uygula(session, cari.id, tutar, belge_no, tarih, "ODEME", plan)
             session.add(
                 CariIslem(
                     cari_id=cari.id,
@@ -1039,15 +1086,7 @@ class FinansService:
                 )
             )
         else:
-            session.add(
-                SatisHareketi(
-                    cari_id=cari.id,
-                    satis_tarihi=tarih,
-                    belge_no=belge_no,
-                    satis_tutari=tutar,
-                    kalan_acik_tutar=tutar,
-                )
-            )
+            AcikKalemService.borc_etkisi(session, cari.id, tutar, belge_no=belge_no, tarih=tarih)
             session.add(
                 CariIslem(
                     cari_id=cari.id,
@@ -3465,6 +3504,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         toplam = sum((s["tutar"] for s in satir_verileri), Decimal("0"))
         if toplam <= 0:
             raise ValueError("Toplam tutar sıfırdan büyük olmalı.")
+        kapatma_plani = FinansService._kapatma_plani_hazirla(veriler, toplam)
 
         with get_session() as session:
             from database.sube_service import SubeService
@@ -3671,11 +3711,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 if tur == "TAHSILAT":
                     FinansService._cari_tahsilat_satiri(
                         session, cari_id, s["tarih"], s["tutar"], belge_no, hesap.hesap_adi, satir_acik,
-                        oncelikli=fatura_hedefi,
+                        oncelikli=fatura_hedefi, plan=kapatma_plani,
                     )
                 else:
                     FinansService._cari_odeme_satiri(
-                        session, cari_id, s["tarih"], s["tutar"], belge_no, hesap.hesap_adi, satir_acik
+                        session, cari_id, s["tarih"], s["tutar"], belge_no, hesap.hesap_adi, satir_acik,
+                        plan=kapatma_plani,
                     )
                 session.add(satir)
 
@@ -3754,11 +3795,10 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
 
     @staticmethod
     def _fatura_odeme_durumu(fatura) -> None:
-        """Yalnız ödeme durumu (AÇIK/KAPALI); onaysız ve iptal faturanın durumu ve içeriği değişmez."""
+        """Onaylı satış faturasının evrak durumu AÇIK kalır; ödenme tahsilat_tutari ile izlenir."""
         if not fatura.onaylandi or (fatura.durum or "") == "İPTAL":
             return
-        toplam = FinansService._fatura_genel_toplami(fatura)
-        fatura.durum = "KAPALI" if Decimal(str(fatura.tahsilat_tutari or 0)) >= toplam else "AÇIK"
+        fatura.durum = "AÇIK"
 
     @staticmethod
     def _faturaya_uygula(fatura, hareket, tutar: Decimal) -> None:

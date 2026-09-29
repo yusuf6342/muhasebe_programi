@@ -560,6 +560,22 @@ def cari_kart_schemasini_guncelle() -> None:
                 connection.execute(
                     text(f'ALTER TABLE "{iade_tablo}" ADD COLUMN "fifo_birim_maliyeti" NUMERIC(18, 4) DEFAULT 0 NOT NULL')
                 )
+        kaynak_yok_kolonlari = {
+            "kaynak_yok_onay": "BOOLEAN",
+            "kaynak_yok_gerekce": "VARCHAR(300)",
+            "kaynak_yok_kullanici": "VARCHAR(120)",
+            "kaynak_yok_tarih": "DATETIME",
+        }
+        eksik_iade = {a: t for a, t in kaynak_yok_kolonlari.items() if a not in iade_sutunlar}
+        if eksik_iade:
+            with engine.begin() as connection:
+                for alan, tip in eksik_iade.items():
+                    connection.execute(text(f'ALTER TABLE "{iade_tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    # Açık kalem kapatma (tahsis) kayıtları — yalnız CREATE TABLE
+    from database.acik_kalem_service import AcikKalemService
+
+    AcikKalemService.schema_hazirla(engine)
 
     stok_tablo = "stok_kartlari"
     if inspect(engine).has_table(stok_tablo):

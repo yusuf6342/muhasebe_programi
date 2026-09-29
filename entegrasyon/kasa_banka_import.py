@@ -365,8 +365,10 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                 cari_db = session.get(Cari, int(cari.id))
                 if cari_db is None:
                     raise ValueError("Cari bulunamadı")
+                from database.acik_kalem_service import AcikKalemService
+
                 if yon:
-                    CariService._aciklara_uygula(session, cari_db.id, tutar)
+                    CariService._alacak_uygula(session, cari_db.id, tutar, cari_belge, tarih, kaynak_tur="TAHSILAT")
                     session.add(
                         CariIslem(
                             cari_id=cari_db.id,
@@ -381,17 +383,7 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                     )
                 else:
                     if (cari_db.cari_turu or "") == "Tedarikçi":
-                        kalan = CariService._aciklara_uygula(session, cari_db.id, tutar)
-                        if kalan > 0:
-                            session.add(
-                                SatisHareketi(
-                                    cari_id=cari_db.id,
-                                    satis_tarihi=tarih,
-                                    belge_no=cari_belge,
-                                    satis_tutari=Decimal("0"),
-                                    kalan_acik_tutar=-kalan,
-                                )
-                            )
+                        CariService._alacak_uygula(session, cari_db.id, tutar, cari_belge, tarih, kaynak_tur="ODEME")
                         session.add(
                             CariIslem(
                                 cari_id=cari_db.id,
@@ -405,15 +397,7 @@ def _tek_banka(client, liste_satir: dict[str, Any], sonuc: ImportSonuc) -> bool:
                             )
                         )
                     else:
-                        session.add(
-                            SatisHareketi(
-                                cari_id=cari_db.id,
-                                satis_tarihi=tarih,
-                                belge_no=cari_belge,
-                                satis_tutari=tutar,
-                                kalan_acik_tutar=tutar,
-                            )
-                        )
+                        AcikKalemService.borc_etkisi(session, cari_db.id, tutar, belge_no=cari_belge, tarih=tarih)
                         session.add(
                             CariIslem(
                                 cari_id=cari_db.id,

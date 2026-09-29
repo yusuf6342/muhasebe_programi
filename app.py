@@ -14,7 +14,7 @@ from database.firma_service import FirmaService
 from database.kk_cekimi_service import KkCekimiService
 from database.rapor_service import RaporService
 from database.satis_irsaliyesi_service import SatisIrsaliyesiService
-from database.satis_faturasi_service import SatisFaturasiService
+from database.satis_faturasi_service import SatisFaturasiService, evrak_durumu
 from database.alis_faturasi_service import AlisFaturasiService
 from database.satis_iade_faturasi_service import SatisIadeFaturasiService
 from database.satis_siparisi_service import (
@@ -69,6 +69,36 @@ ProductSelectionDialog = UrunSecDialog
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
+# Fatura menüsü: ilk üç sabit; diğer seçenekler bunlardan sonra, görsel içe aktarma en sonda.
+SATIS_FATURA_MENU_SIRASI = (
+    ("HIZLI FATURA", "Boş satış faturası kartını hemen açın", "hizli_fatura_ac"),
+    ("SATIŞ FATURA LİSTESİ", "Kayıtlı satış faturalarını inceleyin ve düzenleyin", "satis_faturalari_goster"),
+    ("SATIŞ İADE FATURALARI", "Satış iade faturalarını yönetin", "satis_iade_faturalari_goster"),
+    ("FATURA GÖRSELİ İÇE AKTAR", "PDF/XML/görselden satış faturası taslağı oluşturun", "satis_fatura_belge_aktar"),
+)
+IADE_GECMIS_KOLONLARI = (
+    "tarih", "fatura", "miktar", "net_fiyat", "net_tutar", "kdv_dahil", "iade", "kalan", "durum",
+)
+IADE_GECMIS_BASLIKLARI = (
+    ("tarih", "Tarih", 85),
+    ("fatura", "Fatura No", 130),
+    ("miktar", "Satılan Miktar", 110),
+    ("net_fiyat", "Net Birim Fiyat (İsk. sonrası, KDV hariç)", 170),
+    ("net_tutar", "Net Satır Tutarı (KDV hariç)", 150),
+    ("kdv_dahil", "Satır Tutarı (KDV dahil)", 140),
+    ("iade", "Önceki İade", 95),
+    ("kalan", "Kalan İade Edilebilir", 130),
+    ("durum", "Durum", 120),
+)
+SATIS_FATURA_LISTE_KOLONLARI = (
+    "no", "tarih", "saat", "vade", "musteri", "bakiye", "siparis", "irsaliye", "depo",
+    "toplam", "tahsilat", "kalan", "odeme", "satis_personeli", "islem_yapan", "onaylayan", "durum", "onay",
+)
+SATIS_FATURA_LISTE_BASLIKLARI = (
+    "Evrak No", "Tarih", "Saat", "Vade Tarihi", "Cari Ünvanı", "Cari Bakiye", "Sipariş No", "İrsaliye No",
+    "Depo", "Toplam", "Kapanan Tutar", "Açık Tutar", "Ödeme Durumu", "Satış Personeli", "İşlemi Yapan",
+    "Onaylayan", "Evrak Durumu", "Onay",
+)
 
 
 def _firma_kdv_varsayilan_metin() -> str:
@@ -641,27 +671,97 @@ class CariTahsilatOdemeDialog(tk.Toplevel):
             self.girdiler["hesap"].set(hesaplar[0].hesap_adi)
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
-        evrak_penceresi_boyutlandir(self, genislik=720, yukseklik=440, min_genislik=560, min_yukseklik=340)
+        self.plan_lbl = tk.Label(govde, text="", font=sfont(10, "bold", self), fg="#0d47a1", anchor="w", justify="left")
+        self.plan_lbl.grid(row=len(alanlar) + 2, column=0, columnspan=2, padx=16, pady=(4, 8), sticky="ew")
+        self._kapatma_plani = None
+        self._plan_tutari = None
+        self._plan_acik = False
+        if self._secim_gecerli():
+            ttk.Button(butonlar, text="Açık Kalem Seç…", command=lambda: self._plani_sor(zorla=True)).pack(side="left")
+            self.girdiler["tutar"].bind("<FocusOut>", lambda _e: self.after(60, self._plani_sor), add="+")
+        evrak_penceresi_boyutlandir(self, genislik=720, yukseklik=460, min_genislik=560, min_yukseklik=340)
         self.girdiler["tutar"].focus_set()
 
+    def _secim_gecerli(self) -> bool:
+        """Tahsilat her caride, ödeme yalnız tedarikçide açık kalem kapatır (müşteriye ödeme borç yazar)."""
+        return self.tur == "tahsilat" or (getattr(self.cari, "cari_turu", "") or "") == "Tedarikçi"
+
+    def _girilen_tutar(self):
+        from tutar_bicim import tutar_coz
+
+        try:
+            tutar = tutar_coz(self.girdiler["tutar"].get())
+        except (ValueError, ArithmeticError):
+            return None
+        return tutar if tutar > 0 else None
+
+    def _plani_sor(self, zorla=False):
+        if self._plan_acik or not self.winfo_exists() or not self._secim_gecerli():
+            return
+        tutar = self._girilen_tutar()
+        if tutar is None or (not zorla and self._plan_tutari == tutar):
+            return
+        from acik_kalem_secim_ui import kapatma_plani_sor
+
+        self._plan_acik = True
+        try:
+            acildi, sonuc = kapatma_plani_sor(
+                self, self.cari.id, tutar, cari_adi=self.cari.unvan,
+                baslik="Tahsilat — Açık Kalem Seçimi" if self.tur == "tahsilat" else "Ödeme — Açık Kalem Seçimi",
+            )
+        finally:
+            self._plan_acik = False
+        if not self.winfo_exists():
+            return
+        self._plan_tutari = tutar
+        self._kapatma_plani = sonuc
+        if not acildi:
+            self.plan_lbl.configure(text="")
+        elif sonuc is None:
+            self.plan_lbl.configure(text="Kapatma: seçim yapılmadı → en eski kalemden (FIFO) dağıtılacak.")
+        else:
+            fazla = "diğer kalemlere FIFO" if sonuc["fazla"] == "FIFO" else "avans (açık kredi)"
+            self.plan_lbl.configure(
+                text=f"Kapatma: {len(sonuc['dagitim'])} kalem seçildi; dağıtılmayan tutar → {fazla}."
+            )
+
     def kaydet(self):
+        from database.acik_kalem_service import AcikKalemDegisti
         from tutar_bicim import servis_metni
 
         veri = {alan: widget.get().strip() for alan, widget in self.girdiler.items()}
         if not veri["hesap"]:
             messagebox.showwarning("Eksik hesap", "Kasa/banka hesabı seçin.", parent=self)
             return
+        if self._secim_gecerli() and self._girilen_tutar() != self._plan_tutari:
+            self._plani_sor()
+            if not self.winfo_exists():
+                return
+        plan = self._kapatma_plani if self._girilen_tutar() == self._plan_tutari else None
+        secim = {"dagitim": plan["dagitim"], "fazla": plan["fazla"]} if plan else {}
         try:
             tarih = datetime.strptime(veri["tarih"], "%d.%m.%Y").date()
             tutar = servis_metni(veri["tutar"])
             if self.tur == "tahsilat":
                 self.result = CariService.tahsilat_yap(
-                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
+                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None,
+                    **secim,
                 )
             else:
                 self.result = CariService.odeme_yap(
-                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None
+                    self.cari.id, tarih, tutar, veri["odeme_sekli"], veri["hesap"], veri["aciklama"] or None,
+                    **secim,
                 )
+        except AcikKalemDegisti as hata:
+            self._plan_tutari = None
+            self._kapatma_plani = None
+            self.plan_lbl.configure(text="")
+            messagebox.showerror(
+                "Açık kalem değişti",
+                f"{hata}\n\nSeçtiğiniz kalemler başka bir işlemle değişti. Lütfen kalemleri yeniden seçin.",
+                parent=self,
+            )
+            return
         except ValueError as hata:
             messagebox.showerror("Kayıt yapılamadı", str(hata), parent=self)
             return
@@ -4578,8 +4678,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.satir_tablosu.heading("irsaliye", text="Sipariş Miktarı")
         self.satir_tablosu.heading("fatura", text="İrsaliye Miktarı")
         self.satir_tablosu.heading("acik", text="Belge Miktarı")
-        self.durum.configure(values=("TASLAK", "AÇIK", "KAPALI", "İPTAL"))
-        self.durum.set(fatura.durum if fatura else "TASLAK")
+        self.durum.configure(values=("TASLAK", "AÇIK", "İPTAL"))
+        self.durum.set(evrak_durumu(fatura.durum) if fatura else "TASLAK")
         self._ek_fatura_bilgileri()
         self._fatura_onay_cubugu_olustur()
         try:
@@ -4990,11 +5090,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         if self.fatura and (self.fatura.durum or "") == "İPTAL":
             return "İPTAL"
         if self.fatura and getattr(self.fatura, "onaylandi", False):
-            return "ONAYLANDI"
+            return "AÇIK"
         if hasattr(self, "durum"):
             try:
-                d = (self.durum.get() or "TASLAK").strip().upper()
-                if d in ("AÇIK", "KAPALI"):
+                d = evrak_durumu((self.durum.get() or "TASLAK").strip().upper())
+                if d == "AÇIK":
                     return d
             except tk.TclError:
                 pass
@@ -5454,7 +5554,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             _btn_state(getattr(self, "kaydet_onay_btn", None), False)
             if hasattr(self, "durum"):
                 try:
-                    self.durum.set(self.fatura.durum or "AÇIK")
+                    self.durum.set(evrak_durumu(self.fatura.durum or "AÇIK"))
                 except tk.TclError:
                     pass
         else:
@@ -5462,7 +5562,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             _btn_state(getattr(self, "kaydet_onay_btn", None), True)
             if hasattr(self, "durum") and self.fatura:
                 try:
-                    self.durum.set(self.fatura.durum or "TASLAK")
+                    self.durum.set(evrak_durumu(self.fatura.durum or "TASLAK"))
                 except tk.TclError:
                     pass
         self._fatura_kilit_uygula()
@@ -6336,6 +6436,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             durum_deger = self.durum.get() or "TASLAK"
         except (tk.TclError, AttributeError):
             durum_deger = self.fatura.durum if self.fatura else "TASLAK"
+        durum_deger = evrak_durumu(durum_deger)
 
         try:
             self.hedef_kar_marji.delete(0, "end")
@@ -6432,7 +6533,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         )
         self.durum = ttk.Combobox(
             bolum1,
-            values=("TASLAK", "AÇIK", "KAPALI", "İPTAL"),
+            values=("TASLAK", "AÇIK", "İPTAL"),
             state="readonly",
             width=9,
             style="FaturaUst.TCombobox",
@@ -11456,14 +11557,16 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 class SatisIadeFaturasiDialog(tk.Toplevel):
     """Satış iade faturası — müşterinin önceki alış fiyatını gösterir."""
 
-    def __init__(self, parent, iade=None, kaynak_fatura=None):
+    def __init__(self, parent, iade=None, kaynak_fatura=None, cari=None):
         super().__init__(parent)
         self.iade = iade
         self.kaynak_fatura = kaynak_fatura
+        self.sabit_cari_id = int(cari) if cari else None
         self.result = None
         self.satirlar = []
+        self._gecmis_kayitlari = []
         self.title("Satış İade Faturası")
-        self.geometry("1100x720")
+        self.geometry("1180x780")
         self.minsize(900, 600)
         self.transient(parent)
         self.grab_set()
@@ -11513,27 +11616,44 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         elif kaynak_fatura:
             doviz_verilerini_doldur(self, kaynak_fatura)
 
-        gecmis = ttk.LabelFrame(self, text="MÜŞTERİ ÜRÜN GEÇMİŞİ (daha önce aldı mı / kaçtan?)", padding=8)
-        gecmis.pack(fill="x", padx=12, pady=4)
-        self.gecmis_bilgi = ttk.Label(gecmis, text="Ürün seçince müşterinin önceki alışları burada görünür.", foreground="#1f6aa5")
-        self.gecmis_bilgi.pack(anchor="w", pady=(0, 4))
-        self.gecmis_tablo = ttk.Treeview(
-            gecmis, columns=("fatura", "tarih", "miktar", "fiyat", "net", "fifo"), show="headings", height=4
+        gecmis = tk.LabelFrame(
+            self, text=" GEÇMİŞ SATIŞ BİLGİSİ (bu müşteri · onaylı satışlar) ",
+            font=("Segoe UI", 11, "bold"), fg="#0d2b52", padx=8, pady=6,
         )
-        for kolon, baslik, genislik in (
-            ("fatura", "Fatura No", 130), ("tarih", "Tarih", 85),
-            ("miktar", "Miktar", 70), ("fiyat", "Birim Fiyat", 100),
-            ("net", "Net Alış", 100), ("fifo", "FIFO Maliyet", 100),
-        ):
+        gecmis.pack(fill="x", padx=12, pady=4)
+        ust_bilgi = ttk.Frame(gecmis)
+        ust_bilgi.pack(fill="x")
+        self.gecmis_bilgi = tk.Label(
+            ust_bilgi, text="Ürün seçince bu müşterinin geçmiş satışları burada görünür.",
+            fg="#1f6aa5", font=("Segoe UI", 11, "bold"), anchor="w", justify="left",
+        )
+        self.gecmis_bilgi.pack(side="left", fill="x", expand=True)
+        ttk.Button(ust_bilgi, text="Satışları Gör", command=self.satislari_gor).pack(side="right", padx=4)
+        ttk.Button(ust_bilgi, text="Fiyatı Referans Al", command=self.gecmisten_fiyat_al).pack(side="right", padx=4)
+        ttk.Button(ust_bilgi, text="Seçili Satışa Bağla", command=self.gecmis_satira_bagla).pack(side="right", padx=4)
+        tablo_cerceve = ttk.Frame(gecmis)
+        tablo_cerceve.pack(fill="x", pady=(4, 0))
+        self.gecmis_tablo = ttk.Treeview(tablo_cerceve, columns=IADE_GECMIS_KOLONLARI, show="headings", height=5)
+        for kolon, baslik, genislik in IADE_GECMIS_BASLIKLARI:
             self.gecmis_tablo.heading(kolon, text=baslik)
-            self.gecmis_tablo.column(kolon, width=genislik)
-        self.gecmis_tablo.pack(fill="x")
-        self.gecmis_tablo.bind("<Double-1>", self.gecmisten_fiyat_al)
+            self.gecmis_tablo.column(kolon, width=genislik, anchor="w" if kolon in ("tarih", "fatura", "durum") else "e")
+        gecmis_kaydir = ttk.Scrollbar(tablo_cerceve, orient="vertical", command=self.gecmis_tablo.yview)
+        self.gecmis_tablo.configure(yscrollcommand=gecmis_kaydir.set)
+        self.gecmis_tablo.pack(side="left", fill="x", expand=True)
+        gecmis_kaydir.pack(side="right", fill="y")
+        self.gecmis_tablo.tag_configure("tamamen", foreground="#888888")
+        self.gecmis_tablo.bind("<Double-1>", lambda _e: self.gecmis_satira_bagla())
+        self.bagli_kaynak_etiket = tk.Label(
+            gecmis, text="Bağlı kaynak satış: — (çift tık / 'Seçili Satışa Bağla' ile seçin)",
+            fg="#444444", font=("Segoe UI", 10, "bold"), anchor="w",
+        )
+        self.bagli_kaynak_etiket.pack(fill="x", pady=(4, 0))
         ttk.Label(
             gecmis,
-            text="İade stoğa FIFO ile girer: önce satıştaki lotlara geri yazılır; olmazsa satış FIFO maliyetiyle yeni lot açılır.",
+            text="Net birim fiyat ve net satır tutarı iskonto sonrası ve KDV HARİÇTİR; 'KDV Dahil' sütunu ayrıca gösterilir. "
+                 "Geçmiş fiyat yalnız referanstır, iade fiyatı otomatik değiştirilmez.",
             foreground="#666666",
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w", pady=(2, 0))
 
         satir_frame = ttk.LabelFrame(self, text="İADE SATIRLARI", padding=8)
         satir_frame.pack(fill="both", expand=True, padx=12, pady=4)
@@ -11589,16 +11709,58 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
             self.musteri_degisti()
             self.kaynak.set(kaynak_fatura.fatura_no)
             self.kaynak_satirlari_yukle()
+        elif self.sabit_cari_id:
+            anahtar = next(
+                (k for k, m in self.musteri_map.items() if int(m.id) == self.sabit_cari_id), None
+            )
+            if anahtar:
+                self.musteri.set(anahtar)
+                self.musteri_degisti()
+        if self.sabit_cari_id:
+            self.musteri.configure(state="disabled")
+
+    def _secili_musteri(self):
+        musteri = self.musteri_map.get(self.musteri.get())
+        if musteri is not None and self.sabit_cari_id and int(musteri.id) != self.sabit_cari_id:
+            return None
+        return musteri
+
+    def _haric_iade_id(self):
+        return int(self.iade.id) if self.iade is not None else None
 
     def musteri_degisti(self, _event=None):
-        musteri = self.musteri_map.get(self.musteri.get())
+        musteri = self._secili_musteri()
         self.kaynak.set("")
+        self._gecmis_temizle()
+        onceki_cari = getattr(self, "_aktif_cari_id", None)
+        self._aktif_cari_id = int(musteri.id) if musteri else None
+        if onceki_cari is not None and onceki_cari != self._aktif_cari_id and self.satirlar:
+            bagli = [s for s in self.satirlar if s.get("kaynak_fatura_satiri_id")]
+            for s in bagli:
+                self._kaynak_bagini_kaldir(s)
+            if bagli:
+                self.satir_listesini_yenile()
+                messagebox.showwarning(
+                    "Müşteri değişti",
+                    f"{len(bagli)} satırın kaynak satış bağı önceki müşteriye aitti ve kaldırıldı. "
+                    "Satırları yeni müşterinin satışlarına yeniden bağlayın.",
+                    parent=self,
+                )
         if not musteri:
             self.kaynak["values"] = ()
+            self.kaynak_map = {}
             return
         faturalar = SatisIadeFaturasiService.musteri_satislari(musteri.id)
         self.kaynak_map = {f.fatura_no: f for f in faturalar}
         self.kaynak["values"] = list(self.kaynak_map)
+        if self.satir_girdileri["urun_kodu"].get().strip():
+            self.urun_gecmisini_goster()
+
+    @staticmethod
+    def _kaynak_bagini_kaldir(satir):
+        satir["kaynak_fatura_satiri_id"] = None
+        satir["onceki_fatura_no"] = None
+        satir["onceki_alis_fiyati"] = None
 
     def kaynak_fatura_secildi(self, _event=None):
         pass
@@ -11608,27 +11770,44 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         if not fatura:
             messagebox.showinfo("Kaynak fatura", "Önce müşteri ve satış faturası seçin.", parent=self)
             return
+        musteri = self._secili_musteri()
+        if musteri is None or int(fatura.cari_id) != int(musteri.id):
+            messagebox.showerror("Kaynak fatura", "Seçilen fatura bu müşteriye ait değil.", parent=self)
+            return
         self.satirlar.clear()
+        atlanan = []
+        gecmis_onbellek = {}
         for satir in fatura.satirlar:
-            indirim = satir.birim_fiyat * satir.iskonto_orani / Decimal("100")
-            net = satir.birim_fiyat - indirim
+            if satir.urun_kodu not in gecmis_onbellek:
+                gecmis_onbellek[satir.urun_kodu] = SatisIadeFaturasiService.musteri_urun_gecmisi(
+                    musteri.id, satir.urun_kodu, haric_iade_id=self._haric_iade_id()
+                )["gecmis"]
+            kayit = next(
+                (g for g in gecmis_onbellek[satir.urun_kodu] if int(g["satir_id"]) == int(satir.id)), None
+            )
+            if kayit is None:
+                continue
+            if kayit["tamamen_iade"]:
+                atlanan.append(satir.urun_kodu)
+                continue
             self.satirlar.append({
                 "urun_kodu": satir.urun_kodu,
                 "urun_adi": satir.urun_adi,
-                "miktar": satir.miktar,
+                "miktar": kayit["kalan_iade_miktar"],
                 "birim": satir.birim,
-                "birim_fiyat": net,
+                "birim_fiyat": kayit["net_fiyat"].quantize(Decimal("0.0001")),
                 "iskonto_orani": 0,
                 "kdv_orani": satir.kdv_orani,
-                "onceki_alis_fiyati": net,
+                "onceki_alis_fiyati": kayit["net_fiyat"].quantize(Decimal("0.0001")),
                 "onceki_fatura_no": fatura.fatura_no,
                 "kaynak_fatura_satiri_id": satir.id,
                 "fifo_birim_maliyeti": satir.fifo_birim_maliyeti,
             })
         self.satir_listesini_yenile()
-        self.gecmis_bilgi.configure(
-            text=f"{fatura.fatura_no} faturasından {len(self.satirlar)} satır iade için yüklendi."
-        )
+        metin = f"{fatura.fatura_no} faturasından {len(self.satirlar)} satır kalan iade miktarıyla yüklendi."
+        if atlanan:
+            metin += f" Tamamen iade edilmiş {len(atlanan)} satır eklenmedi: {', '.join(atlanan)}."
+        self.gecmis_bilgi.configure(text=metin, fg="#1f6aa5")
 
     def urun_arama(self, _event=None):
         widget = self.focus_get()
@@ -11659,54 +11838,232 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
                 self.satir_girdileri[alan].insert(0, deger)
         self.urun_gecmisini_goster()
 
-    def urun_gecmisini_goster(self, _event=None):
-        musteri = self.musteri_map.get(self.musteri.get())
-        kod = self.satir_girdileri["urun_kodu"].get().strip()
+    def _gecmis_temizle(self, metin=None):
         for item in self.gecmis_tablo.get_children():
             self.gecmis_tablo.delete(item)
-        if not musteri or not kod:
-            self.gecmis_bilgi.configure(text="Ürün seçince müşterinin önceki alışları burada görünür.")
-            return
-        ozet = SatisIadeFaturasiService.musteri_urun_gecmisi(musteri.id, kod)
-        if not ozet["aldi"]:
-            self.gecmis_bilgi.configure(
-                text=f"⚠ Bu müşteri '{kod}' ürününü daha önce satın almamış.",
-                foreground="#c62828",
+        self._gecmis_kayitlari = []
+        self._gecmis_kodu = None
+        self._secili_gecmis = None
+        self.gecmis_bilgi.configure(
+            text=metin or "Ürün seçince bu müşterinin geçmiş satışları burada görünür.", fg="#1f6aa5"
+        )
+        self._bagli_etiketi_guncelle()
+
+    def _bagli_etiketi_guncelle(self):
+        g = getattr(self, "_secili_gecmis", None)
+        if not g:
+            self.bagli_kaynak_etiket.configure(
+                text="Bağlı kaynak satış: — (çift tık / 'Seçili Satışa Bağla' ile seçin)", fg="#444444"
             )
             return
+        self.bagli_kaynak_etiket.configure(
+            text=(
+                f"Bağlı kaynak satış: {g['fatura_no']} · {tarih_goster(g['tarih'])} · "
+                f"{miktar_goster(g['miktar'])} {g['birim'] or ''} · kalan iade edilebilir "
+                f"{miktar_goster(g['kalan_iade_miktar'])} {g['birim'] or ''}"
+            ),
+            fg="#0d47a1",
+        )
+
+    @staticmethod
+    def _gecmis_degerleri(g):
+        birim = g["birim"] or ""
+        iade_miktar = (
+            g["iade_edilen_temel"] * (g["miktar"] / g["satilan_temel"])
+            if g["satilan_temel"] else g["iade_edilen_temel"]
+        )
+        return (
+            tarih_goster(g["tarih"]),
+            g["fatura_no"],
+            f"{miktar_goster(g['miktar'])} {birim}",
+            para_goster(g["net_fiyat"]),
+            para_goster(g["net_satir_tutari"]),
+            para_goster(g["satir_kdv_dahil"]),
+            f"{miktar_goster(iade_miktar)} {birim}" if g["onceki_iadeler"] else "—",
+            f"{miktar_goster(g['kalan_iade_miktar'])} {birim}",
+            "Tamamen iade edildi" if g["tamamen_iade"] else ("Kısmen iade" if g["onceki_iadeler"] else "İade yok"),
+        )
+
+    def urun_gecmisini_goster(self, _event=None):
+        musteri = self._secili_musteri()
+        kod = self.satir_girdileri["urun_kodu"].get().strip()
+        if not musteri or not kod:
+            self._gecmis_temizle()
+            return
+        if kod == getattr(self, "_gecmis_kodu", None) and _event is not None:
+            return
+        self._gecmis_temizle()
+        ozet = SatisIadeFaturasiService.musteri_urun_gecmisi(
+            musteri.id, kod, haric_iade_id=self._haric_iade_id()
+        )
+        self._gecmis_kodu = kod
+        if not ozet["aldi"]:
+            self.gecmis_bilgi.configure(
+                text=f"⚠ Bu ürün için kayıtlı satış bulunamadı ('{kod}'). Devir öncesinde satış yapılmış olabilir.",
+                fg="#c62828",
+            )
+            return
+        son = ozet["gecmis"][0]
         self.gecmis_bilgi.configure(
             text=(
-                f"✓ Bu müşteri bu ürünü {ozet['adet']} kez almış. "
-                f"Son alış: {para_goster(ozet['son_fiyat'])} | "
-                f"Ortalama: {para_goster(ozet['ortalama_fiyat'])} | "
-                f"Son FIFO maliyet: {para_goster(ozet['gecmis'][0]['fifo_birim_maliyeti'])}  "
-                f"(Çift tıkla → iade fiyatı + FIFO maliyet uygula)"
+                f"✓ {ozet['adet']} onaylı satış · Son: {tarih_goster(son['tarih'])} {son['fatura_no']} · "
+                f"Net birim fiyat {para_goster(son['net_fiyat'])} (iskonto sonrası, KDV hariç) · "
+                f"Kalan iade edilebilir {miktar_goster(son['kalan_iade_miktar'])} {son['birim'] or ''}"
             ),
-            foreground="#2e7d32",
+            fg="#2e7d32",
         )
         self._gecmis_kayitlari = ozet["gecmis"]
         for sira, g in enumerate(ozet["gecmis"]):
-            self.gecmis_tablo.insert("", "end", iid=str(sira), values=(
-                g["fatura_no"], tarih_goster(g["tarih"]), g["miktar"],
-                para_goster(g["birim_fiyat"]), para_goster(g["net_fiyat"]),
-                para_goster(g["fifo_birim_maliyeti"]),
-            ))
-        if not self.satir_girdileri["birim_fiyat"].get().strip() or self.satir_girdileri["birim_fiyat"].get() in ("0", "0.0"):
-            self.satir_girdileri["birim_fiyat"].delete(0, "end")
-            self.satir_girdileri["birim_fiyat"].insert(0, str(ozet["son_fiyat"]))
-        self._secili_gecmis = ozet["gecmis"][0]
+            self.gecmis_tablo.insert(
+                "", "end", iid=str(sira), values=self._gecmis_degerleri(g),
+                tags=("tamamen",) if g["tamamen_iade"] else (),
+            )
+
+    def _secili_gecmis_kaydi(self, tablo=None):
+        tablo = tablo or self.gecmis_tablo
+        secim = tablo.selection()
+        if not secim or not self._gecmis_kayitlari:
+            return None
+        return self._gecmis_kayitlari[int(secim[0])]
+
+    def gecmis_satira_bagla(self, g=None):
+        g = g or self._secili_gecmis_kaydi()
+        if g is None:
+            messagebox.showinfo("Kaynak satış", "Önce geçmiş satış listesinden bir satır seçin.", parent=self)
+            return
+        if g["tamamen_iade"] and not messagebox.askyesno(
+            "Tamamen iade edilmiş satış",
+            f"{g['fatura_no']} satışındaki bu ürün daha önce tamamen iade edilmiş. Yine de bağlansın mı?",
+            parent=self,
+        ):
+            return
+        self._secili_gecmis = g
+        self._bagli_etiketi_guncelle()
 
     def gecmisten_fiyat_al(self, _event=None):
-        secim = self.gecmis_tablo.selection()
-        if not secim or not hasattr(self, "_gecmis_kayitlari"):
+        g = self._secili_gecmis_kaydi() or getattr(self, "_secili_gecmis", None)
+        if g is None:
+            messagebox.showinfo("Fiyat", "Önce geçmiş satış listesinden bir satır seçin.", parent=self)
             return
-        g = self._gecmis_kayitlari[int(secim[0])]
+        fiyat = g["net_fiyat"].quantize(Decimal("0.0001"))
+        if not messagebox.askyesno(
+            "Fiyatı referans al",
+            f"İade fiyatı {para_goster(fiyat)} (iskonto sonrası, KDV hariç) olarak yazılsın mı?",
+            parent=self,
+        ):
+            return
         self.satir_girdileri["birim_fiyat"].delete(0, "end")
-        self.satir_girdileri["birim_fiyat"].insert(0, str(g["net_fiyat"]))
-        self._secili_gecmis = g
+        self.satir_girdileri["birim_fiyat"].insert(0, str(fiyat))
+
+    def satislari_gor(self):
+        musteri = self._secili_musteri()
+        kod = self.satir_girdileri["urun_kodu"].get().strip()
+        if not musteri or not kod:
+            messagebox.showinfo("Satışları Gör", "Önce müşteri ve ürün seçin.", parent=self)
+            return
+        if kod != getattr(self, "_gecmis_kodu", None):
+            self.urun_gecmisini_goster()
+        pencere = tk.Toplevel(self)
+        pencere.title(f"Geçmiş Satışlar · {musteri.unvan} · {kod}")
+        pencere.geometry("1180x520")
+        pencere.transient(self)
+        tk.Label(
+            pencere, text=f"{musteri.unvan} — {kod} ürününün onaylı satışları (yeniden eskiye)",
+            font=("Segoe UI", 12, "bold"), fg="#0d2b52",
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+        ttk.Label(
+            pencere,
+            text="Net birim fiyat ve net satır tutarı iskonto sonrası, KDV hariçtir. Tamamen iade edilen satışlar gri gösterilir.",
+            foreground="#666666",
+        ).pack(anchor="w", padx=10)
+        cerceve = ttk.Frame(pencere)
+        cerceve.pack(fill="both", expand=True, padx=10, pady=6)
+        tablo = ttk.Treeview(cerceve, columns=IADE_GECMIS_KOLONLARI, show="headings")
+        for kolon, baslik, genislik in IADE_GECMIS_BASLIKLARI:
+            tablo.heading(kolon, text=baslik)
+            tablo.column(kolon, width=genislik, anchor="w" if kolon in ("tarih", "fatura", "durum") else "e")
+        kaydir = ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview)
+        tablo.configure(yscrollcommand=kaydir.set)
+        tablo.pack(side="left", fill="both", expand=True)
+        kaydir.pack(side="right", fill="y")
+        tablo.tag_configure("tamamen", foreground="#888888")
+        for sira, g in enumerate(self._gecmis_kayitlari):
+            tablo.insert("", "end", iid=str(sira), values=self._gecmis_degerleri(g),
+                         tags=("tamamen",) if g["tamamen_iade"] else ())
+        detay = tk.Label(pencere, text="", anchor="w", justify="left", font=("Segoe UI", 10))
+        detay.pack(fill="x", padx=10)
+
+        def _secim(_e=None):
+            g = self._secili_gecmis_kaydi(tablo)
+            if g is None:
+                return
+            if g["onceki_iadeler"]:
+                satirlar = "; ".join(
+                    f"{i['iade_no']} ({tarih_goster(i['tarih'])}): {miktar_goster(i['miktar'])} {i['birim'] or ''}"
+                    for i in g["onceki_iadeler"]
+                )
+                detay.configure(text=f"Önceki iadeler: {satirlar}")
+            else:
+                detay.configure(text="Bu satışa bağlı önceki iade yok.")
+
+        def _bagla():
+            g = self._secili_gecmis_kaydi(tablo)
+            if g is None:
+                return
+            self.gecmis_satira_bagla(g)
+            if getattr(self, "_secili_gecmis", None) is g:
+                pencere.destroy()
+
+        tablo.bind("<<TreeviewSelect>>", _secim)
+        tablo.bind("<Double-1>", lambda _e: _bagla())
+        alt = ttk.Frame(pencere)
+        alt.pack(fill="x", padx=10, pady=8)
+        ttk.Button(alt, text="Kapat", command=pencere.destroy).pack(side="right")
+        ttk.Button(alt, text="Seçili Satışa Bağla", command=_bagla).pack(side="right", padx=6)
+
+    def _kaynak_yok_karari(self, kod):
+        """Satış bulunamadığında Devam et / Vazgeç; devam edilirse karar sözlüğü döner."""
+        pencere = tk.Toplevel(self)
+        pencere.title("Kayıtlı satış bulunamadı")
+        pencere.transient(self)
+        pencere.grab_set()
+        pencere.resizable(False, False)
+        tk.Label(
+            pencere,
+            text=("Bu ürün için kayıtlı satış bulunamadı. Devir öncesinde satış yapılmış olabilir. "
+                  "İade faturasına devam edilsin mi?"),
+            wraplength=460, justify="left", font=("Segoe UI", 11, "bold"),
+        ).pack(padx=14, pady=(12, 6), anchor="w")
+        ttk.Label(pencere, text=f"Ürün: {kod}").pack(padx=14, anchor="w")
+        ttk.Label(pencere, text="Gerekçe (isteğe bağlı):").pack(padx=14, pady=(8, 0), anchor="w")
+        gerekce = ttk.Entry(pencere, width=62)
+        gerekce.pack(padx=14, pady=4, fill="x")
+        sonuc = {}
+
+        def _devam():
+            from database.acik_kalem_service import _kullanici
+
+            sonuc.update({
+                "kaynak_yok_onay": True,
+                "kaynak_yok_gerekce": gerekce.get().strip() or None,
+                "kaynak_yok_kullanici": _kullanici()[1],
+                "kaynak_yok_tarih": datetime.now(),
+            })
+            pencere.destroy()
+
+        butonlar = ttk.Frame(pencere)
+        butonlar.pack(fill="x", padx=14, pady=(6, 12))
+        ttk.Button(butonlar, text="Vazgeç", command=pencere.destroy).pack(side="right")
+        ttk.Button(butonlar, text="Devam et", command=_devam).pack(side="right", padx=6)
+        pencere.bind("<Escape>", lambda _e: pencere.destroy())
+        gerekce.focus_set()
+        self.wait_window(pencere)
+        if self.winfo_exists():
+            self.grab_set()
+        return sonuc or None
 
     def satir_ekle(self):
-        musteri = self.musteri_map.get(self.musteri.get())
+        musteri = self._secili_musteri()
         if not musteri:
             messagebox.showwarning("Eksik bilgi", "Önce müşteri seçin.", parent=self)
             return
@@ -11720,24 +12077,26 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("Geçersiz satır", str(hata), parent=self)
             return
-        ozet = SatisIadeFaturasiService.musteri_urun_gecmisi(musteri.id, veri["urun_kodu"])
-        onceki = None
-        onceki_no = None
-        fifo = None
-        kaynak_satir_id = None
-        if hasattr(self, "_secili_gecmis"):
-            onceki = self._secili_gecmis["net_fiyat"]
-            onceki_no = self._secili_gecmis["fatura_no"]
-            fifo = self._secili_gecmis.get("fifo_birim_maliyeti")
-            kaynak_satir_id = self._secili_gecmis.get("satir_id")
-        elif ozet["aldi"]:
-            onceki = ozet["son_fiyat"]
-            onceki_no = ozet["gecmis"][0]["fatura_no"]
-            fifo = ozet["gecmis"][0].get("fifo_birim_maliyeti")
-            kaynak_satir_id = ozet["gecmis"][0].get("satir_id")
+        if veri["urun_kodu"] != getattr(self, "_gecmis_kodu", None):
+            self.urun_gecmisini_goster()
+        secili = getattr(self, "_secili_gecmis", None)
+        karar = None
+        if secili is None:
+            if not self._gecmis_kayitlari:
+                karar = self._kaynak_yok_karari(veri["urun_kodu"])
+                if karar is None:
+                    return
+            elif not messagebox.askyesno(
+                "Kaynak satış seçilmedi",
+                f"Bu ürün için {len(self._gecmis_kayitlari)} kayıtlı satış var ancak iade satırı bir satışa "
+                "bağlanmadı. Kaynaksız eklensin mi?\n\n(Bağlamak için 'Hayır' deyip geçmiş satış listesinden seçin.)",
+                parent=self,
+            ):
+                return
+        fifo = secili.get("fifo_birim_maliyeti") if secili else None
         if fifo in (None, ""):
             fifo = StokService.maliyetler(veri["urun_kodu"], self.depo.get() or "ANA DEPO").get("fifo", 0)
-        self.satirlar.append(doviz_satir_kaydet_oncesi(self, {
+        yeni = {
             "urun_kodu": veri["urun_kodu"],
             "urun_adi": veri["urun_adi"],
             "miktar": veri["miktar"],
@@ -11745,11 +12104,22 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
             "birim_fiyat": veri["birim_fiyat"],
             "iskonto_orani": 0,
             "kdv_orani": veri["kdv_orani"] or _firma_kdv_varsayilan_metin(),
-            "onceki_alis_fiyati": onceki,
-            "onceki_fatura_no": onceki_no,
-            "kaynak_fatura_satiri_id": kaynak_satir_id,
+            "onceki_alis_fiyati": secili["net_fiyat"].quantize(Decimal("0.0001")) if secili else None,
+            "onceki_fatura_no": secili["fatura_no"] if secili else None,
+            "kaynak_fatura_satiri_id": secili.get("satir_id") if secili else None,
             "fifo_birim_maliyeti": fifo,
-        }))
+        }
+        if karar:
+            yeni.update(karar)
+        if secili:
+            uyarilar = SatisIadeFaturasiService.iade_satiri_uyarilari(
+                musteri.id, yeni, haric_iade_id=self._haric_iade_id(), diger_satirlar=self.satirlar
+            )
+            if uyarilar and not messagebox.askyesno(
+                "İade uyarısı", "\n\n".join(uyarilar) + "\n\nYine de eklensin mi?", parent=self
+            ):
+                return
+        self.satirlar.append(doviz_satir_kaydet_oncesi(self, yeni))
         self.satir_listesini_yenile()
         for alan, w in self.satir_girdileri.items():
             if alan == "birim":
@@ -11758,8 +12128,7 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
                 w.delete(0, "end")
         self.satir_girdileri["kdv_orani"].insert(0, _firma_kdv_varsayilan_metin())
         self.satir_girdileri["miktar"].insert(0, "1")
-        if hasattr(self, "_secili_gecmis"):
-            del self._secili_gecmis
+        self._gecmis_temizle()
 
     def satir_kaldir(self):
         secim = self.satir_tablosu.selection()
@@ -11785,7 +12154,7 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
                 para_goster(fiyat),
                 para_goster(onceki) if onceki not in (None, "") else "—",
                 para_goster(fifo) if fifo not in (None, "") else "—",
-                veri.get("onceki_fatura_no") or "",
+                veri.get("onceki_fatura_no") or ("KAYNAKSIZ (onaylı)" if veri.get("kaynak_yok_onay") else "—"),
                 f"{kdv}%", para_goster(toplam),
             ))
         self.toplam_etiket.configure(text=f"Genel Toplam: {para_goster(genel)}")
@@ -11812,11 +12181,43 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
                 "onceki_fatura_no": satir.onceki_fatura_no,
                 "kaynak_fatura_satiri_id": satir.kaynak_fatura_satiri_id,
                 "fifo_birim_maliyeti": satir.fifo_birim_maliyeti,
+                "kaynak_yok_onay": getattr(satir, "kaynak_yok_onay", None),
+                "kaynak_yok_gerekce": getattr(satir, "kaynak_yok_gerekce", None),
+                "kaynak_yok_kullanici": getattr(satir, "kaynak_yok_kullanici", None),
+                "kaynak_yok_tarih": getattr(satir, "kaynak_yok_tarih", None),
             })
+        self._kaynak_baglarini_dogrula()
         self.satir_listesini_yenile()
 
+    def _kaynak_baglarini_dogrula(self):
+        """Yeniden açılan taslakta kaynak satışı sonradan iptal edilen/onayı kaldırılan satırları ayıklar."""
+        musteri = self._secili_musteri()
+        if musteri is None:
+            return
+        gecersiz = []
+        gecmisler = {}
+        for s in self.satirlar:
+            kaynak_id = s.get("kaynak_fatura_satiri_id")
+            if not kaynak_id:
+                continue
+            kod = s["urun_kodu"]
+            if kod not in gecmisler:
+                gecmisler[kod] = SatisIadeFaturasiService.musteri_urun_gecmisi(
+                    musteri.id, kod, haric_iade_id=self._haric_iade_id()
+                )["gecmis"]
+            if not any(int(g["satir_id"]) == int(kaynak_id) for g in gecmisler[kod]):
+                gecersiz.append(f"{kod} ({s.get('onceki_fatura_no') or kaynak_id})")
+                self._kaynak_bagini_kaldir(s)
+        if gecersiz:
+            messagebox.showwarning(
+                "Kaynak satış geçersiz",
+                "Şu satırların kaynak satışı artık onaylı/geçerli değil (iptal edilmiş veya onayı kaldırılmış); "
+                "bağ kaldırıldı, lütfen yeniden bağlayın veya kaynaksız onaylayın:\n\n" + "\n".join(gecersiz),
+                parent=self,
+            )
+
     def kaydet(self):
-        musteri = self.musteri_map.get(self.musteri.get())
+        musteri = self._secili_musteri()
         if not musteri:
             messagebox.showwarning("Eksik bilgi", "Müşteri seçin.", parent=self)
             return
@@ -11840,6 +12241,95 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
             messagebox.showerror("İade kaydedilemedi", str(hata), parent=self)
             return
         self.destroy()
+
+
+class CariSatisIadeListesiDialog(tk.Toplevel):
+    """Cari karttan açılan, yalnız seçili müşteriye ait satış iade faturaları listesi."""
+
+    def __init__(self, parent, cari_id: int):
+        super().__init__(parent)
+        self.cari_id = int(cari_id)
+        cari = CariService.getir(self.cari_id)
+        unvan = getattr(cari, "unvan", "") or ""
+        self.title(f"Satış İade Faturaları · {unvan}")
+        self.geometry("980x520")
+        self.minsize(700, 360)
+        self.transient(parent)
+        self.grab_set()
+        tk.Label(
+            self, text=f"SATIŞ İADE FATURALARI — {unvan}",
+            font=("Segoe UI", 13, "bold"), fg="#0d2b52",
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+        cerceve = ttk.Frame(self)
+        cerceve.pack(fill="both", expand=True, padx=12, pady=4)
+        kolonlar = ("no", "tarih", "kaynak", "depo", "toplam", "durum")
+        basliklar = ("İade No", "İade Tarihi", "Kaynak Fatura", "Depo", "Genel Toplam", "Durum")
+        self.tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        for kolon, baslik in zip(kolonlar, basliklar):
+            self.tablo.heading(kolon, text=baslik)
+            self.tablo.column(kolon, width=140, anchor="e" if kolon == "toplam" else "w")
+        kaydir = ttk.Scrollbar(cerceve, orient="vertical", command=self.tablo.yview)
+        self.tablo.configure(yscrollcommand=kaydir.set)
+        self.tablo.pack(side="left", fill="both", expand=True)
+        kaydir.pack(side="right", fill="y")
+        self.tablo.bind("<Double-1>", lambda _e: self.iade_ac())
+        alt = ttk.Frame(self)
+        alt.pack(fill="x", padx=12, pady=10)
+        ttk.Button(alt, text="Yeni İade Faturası", command=self.yeni_iade).pack(side="left")
+        ttk.Button(alt, text="İadeyi Görüntüle / Aç", command=self.iade_ac).pack(side="left", padx=8)
+        ttk.Button(alt, text="İptal Et", command=self.iade_iptal).pack(side="left")
+        ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        self.yenile()
+
+    def yenile(self):
+        for item in self.tablo.get_children():
+            self.tablo.delete(item)
+        for kayit in SatisIadeFaturasiService.listele(cari_id=self.cari_id):
+            i = kayit["iade"]
+            if int(i.cari_id) != self.cari_id:
+                continue
+            self.tablo.insert("", "end", iid=str(i.id), values=(
+                i.iade_no, tarih_goster(i.iade_tarihi),
+                i.kaynak_fatura.fatura_no if i.kaynak_fatura else "",
+                i.depo, para_goster(kayit["genel_toplam"]), i.durum,
+            ))
+
+    def _secili_id(self):
+        secim = self.tablo.selection()
+        if not secim:
+            messagebox.showinfo("İade seçimi", "Lütfen bir iade faturası seçin.", parent=self)
+            return None
+        return int(secim[0])
+
+    def yeni_iade(self):
+        dialog = SatisIadeFaturasiDialog(self, cari=self.cari_id)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.yenile()
+
+    def iade_ac(self):
+        iade_id = self._secili_id()
+        if iade_id is None:
+            return
+        iade = SatisIadeFaturasiService.getir(iade_id)
+        if iade is None or int(iade.cari_id) != self.cari_id:
+            return
+        dialog = SatisIadeFaturasiDialog(self, iade=iade, cari=self.cari_id)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.yenile()
+
+    def iade_iptal(self):
+        iade_id = self._secili_id()
+        if iade_id is not None and messagebox.askyesno(
+            "İadeyi iptal et", "Seçili iade faturası iptal edilsin mi?", parent=self
+        ):
+            try:
+                SatisIadeFaturasiService.iptal_et(iade_id)
+            except ValueError as hata:
+                messagebox.showerror("İşlem yapılamadı", str(hata), parent=self)
+                return
+            self.yenile()
 
 
 class StokGirisiDialog(tk.Toplevel):
@@ -13753,11 +14243,8 @@ class MuhasebeApp(tk.Tk):
         ızgara = tk.Frame(govde)
         ızgara.pack(fill="both", expand=True, pady=8)
         ızgara.columnconfigure(0, weight=1)
-        ogeler = (
-            ("SATIŞ FATURALARI LİSTESİ", "Kayıtlı satış faturalarını inceleyin ve düzenleyin", self.satis_faturalari_goster),
-            ("HIZLI FATURA", "Boş satış faturası kartını hemen açın", self.hizli_fatura_ac),
-            ("FATURA GÖRSELİ PDF İÇE AKTAR", "PDF/XML/görselden satış faturası taslağı oluşturun", self.satis_fatura_belge_aktar),
-            ("SATIŞ İADE FATURALARI", "Satış iade faturalarını yönetin", self.satis_iade_faturalari_goster),
+        ogeler = tuple(
+            (baslik, aciklama, getattr(self, komut_adi)) for baslik, aciklama, komut_adi in SATIS_FATURA_MENU_SIRASI
         )
         for i, (baslik, aciklama, komut) in enumerate(ogeler):
             HubKart(
@@ -15145,8 +15632,8 @@ class MuhasebeApp(tk.Tk):
 
         cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
-        kolonlar = ("no", "tarih", "saat", "vade", "musteri", "siparis", "irsaliye", "depo", "toplam", "tahsilat", "kalan", "satis_personeli", "islem_yapan", "onaylayan", "durum", "onay")
-        basliklar = ("Fatura No", "Fatura Tarihi", "Saat", "Vade Tarihi", "Müşteri", "Sipariş No", "İrsaliye No", "Depo", "Genel Toplam", "Tahsilat", "Kalan", "Satış Personeli", "İşlemi Yapan", "Onaylayan", "Durum", "Onay")
+        kolonlar = SATIS_FATURA_LISTE_KOLONLARI
+        basliklar = SATIS_FATURA_LISTE_BASLIKLARI
         self._fatura_liste_kolonlar = kolonlar
         self._fatura_liste_basliklar = dict(zip(kolonlar, basliklar))
         self._fatura_liste_filtre = {}
@@ -15161,18 +15648,31 @@ class MuhasebeApp(tk.Tk):
             "saat": (58, "center"),
             "vade": (100, "center"),
             "musteri": (200, "w"),
+            "bakiye": (110, "e"),
             "siparis": (100, "center"),
             "irsaliye": (100, "center"),
             "depo": (80, "center"),
             "toplam": (110, "e"),
-            "tahsilat": (100, "e"),
+            "tahsilat": (110, "e"),
             "kalan": (100, "e"),
+            "odeme": (100, "center"),
             "satis_personeli": (130, "w"),
             "islem_yapan": (120, "w"),
             "onaylayan": (120, "w"),
-            "durum": (80, "center"),
+            "durum": (100, "center"),
             "onay": (80, "center"),
         }
+        # Seçili faturanın cari ünvanı / bakiyesi büyük ve koyu (Treeview tek kolon fontu desteklemez)
+        bilgi = tk.Frame(cerceve, bg="#eef3fb")
+        bilgi.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        self.fatura_secili_cari_etiket = tk.Label(
+            bilgi, text="", bg="#eef3fb", fg="#0d2b52", font=("Segoe UI", 14, "bold"), anchor="w"
+        )
+        self.fatura_secili_cari_etiket.pack(side="left", padx=8, pady=4, fill="x", expand=True)
+        self.fatura_secili_bakiye_etiket = tk.Label(
+            bilgi, text="", bg="#eef3fb", fg="#0d2b52", font=("Segoe UI", 14, "bold"), anchor="e"
+        )
+        self.fatura_secili_bakiye_etiket.pack(side="right", padx=8, pady=4)
         self.fatura_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         treeview_stil(self.fatura_tablosu)
         for kolon, baslik in zip(kolonlar, basliklar):
@@ -15203,20 +15703,21 @@ class MuhasebeApp(tk.Tk):
             self.fatura_toplam_satiri.heading(kolon, text="", anchor="center")
             self.fatura_toplam_satiri.column(kolon, width=genislik, minwidth=50, anchor=hiza, stretch=(kolon == "musteri"))
         self.fatura_toplam_satiri.heading("depo", text="Σ Filtre")
-        self.fatura_toplam_satiri.heading("toplam", text="Σ Genel Toplam")
-        self.fatura_toplam_satiri.heading("tahsilat", text="Σ Tahsilat")
-        self.fatura_toplam_satiri.heading("kalan", text="Σ Kalan")
+        self.fatura_toplam_satiri.heading("toplam", text="Σ Toplam")
+        self.fatura_toplam_satiri.heading("tahsilat", text="Σ Kapanan")
+        self.fatura_toplam_satiri.heading("kalan", text="Σ Açık")
         self.fatura_toplam_satiri.tag_configure("toplam", background="#fff8e1", font=("Segoe UI", 9, "bold"))
 
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.fatura_tablosu.yview)
         self._fatura_yatay_scroll = ttk.Scrollbar(cerceve, orient="horizontal", command=self._fatura_xview)
         self.fatura_tablosu.configure(yscrollcommand=dikey.set, xscrollcommand=self._fatura_xscroll_set)
-        self.fatura_tablosu.grid(row=0, column=0, sticky="nsew")
-        dikey.grid(row=0, column=1, sticky="ns")
-        self.fatura_toplam_satiri.grid(row=1, column=0, sticky="ew")
-        self._fatura_yatay_scroll.grid(row=2, column=0, sticky="ew")
-        cerceve.rowconfigure(0, weight=1)
+        self.fatura_tablosu.grid(row=1, column=0, sticky="nsew")
+        dikey.grid(row=1, column=1, sticky="ns")
+        self.fatura_toplam_satiri.grid(row=2, column=0, sticky="ew")
+        self._fatura_yatay_scroll.grid(row=3, column=0, sticky="ew")
+        cerceve.rowconfigure(1, weight=1)
         cerceve.columnconfigure(0, weight=1)
+        self.fatura_tablosu.bind("<<TreeviewSelect>>", lambda _e: self._fatura_secili_cari_goster())
         self.fatura_tablosu.bind("<Double-1>", lambda _e: self.fatura_ac())
         self.fatura_tablosu.bind("<Button-3>", self._fatura_baslik_sag_tik)
         self.fatura_tablosu.bind("<Configure>", lambda _e: self._fatura_toplam_genislikleri_esitle())
@@ -15290,11 +15791,18 @@ class MuhasebeApp(tk.Tk):
         def _yukle():
             from database.user_audit import display_user
 
+            from database.cari_bakiye_service import liste_bakiyeleri
+
             ham = []
-            for o in SatisFaturasiService.listele_ozet(tarih_bas=yukle_bas, tarih_bit=yukle_bit):
+            ozetler = SatisFaturasiService.listele_ozet(tarih_bas=yukle_bas, tarih_bit=yukle_bit)
+            bakiyeler = liste_bakiyeleri(sorted({o["cari_id"] for o in ozetler if o.get("cari_id")}))
+            for o in ozetler:
                 toplam = o["genel_toplam"] or Decimal("0")
-                tahsilat = o["tahsilat_tutari"] or Decimal("0")
-                kalan = toplam - tahsilat
+                tahsilat = o.get("kapanan_tutar", o["tahsilat_tutari"]) or Decimal("0")
+                kalan = o.get("acik_tutar", toplam - tahsilat)
+                bakiye = bakiyeler.get(o.get("cari_id"), Decimal("0"))
+                odeme = o.get("odeme_durumu") or ""
+                evrak_durumu = o.get("evrak_durumu") or o.get("durum") or ""
                 onayli = bool(o.get("onaylandi"))
                 onay_metin = "Onaylı" if onayli else "Onaysız"
                 unvan = o.get("musteri") or ""
@@ -15310,22 +15818,26 @@ class MuhasebeApp(tk.Tk):
                 ham.append({
                     "id": o["id"],
                     "onaylandi": onayli,
+                    "cari_unvan": unvan,
+                    "cari_bakiye": bakiye,
                     "values": (
                         o.get("fatura_no") or "",
                         tarih_goster(o["fatura_tarihi"]) if o.get("fatura_tarihi") else "",
                         o.get("islem_saati") or "",
                         tarih_goster(o["vade_tarihi"]) if o.get("vade_tarihi") else "",
                         unvan,
+                        para_goster(bakiye),
                         o.get("siparis_no") or "",
                         o.get("irsaliye_no") or "",
                         o.get("depo") or "",
                         para_goster(toplam),
                         para_goster(tahsilat),
                         para_goster(kalan),
+                        odeme,
                         satis_personeli,
                         islem_yapan,
                         onaylayan,
-                        o.get("durum") or "",
+                        evrak_durumu,
                         onay_metin,
                     ),
                     "sort": (
@@ -15334,16 +15846,18 @@ class MuhasebeApp(tk.Tk):
                         o.get("islem_saati") or "",
                         o.get("vade_tarihi") or date.min,
                         unvan.casefold(),
+                        Decimal(bakiye or 0),
                         (o.get("siparis_no") or "").casefold(),
                         (o.get("irsaliye_no") or "").casefold(),
                         (o.get("depo") or "").casefold(),
                         Decimal(toplam or 0),
                         Decimal(tahsilat),
                         Decimal(kalan),
+                        odeme.casefold(),
                         satis_personeli.casefold(),
                         islem_yapan.casefold(),
                         onaylayan.casefold(),
-                        (o.get("durum") or "").casefold(),
+                        evrak_durumu.casefold(),
                         onay_metin.casefold(),
                     ),
                 })
@@ -15368,6 +15882,27 @@ class MuhasebeApp(tk.Tk):
                     pass
 
         arka_planda(self, _yukle, on_ok=_doldur, on_err=_hata)
+
+    def _fatura_secili_cari_goster(self):
+        etiket = getattr(self, "fatura_secili_cari_etiket", None)
+        bakiye_etiket = getattr(self, "fatura_secili_bakiye_etiket", None)
+        if etiket is None or bakiye_etiket is None:
+            return
+        secim = self.fatura_tablosu.selection() if hasattr(self, "fatura_tablosu") else ()
+        satir = None
+        if secim:
+            satir = next(
+                (s for s in getattr(self, "_fatura_liste_ham", []) if str(s["id"]) == secim[0]), None
+            )
+        try:
+            if satir is None:
+                etiket.configure(text="")
+                bakiye_etiket.configure(text="")
+                return
+            etiket.configure(text=satir.get("cari_unvan") or "")
+            bakiye_etiket.configure(text=f"Cari Bakiye: {para_goster(satir.get('cari_bakiye') or 0)}")
+        except tk.TclError:
+            pass
 
     def _fatura_tarih_varsayilan_yaz(self):
         """Fatura tarihi filtresini son 2 güne (bugün-2 … bugün) ayarlar."""

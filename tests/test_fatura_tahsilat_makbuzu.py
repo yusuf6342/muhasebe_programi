@@ -134,7 +134,8 @@ class FaturaTahsilatServisTest(unittest.TestCase):
         self.assertEqual(m.makbuz_no, "MKB-00001")
         self.assertEqual(m.bagli_fatura_no, "SF-2026-0002")
         # FIFO en eski faturayı (SF-0001) değil, bağlı faturayı kapatır
-        self.assertEqual(_durum(self.fatura_id)[:3], (Decimal("600.00"), "KAPALI", Decimal("0.00")))
+        # Tam kapanış evrak durumunu değiştirmez (AÇIK kalır); ödeme durumu ayrı alandır
+        self.assertEqual(_durum(self.fatura_id)[:3], (Decimal("600.00"), "AÇIK", Decimal("0.00")))
         self.assertEqual(_durum(self.eski_id)[:3], (Decimal("0.00"), "AÇIK", Decimal("1200.00")))
         self.assertEqual(FinansService.cari_bakiye_ozeti(self.musteri_id)["bakiye"], bakiye_once - 600)
         oz = FinansService.fatura_tahsilat_ozeti(self.fatura_id)
@@ -175,7 +176,8 @@ class FaturaTahsilatServisTest(unittest.TestCase):
     def test_iptal_faturayi_geri_acar(self):
         ilk = _makbuz(self, [_nakit(self, "400")])
         ikinci = _makbuz(self, [_nakit(self, "200")])
-        self.assertEqual(_durum(self.fatura_id)[1], "KAPALI")
+        self.assertEqual(_durum(self.fatura_id)[1], "AÇIK")
+        self.assertEqual(_durum(self.fatura_id)[2], Decimal("0.00"))
         FinansService.kasa_makbuz_iptal(ikinci.id)
         self.assertEqual(_durum(self.fatura_id)[:3], (Decimal("400.00"), "AÇIK", Decimal("200.00")))
         oz = FinansService.fatura_tahsilat_ozeti(self.fatura_id)
