@@ -1042,8 +1042,24 @@ class FinansService:
             raise ValueError("Cari bulunamadı.")
         kalan = Decimal(str(tutar))
         if oncelikli is not None and oncelikli["butce"] > 0:
+            from database.acik_kalem_service import AcikKalemService, para_anahtari
+
             pay = min(kalan, oncelikli["butce"])
-            FinansService._faturaya_uygula(oncelikli["fatura"], oncelikli["hareket"], pay)
+            hareket = oncelikli["hareket"]
+            if hareket is not None and para_anahtari(hareket) == "TRY":
+                # Onaylı faturaya düşen pay kapatma kaydıyla izlenir (Kapatma Detayı tek kaynak).
+                pay = AcikKalemService.kapat(
+                    session,
+                    cari.id,
+                    pay,
+                    belge_no=belge_no,
+                    kaynak_tur="TAHSILAT",
+                    tarih=tarih,
+                    dagitim=[(int(hareket.id), pay)],
+                    fifo=False,
+                ).kapanan
+            else:
+                FinansService._faturaya_uygula(oncelikli["fatura"], hareket, pay)
             oncelikli["butce"] -= pay
             oncelikli["uygulanan"] += pay
             kalan -= pay
@@ -1275,6 +1291,9 @@ Banka hesabına giriş; gönderen cari zorunlu (tahsilat)."""
                 ).first()
                 if not mevcut:
                     raise ValueError("Güncellenecek fiş bulunamadı.")
+                from database.odeme_sozu_service import OdemeSozuService
+
+                OdemeSozuService.evrak_tutari_kontrol(session, belge_no, tutar)
                 FinansService._havale_cari_geri_al(session, belge_no)
                 FinansService._finans_hareketlerini_sil(session, belge_no)
                 session.flush()
@@ -1329,6 +1348,9 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 ).first()
                 if not mevcut:
                     raise ValueError("Güncellenecek fiş bulunamadı.")
+                from database.odeme_sozu_service import OdemeSozuService
+
+                OdemeSozuService.evrak_tutari_kontrol(session, belge_no, tutar)
                 FinansService._havale_cari_geri_al(session, belge_no)
                 FinansService._finans_hareketlerini_sil(session, belge_no)
                 session.flush()
@@ -3523,6 +3545,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     raise ValueError("Makbuz türü değiştirilemez.")
                 if mevcut.durum == "IPTAL":
                     raise ValueError("İptal edilmiş makbuz düzenlenemez.")
+                from database.odeme_sozu_service import OdemeSozuService
+
+                OdemeSozuService.evrak_tutari_kontrol(session, mevcut.belge_no, toplam)
                 FinansService._makbuz_etkilerini_geri_al(session, mevcut, iptal=False)
                 mevcut.satirlar.clear()
                 session.flush()
@@ -3848,20 +3873,87 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         from database.models.cari import CariIslem
         from database.models.satis_faturasi import SatisFaturasi
 
+        from database.acik_kalem_service import AcikKalemService
+
         islemler = list(session.scalars(select(CariIslem).where(CariIslem.belge_no == makbuz.belge_no)).all())
         toplam = sum(
             (Decimal(str(i.alacak or 0)) + Decimal(str(i.borc or 0)) for i in islemler), Decimal("0")
         )
-        geri = min(Decimal(str(bag.fatura_kapanan or 0)), toplam)
-        if geri > 0:
-            fatura = session.get(SatisFaturasi, int(bag.fatura_id))
-            if fatura is not None:
-                FinansService._faturadan_geri_al(session, fatura, geri)
-        if toplam - geri > 0:
-            CariService._aciklara_geri_al(session, makbuz.cari_id, toplam - geri, makbuz.belge_no)
+        fatura_payi = min(Decimal(str(bag.fatura_kapanan or 0)), toplam)
+        if AcikKalemService.belge_kayitli_mi(session, makbuz.cari_id, makbuz.belge_no):
+            # Kayıtlı tahsisler + kendi avansı geri alınır; kalan fark faturaya eski yolla yazılmış paydır.
+            kayitli = AcikKalemService.belge_geri_al(
+                session, makbuz.cari_id, makbuz.belge_no, neden=f"Makbuz geri alındı {makbuz.belge_no}"
+            )
+            eski = min(max(toplam - kayitli, Decimal("0")), fatura_payi)
+            if eski > 0:
+                fatura = session.get(SatisFaturasi, int(bag.fatura_id))
+                if fatura is not None:
+                    FinansService._faturadan_geri_al(session, fatura, eski)
+        else:
+            if fatura_payi > 0:
+                fatura = session.get(SatisFaturasi, int(bag.fatura_id))
+                if fatura is not None:
+                    FinansService._faturadan_geri_al(session, fatura, fatura_payi)
+            if toplam - fatura_payi > 0:
+                CariService._aciklara_geri_al(
+                    session, makbuz.cari_id, toplam - fatura_payi, makbuz.belge_no
+                )
         for islem in islemler:
             session.delete(islem)
         bag.fatura_kapanan = Decimal("0")
+
+    @staticmethod
+    def bagli_makbuz_paylarini_faturada_tut(session, fatura, *, neden: str) -> Decimal:
+        """Onay kaldırmadan önce: bağlı makbuzların bu faturaya kayıtlı tahsislerini iptal eder.
+
+        Pay faturanın tahsil edilen tutarında kalır (taslakta da makbuza bağlı kalır); avansa
+        dönüp başka faturalara dağılmaz. Yeniden onayda açık tutar toplam − tahsil edilen olur.
+        """
+        from database.acik_kalem_service import AcikKalemService, _kurus
+        from database.models.cari import CariKapatma
+
+        hareket = FinansService._fatura_cari_hareketi(session, fatura)
+        if (
+            hareket is None
+            or not AcikKalemService._tablo_var(session)
+            or not FinansService._bag_tablosu_var(session)
+        ):
+            return Decimal("0")
+        makbuz_idleri = [
+            b.makbuz_id
+            for b in session.scalars(
+                select(SatisFaturaMakbuzBagi).where(SatisFaturaMakbuzBagi.fatura_id == fatura.id)
+            ).all()
+        ]
+        if not makbuz_idleri:
+            return Decimal("0")
+        belgeler = [
+            m.belge_no
+            for m in session.scalars(
+                select(KasaMakbuzu).where(KasaMakbuzu.id.in_(makbuz_idleri))
+            ).all()
+            if m.belge_no
+        ]
+        if not belgeler:
+            return Decimal("0")
+        import uuid
+
+        kimlik = str(uuid.uuid4())
+        toplam = Decimal("0")
+        for kayit in session.scalars(
+            select(CariKapatma).where(
+                CariKapatma.hedef_hareket_id == int(hareket.id),
+                CariKapatma.kaynak_belge_no.in_(belgeler),
+                CariKapatma.iptal.is_(False),
+            )
+        ).all():
+            AcikKalemService._kaydi_iptal_et(kayit, neden, kimlik)
+            toplam += Decimal(str(kayit.tutar or 0))
+        if toplam > 0:
+            AcikKalemService._ekle(session, hareket, toplam)
+        session.flush()
+        return _kurus(toplam)
 
     @staticmethod
     def makbuz_fatura_bagi(makbuz_id) -> dict | None:
@@ -4191,6 +4283,11 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 raise ValueError("Makbuz zaten iptal.")
             FinansService._makbuz_etkilerini_geri_al(session, makbuz, iptal=True)
             makbuz.durum = "IPTAL"
+            from database.odeme_sozu_service import OdemeSozuService
+
+            OdemeSozuService.evrak_baglantilarini_iptal(
+                session, makbuz.belge_no, neden=f"Makbuz iptal edildi {makbuz.belge_no}"
+            )
             session.flush()
 
 

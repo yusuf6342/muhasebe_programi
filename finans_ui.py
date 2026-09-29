@@ -149,6 +149,21 @@ def _finans_menu_isaretle(app):
             dugme.configure(style="Menu.TButton")
 
 
+def _soz_bagla(parent, cari_id, yon, evrak_turu, belge_no):
+    try:
+        from odeme_sozu_ui import evrak_kaydi_sonrasi_bagla
+
+        evrak_kaydi_sonrasi_bagla(parent, cari_id=cari_id, yon=yon, evrak_turu=evrak_turu, belge_no=belge_no)
+    except Exception:
+        pass
+
+
+def _odeme_sozleri_merkezi(app):
+    from odeme_sozu_ui import OdemeSozleriMerkezDialog
+
+    OdemeSozleriMerkezDialog(app)
+
+
 def finans_menusu_goster(app):
     app._icerigi_temizle()
     _finans_menu_isaretle(app)
@@ -178,6 +193,7 @@ def finans_menusu_goster(app):
         ("BANKA KREDİLERİ", lambda: banka_kredileri_menusu_goster(app) if banka_kredileri_menusu_goster else None),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
+        ("ÖDEME SÖZLERİ TAKVİMİ", lambda: _odeme_sozleri_merkezi(app)),
         ("EXCEL VERİ AKTARIM", lambda: _finans_excel_aktarim(app)),
         ("RAPORLAR", lambda: finans_raporlar_menusu_goster(app) if finans_raporlar_menusu_goster else None),
     )):
@@ -1272,6 +1288,9 @@ class HavaleFisDialog(tk.Toplevel):
             f"Belge no: {belge}",
             parent=self,
         )
+        if not self.belge_no:
+            _soz_bagla(self, cari_id, "ALINAN" if self.tur == "ahv" else "VERILEN",
+                       "Alınan Havale" if self.tur == "ahv" else "Gönderilen Havale", belge)
         self.destroy()
 
 
@@ -2049,6 +2068,8 @@ class BankaIslemKkOdemeDialog(tk.Toplevel):
             f"Belge no: {self.result}",
             parent=self,
         )
+        if not self.belge_no:
+            _soz_bagla(self, cari_id, "VERILEN", "Kredi Kartı ile Ödeme", self.result)
         self.destroy()
 
 
@@ -2414,6 +2435,8 @@ class BankaIslemPosTahsilatDialog(tk.Toplevel):
             f"Valör: {sonuc['valor_tarihi'].strftime('%d.%m.%Y')} {sonuc['valor_saati']} → KMH",
             parent=self,
         )
+        if not self.belge_no:
+            _soz_bagla(self, cari_id, "ALINAN", "POS Tahsilatı", self.result)
         self.destroy()
 
 

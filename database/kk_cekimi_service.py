@@ -269,6 +269,9 @@ class KkCekimiService:
         with get_session() as session:
             if guncelleme:
                 belge_no = belge_no.strip()
+                from database.odeme_sozu_service import OdemeSozuService
+
+                OdemeSozuService.evrak_tutari_kontrol(session, belge_no, tutar)
                 KkCekimiService._etkileri_geri_al(session, belge_no)
             else:
                 belge_no = KkCekimiService._belge_no(session)
@@ -381,6 +384,9 @@ class KkCekimiService:
                     durum="İPTAL",
                 )
             )
+            from database.odeme_sozu_service import OdemeSozuService
+
+            OdemeSozuService.evrak_baglantilarini_iptal(session, belge_no, neden="KK çekimi iptal")
             session.flush()
 
         from database.deleted_record_service import ENTITY_KK_CEKIMI, safe_log_cancel

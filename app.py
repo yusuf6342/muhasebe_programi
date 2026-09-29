@@ -96,7 +96,7 @@ SATIS_FATURA_LISTE_KOLONLARI = (
 )
 SATIS_FATURA_LISTE_BASLIKLARI = (
     "Evrak No", "Tarih", "Saat", "Vade Tarihi", "Cari Ünvanı", "Cari Bakiye", "Sipariş No", "İrsaliye No",
-    "Depo", "Toplam", "Kapanan Tutar", "Açık Tutar", "Ödeme Durumu", "Satış Personeli", "İşlemi Yapan",
+    "Depo", "Toplam", "Kapanan", "Kalan", "Ödeme Durumu", "Satış Personeli", "İşlemi Yapan",
     "Onaylayan", "Evrak Durumu", "Onay",
 )
 
@@ -765,6 +765,18 @@ class CariTahsilatOdemeDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("Kayıt yapılamadı", str(hata), parent=self)
             return
+        try:
+            from database.odeme_sozu_service import ALINAN, VERILEN
+            from odeme_sozu_ui import soz_baglama_sor
+
+            islem = self.result
+            soz_baglama_sor(
+                self, cari_id=self.cari.id, yon=ALINAN if self.tur == "tahsilat" else VERILEN,
+                evrak_turu="Tahsilat" if self.tur == "tahsilat" else "Ödeme",
+                belge_no=islem.belge_no, tutar=(islem.alacak or islem.borc), tarih=islem.tarih,
+            )
+        except Exception:
+            pass
         self.destroy()
 
 
@@ -1212,6 +1224,17 @@ class KkCekimiDialog(tk.Toplevel):
             f"Banka: {banka} / {self.result['taksit_sayisi']} taksit",
             parent=self,
         )
+        if not self.belge_no:
+            try:
+                from odeme_sozu_ui import evrak_kaydi_sonrasi_bagla
+
+                belge = self.result["belge_no"]
+                evrak_kaydi_sonrasi_bagla(self, cari_id=musteri.id, yon="ALINAN",
+                                          evrak_turu="KK Çekimi (Tahsilat)", belge_no=belge)
+                evrak_kaydi_sonrasi_bagla(self, cari_id=tedarikci.id, yon="VERILEN",
+                                          evrak_turu="KK Çekimi (Ödeme)", belge_no=belge)
+            except Exception:
+                pass
         self.destroy()
 
 
@@ -5651,9 +5674,10 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             getattr(self, "siparis_no", None),
             getattr(self, "irsaliye_no", None),
             getattr(self, "depo", None),
-            getattr(self, "adres_secimi", None),
         ):
             _set(w, readonly if isinstance(w, (ttk.Entry, ttk.Combobox)) else durum)
+        _set(getattr(self, "adres_secimi", None), "disabled" if kilitli else "readonly")
+        _set(getattr(self, "_btn_yeni_adres", None), durum)
 
 
         # Satır giriş alanları
@@ -5763,6 +5787,19 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                         break
             except tk.TclError:
                 pass
+
+        try:
+            from kapatma_detay_ui import OdemeKapatmaBilgisi
+
+            self._odeme_kapatma_bilgisi = OdemeKapatmaBilgisi(
+                refs["dis"],
+                fatura_turu="SATIS",
+                fatura_id_getir=lambda: getattr(self.fatura, "id", None) if self.fatura else None,
+            )
+            self._odeme_kapatma_bilgisi.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
+            self._odeme_kapatma_bilgisi.yenile()
+        except Exception:
+            self._odeme_kapatma_bilgisi = None
 
         from ui_pencere import sticky_footer_layout
 
@@ -6638,6 +6675,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             kod_satir, text="Ara", width=12, style="FaturaUst.TButton",
             command=lambda: self._musteri_secim_penceresi_ac(zorla=True, kaynak="kod"),
         ).pack(side="left", padx=(6, 0), ipady=_ipady)
+        self._btn_cari_hesap_karti = ttk.Button(
+            kod_satir, text="Cari Hesap Kartı", style="FaturaUst.TButton",
+            command=self.cariye_git,
+        )
+        self._btn_cari_hesap_karti.pack(side="left", padx=(6, 0), ipady=_ipady)
 
         # Satır 2: Müşteri Adı + Yeni Müşteri (sıkı)
         ttk.Label(bolum2, text="Müşteri Adı", style="FaturaUst.TLabel").grid(
@@ -6689,10 +6731,6 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self.irsaliye_no.grid(row=0, column=3, sticky="ew", padx=(0, 8), ipady=_ipady)
         self.irsaliye_no.bind("<<ComboboxSelected>>", self._fatura_irsaliye_secildi)
         self.girdiler["irsaliye_no"] = self.irsaliye_no
-        ttk.Button(
-            bag_satir, text="Cari Kart", command=self.cariye_git, width=10,
-            style="FaturaUst.TButton",
-        ).grid(row=0, column=4, sticky="e", ipady=_ipady)
 
         self._fatura_musteri_listesini_bakiyeli_kur()
         self.musteri_kodu.bind("<KeyRelease>", self._musteri_kod_degisti)
@@ -6766,8 +6804,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         )
         self.adres_secimi.grid(row=0, column=0, sticky="ew", ipady=_ipady)
         self.adres_secimi.bind("<<ComboboxSelected>>", self._fatura_adres_secildi)
+        self._btn_yeni_adres = ttk.Button(
+            adres_kolon, text="Yeni Adres Ekle", command=self.fatura_yeni_adres_ekle,
+            style="FaturaUst.TButton",
+        )
+        self._btn_yeni_adres.grid(row=0, column=1, sticky="e", padx=(6, 0), ipady=_ipady)
         adres_fr = ttk.Frame(adres_kolon)
-        adres_fr.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        adres_fr.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         adres_fr.columnconfigure(0, weight=1)
         self.adres_gorunum = tk.Text(
             adres_fr, height=2, width=28, wrap="word", font=("Segoe UI", 9),
@@ -7616,13 +7659,50 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         except tk.TclError:
             pass
 
-    def _fatura_adreslerini_yukle(self, kayitli_no=None, kayitli_metin=None):
-        """Seçili müşterinin adreslerini combobox'a yükler."""
+    def _fatura_adreslerini_yukle(self, kayitli_no=None, kayitli_metin=None, secilecek_no=None):
+        """Seçili müşterinin adreslerini combobox'a yükler.
+
+        Kayıtlı belgenin adres metni (anlık görüntü) cari adresi sonradan değişse de korunur;
+        aynı müşteri için yeniden yüklemede kullanıcının seçimi bozulmaz.
+        """
         if not hasattr(self, "adres_secimi"):
             return
         musteri = self._secili_musteri()
+        cid = int(musteri.id) if musteri else None
+        onceki_cid = getattr(self, "_fatura_adres_cari_id", None)
+        try:
+            onceki_etiket = (self.adres_secimi.get() or "").strip()
+        except tk.TclError:
+            onceki_etiket = ""
+        ayni_cari = cid is not None and cid == onceki_cid
+        if kayitli_metin is not None or kayitli_no is not None:
+            metin = (kayitli_metin or "").strip()
+            self._fatura_belge_adresi = (
+                {"no": kayitli_no, "metin": metin, "cari_id": cid} if metin else None
+            )
+        elif not ayni_cari:
+            belge_adres = getattr(self, "_fatura_belge_adresi", None)
+            if not belge_adres or belge_adres.get("cari_id") != cid:
+                self._fatura_belge_adresi = None
+        self._fatura_adres_cari_id = cid
         cari = CariService.getir(musteri.id) if musteri else None
         adresler = self._cari_adres_listesi(cari)
+        belge_adres = getattr(self, "_fatura_belge_adresi", None)
+        belge_girdisi = None
+        if belge_adres and belge_adres.get("cari_id") == cid:
+            eslesen = None
+            if belge_adres.get("no") is not None:
+                eslesen = next(
+                    (a for a in adresler if a["no"] == int(belge_adres["no"])), None
+                )
+            if eslesen is None or (eslesen["metin"] or "").strip() != belge_adres["metin"]:
+                belge_girdisi = {
+                    "no": belge_adres.get("no"),
+                    "tip": (eslesen or {}).get("tip") or getattr(self.fatura, "adres_tipi", None),
+                    "etiket": "Belgedeki adres (kayıtlı)",
+                    "metin": belge_adres["metin"],
+                }
+                adresler = [belge_girdisi] + adresler
         self._fatura_adres_map = {a["etiket"]: a for a in adresler}
         try:
             self.adres_secimi.configure(values=list(self._fatura_adres_map.keys()))
@@ -7636,9 +7716,18 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self._fatura_adres_gorunum_yaz(kayitli_metin or "")
             return
         secilecek = None
-        if kayitli_no is not None:
+        if secilecek_no is not None:
+            secilecek = next(
+                (a for a in adresler if a is not belge_girdisi and a["no"] == int(secilecek_no)),
+                None,
+            )
+        if secilecek is None and ayni_cari and kayitli_no is None and kayitli_metin is None:
+            secilecek = self._fatura_adres_map.get(onceki_etiket)
+        if secilecek is None and belge_girdisi is not None:
+            secilecek = belge_girdisi
+        if secilecek is None and belge_adres and belge_adres.get("no") is not None:
             for a in adresler:
-                if a["no"] == int(kayitli_no):
+                if a["no"] == int(belge_adres["no"]):
                     secilecek = a
                     break
         if secilecek is None:
@@ -8548,6 +8637,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 self._bagli_makbuz_ozet = FinansService.fatura_tahsilat_ozeti(int(fid))
             except Exception:
                 self._bagli_makbuz_ozet = None
+        bilgi = getattr(self, "_odeme_kapatma_bilgisi", None)
+        if bilgi is not None:
+            try:
+                bilgi.yenile()
+            except Exception:
+                pass
         return self._bagli_makbuz_ozet
 
     def _bagli_makbuz_tahsilati(self) -> Decimal:
@@ -9964,17 +10059,109 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self._dokuman_yolu = yol
 
     def cariye_git(self):
+        """Seçili müşterinin cari hesap kartını ayrı pencerede açar; kapanınca aynı faturaya döner.
+
+        Fatura alanları ve satırları korunur; kartta başka cariye geçilse de fatura carisi değişmez.
+        """
         cari = self._secili_musteri()
         if not cari:
-            messagebox.showinfo("Cari", "Önce müşteri seçin.", parent=self)
+            messagebox.showwarning(
+                "Cari Hesap Kartı", "Önce faturada bir müşteri seçin.", parent=self
+            )
             return
-        if self.cari_ac:
-            self.cari_ac(cari)
-        else:
-            dialog = CariDialog(self, cari)
-            self.wait_window(dialog)
-            self._musteri_listesini_yenile()
+        try:
+            odak = self.focus_get()
+        except (tk.TclError, KeyError):
+            odak = None
+        kirli = getattr(self, "_fatura_form_kirli", False)
+        try:
+            onceki_grab = self.grab_current()
+        except tk.TclError:
+            onceki_grab = None
+        try:
+            dialog = CariDialog(self, CariService.getir(int(cari.id)) or cari)
+        except Exception as hata:
+            messagebox.showerror("Cari Hesap Kartı", str(hata), parent=self)
+            return
+        while dialog is not None:
+            try:
+                self.wait_window(dialog)
+            except tk.TclError:
+                break
+            try:
+                dialog = next(
+                    (
+                        w
+                        for w in self.winfo_children()
+                        if isinstance(w, CariDialog) and w.winfo_exists()
+                    ),
+                    None,
+                )
+            except tk.TclError:
+                dialog = None
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if onceki_grab is not None:
+            try:
+                if onceki_grab.winfo_exists():
+                    onceki_grab.grab_set()
+            except tk.TclError:
+                pass
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+        self._musteri_bakiyeleri = {}
+        try:
             self._bakiye_guncelle()
+        except Exception:
+            pass
+        self._fatura_adreslerini_yukle()
+        self._fatura_form_kirli = kirli
+        if odak is not None:
+            try:
+                if odak.winfo_exists():
+                    odak.focus_set()
+            except (tk.TclError, AttributeError):
+                pass
+
+    def fatura_yeni_adres_ekle(self):
+        """Seçili müşteriye yeni adres ekler ve aynı faturada hemen seçer."""
+        cari = self._secili_musteri()
+        if not cari:
+            messagebox.showwarning("Yeni Adres", "Önce faturada bir müşteri seçin.", parent=self)
+            return
+        if getattr(self, "_fatura_kilitli", False) or (
+            self.fatura is not None and getattr(self.fatura, "onaylandi", False)
+        ):
+            messagebox.showwarning(
+                "Yeni Adres",
+                "Onaylı faturanın adresi değiştirilemez. Düzenlemek için önce Onay Kaldır yapın.",
+                parent=self,
+            )
+            return
+        if CariService.bos_adres_slotu(int(cari.id)) is None:
+            if messagebox.askyesno(
+                "Yeni Adres",
+                "Bu carinin 3 adres alanı da dolu.\n"
+                "Cari Hesap Kartı açılıp mevcut bir adres düzenlensin mi?",
+                parent=self,
+            ):
+                self.cariye_git()
+            return
+        from fatura_adres_ui import yeni_adres_sor
+
+        kirli = getattr(self, "_fatura_form_kirli", False)
+        no = yeni_adres_sor(self, int(cari.id), getattr(cari, "unvan", "") or "")
+        if no is None:
+            return
+        self._fatura_adreslerini_yukle(secilecek_no=no)
+        self._fatura_form_kirli = True if self.fatura is not None else kirli
 
     def yeni_musteri_ekle(self):
         """Fatura kartından yeni müşteri; kod/ad ayrı aktarılır, kayıt sonrası seçilir."""
@@ -11373,6 +11560,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             messagebox.showerror("Kayıt", "İptal edilmiş fatura kaydedilemez.", parent=self)
             return
         self._kayit_isleniyor = True
+        ilk_kayit = not (self.fatura and getattr(self.fatura, "id", None))
         try:
             try:
                 btn = getattr(self, "_btn_kaydet", None)
@@ -11402,6 +11590,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     "Yazdırmak için Yazdır düğmesini kullanın."
                 ),
             )
+            if ilk_kayit:
+                self._ilk_kayit_tahsilat_makbuzu()
         finally:
             self._kayit_isleniyor = False
             try:
@@ -11427,6 +11617,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             parent=self,
         ):
             return
+        ilk_kayit = not (self.fatura and getattr(self.fatura, "id", None))
         try:
             veriler, satirlar = self._fatura_kayit_verilerini_topla()
             kayit = SatisFaturasiService.kaydet(
@@ -11472,6 +11663,42 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 "Yazdırmak için Yazdır düğmesini kullanın."
             ),
         )
+        if ilk_kayit:
+            self._ilk_kayit_tahsilat_makbuzu()
+
+    def _ilk_kayit_tahsilat_makbuzu(self):
+        """İlk başarılı kayıttan sonra bu faturaya bağlı tahsilat makbuzunu bir kez açar.
+
+        Makbuz kaydedilmeden kapatılırsa hiçbir kayıt oluşmaz; makbuz hatası faturayı geri almaz.
+        """
+        fid = getattr(self.fatura, "id", None) if self.fatura is not None else None
+        if not fid or (getattr(self.fatura, "durum", "") or "") == "İPTAL":
+            return
+        if getattr(self, "_ilk_makbuz_acilan_fatura", None) == int(fid):
+            return
+        self._ilk_makbuz_acilan_fatura = int(fid)
+        try:
+            ozet = FinansService.fatura_tahsilat_ozeti(int(fid))
+            if ozet and Decimal(str(ozet.get("kalan") or 0)) <= Decimal("0.005"):
+                return
+            from kasa_makbuz_ui import KasaMakbuzDialog
+
+            def _kayit_sonrasi(makbuz=None):
+                self._bagli_makbuzlari_yenile(makbuz)
+                self._musteri_bakiyeleri = {}
+                try:
+                    self._bakiye_guncelle()
+                except Exception:
+                    pass
+
+            KasaMakbuzDialog(self, "TAHSILAT", fatura_id=int(fid), on_kayit=_kayit_sonrasi)
+        except Exception as hata:
+            messagebox.showerror(
+                "Tahsilat Makbuzu",
+                "Fatura kaydedildi; ancak tahsilat makbuzu açılamadı.\n"
+                f"Makbuzu daha sonra Tahsilat Makbuzu düğmesiyle alabilirsiniz.\n\n{hata}",
+                parent=self,
+            )
 
     def onay_kaldir(self):
         if not self.fatura or not getattr(self.fatura, "id", None):
@@ -11699,6 +11926,7 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
         self.toplam_etiket.pack(side="left")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="İade Faturasını Kaydet", command=self.kaydet).pack(side="right", padx=8)
+        ttk.Button(alt, text="Kapatma Detayı", command=self.kapatma_detayi_ac).pack(side="right")
 
         if iade:
             self._iadeyi_doldur()
@@ -12158,6 +12386,17 @@ class SatisIadeFaturasiDialog(tk.Toplevel):
                 f"{kdv}%", para_goster(toplam),
             ))
         self.toplam_etiket.configure(text=f"Genel Toplam: {para_goster(genel)}")
+
+    def kapatma_detayi_ac(self):
+        iade = getattr(self, "iade", None)
+        if iade is None or not getattr(iade, "iade_no", None):
+            messagebox.showinfo(
+                "Kapatma Detayı", "İade faturası kaydedildikten sonra görüntülenir.", parent=self
+            )
+            return
+        from kapatma_detay_ui import kapatma_detayi_ac
+
+        kapatma_detayi_ac(self, iade.iade_no, int(iade.cari_id))
 
     def _iadeyi_doldur(self):
         iade = self.iade
@@ -15627,6 +15866,16 @@ class MuhasebeApp(tk.Tk):
         ttk.Button(tarih_filtre, text="Tarihleri Temizle", command=self._fatura_tarih_filtre_temizle).pack(
             side="left", padx=6
         )
+        ttk.Label(tarih_filtre, text="Ödeme:").pack(side="left", padx=(8, 2))
+        self.fatura_odeme_filtre = ttk.Combobox(
+            tarih_filtre,
+            values=("Tümü", "Ödenmedi", "Kısmen Ödendi", "Kapandı"),
+            width=13,
+            state="readonly",
+        )
+        self.fatura_odeme_filtre.set("Tümü")
+        self.fatura_odeme_filtre.pack(side="left")
+        self.fatura_odeme_filtre.bind("<<ComboboxSelected>>", self._fatura_odeme_filtre_secildi)
         # Varsayılan: son 2 gün (bugün-2 … bugün)
         self._fatura_tarih_varsayilan_yaz()
 
@@ -16233,8 +16482,20 @@ class MuhasebeApp(tk.Tk):
         self._fatura_liste_filtre.pop(kolon, None)
         self._fatura_listeyi_goster()
 
+    def _fatura_odeme_filtre_secildi(self, _event=None):
+        secim = (self.fatura_odeme_filtre.get() or "Tümü").strip()
+        if secim == "Tümü":
+            self._fatura_liste_filtre.pop("odeme", None)
+        else:
+            self._fatura_liste_filtre["odeme"] = {secim}
+        self._fatura_listeyi_goster()
+
     def _fatura_filtreleri_temizle(self):
         self._fatura_liste_filtre = {}
+        try:
+            self.fatura_odeme_filtre.set("Tümü")
+        except (AttributeError, tk.TclError):
+            pass
         for ad in ("fatura_tarih_bas", "fatura_tarih_bit", "fatura_vade_bas", "fatura_vade_bit"):
             w = getattr(self, ad, None)
             if w is None:

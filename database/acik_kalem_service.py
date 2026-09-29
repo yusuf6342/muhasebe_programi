@@ -64,8 +64,14 @@ def odeme_durumu(toplam, kapanan) -> str:
     if kapanan <= 0:
         return "Ödenmedi"
     if kapanan + TOLERANS >= toplam:
-        return "Ödendi"
-    return "Kısmi Ödendi"
+        return ODEME_KAPANDI
+    return ODEME_KISMEN
+
+
+ODEME_ODENMEDI = "Ödenmedi"
+ODEME_KISMEN = "Kısmen Ödendi"
+ODEME_KAPANDI = "Kapandı"
+ODEME_DURUMLARI = (ODEME_ODENMEDI, ODEME_KISMEN, ODEME_KAPANDI)
 
 
 def _kullanici() -> tuple[int | None, str | None]:

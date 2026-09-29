@@ -370,6 +370,13 @@ class CekSenetService:
         ).first()
 
     @staticmethod
+    def kayit_cari_belge_no(evrak_id: int) -> str | None:
+        """Evrak kaydında oluşan cari hareketin belge no'su (ödeme sözü bağlantısı için)."""
+        with get_session() as session:
+            kayit = CekSenetService._kayit_hareketi(session, int(evrak_id))
+            return CekSenetService._cari_islem_belge_no(session, kayit.cari_hareket_id if kayit else None)
+
+    @staticmethod
     def _cari_islem_belge_no(session, cari_hareket_id: int | None) -> str | None:
         if not cari_hareket_id:
             return None
@@ -980,7 +987,15 @@ class CekSenetService:
                     f"Bu evrak iptal edilemez (durum: {_durum_etiket(evrak.durum)})."
                 )
             CekSenetService._muhasebe_posta_engeli(session, evrak, islem="iptal")
+            kayit_h = CekSenetService._kayit_hareketi(session, evrak.id)
+            kayit_belge = CekSenetService._cari_islem_belge_no(
+                session, kayit_h.cari_hareket_id if kayit_h else None
+            )
             CekSenetService._kayit_cari_tam_geri_al(session, evrak)
+            if kayit_belge:
+                from database.odeme_sozu_service import OdemeSozuService
+
+                OdemeSozuService.evrak_baglantilarini_iptal(session, kayit_belge, neden="Çek/senet iptal")
             onceki = evrak.durum
             evrak.durum = DURUM_IPTAL
             evrak.bulundugu_yer = "İptal"

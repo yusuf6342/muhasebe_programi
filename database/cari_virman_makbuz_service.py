@@ -282,6 +282,11 @@ class CariVirmanMakbuzService:
                     durum="AÇIK",
                 )
                 session.add(kayit)
+            else:
+                from database.odeme_sozu_service import OdemeSozuService
+
+                for belge in (kayit.tahsilat_belge_no, kayit.odeme_belge_no):
+                    OdemeSozuService.evrak_tutari_kontrol(session, belge, tutar)
             kayit.sube_id = sube_id
             kayit.makbuz_no = makbuz_no
             kayit.tarih = tarih
@@ -380,4 +385,8 @@ class CariVirmanMakbuzService:
                 raise ValueError("Cari virman makbuzu zaten iptal.")
             cls._cari_etkilerini_geri_al(session, kayit)
             kayit.durum = "IPTAL"
+            from database.odeme_sozu_service import OdemeSozuService
+
+            for belge in (kayit.tahsilat_belge_no, kayit.odeme_belge_no):
+                OdemeSozuService.evrak_baglantilarini_iptal(session, belge, neden="Cari virman makbuzu iptal")
             session.flush()

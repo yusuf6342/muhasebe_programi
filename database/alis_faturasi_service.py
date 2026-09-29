@@ -104,11 +104,37 @@ class AlisFaturasiService:
             if tarih_bit is not None:
                 statement = statement.where(AlisFaturasi.fatura_tarihi <= tarih_bit)
             faturalar = list(session.scalars(statement).unique().all())
+            from database.acik_kalem_service import odeme_durumu
+
+            acik_map: dict[tuple[int, str], Decimal] = {}
+            nolar = [f.fatura_no for f in faturalar if f.fatura_no]
+            for i in range(0, len(nolar), 500):
+                for cid, bno, kalan in session.execute(
+                    select(
+                        SatisHareketi.cari_id, SatisHareketi.belge_no, SatisHareketi.kalan_acik_tutar
+                    ).where(
+                        SatisHareketi.belge_no.in_(nolar[i:i + 500]),
+                        SatisHareketi.satis_tutari > 0,
+                    )
+                ).all():
+                    acik_map[(int(cid), bno)] = Decimal(str(kalan or 0))
             sonuc = []
             for f in faturalar:
                 genel = Decimal(str(getattr(f, "tl_genel_toplam", 0) or 0))
                 cari = f.cari
+                iptal = (f.durum or "") == "İPTAL"
+                anahtar = (int(f.cari_id), f.fatura_no)
+                if iptal:
+                    acik = Decimal("0")
+                elif anahtar in acik_map:
+                    acik = max(Decimal("0"), acik_map[anahtar])
+                else:
+                    acik = max(Decimal("0"), genel - Decimal(str(f.odeme_tutari or 0)))
+                kapanan = Decimal("0") if iptal else max(Decimal("0"), genel - acik)
                 sonuc.append({
+                    "kapanan_tutar": kapanan,
+                    "acik_tutar": acik,
+                    "odeme_durumu": "" if iptal else odeme_durumu(genel, kapanan),
                     "id": f.id,
                     "fatura_no": f.fatura_no or "",
                     "fatura_tarihi": f.fatura_tarihi,

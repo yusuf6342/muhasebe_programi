@@ -1288,6 +1288,63 @@ class CariService:
                 raise ValueError("Cari kodu zaten kullanılıyor.") from hata
             return cari
 
+    ADRES_SLOTLARI = (
+        (1, "adres", "il", "ilce", "adres_tipi"),
+        (2, "adres2", "il2", "ilce2", "adres_tipi2"),
+        (3, "adres3", "il3", "ilce3", "adres_tipi3"),
+    )
+    ADRES_TIPLERI = ("Merkez", "Fatura", "Sevk", "Depo", "Şube", "Diğer")
+
+    @staticmethod
+    def bos_adres_slotu(cari_id: int) -> int | None:
+        cari = CariService.getir(cari_id)
+        if cari is None:
+            return None
+        for no, adres_alan, il_alan, ilce_alan, _tip in CariService.ADRES_SLOTLARI:
+            if not any(
+                (getattr(cari, alan, None) or "").strip()
+                for alan in (adres_alan, il_alan, ilce_alan)
+            ):
+                return no
+        return None
+
+    @staticmethod
+    def adres_ekle(cari_id: int, tip: str, adres: str, il: str = "", ilce: str = "") -> int:
+        """Carinin ilk boş adres yuvasına adres ekler; eklenen adres numarasını döner."""
+        yazma_zorunlu("cari_duzenleme")
+        tip = (tip or "").strip()
+        adres = (adres or "").strip()
+        il = (il or "").strip()
+        ilce = (ilce or "").strip()
+        if tip not in CariService.ADRES_TIPLERI:
+            raise ValueError("Adres türü seçin.")
+        if not adres:
+            raise ValueError("Açık adres boş olamaz.")
+        if len(adres) > 500:
+            raise ValueError("Açık adres en fazla 500 karakter olabilir.")
+        if len(il) > 50 or len(ilce) > 50:
+            raise ValueError("İl / ilçe en fazla 50 karakter olabilir.")
+        with get_session() as session:
+            cari = session.get(Cari, cari_id)
+            if cari is None:
+                raise ValueError("Cari bulunamadı.")
+            for no, adres_alan, il_alan, ilce_alan, tip_alan in CariService.ADRES_SLOTLARI:
+                if any(
+                    (getattr(cari, alan, None) or "").strip()
+                    for alan in (adres_alan, il_alan, ilce_alan)
+                ):
+                    continue
+                setattr(cari, adres_alan, adres)
+                setattr(cari, il_alan, il or None)
+                setattr(cari, ilce_alan, ilce or None)
+                setattr(cari, tip_alan, tip)
+                session.flush()
+                return no
+        raise ValueError(
+            "Bu carinin 3 adres alanı da dolu. Yeni adres için Cari Hesap Kartı'ndan "
+            "mevcut bir adresi düzenleyin."
+        )
+
     @staticmethod
     def pasife_al(cari_id: int) -> None:
         yazma_zorunlu("cari_duzenleme")

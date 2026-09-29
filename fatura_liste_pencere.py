@@ -17,6 +17,7 @@ from tkinter import messagebox, ttk
 from database.turkce_normalize import turkce_normalize
 
 SAYFA_BOYUTU = 100
+ODEME_FILTRELERI = ("Tümü", "Ödenmedi", "Kısmen Ödendi", "Kapandı")
 DOC_SATIS = "SALES_INVOICE"
 DOC_ALIS = "PURCHASE_INVOICE"
 
@@ -173,6 +174,13 @@ class FaturaListePencere(tk.Toplevel):
         self.durum = ttk.Combobox(ust, values=durumlar, width=10, state="readonly")
         self.durum.set("")
         self.durum.pack(side="left")
+        ttk.Label(ust, text="Ödeme:").pack(side="left", padx=(10, 2))
+        self.odeme_filtre = ttk.Combobox(
+            ust, values=ODEME_FILTRELERI, width=13, state="readonly"
+        )
+        self.odeme_filtre.set("Tümü")
+        self.odeme_filtre.pack(side="left")
+        self.odeme_filtre.bind("<<ComboboxSelected>>", lambda _e: self._filtre_uygula())
 
         ttk.Label(ust, text="Tutar:").pack(side="left", padx=(10, 2))
         self.tutar_min = ttk.Entry(ust, width=8)
@@ -226,8 +234,8 @@ class FaturaListePencere(tk.Toplevel):
             "KDV Hariç",
             "KDV",
             "Toplam",
-            "Kapanan Tutar",
-            "Açık Tutar",
+            "Kapanan",
+            "Kalan",
             "Ödeme Durumu",
             "Döviz",
             "Satış Personeli" if satis else "Kullanıcı",
@@ -314,6 +322,7 @@ class FaturaListePencere(tk.Toplevel):
         self.tutar_min.delete(0, "end")
         self.tutar_max.delete(0, "end")
         self.durum.set("")
+        self.odeme_filtre.set("Tümü")
         bugun = date.today()
         self.tarih_bas.delete(0, "end")
         self.tarih_bas.insert(0, (bugun - timedelta(days=30)).strftime("%d.%m.%Y"))
@@ -342,6 +351,7 @@ class FaturaListePencere(tk.Toplevel):
         no_q = turkce_normalize((self.no_ara.get() or "").strip())
         cari_q = turkce_normalize((self.cari_ara.get() or "").strip())
         durum_q = (self.durum.get() or "").strip().upper()
+        odeme_q = (self.odeme_filtre.get() or "Tümü").strip()
         personel_q = turkce_normalize((self.personel_ara.get() or "").strip())
         tmin = self._tutar_oku(self.tutar_min)
         tmax = self._tutar_oku(self.tutar_max)
@@ -357,6 +367,8 @@ class FaturaListePencere(tk.Toplevel):
                 if cari_q not in blob:
                     continue
             if durum_q and (r.get("evrak_durumu") or r.get("durum") or "").upper() != durum_q:
+                continue
+            if odeme_q != "Tümü" and (r.get("odeme_durumu") or "") != odeme_q:
                 continue
             if personel_q:
                 pblob = turkce_normalize((

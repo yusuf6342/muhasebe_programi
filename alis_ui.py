@@ -866,6 +866,15 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.bind("<F1>", self._f1_kaydet)
         self.bind("<F3>", self._f3_fatura_listesi)
         self.bind_all("<F1>", self._f1_kaydet)
+        from kapatma_detay_ui import OdemeKapatmaBilgisi
+
+        self._odeme_kapatma_bilgisi = OdemeKapatmaBilgisi(
+            self,
+            fatura_turu="ALIS",
+            fatura_id_getir=lambda: getattr(self.fatura, "id", None) if self.fatura else None,
+        )
+        self._odeme_kapatma_bilgisi.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
+        self._odeme_kapatma_bilgisi.yenile()
 
         kaydirma_alani = ttk.Frame(self, padding=(6, 4))
         kaydirma_alani.pack(fill="both", expand=True)
@@ -1185,6 +1194,9 @@ class AlisFaturasiDialog(tk.Toplevel):
             )
             self.fatura = AlisFaturasiService.getir(self.result.id) or self.result
             self._fatura_form_kirli = False
+            bilgi = getattr(self, "_odeme_kapatma_bilgisi", None)
+            if bilgi is not None:
+                bilgi.yenile()
             return True
         except ValueError as hata:
             messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
@@ -2347,6 +2359,12 @@ class AlisFaturasiDialog(tk.Toplevel):
 
     def _faturayi_doldur(self):
         self._fatura_yukleniyor = True
+        bilgi = getattr(self, "_odeme_kapatma_bilgisi", None)
+        if bilgi is not None:
+            try:
+                bilgi.yenile()
+            except Exception:
+                pass
         try:
             fatura = self.fatura
             self._tedarikci_sec(fatura.cari)

@@ -646,17 +646,29 @@ class CariDialog(tk.Toplevel):
     def _hizli_arama_seridi_olustur(self):
         """Üst şerit: müşteri/tedarikçi ismiyle hızlı arama → seçilen kartı yükler."""
         serit = tk.Frame(self, bg=ACIK_BG)
-        serit.pack(fill="x", padx=12, pady=(8, 0), after=self._sari_cizgi)
+        serit.pack(fill="x", padx=12, pady=(10, 2), after=self._sari_cizgi)
         self._arama_serit = serit
         tk.Label(
             serit,
             text=f"{self.etiket} Ara:",
             bg=ACIK_BG,
             fg=LACIVERT,
-            font=font(9, "bold", self),
+            font=font(10, "bold", self),
         ).pack(side="left")
-        self._hizli_ara = ttk.Entry(serit, width=40)
-        self._hizli_ara.pack(side="left", padx=(8, 4), fill="x", expand=True)
+        self._hizli_ara = tk.Entry(
+            serit,
+            width=40,
+            font=font(10, root=self),
+            fg="#000000",
+            bg="#FFFFFF",
+            insertbackground="#000000",
+            insertwidth=2,
+            relief="flat",
+            highlightthickness=2,
+            highlightbackground="#000000",
+            highlightcolor="#000000",
+        )
+        self._hizli_ara.pack(side="left", padx=(8, 4), ipady=5, fill="x", expand=True)
         self._hizli_ara.bind("<Return>", self._hizli_cari_ara)
         self._hizli_ara.bind("<F10>", self._hizli_cari_ara)
         tk_buton(serit, "Ara (F10)", self._hizli_cari_ara, rol="ara").pack(
@@ -831,16 +843,16 @@ class CariDialog(tk.Toplevel):
         sag.pack(side="left", fill="x", expand=True)
         return sag
 
-    def _ozet_deger_satiri(self, parent, baslik: str, *, kalin: bool = False):
-        """Sol etiket, sağ değer — borç/alacak özet satırı."""
+    def _ozet_deger_satiri(self, parent, baslik: str, *, kalin: bool = False, buyuk: bool = False):
+        """Sol etiket, sağ değer — borç/alacak özet satırı. buyuk: etiket ve değer 11 pt koyu."""
         satir = tk.Frame(parent, bg=BEYAZ)
-        satir.pack(fill="x", pady=0)
+        satir.pack(fill="x", pady=(1, 1) if buyuk else 0)
         lbl = tk.Label(
             satir,
             text=baslik,
             bg=BEYAZ,
             fg=LACIVERT,
-            font=font(8, "bold", self),
+            font=font(11 if buyuk else 8, "bold", self),
             anchor="w",
         )
         lbl.pack(side="left")
@@ -849,7 +861,7 @@ class CariDialog(tk.Toplevel):
             text="—",
             bg=BEYAZ,
             fg=LACIVERT,
-            font=font(9 if kalin else 8, "bold", self),
+            font=font(11 if buyuk else (9 if kalin else 8), "bold", self),
             anchor="e",
         )
         deger.pack(side="right")
@@ -872,8 +884,12 @@ class CariDialog(tk.Toplevel):
         )
         for etiket, alan in alanlar:
             sag = self._form_satiri(parent, etiket)
-            w = self._entry(sag, alan, width=16)
-            w.pack(fill="x")
+            if alan == "unvan":
+                w = self._entry(sag, alan, width=16, font=font(11, "bold", self))
+                w.pack(fill="x", ipady=2)
+            else:
+                w = self._entry(sag, alan, width=16)
+                w.pack(fill="x")
             if alan == "vergi_numarasi":
                 w.bind("<FocusOut>", self._vergi_no_kontrol)
         self._unvan_arama = UnvanAramaKutusu(
@@ -1087,7 +1103,7 @@ class CariDialog(tk.Toplevel):
 
         lbl, _ = self._ozet_deger_satiri(parent, "Toplam borç")
         lbl, _ = self._ozet_deger_satiri(parent, "Toplam alacak")
-        lbl, _ = self._ozet_deger_satiri(parent, "Kalan Bakiye", kalin=True)
+        lbl, _ = self._ozet_deger_satiri(parent, "Kalan Bakiye", buyuk=True)
         ToolTip(lbl, "Toplam borç − toplam alacak (defter kalan bakiyesi).")
         self._ozet_deger_satiri(parent, "Bakiye yönü")
         lbl, _ = self._ozet_deger_satiri(parent, "Ortalama borç kapatma süresi")
@@ -1096,7 +1112,7 @@ class CariDialog(tk.Toplevel):
             "Teknik: Kapanan borcun tutar-ağırlıklı ortalama valörü (gün). "
             "FIFO eşleştirme; tamamen kapanan faturalar öncelikli.",
         )
-        lbl, _ = self._ozet_deger_satiri(parent, "Ortalama Valör")
+        lbl, _ = self._ozet_deger_satiri(parent, "Ortalama Valör", buyuk=True)
         ToolTip(
             lbl,
             "Bakiyeye göre Borç Valörü veya Alacak Valörü. "
@@ -1187,6 +1203,23 @@ class CariDialog(tk.Toplevel):
             self.hizli_dugmeleri.append(dugme)
             if not izin_ok:
                 ToolTip(dugme, "Bu işlem için yetkiniz yok.")
+
+        satir2 = tk.Frame(hizli, bg=BEYAZ)
+        satir2.pack(fill="x", pady=(4, 0))
+        soz_baslik = "Ödeme Sözleri (Verilen)" if self.tedarikci_modu else "Ödeme Sözleri (Alınan)"
+        for baslik, komut in (
+            ("Açık Kalemler", self.acik_kalemler_ac),
+            (soz_baslik, self.odeme_sozleri_ac),
+        ):
+            dugme = tk_buton(
+                satir2, baslik, komut, rol="ikincil", state="normal" if kayitli else "disabled"
+            )
+            dugme.pack(side="left", padx=3)
+            self.hizli_dugmeleri.append(dugme)
+        self._soz_ozet_lbl = tk.Label(
+            satir2, text="", bg=BEYAZ, fg=LACIVERT, font=font(9, root=self), anchor="w"
+        )
+        self._soz_ozet_lbl.pack(side="left", padx=10, fill="x", expand=True)
 
     def _hareket_tablosunu_olustur(self, parent):
         dis, hareket = beyaz_kart(parent, padx=10, pady=8)
@@ -1421,6 +1454,7 @@ class CariDialog(tk.Toplevel):
         self.hareket_tablosu = tablo
         self._hareket_menu = tk.Menu(self, tearoff=0)
         self._hareket_menu.add_command(label="Belgeyi Aç", command=self._hareket_belge_ac)
+        self._hareket_menu.add_command(label="Kapatma Detayı", command=self._hareket_kapatma_detayi)
         self._hareket_menu.add_command(
             label="Fatura ürünlerini göster/gizle", command=self._secili_fatura_detay_toggle
         )
@@ -2571,6 +2605,59 @@ class CariDialog(tk.Toplevel):
 
         return hareket_belgeyi_ac(self, tur, belge_no)
 
+    def _hareket_kapatma_detayi(self):
+        if not self.hareket_tablosu or not self.cari:
+            return
+        secim = self.hareket_tablosu.selection()
+        if not secim:
+            messagebox.showinfo("Kapatma Detayı", "Lütfen bir hareket satırı seçin.", parent=self)
+            return
+        iid = secim[0]
+        if iid not in self._hareket_iid_meta:
+            iid = self.hareket_tablosu.parent(iid) or iid
+        meta = self._hareket_iid_meta.get(iid) or {}
+        belge_no = (meta.get("belge_no") or "").strip()
+        if not belge_no:
+            degerler = self.hareket_tablosu.item(iid, "values")
+            belge_no = (degerler[2] if degerler and len(degerler) > 2 else "") or ""
+        from kapatma_detay_ui import kapatma_detayi_ac
+
+        kapatma_detayi_ac(self, belge_no.strip(), int(self.cari.id))
+
+    def acik_kalemler_ac(self):
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from acik_kalemler_ui import CariAcikKalemlerDialog
+
+        dialog = CariAcikKalemlerDialog(self, int(self.cari.id), self.cari.unvan or "")
+        self.wait_window(dialog)
+
+    def odeme_sozleri_ac(self):
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from odeme_sozu_ui import CariOdemeSozleriDialog
+
+        dialog = CariOdemeSozleriDialog(self, self.cari)
+        self.wait_window(dialog)
+        self._soz_ozetini_guncelle()
+
+    def _soz_ozetini_guncelle(self):
+        lbl = getattr(self, "_soz_ozet_lbl", None)
+        if lbl is None or not self.cari or not getattr(self.cari, "id", None):
+            return
+        try:
+            from database.odeme_sozu_service import OdemeSozuService
+
+            oz = OdemeSozuService.cari_ozeti(int(self.cari.id))
+        except Exception:
+            return
+        try:
+            lbl.configure(text=oz.get("metin", ""))
+        except tk.TclError:
+            pass
+
     def yenile(self):
         if not self.cari:
             return
@@ -2614,6 +2701,7 @@ class CariDialog(tk.Toplevel):
                 self.hareket_tur_filtre.set(mevcut if mevcut in degerler else "Tümü")
                 self._hareketleri_goster()
                 self._baslik_rozetlerini_guncelle()
+                self._soz_ozetini_guncelle()
             except Exception as hata:
                 messagebox.showerror("Yenileme", f"Özet yüklenemedi:\n{hata}", parent=self)
             finally:

@@ -925,8 +925,10 @@ class SatisFaturasiService:
             DovizService.kur_farki_fislerini_sil(session, fatura.fatura_no)
             from database.acik_kalem_service import AcikKalemService
 
+            neden = f"Fatura onayı kaldırıldı {fatura.fatura_no}"
+            FinansService.bagli_makbuz_paylarini_faturada_tut(session, fatura, neden=neden)
             AcikKalemService.belge_kalemlerini_sil(
-                session, fatura.fatura_no, fatura.cari_id, neden=f"Fatura onayı kaldırıldı {fatura.fatura_no}"
+                session, fatura.fatura_no, fatura.cari_id, neden=neden
             )
             fatura.onaylandi = False
             fatura.durum = "TASLAK"

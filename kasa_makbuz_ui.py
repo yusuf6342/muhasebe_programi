@@ -1323,6 +1323,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.mod = "yeni"
         self.makbuz = None
         self.makbuz_id = None
+        self._kapatilan_panelini_goster(None, None)
         self._makbuz_no_manuel = False
         self._kayitli_no = None
         self._onerilen_no = FinansService.makbuz_no_oner() if self.tahsilat else None
@@ -1423,8 +1424,31 @@ class KasaMakbuzDialog(tk.Toplevel):
             self._bakiye_guncelle(int(makbuz.cari_id))
             self._mod_uygula()
             self._kirli = False
+            self._kapatilan_panelini_goster(makbuz.belge_no, int(makbuz.cari_id))
         finally:
             self._yukleniyor = False
+
+    def _kapatilan_panelini_goster(self, belge_no: str | None, cari_id: int | None):
+        """Kayıtlı makbuzun Kapatılan Borçlar / Alacaklar tablosu (salt okunur)."""
+        panel = getattr(self, "_kapatilan_panel", None)
+        if panel is not None:
+            try:
+                panel.destroy()
+            except tk.TclError:
+                pass
+            self._kapatilan_panel = None
+        if not belge_no or not cari_id:
+            return
+        try:
+            from kapatma_detay_ui import KapatilanBorclarPaneli
+
+            baslik = "Kapatılan Borçlar" if self.tahsilat else "Kapatılan Borçlar / Alacaklar"
+            self._kapatilan_panel = KapatilanBorclarPaneli(
+                self._ic, belge_no, int(cari_id), baslik=baslik, height=4
+            )
+            self._kapatilan_panel.pack(side="top", fill="x", padx=12, pady=(4, 10))
+        except Exception:
+            self._kapatilan_panel = None
 
     def _virmani_yukle(self, kayit):
         self._yukleniyor = True
@@ -1453,6 +1477,9 @@ class KasaMakbuzDialog(tk.Toplevel):
             self._virman_bakiyelerini_guncelle()
             self._mod_uygula()
             self._kirli = False
+            self._kapatilan_panelini_goster(
+                getattr(kayit, "tahsilat_belge_no", None), int(kayit.musteri_id)
+            )
         finally:
             self._yukleniyor = False
 
@@ -1936,12 +1963,33 @@ class KasaMakbuzDialog(tk.Toplevel):
                 f"Makbuz {makbuz.makbuz_no} numarasıyla kaydedildi.",
                 parent=self,
             )
+        if onceki_mod != "duzenle":
+            self._soz_baglama_sor(makbuz)
         if callable(self._on_kayit):
             try:
                 self._on_kayit(makbuz)
             except Exception:
                 pass
         return True
+
+    def _soz_baglama_sor(self, makbuz) -> None:
+        try:
+            from odeme_sozu_ui import soz_baglama_sor
+            from database.odeme_sozu_service import ALINAN, VERILEN
+
+            if self.virman:
+                soz_baglama_sor(self, cari_id=makbuz.musteri_id, yon=ALINAN, evrak_turu="Cari Virman Tahsilatı",
+                                belge_no=makbuz.tahsilat_belge_no, tutar=makbuz.tutar, tarih=makbuz.tarih)
+                soz_baglama_sor(self, cari_id=makbuz.tedarikci_id, yon=VERILEN, evrak_turu="Cari Virman Ödemesi",
+                                belge_no=makbuz.odeme_belge_no, tutar=makbuz.tutar, tarih=makbuz.tarih)
+            else:
+                soz_baglama_sor(
+                    self, cari_id=makbuz.cari_id, yon=ALINAN if self.tahsilat else VERILEN,
+                    evrak_turu="Tahsilat Makbuzu" if self.tahsilat else "Ödeme Makbuzu",
+                    belge_no=makbuz.belge_no, tutar=makbuz.tutar, evrak_id=makbuz.id, tarih=makbuz.tarih,
+                )
+        except Exception:
+            pass
 
     def duzenlemeye_gec(self):
         if self.mod != "goruntule" or self.makbuz is None:

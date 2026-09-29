@@ -84,8 +84,8 @@ class DurumAkisiTest(IadeTemel):
         self.assertEqual(evrak_durumu("KAPALI"), "AÇIK")
         self.assertEqual(evrak_durumu("TASLAK"), "TASLAK")
         self.assertEqual(odeme_durumu(D("100"), D("0")), "Ödenmedi")
-        self.assertEqual(odeme_durumu(D("100"), D("40")), "Kısmi Ödendi")
-        self.assertEqual(odeme_durumu(D("100"), D("100")), "Ödendi")
+        self.assertEqual(odeme_durumu(D("100"), D("40")), "Kısmen Ödendi")
+        self.assertEqual(odeme_durumu(D("100"), D("100")), "Kapandı")
 
     def test_fatura_menusu_sirasi(self):
         import app
@@ -94,7 +94,7 @@ class DurumAkisiTest(IadeTemel):
             [m[0] for m in app.SATIS_FATURA_MENU_SIRASI],
             ["HIZLI FATURA", "SATIŞ FATURA LİSTESİ", "SATIŞ İADE FATURALARI", "FATURA GÖRSELİ İÇE AKTAR"],
         )
-        for baslik in ("Tarih", "Evrak No", "Cari Ünvanı", "Evrak Durumu", "Toplam", "Kapanan Tutar", "Açık Tutar"):
+        for baslik in ("Tarih", "Evrak No", "Cari Ünvanı", "Evrak Durumu", "Toplam", "Kapanan", "Kalan", "Ödeme Durumu"):
             self.assertIn(baslik, app.SATIS_FATURA_LISTE_BASLIKLARI)
 
 

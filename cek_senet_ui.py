@@ -1849,6 +1849,19 @@ class EvrakDialog(tk.Toplevel):
             f"Evrak kaydedildi.\nPortföy no: {self.result.get('portfoy_no')}",
             parent=self,
         )
+        if self.mod == "yeni":
+            try:
+                from odeme_sozu_ui import evrak_kaydi_sonrasi_bagla
+
+                belge = CekSenetService.kayit_cari_belge_no(int(self.result["id"]))
+                alinan = veriler["islem_yonu"] == ISLEM_YONU_ALINAN
+                evrak_kaydi_sonrasi_bagla(
+                    self, cari_id=veriler["cari_id"], yon="ALINAN" if alinan else "VERILEN",
+                    evrak_turu=("Alınan " if alinan else "Verilen ") + ("Çek" if veriler["basit_tur"] == "CEK" else "Senet"),
+                    belge_no=belge,
+                )
+            except Exception:
+                pass
         self.destroy()
 
 

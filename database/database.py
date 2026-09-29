@@ -904,6 +904,12 @@ def cari_kart_schemasini_guncelle() -> None:
         _scan_msg_schema()
     except Exception:
         pass
+    try:
+        from database.odeme_sozu_service import OdemeSozuService
+
+        OdemeSozuService.schema_hazirla(engine)
+    except Exception:
+        pass
     performans_indekslerini_hazirla()
 
 

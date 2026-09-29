@@ -840,6 +840,35 @@ def giris_dashboard_goster(app) -> None:
 
     arka_planda(app, ozet_verileri_topla, on_ok=_ozet_doldur, on_err=lambda _e: _ozet_doldur({}))
 
+    soz_f = tk.Frame(pad, bg=ACIK_BG)
+    soz_f.pack(fill="x", pady=(0, 12))
+
+    def _soz_hatirlatma(metin):
+        if not metin or not soz_f.winfo_exists():
+            return
+        kutu = tk.Frame(soz_f, bg=BEYAZ, highlightthickness=1, highlightbackground=UYARI)
+        kutu.pack(fill="x", padx=6)
+        tk.Label(
+            kutu, text="Ödeme sözü hatırlatması", bg=BEYAZ, fg=UYARI, font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=(12, 8), pady=8)
+        tk.Label(kutu, text=metin, bg=BEYAZ, fg=LACIVERT, font=FONT_KUCUK, justify="left").pack(
+            side="left", padx=4, pady=8
+        )
+
+        def _ac():
+            from odeme_sozu_ui import OdemeSozleriMerkezDialog
+
+            OdemeSozleriMerkezDialog(app)
+
+        ttk.Button(kutu, text="Ödeme Sözleri Takvimi", command=_ac).pack(side="right", padx=10, pady=6)
+
+    def _soz_metni():
+        from database.odeme_sozu_service import OdemeSozuService
+
+        return OdemeSozuService.hatirlatma_metni()
+
+    arka_planda(app, _soz_metni, on_ok=_soz_hatirlatma, on_err=lambda _e: None)
+
     # —— Modül kartları ——
     tk.Label(
         pad, text="Modüller", bg=ACIK_BG, fg=LACIVERT, font=("Segoe UI", 12, "bold")
