@@ -96,12 +96,12 @@ class TeklifDagitimTest(unittest.TestCase):
     """Senaryo 1–7 ve 15 — saf Decimal, DB yok."""
 
     def test_01_sadece_yuzde_yirmi(self):
-        # 10000 + %20 = 12000
+        # Satış üzerinden %20 marj: 10000 × 100 / 80 = 12500
         s = [_satir(1, 10000, kod="A")]
         r = dagitimli_hesapla(s, profit_rate=20)
-        self.assertEqual(r.calculated_offer_subtotal, Decimal("12000.00"))
-        self.assertEqual(r.percentage_profit_amount, Decimal("2000.00"))
-        self.assertEqual(r.satirlar[0]["satir_ara"], Decimal("12000.00"))
+        self.assertEqual(r.calculated_offer_subtotal, Decimal("12500.00"))
+        self.assertEqual(r.percentage_profit_amount, Decimal("2500.00"))
+        self.assertEqual(r.satirlar[0]["satir_ara"], Decimal("12500.00"))
 
     def test_02_sadece_maktu_1000(self):
         s = [_satir(1, 10000, kod="A")]
@@ -111,7 +111,7 @@ class TeklifDagitimTest(unittest.TestCase):
     def test_03_yuzde_ve_maktu(self):
         s = [_satir(1, 10000, kod="A")]
         r = dagitimli_hesapla(s, profit_rate=20, fixed_profit_amount=1000)
-        self.assertEqual(r.calculated_offer_subtotal, Decimal("13000.00"))
+        self.assertEqual(r.calculated_offer_subtotal, Decimal("13500.00"))
 
     def test_04_sadece_masraf_500(self):
         s = [_satir(1, 10000, kod="A")]
@@ -123,12 +123,12 @@ class TeklifDagitimTest(unittest.TestCase):
         r = dagitimli_hesapla(
             s, profit_rate=20, fixed_profit_amount=1000, customer_expense_amount=500
         )
-        self.assertEqual(r.calculated_offer_subtotal, Decimal("13500.00"))
-        self.assertEqual(r.percentage_profit_amount, Decimal("2000.00"))
-        self.assertEqual(r.total_target_profit, Decimal("3000.00"))
+        self.assertEqual(r.calculated_offer_subtotal, Decimal("14000.00"))
+        self.assertEqual(r.percentage_profit_amount, Decimal("2500.00"))
+        self.assertEqual(r.total_target_profit, Decimal("3500.00"))
 
     def test_06_oranli_dagitim_60_40(self):
-        # Ek 3500 (= %20*10000 + 1000 + 500) → 2100 / 1400
+        # Ek 4000 (= %20 marj 2500 + 1000 + 500) → 2400 / 1600
         s = [
             _satir(1, 6000, kod="A"),
             _satir(1, 4000, kod="B"),
@@ -136,28 +136,28 @@ class TeklifDagitimTest(unittest.TestCase):
         r = dagitimli_hesapla(
             s, profit_rate=20, fixed_profit_amount=1000, customer_expense_amount=500
         )
-        self.assertEqual(r.calculated_offer_subtotal, Decimal("13500.00"))
+        self.assertEqual(r.calculated_offer_subtotal, Decimal("14000.00"))
         a = next(x for x in r.satir_sonuclari if x.index == 0)
         b = next(x for x in r.satir_sonuclari if x.index == 1)
         ekstra_a = a.allocated_percentage_profit + a.allocated_fixed_profit + a.allocated_expense
         ekstra_b = b.allocated_percentage_profit + b.allocated_fixed_profit + b.allocated_expense
-        self.assertEqual(ekstra_a.quantize(Decimal("0.01")), Decimal("2100.00"))
-        self.assertEqual(ekstra_b.quantize(Decimal("0.01")), Decimal("1400.00"))
-        self.assertEqual(a.satir_ara, Decimal("8100.00"))
-        self.assertEqual(b.satir_ara, Decimal("5400.00"))
+        self.assertEqual(ekstra_a.quantize(Decimal("0.01")), Decimal("2400.00"))
+        self.assertEqual(ekstra_b.quantize(Decimal("0.01")), Decimal("1600.00"))
+        self.assertEqual(a.satir_ara, Decimal("8400.00"))
+        self.assertEqual(b.satir_ara, Decimal("5600.00"))
 
     def test_07_ondalik_miktar(self):
         s = [
             _satir(Decimal("1.5"), Decimal("100"), kod="A"),
             _satir(Decimal("2.5"), Decimal("100"), kod="B"),
         ]
-        # alış: 150 + 250 = 400; %20 = 80 → toplam 480
+        # alış: 150 + 250 = 400; %20 marj → 400 × 100 / 80 = 500
         r = dagitimli_hesapla(s, profit_rate=20)
         self.assertEqual(r.total_purchase_cost, Decimal("400.00"))
-        self.assertEqual(r.calculated_offer_subtotal, Decimal("480.00"))
+        self.assertEqual(r.calculated_offer_subtotal, Decimal("500.00"))
         self.assertEqual(
             sum((x.satir_ara for x in r.satir_sonuclari), Decimal("0")),
-            Decimal("480.00"),
+            Decimal("500.00"),
         )
 
     def test_15_satir_toplamlari_baslik_esit(self):

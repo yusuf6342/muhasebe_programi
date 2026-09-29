@@ -26,11 +26,12 @@ class SatisNavigasyonTest(unittest.TestCase):
         self.assertEqual(anahtarlar[1], "musteri_liste")
         cari = [k[0].replace("\n", " ") for k in CARI_ISLEM_KARTLARI]
         self.assertEqual(cari[0], "TAHSİLAT MAKBUZU")
-        self.assertEqual(cari[1], "CARİ VİRMAN")
-        self.assertIn("KREDİ KARTI ÇEKİM EVRAKI", cari[2])
-        self.assertNotIn("...", cari[2])
-        self.assertEqual(cari[3], "GELİR FİŞİ")
-        self.assertEqual(cari[4], "GİDER FİŞİ")
+        self.assertEqual(cari[1], "TAHSİLAT MAKBUZLARI LİSTESİ")
+        self.assertEqual(cari[2], "CARİ VİRMAN")
+        self.assertIn("KREDİ KARTI ÇEKİM EVRAKI", cari[3])
+        self.assertNotIn("...", cari[3])
+        self.assertEqual(cari[4], "GELİR FİŞİ")
+        self.assertEqual(cari[5], "GİDER FİŞİ")
         rapor = [k[0] for k in RAPOR_KARTLARI]
         self.assertIn("SATIŞ RAPORLARI", rapor)
         self.assertIn("DÖVİZ KURLARI", rapor)

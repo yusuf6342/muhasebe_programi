@@ -134,7 +134,7 @@ class SatisPersoneliTest(unittest.TestCase):
         self.assertIn("sales_person_id", cols)
         self.assertIn("sales_person_full_name", cols)
 
-    def test_kaydet_personel_zorunlu(self):
+    def test_kaydet_personel_opsiyonel(self):
         from database.satis_faturasi_service import SatisFaturasiService
 
         veriler = {
@@ -155,9 +155,9 @@ class SatisPersoneliTest(unittest.TestCase):
                 "kdv_orani": 20,
             }
         ]
-        with self.assertRaises(ValueError) as ctx:
-            SatisFaturasiService.kaydet(veriler, satirlar)
-        self.assertIn("Satış personeli", str(ctx.exception))
+        fatura = SatisFaturasiService.kaydet(veriler, satirlar)
+        self.assertIsNone(fatura.sales_person_id)
+        self.assertIsNone(fatura.sales_person_full_name)
 
     @patch("database.satis_personeli.aktif_satis_personelleri")
     def test_kaydet_ve_listele(self, mock_aktif):
