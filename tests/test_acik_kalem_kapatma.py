@@ -259,6 +259,94 @@ class RaporVeMakbuzTest(AcikKalemTemel):
             self.assertTrue(any(u["cari_id"] == self.cid for u in uygulanan))
         self.assertTrue(_mutabakat(self.cid)["uyumlu"])
 
+    def _fatura_ici_tahsilatli_cari(self):
+        from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiTahsilati
+
+        with get_session() as s:
+            c = Cari(cari_kodu="PRK900", unvan="PERAKENDE TEST", cari_turu="Müşteri")
+            s.add(c)
+            s.flush()
+            f = SatisFaturasi(fatura_no="SF-FIC-1", fatura_tarihi=date(2026, 3, 1), vade_tarihi=date(2026, 3, 1),
+                              cari_id=c.id, durum="KAPALI", onaylandi=True, depo="ANA DEPO",
+                              tahsilat_tutari=D("60"), tl_genel_toplam=D("60"), tl_brut_toplam=D("60"),
+                              row_version=1)
+            f.tahsilatlar.append(SatisFaturasiTahsilati(tahsilat_tarihi=date(2026, 3, 1), tutar=D("60"),
+                                                        odeme_sekli="KREDİ KARTI", hesap="POS"))
+            s.add(f)
+            s.add(SatisHareketi(cari_id=c.id, satis_tarihi=date(2026, 3, 1), belge_no="SF-FIC-1",
+                                satis_tutari=D("60"), kalan_acik_tutar=D("0")))
+            _kalem(s, c.id, "SF-FIC-2", date(2026, 3, 2), "40")
+            return c.id
+
+    def test_gecis_fatura_ici_tahsilat_manuel_inceleme_ve_tekrar_calistirma(self):
+        from database.acik_kalem_gecis import (
+            DEVIR, MANUEL, bakiye_anlik, bakiye_karsilastir, gecis_kuru_calisma, gecis_uygula,
+        )
+        from database.kapatma_izleme_service import evrak_kapatma_detayi
+        from database.models.acik_kalem_gecis import AcikKalemGecisKaydi
+
+        prk = self._fatura_ici_tahsilatli_cari()
+        with get_session() as s:
+            s.execute(text("UPDATE cari_satis_hareketleri SET kalan_acik_tutar = 0 WHERE id = :i"), {"i": self.a})
+            s.add(SatisHareketi(cari_id=self.cid, satis_tarihi=date(2026, 1, 5), belge_no="THS-ESKI",
+                                satis_tutari=D("0"), kalan_acik_tutar=D("-30")))
+        with get_session() as s:
+            once = bakiye_anlik(s)
+            rapor = gecis_kuru_calisma(s)
+            m = next(c for c in rapor["cariler"] if c["cari_id"] == self.cid)
+            p = next(c for c in rapor["cariler"] if c["cari_id"] == prk)
+            self.assertEqual((m["fark"], m["oneri"]["islem"], m["oneri"]["tutar"]), (D("130.00"), DEVIR, D("130.00")))
+            self.assertEqual((p["fark"], p["fatura_ici_tahsilat"], p["oneri"]["islem"]), (D("60.00"), D("60.00"), MANUEL))
+            self.assertEqual(p["fatura_ici_belgeler"], [("SF-FIC-1", D("60.00"))])
+            uygulanan = gecis_uygula(s, rapor)
+        self.assertIn(self.cid, [u["cari_id"] for u in uygulanan])
+        self.assertNotIn(prk, [u["cari_id"] for u in uygulanan])
+        with get_session() as s:
+            self.assertEqual(bakiye_karsilastir(once, bakiye_anlik(s))["farkli"], [])
+            self.assertTrue(AcikKalemService.mutabakat(s, self.cid)["uyumlu"])
+            self.assertEqual(AcikKalemService.mutabakat(s, prk)["fark"], D("60.00"))
+            dvf = s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no.like("DVF-%"),
+                                                       SatisHareketi.cari_id == self.cid))
+            self.assertEqual((D(str(dvf.satis_tutari)), D(str(dvf.kalan_acik_tutar))), (D("0"), D("130.00")))
+            self.assertEqual(s.scalar(select(CariKapatma.id).where(CariKapatma.hedef_hareket_id == dvf.id)), None)
+            self.assertEqual(D(str(s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == "THS-ESKI")).kalan_acik_tutar)), D("-30.00"))
+            kayit = s.scalar(select(AcikKalemGecisKaydi).where(AcikKalemGecisKaydi.cari_id == self.cid))
+            self.assertIn("Gerçek fatura veya tahsilat değildir", kayit.aciklama)
+            self.assertEqual(s.scalar(select(AcikKalemGecisKaydi).where(AcikKalemGecisKaydi.cari_id == prk)), None)
+            dvf_no = dvf.belge_no
+        with get_session() as s:
+            ikinci = gecis_uygula(s, gecis_kuru_calisma(s))
+            self.assertEqual(ikinci, [])
+        with get_session() as s:
+            self.assertEqual(len(s.scalars(select(SatisHareketi).where(SatisHareketi.belge_no.like("DVF-%"))).all()),
+                             len(uygulanan))
+        from database.cari_bakiye_service import _kayitlari_topla
+
+        with get_session() as s:
+            belgeler = [k[1] for k in _kayitlari_topla(s, self.cid, as_of=None, strict_before=False,
+                                                       exclude_belge_no=None, currency=None)]
+        self.assertNotIn(dvf_no, belgeler)
+        d = evrak_kapatma_detayi(dvf_no)
+        self.assertIn("Gerçek fatura veya tahsilat değildir", d["mesaj"])
+        self.assertEqual(d["evrak_turu"], "Geçiş Devir Farkı")
+
+    def test_gecis_yedek_dogrulama(self):
+        import tempfile
+
+        from database.acik_kalem_gecis import gecis_kuru_calisma, salt_okunur_oturum, yedek_dogrula, yedekle
+
+        with tempfile.TemporaryDirectory() as d:
+            s, m = salt_okunur_oturum(self.db_path)
+            try:
+                rapor = gecis_kuru_calisma(s)
+            finally:
+                s.close()
+                m.dispose()
+            yedek = yedekle(self.db_path, d)
+            sonuc = yedek_dogrula(self.db_path, yedek, rapor)
+            self.assertTrue(sonuc["gecerli"], sonuc)
+            self.assertEqual(sonuc["butunluk"], "ok")
+
 
 class TahsilatGirEkranTest(AcikKalemTemel):
     def setUp(self):

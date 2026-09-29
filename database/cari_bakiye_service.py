@@ -24,7 +24,7 @@ KURUS = Decimal("0.01")
 # Defterde SatisHareketi olarak ayrıca gösterilmeyen önekler (CariIslem zaten var)
 _DEFTER_ATLA_ONEK = (
     "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-",
-    "IPT-", "FZO-",
+    "IPT-", "FZO-", "DVF-",
 )
 
 

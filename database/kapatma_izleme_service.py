@@ -147,8 +147,27 @@ def _evrak_bilgisi(session, cari_id: int | None, belge_no: str) -> dict[str, Any
             bilgi["ac_tur"] = tur
     if not bilgi["evrak_turu"] and belge_no.startswith(GECIS_DEVIR_ONEKI):
         bilgi["evrak_turu"] = "Geçiş Devir Farkı"
+        bilgi["hesap"] = "Gerçek fatura/tahsilat değildir"
     bilgi.setdefault("evrak_no_goster", belge_no)
     return bilgi
+
+
+def gecis_devir_aciklamasi(session, belge_no: str) -> str:
+    """DVF- kalemi için geçişte yazılan açıklama (kayıt yoksa genel açıklama)."""
+    genel = "Geçiş Devir Farkı: veri geçişinde eşleştirilemeyen net fark. Gerçek fatura veya tahsilat değildir."
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        from database.models.acik_kalem_gecis import AcikKalemGecisKaydi
+
+        if not sa_inspect(session.connection()).has_table(AcikKalemGecisKaydi.__tablename__):
+            return genel
+        kayit = session.scalar(select(AcikKalemGecisKaydi).where(AcikKalemGecisKaydi.belge_no == belge_no))
+    except Exception:
+        return genel
+    if kayit is None:
+        return genel
+    return f"Geçiş Devir Farkı ({kayit.tarih:%d.%m.%Y}): {kayit.aciklama}"
 
 
 def _hedef_esas(session, hareket: SatisHareketi, aktif_toplam: Decimal) -> Decimal:
@@ -331,6 +350,8 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
             )
             _tani_yaz(belge_no, sonuc["uyari"])
         sonuc["kapatanlar"] = kapatanlar
+        if belge_no.startswith(GECIS_DEVIR_ONEKI):
+            sonuc["mesaj"] = gecis_devir_aciklamasi(session, belge_no)
         if not kapatanlar and not sonuc["mesaj"]:
             sonuc["mesaj"] = MESAJ_KAYIT_YOK
         if AcikKalemService._tablo_var(session):
@@ -365,6 +386,8 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
             sonuc["kaynak"] = kaynak
             if sonuc["mesaj"] == MESAJ_KAYIT_YOK and hareket is None:
                 sonuc["mesaj"] = None
+    if belge_no.startswith(GECIS_DEVIR_ONEKI):
+        sonuc["mesaj"] = gecis_devir_aciklamasi(session, belge_no)
     return sonuc
 
 
