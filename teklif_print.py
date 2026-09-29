@@ -531,6 +531,222 @@ class MusteriTeklifOnizlemeDialog(tk.Toplevel):
             messagebox.showerror("E-posta", str(exc), parent=self)
 
 
+def pdf_ac(yol: Path) -> None:
+    """PDF'yi varsayılan görüntüleyicide açar."""
+    yol = Path(yol).resolve()
+    if os.name == "nt":
+        os.startfile(str(yol))  # type: ignore[attr-defined]
+    else:
+        webbrowser.open(yol.as_uri())
+
+
+class MusteriGorunumuDialog(tk.Toplevel):
+    """İç teklif ekranıyla aynı kayıttan beslenen müşteri görünümü (modal değil).
+
+    Yalnızca CustomerQuoteViewModel alanları gösterilir; alış/maliyet/kâr verisi
+    bu pencereye hiç taşınmaz.
+    """
+
+    KOLONLAR = (
+        ("sira", "#", 36, "center"),
+        ("urun", "Ürün", 300, "w"),
+        ("birim", "Birim", 70, "center"),
+        ("miktar", "Miktar", 80, "e"),
+        ("fiyat", "Birim Fiyat", 100, "e"),
+        ("isk", "İskonto", 70, "e"),
+        ("kdv", "KDV", 60, "e"),
+        ("tutar", "Tutar", 110, "e"),
+    )
+
+    def __init__(self, parent, dialog):
+        super().__init__(parent)
+        self.dialog = dialog
+        self.vm: CustomerQuoteViewModel | None = None
+        self._bekleyen = None
+        self.title("Müşteri Görünümü")
+        self.geometry("980x640")
+        self.minsize(760, 480)
+        self.transient(parent)
+        self.configure(bg="#F8FAFC")
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self._kur()
+        self.yenile()
+
+    def _kur(self):
+        bar = tk.Frame(self, bg="#0b1f3a", pady=6, padx=8)
+        bar.pack(fill="x")
+        tk.Label(
+            bar, text="Müşteri Görünümü", bg="#0b1f3a", fg="#e8b923",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side="left", padx=8)
+
+        def btn(t, cmd, bg="#e8b923", fg="#0b1f3a"):
+            b = tk.Button(
+                bar, text=t, command=cmd, bg=bg, fg=fg, relief="flat",
+                padx=8, pady=3, font=("Segoe UI", 9, "bold"), cursor="hand2",
+            )
+            b.pack(side="left", padx=2)
+            return b
+
+        btn("Yenile", self.yenile)
+        btn("PDF Önizleme", self._pdf_onizleme)
+        btn("Metni Kopyala", self._metni_kopyala)
+        btn("Kapat", self.destroy, "#9CA3AF", "#111")
+
+        self.lbl_eksik = tk.Label(
+            self, text="", bg="#FEE2E2", fg="#991B1B", font=("Segoe UI", 9, "bold"),
+            justify="left", anchor="w", padx=10, pady=4,
+        )
+
+        ust = tk.Frame(self, bg="#F8FAFC", padx=12, pady=8)
+        ust.pack(fill="x")
+        self._ust = ust
+        self.lbl_firma = tk.Label(
+            ust, text="", bg="#F8FAFC", fg="#0B2A4A", font=("Segoe UI", 12, "bold"), anchor="w"
+        )
+        self.lbl_firma.grid(row=0, column=0, sticky="w")
+        self.lbl_teklif = tk.Label(
+            ust, text="", bg="#F8FAFC", fg="#1E293B", font=("Segoe UI", 9), justify="right", anchor="e"
+        )
+        self.lbl_teklif.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.lbl_musteri = tk.Label(
+            ust, text="", bg="#F8FAFC", fg="#1E293B", font=("Segoe UI", 9), justify="left", anchor="w"
+        )
+        self.lbl_musteri.grid(row=1, column=0, sticky="w")
+        ust.columnconfigure(0, weight=1)
+
+        orta = tk.Frame(self, bg="#F8FAFC", padx=12)
+        orta.pack(fill="both", expand=True)
+        self.tablo = ttk.Treeview(
+            orta, columns=[k[0] for k in self.KOLONLAR], show="headings", height=12
+        )
+        for anahtar, baslik, gen, hiza in self.KOLONLAR:
+            self.tablo.heading(anahtar, text=baslik)
+            self.tablo.column(anahtar, width=gen, anchor=hiza, stretch=(anahtar == "urun"))
+        sy = ttk.Scrollbar(orta, orient="vertical", command=self.tablo.yview)
+        self.tablo.configure(yscrollcommand=sy.set)
+        sy.pack(side="right", fill="y")
+        self.tablo.pack(side="left", fill="both", expand=True)
+
+        alt = tk.Frame(self, bg="#F8FAFC", padx=12, pady=8)
+        alt.pack(fill="x")
+        self.lbl_sartlar = tk.Label(
+            alt, text="", bg="#F8FAFC", fg="#1E293B", font=("Segoe UI", 9),
+            justify="left", anchor="nw", wraplength=560,
+        )
+        self.lbl_sartlar.pack(side="left", fill="both", expand=True, anchor="nw")
+        self.lbl_toplam = tk.Label(
+            alt, text="", bg="#F8FAFC", fg="#0B2A4A", font=("Segoe UI", 10, "bold"),
+            justify="right", anchor="ne",
+        )
+        self.lbl_toplam.pack(side="right", anchor="ne")
+
+    def yenile_sonra(self):
+        """İç ekrandaki değişikliklerde kısa gecikmeyle yenile (tuş başına değil)."""
+        if self._bekleyen is not None:
+            try:
+                self.after_cancel(self._bekleyen)
+            except tk.TclError:
+                pass
+        self._bekleyen = self.after(150, self.yenile)
+
+    def yenile(self):
+        self._bekleyen = None
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        from database.teklif_customer_view import eksik_satis_fiyati_satirlari
+
+        try:
+            vm = build_customer_quote_from_dialog(self.dialog)
+        except Exception as exc:
+            _LOG.warning("Müşteri görünümü üretilemedi: %s", exc)
+            return
+        self.vm = vm
+        pb = vm.para_birimi_etiket or vm.para_birimi
+        f = vm.firma or {}
+        m = vm.musteri or {}
+        self.lbl_firma.configure(text=f.get("unvan") or "")
+        self.lbl_teklif.configure(
+            text=(
+                f"Teklif No: {vm.teklif_no or '(kaydedilmedi)'}\n"
+                f"Tarih: {vm.teklif_tarihi or '—'}\n"
+                f"Geçerlilik: {vm.gecerlilik_suresi or '—'}"
+                + (f" ({vm.gecerlilik_tarihi})" if vm.gecerlilik_tarihi else "")
+            )
+        )
+        musteri_satir = [f"Sayın {m.get('unvan') or '—'}"]
+        if m.get("yetkili"):
+            musteri_satir.append(f"Yetkili: {m['yetkili']}")
+        iletisim = "  ".join(x for x in (m.get("telefon"), m.get("email")) if x)
+        if iletisim:
+            musteri_satir.append(iletisim)
+        self.lbl_musteri.configure(text="\n".join(musteri_satir))
+
+        self.tablo.delete(*self.tablo.get_children())
+        for s in vm.satirlar or []:
+            urun = f"{s.urun_kodu} — {s.urun_adi}" if s.urun_kodu else s.urun_adi
+            self.tablo.insert(
+                "",
+                "end",
+                values=(
+                    s.sira,
+                    urun,
+                    s.birim,
+                    s.miktar_goster,
+                    s.birim_fiyat_goster,
+                    s.iskonto_goster,
+                    s.kdv_oran_goster,
+                    s.kdv_hariç_goster,
+                ),
+            )
+        toplam = [f"Ara Toplam: {vm.ara_goster} {pb}"]
+        if vm.iskonto_toplam:
+            toplam.append(f"İskonto: {vm.iskonto_goster} {pb}")
+        if vm.genel_iskonto:
+            toplam.append(f"Genel İndirim: {vm.genel_iskonto_goster} {pb}")
+        toplam += [f"KDV: {vm.kdv_goster} {pb}", f"GENEL TOPLAM: {vm.genel_goster} {pb}"]
+        self.lbl_toplam.configure(text="\n".join(toplam))
+        sart = [
+            f"Teslim süresi: {vm.termin_suresi or vm.teslimat_sekli or '—'}",
+            f"Ödeme şartı: {vm.odeme_sekli or '—'}",
+        ]
+        if vm.musteri_notu:
+            sart.append(f"Açıklama: {vm.musteri_notu}")
+        self.lbl_sartlar.configure(text="\n".join(sart))
+
+        eksik = eksik_satis_fiyati_satirlari(getattr(self.dialog, "satirlar", None) or [])
+        if eksik:
+            liste = ", ".join(eksik[:6]) + (f" … +{len(eksik) - 6}" if len(eksik) > 6 else "")
+            self.lbl_eksik.configure(
+                text=f"Satış fiyatı boş {len(eksik)} satır var — PDF için önce «Fiyatları Hesapla»: {liste}"
+            )
+            self.lbl_eksik.pack(fill="x", before=self._ust)
+        else:
+            self.lbl_eksik.pack_forget()
+
+    def _pdf_onizleme(self):
+        if hasattr(self.dialog, "_pdf_onizleme"):
+            self.dialog._pdf_onizleme(parent=self)
+            self.yenile()
+
+    def _metni_kopyala(self):
+        from database.teklif_customer_view import musteri_gorunumu_metni
+
+        try:
+            self.yenile()
+            if self.vm is None:
+                return
+            metin = musteri_gorunumu_metni(self.vm)
+            self.clipboard_clear()
+            self.clipboard_append(metin)
+            messagebox.showinfo("Kopyalandı", "Müşteri teklif metni panoya kopyalandı.", parent=self)
+        except CustomerQuoteSecurityError as exc:
+            messagebox.showerror("Güvenlik", str(exc), parent=self)
+
+
 class IcMaliyetAnaliziDialog(tk.Toplevel):
     """İç maliyet analizi — şirket içidir."""
 

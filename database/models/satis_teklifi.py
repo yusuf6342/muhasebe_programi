@@ -168,6 +168,8 @@ class SatisTeklifiSatiri(Base):
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     birim: Mapped[str] = mapped_column(String(20), nullable=False, default="Adet")
+    # 1 satır birimi = kaç stok ana birimi (alış birim fiyatı ana birim üzerinden tutulur)
+    birim_carpani: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=1)
     maliyet_kaynagi: Mapped[str | None] = mapped_column(String(50), nullable=True)
     birim_maliyet: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     maliyet_hesap_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

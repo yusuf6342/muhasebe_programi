@@ -22,7 +22,10 @@ from database.teklif_pricing_service import (
     TERMIN_TURLERI,
     QuotePricingService,
     dagitimli_hesapla,
+    ic_maliyet_ozeti,
     maliyet_getir,
+    satir_alis_maliyeti,
+    stok_birim_carpani,
     tahmini_teslim_hesapla,
 )
 from database.teklif_odeme import (
@@ -393,7 +396,8 @@ class TeklifDialog(tk.Toplevel):
         )
         self.btn_kabul = self._btn(sag, "Kabul Edildi", self._kabul_edildi, YESIL)
         self.btn_siparisler = self._btn(sag, "Siparişler", self._siparis_listesi_ac, LACIVERT)
-        self._btn(sag, "Ön İzleme", self._onizleme, "#455A64")
+        self._btn(sag, "Müşteri Görünümü", self._musteri_gorunumu, "#455A64")
+        self._btn(sag, "PDF Önizleme", self._pdf_onizleme, "#7C3AED")
         self.btn_yazdir = self._btn(sag, "Yazdır", self._yazdir, "#1565C0")
         diger = tk.Menubutton(
             sag, text="Diğer ▾", bg="#374151", fg=BEYAZ, relief="flat", font=("Segoe UI", 9, "bold")
@@ -1036,7 +1040,7 @@ class TeklifDialog(tk.Toplevel):
                 "miktar",
                 "birim",
                 "alis",
-                "kaynak",
+                "alis_toplam",
                 "fiyat",
                 "om",
                 "isk",
@@ -1050,9 +1054,9 @@ class TeklifDialog(tk.Toplevel):
                 "ad": "Ad",
                 "miktar": "Miktar",
                 "birim": "Birim",
-                "alis": "Alış",
-                "kaynak": "Kaynak",
-                "fiyat": "Fiyat",
+                "alis": "Alış Birim",
+                "alis_toplam": "Alış Maliyeti",
+                "fiyat": "Satış Fiyatı",
                 "om": "O/M",
                 "isk": "İsk",
                 "kdv": "KDV",
@@ -1065,9 +1069,9 @@ class TeklifDialog(tk.Toplevel):
                 "ad": 280,
                 "miktar": 80,
                 "birim": 70,
-                "alis": 90,
-                "kaynak": 90,
-                "fiyat": 90,
+                "alis": 95,
+                "alis_toplam": 110,
+                "fiyat": 100,
                 "om": 48,
                 "isk": 60,
                 "kdv": 60,
@@ -1153,7 +1157,7 @@ class TeklifDialog(tk.Toplevel):
                 width=genislikler.get(c, 80),
                 minwidth=36 if c == "tur" else 48,
                 stretch=True,
-                anchor="w" if c in ("kod", "ad", "kaynak") else "e" if c != "tur" else "center",
+                anchor="w" if c in ("kod", "ad") else "e" if c != "tur" else "center",
             )
         self.satir_tablo.pack(side="left", fill="both", expand=True)
         self.satir_tablo.bind("<Double-1>", self._satir_cift_tik)
@@ -1613,6 +1617,90 @@ class TeklifDialog(tk.Toplevel):
             if not sessiz:
                 messagebox.showerror("TCMB", str(hata), parent=self)
 
+    def _ic_maliyet_paneli_kur(self, ebeveyn) -> None:
+        """Alt özetteki iç maliyet paneli — yalnızca maliyet yetkisi olanlara."""
+        ACIK_SARI = "#FEF9C3"
+        cer = tk.Frame(ebeveyn, bg=ACIK_SARI, highlightthickness=1, highlightbackground="#E0C97A")
+        paketli = [c for c in ebeveyn.winfo_children() if c is not cer and c.winfo_manager() == "pack"]
+        paket = {"side": "top", "fill": "x", "pady": (0, 4)}
+        if paketli:
+            paket["before"] = paketli[0]
+        cer.pack(**paket)
+        tk.Label(
+            cer,
+            text="İç Maliyet Özeti (müşteriye gösterilmez)",
+            bg=ACIK_SARI,
+            fg="#7C5E00",
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=6, pady=(2, 0))
+        alanlar = (
+            ("genel_alis_maliyeti", "Genel Alış Maliyeti Toplamı"),
+            ("satis_toplami", "Satış Toplamı (KDV hariç)"),
+            ("musteri_masrafi", "Müşteri Masrafı"),
+            ("ic_masraf", "İç Masraf"),
+            ("kar_tutari", "Kâr Tutarı"),
+            ("kar_marji", "Kâr Marjı %"),
+        )
+        self.ic_maliyet_degerleri: dict[str, tk.Label] = {}
+        for i, (anahtar, baslik) in enumerate(alanlar):
+            satir, sutun = 1 + i // 3, (i % 3) * 2
+            tk.Label(cer, text=baslik + ":", bg=ACIK_SARI, font=("Segoe UI", 8)).grid(
+                row=satir, column=sutun, sticky="w", padx=(6, 2)
+            )
+            deger = tk.Label(cer, text="—", bg=ACIK_SARI, font=("Segoe UI", 9, "bold"), anchor="e")
+            deger.grid(row=satir, column=sutun + 1, sticky="e", padx=(0, 10))
+            self.ic_maliyet_degerleri[anahtar] = deger
+        self.lbl_ic_maliyet_uyari = tk.Label(
+            cer, text="", bg=ACIK_SARI, fg="#B91C1C", font=("Segoe UI", 8, "bold"),
+            justify="left", anchor="w", wraplength=560,
+        )
+        self.lbl_ic_maliyet_uyari.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 2))
+        self._ic_maliyet_paneli = cer
+
+    def _ic_maliyet_ozeti_hesapla(self) -> dict:
+        def _gir(anahtar):
+            try:
+                return _decimal(self.fiyat_girdiler[anahtar].get() or 0)
+            except (KeyError, ValueError, tk.TclError, AttributeError):
+                return Decimal("0")
+
+        return ic_maliyet_ozeti(
+            self.satirlar,
+            _gir("customer_expense_amount"),
+            _gir("internal_expense_amount"),
+        )
+
+    def _ic_maliyet_paneli_yaz(self, ozet: dict) -> None:
+        etiketler = getattr(self, "ic_maliyet_degerleri", None)
+        if not etiketler:
+            return
+        eksik = ozet["eksik_var"]
+        try:
+            for anahtar, lbl in etiketler.items():
+                deger = ozet.get(anahtar)
+                if deger is None:
+                    metin = "—"
+                elif anahtar == "kar_marji":
+                    metin = f"%{_para(deger)}"
+                else:
+                    metin = _para(deger)
+                if eksik and anahtar in ("genel_alis_maliyeti", "kar_tutari", "kar_marji"):
+                    metin += " *"
+                lbl.configure(text=metin, fg="#B91C1C" if eksik and anahtar == "genel_alis_maliyeti" else "#0F172A")
+            if eksik:
+                satirlar = ozet["eksik_satirlar"]
+                liste = ", ".join(satirlar[:5]) + (f" … +{len(satirlar) - 5}" if len(satirlar) > 5 else "")
+                self.lbl_ic_maliyet_uyari.configure(
+                    text=(
+                        f"* Genel alış maliyeti EKSİK maliyet içeriyor — alış fiyatı olmayan "
+                        f"{len(satirlar)} satır toplama katılmadı: {liste}"
+                    )
+                )
+            else:
+                self.lbl_ic_maliyet_uyari.configure(text="")
+        except tk.TclError:
+            pass
+
     def _teklif_alt_ozet_kur(self) -> None:
         """Fatura ile aynı Brüt / İndirim / Masraf / Net sticky footer."""
         if getattr(self, "_teklif_alt_ozet", None):
@@ -1662,6 +1750,11 @@ class TeklifDialog(tk.Toplevel):
             not_w.pack(fill="both", expand=True, pady=(2, 0))
         except tk.TclError:
             pass
+        if maliyet_izinli():
+            try:
+                self._ic_maliyet_paneli_kur(refs["sol"])
+            except Exception:
+                self.ic_maliyet_degerleri = {}
         sticky_footer_layout(
             self,
             ust=getattr(self, "_teklif_toolbar", None),
@@ -2471,6 +2564,8 @@ class TeklifDialog(tk.Toplevel):
         kay = self._secili_maliyet_kaynagi()
         uyarilar = []
         for s in self.satirlar:
+            if s.get("is_manual_item") or s.get("manuel"):
+                continue
             snap = maliyet_getir(s.get("urun_kodu") or "", depo, kay)
             s["birim_maliyet"] = snap.birim_maliyet
             s["maliyet_kaynagi"] = snap.maliyet_kaynagi
@@ -2478,9 +2573,8 @@ class TeklifDialog(tk.Toplevel):
             s["purchase_currency"] = snap.purchase_currency
             s["purchase_exchange_rate"] = snap.purchase_exchange_rate
             s["purchase_unit_price_base"] = snap.purchase_unit_price_base
-            s["purchase_total_cost"] = (
-                snap.purchase_unit_price_base * _decimal(s.get("miktar", 0))
-            ).quantize(Decimal("0.01"))
+            s["cost_status"] = "OK" if snap.purchase_unit_price_base > 0 else "EKSIK"
+            s["purchase_total_cost"] = satir_alis_maliyeti(s).toplam or Decimal("0")
             s["cost_source_date"] = snap.cost_source_date
             s["supplier_id"] = snap.supplier_id
             s["supplier_name"] = snap.supplier_name
@@ -2741,6 +2835,7 @@ class TeklifDialog(tk.Toplevel):
                     "urun_adi": s.urun_adi,
                     "miktar": s.miktar,
                     "birim": s.birim,
+                    "birim_carpani": getattr(s, "birim_carpani", None) or Decimal("1"),
                     "birim_maliyet": s.birim_maliyet,
                     "maliyet_kaynagi": s.maliyet_kaynagi,
                     "liste_fiyati": s.liste_fiyati,
@@ -3066,9 +3161,8 @@ class TeklifDialog(tk.Toplevel):
             if fiyat > 0 or net > 0:
                 s["fiyat_hesaplandi"] = True
                 s["yeniden_hesaplanmali"] = False
-        base = _decimal(s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0)
-        if miktar > 0 and base > 0:
-            s["purchase_total_cost"] = (base * miktar).quantize(Decimal("0.01"))
+        alis = satir_alis_maliyeti(s)
+        s["purchase_total_cost"] = alis.toplam if not alis.eksik else Decimal("0")
 
     def _satir_secildi(self, _e=None):
         if getattr(self, "_satir_yukle_kilit", False):
@@ -3197,6 +3291,8 @@ class TeklifDialog(tk.Toplevel):
         if ad_metin:
             s["urun_adi"] = ad_metin
         s["miktar"] = miktar
+        if birim != (s.get("birim") or "") and not (s.get("is_manual_item") or s.get("manuel")):
+            s["birim_carpani"] = stok_birim_carpani(s.get("urun_kodu"), birim)
         s["birim"] = birim
         s["kdv_orani"] = kdv
         if hasattr(self, "urun_depo"):
@@ -3930,13 +4026,24 @@ class TeklifDialog(tk.Toplevel):
         # Satış fiyatı ürün eklenirken boş; yalnızca «Fiyatları Hesapla» ile üretilir
         fiyat = None
         net = Decimal("0")
-        purchase_total = (snap.purchase_unit_price_base * miktar).quantize(Decimal("0.01"))
+        carpan = Decimal("1") if manuel else stok_birim_carpani(kod, birim)
+        purchase_total = (
+            satir_alis_maliyeti(
+                {
+                    "purchase_unit_price_base": snap.purchase_unit_price_base,
+                    "miktar": miktar,
+                    "birim_carpani": carpan,
+                }
+            ).toplam
+            or Decimal("0")
+        )
         self.satirlar.append(
             {
                 "urun_kodu": kod,
                 "urun_adi": ad,
                 "miktar": miktar,
                 "birim": birim,
+                "birim_carpani": carpan,
                 "birim_maliyet": snap.birim_maliyet,
                 "maliyet_kaynagi": snap.maliyet_kaynagi,
                 "liste_fiyati": liste,
@@ -4311,13 +4418,11 @@ class TeklifDialog(tk.Toplevel):
                     hesapli = True
                     s["fiyat_hesaplandi"] = True
             om = "M" if s.get("is_manual_price") else ("?" if not hesapli else "O")
-            alis = s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0
+            alis = satir_alis_maliyeti(s)
             manuel = bool(s.get("is_manual_item") or s.get("manuel"))
             tur = "M" if manuel else ("H" if s.get("hizmet_satiri") else "S")
             tags = ["cift" if sira % 2 else "tek"]
-            if maliyeti_goster and (
-                _decimal(alis) <= 0 or s.get("cost_status") == "EKSIK" or s.get("margin_unavailable")
-            ):
+            if maliyeti_goster and (alis.eksik or s.get("margin_unavailable")):
                 tags.append("maliyet_yok")
             if manuel:
                 tags.append("manuel_satir")
@@ -4342,8 +4447,8 @@ class TeklifDialog(tk.Toplevel):
                     s["urun_adi"],
                     _para(s["miktar"]),
                     s["birim"],
-                    "—" if (manuel and s.get("cost_status") == "EKSIK") else _para(alis),
-                    s.get("maliyet_kaynagi") or ("MANUEL" if manuel else ""),
+                    "EKSİK" if alis.eksik else _para(alis.birim_fiyat),
+                    "EKSİK" if alis.eksik else _para(alis.toplam),
                     fiyat_g,
                     om,
                     _para(s.get("iskonto_orani", 0)) if hesapli else "",
@@ -4665,19 +4770,32 @@ class TeklifDialog(tk.Toplevel):
                     except tk.TclError:
                         pass
 
-        # Maliyet özeti (fiyat paneli)
-        if maliyet_izinli() and hasattr(self, "lbl_fiyat_ozet"):
-            try:
-                self.lbl_fiyat_ozet.configure(
-                    text=(
-                        f"Maliyet: {_para(tot['toplam_maliyet'])}  |  "
-                        f"Kâr: {_para(tot['brut_kar'])}  |  "
-                        f"Marj: {_para(tot['gercek_marj'])}%  |  "
-                        f"Maliyet üstü: {_para(tot['maliyet_ustu_oran'])}%"
+        if maliyet_izinli():
+            ozet = self._ic_maliyet_ozeti_hesapla()
+            self._ic_maliyet_paneli_yaz(ozet)
+            if hasattr(self, "lbl_fiyat_ozet"):
+                yildiz = " *" if ozet["eksik_var"] else ""
+                marj = "—" if ozet["kar_marji"] is None else f"%{_para(ozet['kar_marji'])}"
+                try:
+                    self.lbl_fiyat_ozet.configure(
+                        text=(
+                            f"Alış Maliyeti: {_para(ozet['genel_alis_maliyeti'])}{yildiz}  |  "
+                            f"Satış (KDV hariç): {_para(ozet['satis_toplami'])}  |  "
+                            f"Kâr: {_para(ozet['kar_tutari'])}{yildiz}  |  Kâr Marjı: {marj}"
+                            + ("\n* Alış fiyatı eksik satır var" if yildiz else "")
+                        )
                     )
-                )
+                except tk.TclError:
+                    pass
+        dlg = getattr(self, "_musteri_gorunumu_dlg", None)
+        if dlg is not None:
+            try:
+                if dlg.winfo_exists():
+                    dlg.yenile_sonra()
+                else:
+                    self._musteri_gorunumu_dlg = None
             except tk.TclError:
-                pass
+                self._musteri_gorunumu_dlg = None
 
     def _veriler(self) -> tuple[dict, list]:
         cari = self._secili_musteri()
@@ -5380,17 +5498,9 @@ class TeklifDialog(tk.Toplevel):
 
     def _hesaplanmamis_satis_satirlari(self) -> list[str]:
         """Satış fiyatı henüz üretilmemiş satır etiketleri."""
-        eksik = []
-        for s in self.satirlar:
-            hesapli = bool(s.get("fiyat_hesaplandi"))
-            fiyat = s.get("teklif_fiyati")
-            if fiyat is None or (not hesapli and _decimal(fiyat or 0) <= 0):
-                if s.get("fiyat_hesaplandi") is None and _decimal(fiyat or 0) > 0:
-                    continue  # kayıtlı eski teklif
-                kod = s.get("urun_kodu") or ""
-                ad = (s.get("urun_adi") or "")[:40]
-                eksik.append(f"{kod} — {ad}".strip(" —"))
-        return eksik
+        from database.teklif_customer_view import eksik_satis_fiyati_satirlari
+
+        return eksik_satis_fiyati_satirlari(self.satirlar)
 
     def _musteri_cikti_icin_fiyat_zorunlu(self, islem_adi: str) -> bool:
         """Ön izleme / PDF / gönderim / sipariş öncesi eksik satış fiyatı engeli."""
@@ -5407,6 +5517,60 @@ class TeklifDialog(tk.Toplevel):
             parent=self,
         )
         return False
+
+    def _musteri_gorunumu(self):
+        """Aynı teklif kaydının müşteri görünümü — maliyet/kâr alanı yok; açıkken canlı güncellenir."""
+        dlg = getattr(self, "_musteri_gorunumu_dlg", None)
+        try:
+            if dlg is not None and dlg.winfo_exists():
+                dlg.yenile()
+                dlg.deiconify()
+                dlg.lift()
+                return
+        except tk.TclError:
+            pass
+        try:
+            from teklif_print import MusteriGorunumuDialog
+
+            self._musteri_gorunumu_dlg = MusteriGorunumuDialog(self, self)
+        except Exception as exc:
+            self._musteri_gorunumu_dlg = None
+            messagebox.showerror("Müşteri Görünümü", str(exc), parent=self)
+
+    def _pdf_onizleme(self, parent=None):
+        """Müşteri PDF'sini üretip varsayılan PDF görüntüleyicide açar."""
+        parent = parent or self
+        if not self._musteri_cikti_icin_fiyat_zorunlu("Müşteri PDF'si"):
+            return None
+        try:
+            if not self.teklif:
+                self.kaydet()
+            if not self.teklif:
+                return None
+            from teklif_print import musteri_teklif_pdf_uret, pdf_ac
+
+            pdf = musteri_teklif_pdf_uret(self)
+            self._pdf_olusturma_isaretle()
+            pdf_ac(pdf)
+            return pdf
+        except Exception as exc:
+            messagebox.showerror("PDF Önizleme", str(exc), parent=parent)
+            return None
+
+    def _pdf_olusturma_isaretle(self) -> None:
+        if not self.teklif:
+            return
+        try:
+            from database.database import get_session
+            from datetime import datetime as dt
+
+            with get_session() as session:
+                t = session.get(type(self.teklif), self.teklif.id)
+                if t:
+                    t.pdf_olusturma = dt.now()
+                    session.flush()
+        except Exception:
+            pass
 
     def _onizleme(self):
         """Müşteri Teklif Ön İzlemesi — maliyet/kâr yok."""
@@ -5471,6 +5635,8 @@ class TeklifDialog(tk.Toplevel):
             messagebox.showerror("Yazdır", str(exc), parent=self)
 
     def _email_hazirla(self):
+        if not self._musteri_cikti_icin_fiyat_zorunlu("E-posta PDF'si"):
+            return
         try:
             if not self.teklif:
                 self.kaydet()

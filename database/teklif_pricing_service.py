@@ -103,6 +103,121 @@ def yuvarla(fiyat: Decimal, kural: YUVARLAMA = "kurus") -> Decimal:
     return fiyat.quantize(_KURUS, rounding=ROUND_HALF_UP)
 
 
+def _alan(s, ad: str, varsayilan=None):
+    if isinstance(s, dict):
+        return s.get(ad, varsayilan)
+    return getattr(s, ad, varsayilan)
+
+
+def satir_birim_carpani(s) -> Decimal:
+    """Satır biriminin stok ana birimi karşılığı (1 Koli = 12 Adet → 12)."""
+    try:
+        c = _d(_alan(s, "birim_carpani") or 1)
+    except ValueError:
+        return Decimal("1")
+    return c if c > 0 else Decimal("1")
+
+
+def satir_toplama_dahil(s) -> bool:
+    return not (_alan(s, "opsiyonel", False) and not _alan(s, "toplama_dahil", True))
+
+
+@dataclass
+class SatirAlisMaliyeti:
+    birim_fiyat: Decimal | None
+    toplam: Decimal | None
+
+    @property
+    def eksik(self) -> bool:
+        return self.toplam is None
+
+
+def satir_alis_maliyeti(s) -> SatirAlisMaliyeti:
+    """Alış maliyeti satır toplamı = miktar × seçilen birimin alış birim fiyatı.
+
+    purchase_unit_price_base stok ana birimi içindir; seçilen birime birim çarpanıyla
+    çevrilir. Alış fiyatı yoksa satır eksik döner — sıfır maliyet kabul edilmez.
+    """
+    base = _d(_alan(s, "purchase_unit_price_base") or _alan(s, "birim_maliyet") or 0)
+    if base <= 0:
+        return SatirAlisMaliyeti(None, None)
+    miktar = _d(_alan(s, "miktar") or 0)
+    birim = base * satir_birim_carpani(s)
+    return SatirAlisMaliyeti(
+        birim.quantize(_DORT, rounding=ROUND_HALF_UP),
+        (birim * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP),
+    )
+
+
+def stok_birim_carpani(urun_kodu: str | None, birim: str | None) -> Decimal:
+    """Stok kartındaki birim dönüşümü; kart/birim tanımsızsa 1."""
+    kod = (urun_kodu or "").strip()
+    if not kod or kod.upper() in ("OZEL", "MANUEL"):
+        return Decimal("1")
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from database.database import get_session
+        from database.models.stok import StokKarti
+
+        with get_session() as session:
+            kart = session.scalar(
+                select(StokKarti)
+                .options(selectinload(StokKarti.birimler))
+                .where(StokKarti.stok_kodu == kod)
+            )
+            if kart is None:
+                return Decimal("1")
+            return StokService.birim_carpani(kart, birim, kart.birim or "Adet")
+    except Exception:
+        return Decimal("1")
+
+
+def alis_maliyet_ozeti(satirlar) -> dict[str, Any]:
+    """Genel Alış Maliyeti Toplamı ve alış fiyatı eksik satırlar (toplama dahil olanlar)."""
+    toplam = Decimal("0")
+    eksik: list[str] = []
+    for sira, s in enumerate(satirlar or [], start=1):
+        if not satir_toplama_dahil(s):
+            continue
+        m = satir_alis_maliyeti(s)
+        if m.eksik:
+            kod = str(_alan(s, "urun_kodu") or "").strip()
+            ad = str(_alan(s, "urun_adi") or "").strip()[:40]
+            eksik.append(f"{sira}. " + " — ".join(p for p in (kod, ad) if p))
+        else:
+            toplam += m.toplam
+    return {
+        "genel_alis_maliyeti": toplam.quantize(_KURUS, rounding=ROUND_HALF_UP),
+        "eksik_satirlar": eksik,
+        "eksik_var": bool(eksik),
+    }
+
+
+def ic_maliyet_ozeti(satirlar, customer_expense_amount=0, internal_expense_amount=0) -> dict[str, Any]:
+    """İç teklif alt özeti: alış maliyeti, satış (KDV hariç), masraflar, kâr ve marj.
+
+    Kâr = Satış Toplamı (KDV hariç) − Genel Alış Maliyeti − Müşteri Masrafı − İç Masraf.
+    Alış fiyatı eksik satır varsa kâr/marj eksik maliyetle hesaplanmıştır (``eksik_var``).
+    """
+    alis = alis_maliyet_ozeti(satirlar)
+    satis = QuotePricingService.satir_toplamlari(list(satirlar or []))["ara_toplam"]
+    satis = _d(satis).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    musteri = _d(customer_expense_amount or 0).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    ic = _d(internal_expense_amount or 0).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    kar = satis - alis["genel_alis_maliyeti"] - musteri - ic
+    marj = (kar / satis * 100).quantize(_KURUS, rounding=ROUND_HALF_UP) if satis > 0 else None
+    return {
+        **alis,
+        "satis_toplami": satis,
+        "musteri_masrafi": musteri,
+        "ic_masraf": ic,
+        "kar_tutari": kar,
+        "kar_marji": marj,
+    }
+
+
 @dataclass
 class CostSnapshot:
     birim_maliyet: Decimal = Decimal("0")
@@ -462,12 +577,15 @@ def dagitimli_hesapla(
             or row.get("purchase_unit_price")
             or 0
         )
-        purchase_total = _d(row.get("purchase_total_cost") or 0)
-        if purchase_total <= 0:
-            purchase_total = (unit_base * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        carpan = satir_birim_carpani(row)
+        if unit_base > 0:
+            purchase_total = (unit_base * carpan * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        else:
+            purchase_total = _d(row.get("purchase_total_cost") or 0)
         row["_idx"] = i
         row["_miktar"] = miktar
         row["_unit_base"] = unit_base
+        row["_carpan"] = carpan
         row["_purchase_total"] = purchase_total
         row["_manuel"] = bool(row.get("is_manual_price")) and manuel_koru
         # Eksik maliyetli manuel ürün: yanıltıcı kâr üretme — dağıtımdan çıkar
@@ -621,7 +739,7 @@ def dagitimli_hesapla(
             net = (ara / miktar).quantize(_DORT, rounding=ROUND_HALF_UP) if miktar else unit
         kdv = (ara * kdv_o / Decimal("100")).quantize(_KURUS, rounding=ROUND_HALF_UP)
         mal = r["_unit_base"]
-        kar_oran, marj = kar_metrikleri(net, mal)
+        kar_oran, marj = kar_metrikleri(net, mal * r["_carpan"])
         line_profit = (ara - r["_purchase_total"] - r.get("_alloc_exp", Decimal("0"))).quantize(
             _KURUS, rounding=ROUND_HALF_UP
         )
@@ -818,15 +936,14 @@ class QuotePricingService:
         kdv = Decimal("0")
         genel = Decimal("0")
         maliyet = Decimal("0")
+        eksik_maliyet = 0
         for s in satirlar:
+            if not satir_toplama_dahil(s):
+                continue
             if isinstance(s, dict):
-                dahil = s.get("toplama_dahil", True)
-                ops = s.get("opsiyonel", False)
-                if ops and not dahil:
-                    continue
-                miktar = _d(s.get("miktar", 0))
-                liste = _d(s.get("teklif_fiyati", s.get("liste_fiyati", 0)))
-                net = _d(s.get("net_birim_fiyat", 0))
+                miktar = _d(s.get("miktar") or 0)
+                liste = _d(s.get("teklif_fiyati", s.get("liste_fiyati", 0)) or 0)
+                net = _d(s.get("net_birim_fiyat") or 0)
                 if net <= 0:
                     net = net_iskontolu(
                         liste,
@@ -835,15 +952,16 @@ class QuotePricingService:
                         s.get("iskonto_orani_3", 0),
                     )
                 kdv_o = _d(s.get("kdv_orani", 20))
-                mal = _d(s.get("birim_maliyet", s.get("purchase_unit_price_base", 0)))
             else:
-                if getattr(s, "opsiyonel", False) and not getattr(s, "toplama_dahil", True):
-                    continue
                 miktar = _d(s.miktar)
                 liste = _d(s.teklif_fiyati)
                 net = _d(s.net_birim_fiyat)
                 kdv_o = _d(s.kdv_orani)
-                mal = _d(getattr(s, "birim_maliyet", 0) or 0)
+            alis = satir_alis_maliyeti(s)
+            if alis.eksik:
+                eksik_maliyet += 1
+            else:
+                maliyet += alis.toplam
             satir_brut = (liste * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
             satir_ara = (net * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
             satir_isk = satir_brut - satir_ara
@@ -853,7 +971,6 @@ class QuotePricingService:
             ara += satir_ara
             kdv += satir_kdv
             genel += satir_ara + satir_kdv
-            maliyet += (mal * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
         kar = ara - maliyet
         marj = (kar / ara * 100).quantize(_KURUS, rounding=ROUND_HALF_UP) if ara else Decimal("0")
         oran = (kar / maliyet * 100).quantize(_KURUS, rounding=ROUND_HALF_UP) if maliyet else Decimal("0")
@@ -864,6 +981,7 @@ class QuotePricingService:
             "kdv_toplam": kdv,
             "genel_toplam": genel,
             "toplam_maliyet": maliyet,
+            "eksik_maliyet_satir": eksik_maliyet,
             "brut_kar": kar,
             "gercek_marj": marj,
             "maliyet_ustu_oran": oran,

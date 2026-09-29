@@ -136,6 +136,7 @@ class QuoteService:
         if insp.has_table("satis_teklifi_satirlari"):
             mevcut = {c["name"] for c in insp.get_columns("satis_teklifi_satirlari")}
             eklenecekler = {
+                "birim_carpani": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
                 "purchase_unit_price": "NUMERIC(18, 6) DEFAULT 0 NOT NULL",
                 "purchase_currency": "VARCHAR(3) DEFAULT 'TRY' NOT NULL",
                 "purchase_exchange_rate": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
@@ -287,12 +288,18 @@ class QuoteService:
             mal = _d(veri.get("birim_maliyet", veri.get("purchase_unit_price_base", 0)))
             purchase_base = _d(veri.get("purchase_unit_price_base", mal))
             purchase_unit = _d(veri.get("purchase_unit_price", purchase_base))
-            purchase_total = _d(veri.get("purchase_total_cost") or 0)
-            if purchase_total <= 0 and purchase_base > 0:
-                purchase_total = (purchase_base * miktar).quantize(Decimal("0.01"))
-            from database.teklif_pricing_service import kar_metrikleri
+            from database.teklif_pricing_service import (
+                kar_metrikleri,
+                satir_alis_maliyeti,
+                satir_birim_carpani,
+            )
 
-            oran, marj = kar_metrikleri(net, mal)
+            carpan = satir_birim_carpani(veri)
+            alis = satir_alis_maliyeti(veri)
+            purchase_total = (
+                alis.toplam if not alis.eksik else _d(veri.get("purchase_total_cost") or 0)
+            )
+            oran, marj = kar_metrikleri(net, mal * carpan)
             final_unit = _d(veri.get("final_offer_unit_price") or fiyat)
             calc_unit = _d(veri.get("calculated_offer_unit_price") or final_unit)
             teklif.satirlar.append(
@@ -303,6 +310,7 @@ class QuoteService:
                     aciklama=veri.get("aciklama") or None,
                     miktar=miktar,
                     birim=veri.get("birim") or "Adet",
+                    birim_carpani=carpan,
                     maliyet_kaynagi=veri.get("maliyet_kaynagi"),
                     birim_maliyet=mal,
                     maliyet_hesap_zamani=veri.get("maliyet_hesap_zamani") or datetime.now(),
@@ -810,6 +818,7 @@ class QuoteService:
                         aciklama=s.aciklama,
                         miktar=s.miktar,
                         birim=s.birim,
+                        birim_carpani=getattr(s, "birim_carpani", None) or 1,
                         maliyet_kaynagi=s.maliyet_kaynagi,
                         birim_maliyet=s.birim_maliyet,
                         maliyet_hesap_zamani=s.maliyet_hesap_zamani,

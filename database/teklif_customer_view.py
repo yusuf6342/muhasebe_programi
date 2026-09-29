@@ -43,6 +43,20 @@ YASAK_MUSTERI_ALANLARI = frozenset(
         "ic_not",
         "fifo",
         "agirlikli",
+        "purchase_unit_price_base",
+        "alis_birim",
+        "alis_toplam",
+        "alis_birim_fiyati",
+        "genel_alis_maliyeti",
+        "internal_expense_amount",
+        "customer_expense_amount",
+        "ic_masraf",
+        "musteri_masrafi",
+        "kar_tutari",
+        "kar_marji",
+        "actual_profit_amount",
+        "actual_margin_rate",
+        "calculation_method",
     }
 )
 
@@ -815,6 +829,64 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     return vm
 
 
+def eksik_satis_fiyati_satirlari(satirlar) -> list[str]:
+    """Satış fiyatı boş / hesaplanmamış satırlar — «1. KOD — Ad» biçiminde."""
+    eksik: list[str] = []
+    for sira, s in enumerate(satirlar or [], start=1):
+        if s.get("opsiyonel") and not s.get("toplama_dahil", True):
+            continue
+        fiyat = s.get("teklif_fiyati")
+        if fiyat is None:
+            fiyat = s.get("final_offer_unit_price")
+        if fiyat is not None and (s.get("fiyat_hesaplandi") or _d(fiyat) > 0):
+            continue
+        kod = str(s.get("urun_kodu") or "").strip()
+        ad = str(s.get("urun_adi") or s.get("manual_product_name") or "").strip()[:40]
+        eksik.append(f"{sira}. " + " — ".join(p for p in (kod, ad) if p))
+    return eksik
+
+
+def musteri_gorunumu_metni(vm: CustomerQuoteViewModel) -> str:
+    """Müşteri görünümünün kopyalanabilir düz metni — yalnızca müşteri alanları."""
+    assert_customer_model_safe(vm)
+    pb = vm.para_birimi_etiket or vm.para_birimi
+    f = vm.firma or {}
+    m = vm.musteri or {}
+    satirlar = [
+        f"{vm.belge_baslik or 'FİYAT TEKLİFİ'}",
+        f"{f.get('unvan') or ''}",
+        f"Teklif No: {vm.teklif_no}    Tarih: {vm.teklif_tarihi}",
+        f"Geçerlilik: {vm.gecerlilik_suresi or vm.gecerlilik_tarihi or '—'}"
+        + (f" ({vm.gecerlilik_tarihi})" if vm.gecerlilik_suresi and vm.gecerlilik_tarihi else ""),
+        f"Müşteri: {m.get('unvan') or '—'}",
+    ]
+    if m.get("yetkili"):
+        satirlar.append(f"Yetkili: {m['yetkili']}")
+    satirlar.append("")
+    for s in vm.satirlar or []:
+        kod = f"{s.urun_kodu} " if s.urun_kodu else ""
+        satirlar.append(
+            f"{s.sira}. {kod}{s.urun_adi} | {s.miktar_goster} {s.birim} | "
+            f"Birim: {s.birim_fiyat_goster} {pb} | İsk: {s.iskonto_goster} | "
+            f"KDV: {s.kdv_oran_goster} | Tutar: {s.kdv_hariç_goster} {pb}"
+        )
+    satirlar += [
+        "",
+        f"Ara Toplam: {vm.ara_goster} {pb}",
+        f"KDV: {vm.kdv_goster} {pb}",
+        f"GENEL TOPLAM: {vm.genel_goster} {pb}",
+        "",
+        f"Teslim süresi: {vm.termin_suresi or vm.teslimat_sekli or '—'}",
+        f"Ödeme şartı: {vm.odeme_sekli or '—'}",
+    ]
+    if vm.musteri_notu:
+        satirlar.append(f"Açıklama: {vm.musteri_notu}")
+    satirlar.append(f"Oluşturulma: {vm.olusturma_tarih_saat}")
+    metin = "\n".join(satirlar)
+    assert_customer_output_safe(metin)
+    return metin
+
+
 def build_internal_cost_from_dialog(dialog) -> InternalQuoteCostViewModel:
     """Yetkili iç maliyet görünümü — müşteri şablonuna bağlanmaz."""
     from database.access import maliyet_izinli, kar_izinli
@@ -837,15 +909,18 @@ def build_internal_cost_from_dialog(dialog) -> InternalQuoteCostViewModel:
         except Exception:
             return ""
 
+    from database.teklif_pricing_service import satir_alis_maliyeti
+
     satirlar_src = list(getattr(dialog, "satirlar", None) or [])
     lines: list[InternalCostLine] = []
     for i, s in enumerate(satirlar_src, start=1):
         miktar = _d(s.get("miktar", 0))
-        alis = _d(s.get("purchase_unit_price_base") or s.get("birim_maliyet") or 0)
+        alis_m = satir_alis_maliyeti(s)
+        alis = alis_m.birim_fiyat or Decimal("0")
         teklif_f = _d(s.get("final_offer_unit_price") or s.get("teklif_fiyati") or 0)
         net = _d(s.get("net_birim_fiyat") or teklif_f)
         ara = (net * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
-        alis_t = (alis * miktar).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        alis_t = alis_m.toplam or Decimal("0")
         lines.append(
             InternalCostLine(
                 sira=i,
