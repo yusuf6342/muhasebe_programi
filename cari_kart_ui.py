@@ -1165,9 +1165,13 @@ class CariDialog(tk.Toplevel):
         kayitli = bool(self.cari)
         if self.tedarikci_modu:
             komutlar = (
-                ("Yeni Sipariş", self.yeni_alis_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni İrsaliye", self.yeni_alis_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni Fatura", self.yeni_alis_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
+                ("Yeni Sipariş", self.yeni_alis_siparis_ac,
+                 ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
+                ("Yeni İrsaliye", self.yeni_alis_irsaliye_ac,
+                 ("alis_irsaliye_duzenleme", "alis_duzenleme", "yeni_kayit")),
+                ("Yeni Fatura", self.yeni_alis_fatura_ac,
+                 ("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")),
+                ("Alış Evrakları", self.alis_evraklari_ac, None),
                 ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
                 ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
@@ -1812,17 +1816,20 @@ class CariDialog(tk.Toplevel):
             return
         bakiye = Decimal(str(metrik.get("bakiye") or 0))
         durum = metrik.get("bakiye_durumu") or "Bakiye yok"
+        etiket = self._bakiye_yon_metni(bakiye)
         if bakiye > 0:
-            renk, etiket = UYARI, "Borçlu"
+            renk = UYARI
         elif bakiye < 0:
-            renk, etiket = BASARI, "Alacaklı"
+            renk = BASARI
         else:
-            renk, etiket = IKINCIL, "Kapalı"
+            renk = IKINCIL
         if "guncel_bakiye" in self.ozet_kartlari:
             self.ozet_kartlari["guncel_bakiye"]["deger"].configure(
                 text=para_goster(abs(bakiye)), fg=renk
             )
-            self.ozet_kartlari["guncel_bakiye"]["alt"].configure(text=f"{etiket} · {durum}")
+            self.ozet_kartlari["guncel_bakiye"]["alt"].configure(
+                text=etiket if self.tedarikci_modu else f"{etiket} · {durum}"
+            )
 
         if "kullanilabilir_risk" in self.ozet_kartlari:
             kalan = metrik.get("kullanilabilir_risk")
@@ -1859,7 +1866,9 @@ class CariDialog(tk.Toplevel):
         valor_etiket = metrik.get("valor_turu_etiket") or "Valör Yok"
         valor_tarih = metrik.get("ortalama_valor_tarihi")
         yon = metrik.get("bakiye_yonu")
-        if yon == "BORCLU":
+        if self.tedarikci_modu:
+            yon_yazi = etiket
+        elif yon == "BORCLU":
             yon_yazi = "Borçlu"
         elif yon == "ALACAKLI":
             yon_yazi = "Alacaklı"
@@ -2741,6 +2750,31 @@ class CariDialog(tk.Toplevel):
         dialog = CariBekleyenSiparislerDialog(self, self.cari, yon=yon)
         self.wait_window(dialog)
         self._bekleyen_siparis_ozetini_guncelle()
+
+    def _bakiye_yon_metni(self, bakiye: Decimal) -> str:
+        """Tedarikçide pozitif bakiye bizim borcumuzdur; yön açık yazılır."""
+        if self.tedarikci_modu:
+            if bakiye > 0:
+                return "Alacaklı (tedarikçiye borcumuz)"
+            if bakiye < 0:
+                return "Borçlu (tedarikçiden alacağımız)"
+            return "Kapalı"
+        if bakiye > 0:
+            return "Borçlu"
+        if bakiye < 0:
+            return "Alacaklı"
+        return "Kapalı"
+
+    def alis_evraklari_ac(self, sekme: str = "fatura"):
+        """Bu tedarikçinin faturalanmamış irsaliyeleri, alış ve alış iade faturaları."""
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from tedarikci_evrak_ui import TedarikciEvraklariDialog
+
+        dialog = TedarikciEvraklariDialog(self, self.cari, sekme=sekme)
+        self.wait_window(dialog)
+        self.yenile()
 
     def satis_iade_faturalari_ac(self):
         """Bu müşterinin satış iade faturaları (yalnız bu cari; yeni iade bu cari ile açılır)."""

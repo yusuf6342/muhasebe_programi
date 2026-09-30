@@ -368,6 +368,25 @@ class AuditDeleteService:
                 raise SoftDeleteError(
                     f"Bu carinin {acik} açık/aktif satış faturası var. Önce belgeleri iptal edin."
                 )
+            from database.models.alis_faturasi import AlisFaturasi
+            from database.models.alis_irsaliyesi import AlisIrsaliyesi
+            from database.models.alis_siparisi import AlisSiparisi
+
+            for model, pasif_durumlar, ad in (
+                (AlisFaturasi, ("İPTAL",), "alış faturası"),
+                (AlisIrsaliyesi, ("İPTAL", "FATURALANDI"), "faturalanmamış alış irsaliyesi"),
+                (AlisSiparisi, ("İPTAL", "FATURALI", "İRSALİYELİ"), "açık alış siparişi"),
+            ):
+                sorgu = select(func.count()).select_from(model).where(
+                    model.cari_id == obj.id, model.durum.notin_(pasif_durumlar)
+                )
+                if hasattr(model, "is_deleted"):
+                    sorgu = sorgu.where(or_(model.is_deleted.is_(False), model.is_deleted.is_(None)))
+                adet = session.scalar(sorgu) or 0
+                if adet:
+                    raise SoftDeleteError(
+                        f"Bu carinin {adet} aktif {ad} kaydı var. Önce belgeleri iptal edin."
+                    )
             # Hareketli cari silinebilir (soft) ama kritik sayılır — engelleme yok
             _ = session.scalar(select(func.count()).select_from(CariIslem).where(CariIslem.cari_id == obj.id))
             _ = session.scalar(

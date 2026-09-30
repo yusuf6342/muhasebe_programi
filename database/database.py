@@ -750,6 +750,20 @@ def cari_kart_schemasini_guncelle() -> None:
                         text(f'ALTER TABLE "{fatura_tablo}" ADD COLUMN "islem_saati" VARCHAR(8)')
                     )
 
+    if inspect(engine).has_table("alis_faturalari"):
+        alis_f_sutunlar = {s["name"] for s in inspect(engine).get_columns("alis_faturalari")}
+        if "tedarikci_fatura_no" not in alis_f_sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text('ALTER TABLE "alis_faturalari" ADD COLUMN "tedarikci_fatura_no" VARCHAR(50)')
+                )
+                connection.execute(
+                    text(
+                        'CREATE INDEX IF NOT EXISTS "ix_alis_faturalari_tedarikci_fatura_no" '
+                        'ON "alis_faturalari" ("tedarikci_fatura_no")'
+                    )
+                )
+
     # Mevcut satış faturaları zaten hareket üretmiş sayılır (DEFAULT 1).
     if inspect(engine).has_table("satis_faturalari"):
         satis_sutunlar = {s["name"] for s in inspect(engine).get_columns("satis_faturalari")}

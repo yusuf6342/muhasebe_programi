@@ -68,6 +68,8 @@ from database.turkce_normalize import turkce_normalize
 ProductSelectionDialog = UrunSecDialog
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
+CARI_DURUM_FILTRELERI = ("Tümü", "Aktif", "Pasif")
+CARI_BAKIYE_FILTRELERI = ("Tümü", "Bakiyeli", "Bakiyesiz")
 KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
 # Fatura menüsü: ilk üç sabit; diğer seçenekler bunlardan sonra, görsel içe aktarma en sonda.
 SATIS_FATURA_MENU_SIRASI = (
@@ -18193,6 +18195,10 @@ class MuhasebeApp(tk.Tk):
         """Boş müşteri kartı — hızlı arama ile kayıt yüklenir; liste açılmaz."""
         CariDialog(self, cari=None, cari_turu="Müşteri")
 
+    def tedarikci_karti_ac(self):
+        """Boş tedarikçi kartı — önceki kayıt taşınmaz; kaydetmeden veritabanına yazılmaz."""
+        CariDialog(self, cari=None, cari_turu="Tedarikçi")
+
     def cariler_goster(self):
         self._cariler_goster(cari_turu="Müşteri")
 
@@ -18202,8 +18208,10 @@ class MuhasebeApp(tk.Tk):
     def _cariler_goster(self, cari_turu="Müşteri"):
         self._icerigi_temizle()
         self._cari_liste_turu = cari_turu
+        self._cari_liste_siralama = None
+        self._cari_liste_kayitlar = []
         tedarikci = cari_turu == "Tedarikçi"
-        baslik = "TEDARİKÇİ CARİ HESAP KARTLARI" if tedarikci else "MÜŞTERİ LİSTESİ"
+        baslik = "TEDARİKÇİ LİSTESİ" if tedarikci else "MÜŞTERİ LİSTESİ"
         etiket = "Tedarikçi" if tedarikci else "Müşteri"
         from cari_liste_ui import (
             CARI_LISTE_SAG,
@@ -18236,6 +18244,20 @@ class MuhasebeApp(tk.Tk):
         tk_buton(ust, "Kolon Ayarları", self._cari_kolon_ayarlari_ac, rol="ara").pack(
             side="left", padx=8
         )
+        ttk.Label(ust, text="Durum:").pack(side="left", padx=(8, 2))
+        self.cari_durum_filtre = ttk.Combobox(
+            ust, values=CARI_DURUM_FILTRELERI, state="readonly", width=8
+        )
+        self.cari_durum_filtre.set("Tümü")
+        self.cari_durum_filtre.pack(side="left")
+        ttk.Label(ust, text="Bakiye:").pack(side="left", padx=(8, 2))
+        self.cari_bakiye_filtre = ttk.Combobox(
+            ust, values=CARI_BAKIYE_FILTRELERI, state="readonly", width=10
+        )
+        self.cari_bakiye_filtre.set("Tümü")
+        self.cari_bakiye_filtre.pack(side="left")
+        for kutu in (self.cari_durum_filtre, self.cari_bakiye_filtre):
+            kutu.bind("<<ComboboxSelected>>", lambda _e: self._cari_listesi_filtrele())
         tk_buton(ust, "EvoBulut’tan Aktar", self.evobulut_cari_aktar, rol="duzenle").pack(
             side="right", padx=(0, 8)
         )
@@ -18254,7 +18276,10 @@ class MuhasebeApp(tk.Tk):
             cfg = ayar_kol.get(kolon) or {}
             w = int(cfg.get("genislik") or 120)
             self.cari_tablosu.heading(
-                kolon, text=baslik_metni(kolon, etiket=etiket), anchor=ank
+                kolon,
+                text=baslik_metni(kolon, etiket=etiket),
+                anchor=ank,
+                command=lambda k=kolon: self._cari_listesi_sirala(k),
             )
             self.cari_tablosu.column(kolon, width=w, anchor=ank, minwidth=60, stretch=False)
         kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=self.cari_tablosu.yview)
@@ -18346,21 +18371,17 @@ class MuhasebeApp(tk.Tk):
                 return
             # Sıralama için gerçek küsuratlı değer (görüntü yuvarlanmış)
             self._cari_liste_ham = {}
-            for i, ozet in enumerate(cariler):
+            self._cari_liste_kayitlar = []
+            for ozet in cariler:
                 cari = ozet["cari"]
                 iid = str(cari.id)
                 self._cari_liste_ham[iid] = {
                     "agirlikli": gecen_gun_sayi(ozet.get("agirlikli_ortalama_gun")),
                     "bakiye": ozet.get("bakiye"),
+                    "aktif": bool(cari.aktif),
                 }
-                serit = "cift" if i % 2 else "tek"
-                self.cari_tablosu.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    tags=(serit, "bakiye_koyu"),
-                    values=_satir_degerleri(ozet),
-                )
+                self._cari_liste_kayitlar.append((iid, _satir_degerleri(ozet)))
+            MuhasebeApp._cari_listesi_filtrele(self)
 
         def _hata(exc):
             if getattr(self, "_cari_yenile_token", 0) != token:
@@ -18368,6 +18389,54 @@ class MuhasebeApp(tk.Tk):
             messagebox.showerror("Cari listesi", str(exc), parent=self)
 
         arka_planda(self, _yukle, on_ok=_doldur, on_err=_hata)
+
+    def _cari_listesi_filtrele(self):
+        tablo = getattr(self, "cari_tablosu", None)
+        if tablo is None:
+            return
+        durum = getattr(self, "cari_durum_filtre", None)
+        bakiye_f = getattr(self, "cari_bakiye_filtre", None)
+        durum_q = durum.get() if durum is not None else "Tümü"
+        bakiye_q = bakiye_f.get() if bakiye_f is not None else "Tümü"
+        ham = getattr(self, "_cari_liste_ham", {})
+        secili = tablo.selection()
+        tablo.delete(*tablo.get_children())
+        kayitlar = list(getattr(self, "_cari_liste_kayitlar", []))
+        siralama = getattr(self, "_cari_liste_siralama", None)
+        if siralama:
+            kolon, ters = siralama
+            kolonlar = list(tablo["columns"])
+            sira = kolonlar.index(kolon) if kolon in kolonlar else None
+
+            def _anahtar(kayit):
+                iid, degerler = kayit
+                if kolon in ("bakiye", "agirlikli"):
+                    return Decimal(str(ham.get(iid, {}).get(kolon) or 0))
+                return turkce_normalize(str(degerler[sira] if sira is not None else ""))
+
+            kayitlar.sort(key=_anahtar, reverse=ters)
+        gorunen = 0
+        for iid, degerler in kayitlar:
+            bilgi = ham.get(iid, {})
+            if durum_q == "Aktif" and not bilgi.get("aktif", True):
+                continue
+            if durum_q == "Pasif" and bilgi.get("aktif", True):
+                continue
+            sifir = Decimal(str(bilgi.get("bakiye") or 0)) == 0
+            if (bakiye_q == "Bakiyeli" and sifir) or (bakiye_q == "Bakiyesiz" and not sifir):
+                continue
+            serit = "cift" if gorunen % 2 else "tek"
+            tablo.insert("", "end", iid=iid, tags=(serit, "bakiye_koyu"), values=degerler)
+            gorunen += 1
+        kalan = [i for i in secili if tablo.exists(i)]
+        if kalan:
+            tablo.selection_set(kalan)
+
+    def _cari_listesi_sirala(self, kolon):
+        onceki = getattr(self, "_cari_liste_siralama", None)
+        ters = not onceki[1] if onceki and onceki[0] == kolon else False
+        self._cari_liste_siralama = (kolon, ters)
+        self._cari_listesi_filtrele()
 
     def _secili_cari(self):
         secim = self.cari_tablosu.selection()
@@ -18948,7 +19017,7 @@ class MuhasebeApp(tk.Tk):
 
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(10, 0))
-        kolonlar = ("no", "tarih", "saat", "vade", "tedarikci", "siparis", "irsaliye", "depo", "genel", "odeme", "kalan", "durum")
+        kolonlar = ("no", "ted_no", "tarih", "saat", "vade", "tedarikci", "siparis", "irsaliye", "depo", "genel", "odeme", "kalan", "durum")
         self.alis_fat_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.alis_fat_tablosu.yview)
         self.alis_fat_tablosu.configure(yscrollcommand=dikey.set)
@@ -18967,6 +19036,7 @@ class MuhasebeApp(tk.Tk):
                 odeme = f.odeme_tutari or Decimal("0")
                 ham = {
                     "no": f.fatura_no,
+                    "ted_no": getattr(f, "tedarikci_fatura_no", None) or "",
                     "tarih": tarih_goster(f.fatura_tarihi),
                     "saat": f.islem_saati or "",
                     "vade": tarih_goster(f.vade_tarihi),

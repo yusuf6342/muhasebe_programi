@@ -37,7 +37,8 @@ ALIS_LISTE_TANIMLARI: dict[str, tuple[tuple[str, str, int, bool], ...]] = {
         ("durum", "Durum", 110, True),
     ),
     "alis_fatura_listesi": (
-        ("no", "Fatura No", 130, True),
+        ("no", "Kayıt No", 130, True),
+        ("ted_no", "Tedarikçi Fatura No", 130, True),
         ("tarih", "Tarih", 85, True),
         ("saat", "Saat", 60, True),
         ("vade", "Vade", 85, True),

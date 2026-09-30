@@ -153,12 +153,19 @@ def _musteri_blok(vm: InvoicePrintViewModel) -> str:
             continue
         if m.get(key):
             satirlar.append(f"<div><span>{et}:</span> {_e(m[key])}</div>")
-    return "<div class='musteri'><div class='m-baslik'>Sayın</div>" + "".join(satirlar) + "</div>"
+    if vm.kayit_notu:
+        satirlar.append(f"<div><span>Not:</span> {_e(vm.kayit_notu)}</div>")
+    return (
+        f"<div class='musteri'><div class='m-baslik'>{_e(vm.cari_basligi or 'Sayın')}</div>"
+        + "".join(satirlar)
+        + "</div>"
+    )
 
 
 def _belge_meta(vm: InvoicePrintViewModel) -> str:
     parcalar = [
         _meta_satir(vm.belge_no_etiketi or "Fatura No", vm.fatura_no),
+        _meta_satir("Tedarikçi Fat. No", vm.tedarikci_fatura_no),
         _meta_satir("Tarih", vm.fatura_tarihi),
         _meta_satir("Saat", vm.islem_saati),
         _meta_satir("Vade", vm.vade_tarihi),
@@ -209,7 +216,8 @@ def _toplamlar(vm: InvoicePrintViewModel) -> str:
     )
     if a.get("tahsil_kalan_goster", True):
         satirlar.append(
-            f"<tr><td>Tahsil Edilen</td><td class='r'>{_e(vm.tahsil_goster)}</td></tr>"
+            f"<tr><td>{_e(vm.tahsil_etiketi or 'Tahsil Edilen')}</td>"
+            f"<td class='r'>{_e(vm.tahsil_goster)}</td></tr>"
         )
         satirlar.append(
             f"<tr><td>Kalan Bakiye</td><td class='r'>{_e(vm.kalan_goster)}</td></tr>"
@@ -406,7 +414,7 @@ def render_invoice_html(
                 f"(devam)</h1>"
                 f"<div class='belge-meta'>"
                 f"{_meta_satir(vm.belge_no_etiketi or 'Fatura No', vm.fatura_no)}"
-                f"{_meta_satir('Müşteri', (vm.musteri or {}).get('unvan') or '')}"
+                f"{_meta_satir(vm.cari_etiketi or 'Müşteri', (vm.musteri or {}).get('unvan') or '')}"
                 f"</div></div>"
             )
         tablo = (

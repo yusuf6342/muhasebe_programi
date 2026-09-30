@@ -59,6 +59,11 @@ class InvoicePrintViewModel:
     logo_data_uri: str | None = None
     # Müşteri
     musteri: dict[str, Any] = field(default_factory=dict)
+    cari_basligi: str = "Sayın"
+    cari_etiketi: str = "Müşteri"
+    tedarikci_fatura_no: str = ""
+    kayit_notu: str = ""
+    tahsil_etiketi: str = "Tahsil Edilen"
     # Üst bilgiler
     fatura_no: str = ""
     fatura_tarihi: str = ""

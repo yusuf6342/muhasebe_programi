@@ -659,6 +659,18 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
     vm.ters_renk = bool(getattr(kart, "_print_ters_renk", False))
     vm.belge_no_etiketi = getattr(kart, "_print_belge_no_etiketi", None) or vm.belge_no_etiketi
     vm.ozet_basligi = getattr(kart, "_print_ozet_basligi", None) or vm.ozet_basligi
+    if alis:
+        vm.cari_basligi = "Tedarikçi"
+        vm.cari_etiketi = "Tedarikçi"
+        vm.tahsil_etiketi = "Ödenen"
+        vm.kayit_notu = "Programdaki alış kaydının çıktısıdır; tedarikçinin özgün belgesi değildir."
+        try:
+            alan = kart.girdiler.get("tedarikci_fatura_no")
+            vm.tedarikci_fatura_no = alan.get().strip() if alan is not None else ""
+        except Exception:
+            vm.tedarikci_fatura_no = ""
+        if not vm.tedarikci_fatura_no and getattr(kart, "fatura", None):
+            vm.tedarikci_fatura_no = getattr(kart.fatura, "tedarikci_fatura_no", None) or ""
     if getattr(kart, "_print_tahsil_gizle", False):
         vm.ayarlar = dict(vm.ayarlar or {}, tahsil_kalan_goster=False)
     return vm

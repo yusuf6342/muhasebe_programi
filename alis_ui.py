@@ -6,7 +6,11 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from database.alis_faturasi_service import ODEME_SEKILLERI, AlisFaturasiService
+from database.alis_faturasi_service import (
+    ODEME_SEKILLERI,
+    AlisFaturasiService,
+    MukerrerTedarikciFaturaHatasi,
+)
 from database.alis_iade_faturasi_service import AlisIadeFaturasiService
 from database.alis_irsaliyesi_service import AlisIrsaliyesiService
 from database.alis_siparisi_service import AlisSiparisiService
@@ -23,8 +27,12 @@ from doviz_fatura_panel import (
 from product_provider import search_prices, search_products
 from ui_takvim import saat_dogrula, saat_varsayilan, tarih_alani
 from database.turkce_normalize import turkce_normalize
+import fatura_tema as ftema
 
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
+ALIS_BELGE_BASLIGI = "ALIŞ FATURASI"
+ALIS_TABLO_STILI = "AlisSatir.Treeview"
+ALIS_UST_PADY = 3
 
 
 def para_goster(tutar):
@@ -973,6 +981,10 @@ class AlisIrsaliyesiDialog(_AlisSatirGirisi, tk.Toplevel):
 class AlisFaturasiDialog(tk.Toplevel):
     """Satış faturası kartına denk, satın alma (alış) faturası kartı."""
 
+    _print_belge_turu = ALIS_BELGE_BASLIGI
+    _print_belge_no_etiketi = "Kayıt No"
+    _print_ters_renk = True
+
     def __init__(self, parent, fatura=None, siparis=None, irsaliye=None, cari=None, cari_ac=None):
         super().__init__(parent)
         self.fatura = fatura
@@ -1007,39 +1019,25 @@ class AlisFaturasiDialog(tk.Toplevel):
             tedarikciler.append(cari)
         self.tedarikci_map = {f"{c.cari_kodu} - {c.unvan}": c for c in tedarikciler}
         self.girdiler = {}
+        self._cari_ozet = {"bakiye": Decimal("0"), "ortalama_vade": None}
 
-        # Üstte sabit kayıt çubuğu
-        butonlar = ttk.Frame(self, padding=(8, 6, 8, 4))
-        butonlar.pack(side="top", fill="x")
-        self._alis_ust_butonlar = butonlar
-        ttk.Label(
-            butonlar,
-            text="Kayıt: F1",
-            font=("Segoe UI", 10, "bold"),
-            foreground="#1f6aa5",
-        ).pack(side="left", padx=(0, 12))
-        ttk.Button(butonlar, text="Kaydet (F1)", width=16, command=self.kaydet).pack(
-            side="right", padx=4
-        )
-        liste_btn = ttk.Button(
-            butonlar, text="Fatura Listesi (F3)", command=self._fatura_listesini_ac
-        )
-        liste_btn.pack(side="right", padx=4)
-        self._tooltip_bagla(liste_btn, "Alış Fatura Listesini Aç")
-        ttk.Button(butonlar, text="PDF", command=self._alis_pdf_kaydet).pack(
-            side="right", padx=4
-        )
-        ttk.Button(butonlar, text="Ön İzleme", command=self._alis_onizleme_ac).pack(
-            side="right", padx=4
-        )
-        ttk.Button(butonlar, text="İptal Et", command=self.faturayi_iptal_et).pack(side="right", padx=4)
-        ttk.Button(butonlar, text="Masraf Dağıtımları", command=self._masraf_dagitimlari).pack(
-            side="right", padx=4
-        )
-        ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=4)
+        try:
+            ftema.stil_uygula(root=self)
+        except Exception:
+            pass
+        try:
+            self.configure(bg=ftema.ACIK_BG)
+        except tk.TclError:
+            pass
+        self._alis_stilleri_kur()
+        self._alis_toolbar_kur()
         self.bind("<F1>", self._f1_kaydet)
         self.bind("<F3>", self._f3_fatura_listesi)
         self.bind_all("<F1>", self._f1_kaydet)
+        self.bind("<Escape>", lambda _e: self.kapat_istegi())
+        self.protocol("WM_DELETE_WINDOW", self.kapat_istegi)
+        self.bind("<KeyRelease>", self._form_tus_degisti, add="+")
+        self.bind("<<ComboboxSelected>>", self._form_degisti, add="+")
         from kapatma_detay_ui import OdemeKapatmaBilgisi
 
         self._odeme_kapatma_bilgisi = OdemeKapatmaBilgisi(
@@ -1053,7 +1051,7 @@ class AlisFaturasiDialog(tk.Toplevel):
         kaydirma_alani = ttk.Frame(self, padding=(6, 4))
         kaydirma_alani.pack(fill="both", expand=True)
         self._kaydirma_alani = kaydirma_alani
-        self.canvas = tk.Canvas(kaydirma_alani, highlightthickness=0)
+        self.canvas = tk.Canvas(kaydirma_alani, highlightthickness=0, bg=ftema.ACIK_BG)
         dikey_kaydirma = ttk.Scrollbar(kaydirma_alani, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=dikey_kaydirma.set)
         dikey_kaydirma.pack(side="right", fill="y")
@@ -1064,15 +1062,17 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(pencere, width=e.width))
         self.canvas.bind_all("<MouseWheel>", self._fare_tekerlegi)
 
-        self._fatura_bilgileri_olustur()
-        self._depo_bar_olustur()
-        self._baglanti_olustur()
-        doviz_cerceve = ttk.LabelFrame(self.icerik, text="DÖVİZ / KUR", padding=6)
-        doviz_cerceve.pack(fill="x", pady=4)
+        self._ust_paneller_olustur()
+        self._doviz_cerceve = ttk.LabelFrame(
+            self.icerik, text="Döviz / Kur", padding=6, style="AlisUst.TLabelframe"
+        )
         self._doviz_fiyat_alani = "birim_fiyat"
-        doviz_paneli_kur(self, doviz_cerceve)
-        satir_sayfasi = ttk.LabelFrame(self.icerik, text="FATURA SATIRI GİRİŞİ VE SATIRLAR", padding=8)
+        doviz_paneli_kur(self, self._doviz_cerceve)
+        satir_sayfasi = ttk.LabelFrame(
+            self.icerik, text="ÜRÜN SATIRLARI", padding=8, style="AlisUst.TLabelframe"
+        )
         satir_sayfasi.pack(fill="both", expand=True, pady=4)
+        self._satir_sayfasi = satir_sayfasi
         self._satir_olustur(satir_sayfasi)
         alt = ttk.Frame(self.icerik)
         alt.pack(fill="x", pady=4)
@@ -1096,6 +1096,9 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.vade_tarih_degisti()
         self._toplamlari_guncelle()
         self._alis_sticky_footer_kur()
+        self._doviz_gorunumu_guncelle()
+        self._toolbar_guncelle()
+        ftema.renkleri_tersle(self, haric=[self._alis_toolbar["rozet"]])
         self._fatura_yukleniyor = False
         self._fatura_form_kirli = False
 
@@ -1153,14 +1156,9 @@ class AlisFaturasiDialog(tk.Toplevel):
                 footer.pack_forget()
             except tk.TclError:
                 pass
-        alt = ttk.Frame(self, padding=(6, 2, 6, 4))
-        footer.pack(in_=alt, fill="x")
+        alt = tk.Frame(self, bg=ftema.ACIK_BG)
+        footer.pack(in_=alt, fill="x", padx=6, pady=(2, 4))
         footer.lift(alt)
-        # Alt banda Kaydet/Kapat tekrarı (kaydırırken de erişilebilir)
-        btn = ttk.Frame(alt)
-        btn.pack(fill="x", pady=(4, 0))
-        ttk.Button(btn, text="Kapat", command=self.destroy).pack(side="right", padx=4)
-        ttk.Button(btn, text="Kaydet (F1)", command=self.kaydet).pack(side="right", padx=4)
         sticky_footer_layout(
             self,
             ust=getattr(self, "_alis_ust_butonlar", None),
@@ -1344,6 +1342,8 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "islem_saati": islem_saati,
                 "vade_tarihi": vade_tarihi,
                 "cari_id": tedarikci.id,
+                "sube_id": self._sube_map.get(self.sube.get()),
+                "tedarikci_fatura_no": self.girdiler["tedarikci_fatura_no"].get().strip() or None,
                 "siparis_id": siparis_id,
                 "irsaliye_id": irsaliye_id,
                 "depo": self.depo.get(),
@@ -1369,11 +1369,17 @@ class AlisFaturasiDialog(tk.Toplevel):
                 self.fatura.id if self.fatura else None,
             )
             self.fatura = AlisFaturasiService.getir(self.result.id) or self.result
-            self._fatura_form_kirli = False
-            bilgi = getattr(self, "_odeme_kapatma_bilgisi", None)
-            if bilgi is not None:
-                bilgi.yenile()
+            self.kaynak_siparis = None
+            self.kaynak_irsaliye = None
+            self._fatura_persisted = True
+            self._faturayi_doldur()
+            self._toolbar_guncelle()
             return True
+        except MukerrerTedarikciFaturaHatasi as hata:
+            self._mukerrer_kaydi_goster(
+                hata.fatura_id, hata.fatura_no, self.girdiler["tedarikci_fatura_no"].get().strip()
+            )
+            return False
         except ValueError as hata:
             messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
             return False
@@ -1434,47 +1440,198 @@ class AlisFaturasiDialog(tk.Toplevel):
         super().destroy()
 
     def _girdi(self, parent, satir, baslik, alan, deger="", sutun=0, genislik=35, readonly=False):
-        ttk.Label(parent, text=baslik).grid(row=satir, column=sutun, padx=8, pady=5, sticky="w")
-        widget = ttk.Entry(parent, width=genislik)
-        widget.grid(row=satir, column=sutun + 1, padx=8, pady=5, sticky="ew")
+        ttk.Label(parent, text=baslik, style="AlisUst.TLabel").grid(
+            row=satir, column=sutun, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        widget = ttk.Entry(parent, width=genislik, style="FaturaUst.TEntry")
+        widget.grid(row=satir, column=sutun + 1, padx=(0, 8), pady=ALIS_UST_PADY, sticky="ew")
         widget.insert(0, deger)
         if readonly:
             widget.configure(state="readonly")
         self.girdiler[alan] = widget
         return widget
 
-    def _fatura_bilgileri_olustur(self):
-        ttk.Label(self.icerik, text="FATURA BİLGİLERİ", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
-        genel = ttk.LabelFrame(self.icerik, text="Fatura Bilgileri", padding=8)
-        genel.pack(fill="x", pady=(0, 8))
+    def _alis_stilleri_kur(self):
+        stil = ttk.Style(self)
+        stil.configure("AlisUst.TLabel", font=ftema.font(9, root=self), foreground="#334155")
+        stil.configure("AlisUst.TLabelframe", padding=(10, 8))
+        stil.configure(
+            "AlisUst.TLabelframe.Label", font=ftema.font(9, "bold", self), foreground=ftema.LACIVERT
+        )
+        kaynak = "FaturaSatir.Treeview"
+        ayar = {}
+        for secenek in ("rowheight", "font", "borderwidth", "relief", "fieldbackground", "background", "foreground"):
+            deger = stil.lookup(kaynak, secenek)
+            if deger not in ("", None):
+                ayar[secenek] = deger
+        stil.configure(ALIS_TABLO_STILI, **ayar)
+        stil.configure(
+            f"{ALIS_TABLO_STILI}.Heading",
+            font=ftema.font(10, "bold", self),
+            background=ftema.SARI,
+            foreground=ftema.LACIVERT,
+            relief="solid",
+            borderwidth=1,
+        )
+        stil.map(
+            f"{ALIS_TABLO_STILI}.Heading",
+            background=[("active", ftema.LACIVERT), ("pressed", ftema.LACIVERT)],
+            foreground=[("active", ftema.SARI), ("pressed", ftema.SARI)],
+        )
+        stil.map(
+            ALIS_TABLO_STILI,
+            background=[("selected", ftema.SECIM)],
+            foreground=[("selected", ftema.LACIVERT)],
+        )
+
+    def _alis_toolbar_kur(self):
+        refs = ftema.ust_toolbar(
+            self,
+            baslik=ALIS_BELGE_BASLIGI,
+            fatura_no=getattr(self.fatura, "fatura_no", "") or "Yeni",
+            musteri_kisa="",
+            durum=getattr(self.fatura, "durum", None) or "YENİ",
+        )
+        self._alis_toolbar = refs
+        self._alis_ust_butonlar = refs["cubuk"]
+        sag = refs["sag"]
+        liste_btn = ftema.tk_buton(sag, "Fatura Listesi (F3)", self._fatura_listesini_ac, rol="ikincil")
+        liste_btn.pack(side="left", padx=3)
+        self._tooltip_bagla(liste_btn, "Alış Fatura Listesini Aç")
+        self.kaydet_btn = ftema.tk_buton(sag, "Kaydet (F1)", self.kaydet, rol="vurgu")
+        self.kaydet_btn.pack(side="left", padx=3)
+        ftema.tk_buton(sag, "Önizleme", self._alis_onizleme_ac, rol="ikincil").pack(side="left", padx=3)
+        ftema.tk_buton(sag, "PDF", self._alis_pdf_kaydet, rol="ikincil").pack(side="left", padx=3)
+        ftema.tk_buton(sag, "Masraf Dağıtımları", self._masraf_dagitimlari, rol="ikincil").pack(
+            side="left", padx=3
+        )
+        self.iptal_btn = ftema.tk_buton(sag, "İptal Et", self.faturayi_iptal_et, rol="tehlike")
+        self.iptal_btn.pack(side="left", padx=3)
+        ftema.tk_buton(sag, "Kapat (Esc)", self.kapat_istegi, rol="ikincil").pack(side="left", padx=(10, 3))
+
+    def _pencere_basligi(self) -> str:
+        no = getattr(self.fatura, "fatura_no", "") if self.fatura else ""
+        return f"{ALIS_BELGE_BASLIGI} — {no}" if no else f"{ALIS_BELGE_BASLIGI} — Yeni"
+
+    def _toolbar_guncelle(self):
+        refs = getattr(self, "_alis_toolbar", None)
+        self.title(self._pencere_basligi())
+        if not refs:
+            return
+        try:
+            refs["fatura_no"].configure(text=getattr(self.fatura, "fatura_no", "") or "Yeni")
+            tedarikci = self.tedarikci_map.get(self.tedarikci.get()) if hasattr(self, "tedarikci") else None
+            refs["musteri"].configure(text=(f"Tedarikçi: {tedarikci.unvan}" if tedarikci else "")[:60])
+            ftema.rozet_guncelle(refs["rozet"], getattr(self.fatura, "durum", None) or "YENİ")
+        except tk.TclError:
+            return
+        iptal = bool(self.fatura and self.fatura.durum == "İPTAL")
+        for dugme in (getattr(self, "kaydet_btn", None), getattr(self, "iptal_btn", None)):
+            if dugme is not None:
+                dugme.configure(state="disabled" if iptal else "normal")
+
+    def _form_degisti(self, _event=None):
+        if not getattr(self, "_fatura_yukleniyor", False):
+            self._fatura_form_kirli = True
+
+    def _form_tus_degisti(self, event):
+        if event.char and event.char.isprintable() or event.keysym in ("BackSpace", "Delete"):
+            self._form_degisti()
+
+    def kapat_istegi(self):
+        """Kaydedilmemiş değişiklik varsa sorar; kayıt başarısızsa pencere açık kalır."""
+        if self._fatura_kirli_mi():
+            cevap = messagebox.askyesnocancel(
+                "Kaydedilmemiş değişiklikler",
+                "Alış faturasında kaydedilmemiş değişiklikler var.\nKaydetmek ister misiniz?",
+                parent=self,
+            )
+            if cevap is None:
+                return
+            if cevap and not self._kaydet_kapatmadan():
+                return
+        self.destroy()
+
+    def _ust_paneller_olustur(self):
+        ust = tk.Frame(self.icerik, bg=ftema.ACIK_BG)
+        ust.pack(fill="x", pady=(0, 6))
+        self._fatura_ust_panel = ust
+        for sutun, agirlik in enumerate((25, 28, 25, 22)):
+            ust.columnconfigure(sutun, weight=agirlik, uniform="alis_ust")
+
+        # 1 — Fatura Bilgileri
+        p1 = ttk.LabelFrame(ust, text="Fatura Bilgileri", style="AlisUst.TLabelframe")
+        p1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         fatura_no = self.fatura.fatura_no if self.fatura else AlisFaturasiService.fatura_no()
-        self._girdi(genel, 0, "Fatura Numarası", "fatura_no", fatura_no, readonly=True)
+        self._girdi(p1, 0, "Kayıt No", "fatura_no", fatura_no, genislik=14, readonly=True)
+        self._girdi(
+            p1, 1, "Tedarikçi Fat. No", "tedarikci_fatura_no",
+            (getattr(self.fatura, "tedarikci_fatura_no", None) or "") if self.fatura else "", genislik=14,
+        )
+        self.girdiler["tedarikci_fatura_no"].bind("<FocusOut>", self._mukerrer_uyar, add="+")
         tarih_alani(
-            genel, 1, "Fatura Tarihi", "fatura_tarihi",
+            p1, 2, "Fatura Tarihi", "fatura_tarihi",
             tarih_goster(self.fatura.fatura_tarihi) if self.fatura else date.today().strftime("%d.%m.%Y"),
             self.girdiler,
             on_select=self.vade_gun_degisti,
+            genislik=10,
         )
         saat_deger = saat_varsayilan(
             self.fatura.islem_saati if self.fatura and self.fatura.islem_saati
             else (self.fatura.olusturma_tarihi.strftime("%H:%M") if self.fatura else None)
         )
-        self._girdi(genel, 2, "İşlem Saati", "islem_saati", saat_deger)
+        self._girdi(p1, 3, "İşlem Saati", "islem_saati", saat_deger, genislik=8)
         tarih_alani(
-            genel, 3, "Vade Tarihi", "vade_tarihi",
+            p1, 4, "Vade Tarihi", "vade_tarihi",
             tarih_goster(self.fatura.vade_tarihi) if self.fatura else date.today().strftime("%d.%m.%Y"),
             self.girdiler,
             on_select=self.vade_tarih_degisti,
+            genislik=10,
         )
-        self._girdi(
-            genel, 4, "Vade Günü", "vade_gunu",
-            str(self.fatura.vade_gunu if self.fatura else 0),
-        )
+        self._girdi(p1, 5, "Vade Günü", "vade_gunu", str(self.fatura.vade_gunu if self.fatura else 0), genislik=8)
         self.girdiler["fatura_tarihi"].bind("<FocusOut>", self.vade_gun_degisti)
         self.girdiler["vade_tarihi"].bind("<FocusOut>", self.vade_tarih_degisti)
         self.girdiler["vade_gunu"].bind("<KeyRelease>", self.vade_gun_degisti)
+        ttk.Label(p1, text="Durum", style="AlisUst.TLabel").grid(
+            row=6, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self.durum = ttk.Combobox(
+            p1, values=("AÇIK", "KAPALI", "İPTAL"), state="readonly", width=12, style="FaturaUst.TCombobox"
+        )
+        self.durum.grid(row=6, column=1, padx=(0, 8), pady=ALIS_UST_PADY, sticky="w")
+        self.durum.set(self.fatura.durum if self.fatura else "AÇIK")
+        self.durum.configure(state="disabled")
+        p1.columnconfigure(1, weight=1)
 
-        ttk.Label(genel, text="Şube").grid(row=8, column=0, padx=8, pady=5, sticky="w")
+        # 2 — Tedarikçi ve Cari
+        p2 = ttk.LabelFrame(ust, text="Tedarikçi ve Cari", style="AlisUst.TLabelframe")
+        p2.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
+        ttk.Label(p2, text="Tedarikçi", style="AlisUst.TLabel").grid(
+            row=0, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self.tedarikci = tk.StringVar()
+        self.tedarikci_combo = ttk.Combobox(
+            p2, textvariable=self.tedarikci, values=list(self.tedarikci_map), state="readonly", width=30,
+            style="FaturaUst.TCombobox",
+        )
+        self.tedarikci_combo.grid(row=0, column=1, columnspan=3, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        self.tedarikci_combo.bind("<<ComboboxSelected>>", lambda _e: self._tedarikci_degisti())
+        self._tooltip_bagla(self.tedarikci_combo, "F10 veya sağ tık: tedarikçi listesinden seç")
+        for olay in ("<F10>", "<Button-3>"):
+            self.tedarikci_combo.bind(olay, self._tedarikci_listeden_sec)
+        ttk.Label(p2, text="Sipariş No", style="AlisUst.TLabel").grid(
+            row=1, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self.siparis_no = ttk.Entry(p2, width=18, style="FaturaUst.TEntry")
+        self.siparis_no.grid(row=1, column=1, columnspan=3, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        ttk.Label(p2, text="İrsaliye No", style="AlisUst.TLabel").grid(
+            row=2, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self.irsaliye_no = ttk.Entry(p2, width=18, style="FaturaUst.TEntry")
+        self.irsaliye_no.grid(row=2, column=1, columnspan=3, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        ttk.Label(p2, text="Şube", style="AlisUst.TLabel").grid(
+            row=3, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
         from sube_ui import sube_secim_hazirla
 
         kaynak_sube_id = (
@@ -1482,80 +1639,17 @@ class AlisFaturasiDialog(tk.Toplevel):
             or getattr(self.kaynak_irsaliye, "sube_id", None)
             or getattr(self.kaynak_siparis, "sube_id", None)
         )
-        self.sube, self._sube_map = sube_secim_hazirla(genel, kaynak_sube_id)
-        self.sube.grid(row=8, column=1, padx=8, pady=5, sticky="ew")
-
-        ttk.Label(genel, text="Tedarikçi").grid(row=5, column=0, padx=8, pady=5, sticky="w")
-        self.tedarikci = tk.StringVar()
-        self.tedarikci_combo = ttk.Combobox(
-            genel, textvariable=self.tedarikci, values=list(self.tedarikci_map), state="readonly", width=33,
+        self.sube, self._sube_map = sube_secim_hazirla(p2, kaynak_sube_id)
+        self.sube.grid(row=3, column=1, columnspan=3, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        dugmeler = tk.Frame(p2)
+        dugmeler.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ftema.tk_buton(dugmeler, "Cari Kartına Geç", self.cariye_git, rol="kaydet").pack(side="left")
+        ftema.tk_buton(dugmeler, "Alış Evrakları", self._tedarikci_evraklari, rol="ikincil").pack(
+            side="left", padx=6
         )
-        self.tedarikci_combo.grid(row=5, column=1, padx=8, pady=5, sticky="ew")
-        self.tedarikci_combo.bind("<<ComboboxSelected>>", lambda _e: self._bakiye_guncelle())
-
-        self._girdi(genel, 6, "Mevcut Borç Bakiyesi", "mevcut_bakiye", "0,00 TL", readonly=True)
-        self._girdi(genel, 7, "Tahmini Yeni Bakiye", "tahmini_bakiye", "0,00 TL", readonly=True)
-
-        ttk.Label(genel, text="Durum").grid(row=0, column=2, padx=8, pady=5, sticky="w")
-        self.durum = ttk.Combobox(genel, values=("AÇIK", "KAPALI", "İPTAL"), state="readonly", width=28)
-        self.durum.grid(row=0, column=3, padx=8, pady=5, sticky="ew")
-        self.durum.set(self.fatura.durum if self.fatura else "AÇIK")
-        self.durum.configure(state="disabled")
-        genel.columnconfigure(1, weight=1)
-        genel.columnconfigure(3, weight=1)
-
-    def _depo_bar_olustur(self):
-        depo_bar = ttk.LabelFrame(self.icerik, text="STOK GİRİŞ DEPOSU", padding=8)
-        depo_bar.pack(fill="x", pady=4)
-        ttk.Label(depo_bar, text="Ürün hangi depoya girsin?").pack(side="left", padx=(0, 10))
-        depolar = tuple(d.ad for d in StokService.depolar()) or ("ANA DEPO",)
-        self.depo = ttk.Combobox(depo_bar, values=depolar, state="readonly", width=32)
-        self.depo.pack(side="left")
-        if self.fatura and self.fatura.depo in depolar:
-            self.depo.set(self.fatura.depo)
-        else:
-            self.depo.set(depolar[0])
-        ttk.Button(depo_bar, text="Yeni Depo Aç", command=self.depo_ekle).pack(side="left", padx=10)
-        ttk.Label(
-            depo_bar,
-            text="Satır kaydında stok girişi ve lot bu depoya yazılır.",
-            foreground="#666666",
-        ).pack(side="left", padx=8)
-        self.girdiler["depo"] = self.depo
-
-    def _baglanti_olustur(self):
-        ek = ttk.LabelFrame(self.icerik, text="FATURA BAĞLANTI BİLGİLERİ", padding=8)
-        ek.pack(fill="x", pady=4)
-        ttk.Label(ek, text="Sipariş Numarası").grid(row=0, column=0, padx=6, pady=4, sticky="w")
-        self.siparis_no = ttk.Entry(ek, width=28)
-        self.siparis_no.grid(row=0, column=1, padx=6, pady=4, sticky="ew")
-        ttk.Label(ek, text="İrsaliye Numarası").grid(row=0, column=2, padx=6, pady=4, sticky="w")
-        self.irsaliye_no = ttk.Entry(ek, width=28)
-        self.irsaliye_no.grid(row=0, column=3, padx=6, pady=4, sticky="ew")
-        ttk.Button(ek, text="Cari Kartına Geç", command=self.cariye_git).grid(row=0, column=4, padx=6, sticky="w")
-
-        ttk.Label(ek, text="Doküman Ekle").grid(row=1, column=0, padx=6, pady=4, sticky="w")
-        self.dokuman = ttk.Entry(ek, width=28)
-        self.dokuman.grid(row=1, column=1, padx=6, pady=4, sticky="ew")
-        ttk.Button(ek, text="Doküman Seç", command=self.dokuman_sec).grid(row=1, column=2, padx=6, sticky="w")
-
-        ozet = ttk.Frame(ek)
-        ozet.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(8, 0))
-        self.yeni_bakiye_etiket = ttk.Label(
-            ozet, text="Bu fatura ile yeni bakiye toplamı: -",
-            foreground="#1f6aa5", font=("Segoe UI", 10, "bold"),
-        )
-        self.yeni_bakiye_etiket.pack(side="left", padx=(0, 24))
-        self.ortalama_vade_etiket = ttk.Label(
-            ozet, text="Bu fatura ile yeni bakiye ağırlıklı ortalama vadesi: -",
-            foreground="#1f6aa5", font=("Segoe UI", 10, "bold"),
-        )
-        self.ortalama_vade_etiket.pack(side="left")
-        for sutun in (1, 3):
-            ek.columnconfigure(sutun, weight=1)
+        p2.columnconfigure(1, weight=1)
         self.girdiler["siparis_no"] = self.siparis_no
         self.girdiler["irsaliye_no"] = self.irsaliye_no
-        self.girdiler["dokuman"] = self.dokuman
         if self.kaynak_siparis:
             self.siparis_no.insert(0, self.kaynak_siparis.siparis_no)
         if self.kaynak_irsaliye:
@@ -1563,6 +1657,141 @@ class AlisFaturasiDialog(tk.Toplevel):
             if self.kaynak_irsaliye.siparis:
                 self.siparis_no.delete(0, "end")
                 self.siparis_no.insert(0, self.kaynak_irsaliye.siparis.siparis_no)
+
+        # 3 — Depo, Belge ve Döviz
+        p3 = ttk.LabelFrame(ust, text="Depo, Belge ve Döviz", style="AlisUst.TLabelframe")
+        p3.grid(row=0, column=2, sticky="nsew", padx=(0, 6))
+        ttk.Label(p3, text="Giriş Deposu", style="AlisUst.TLabel").grid(
+            row=0, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        depolar = tuple(d.ad for d in StokService.depolar()) or ("ANA DEPO",)
+        self.depo = ttk.Combobox(p3, values=depolar, state="readonly", width=18, style="FaturaUst.TCombobox")
+        self.depo.grid(row=0, column=1, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        if self.fatura and self.fatura.depo in depolar:
+            self.depo.set(self.fatura.depo)
+        else:
+            self.depo.set(depolar[0])
+        ttk.Button(p3, text="Yeni Depo", command=self.depo_ekle, style="FaturaUst.TButton").grid(
+            row=0, column=2, padx=(4, 0), pady=ALIS_UST_PADY
+        )
+        self.girdiler["depo"] = self.depo
+        ttk.Label(p3, text="Doküman", style="AlisUst.TLabel").grid(
+            row=1, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self.dokuman = ttk.Entry(p3, width=18, style="FaturaUst.TEntry")
+        self.dokuman.grid(row=1, column=1, padx=0, pady=ALIS_UST_PADY, sticky="ew")
+        ttk.Button(p3, text="Seç", command=self.dokuman_sec, style="FaturaUst.TButton").grid(
+            row=1, column=2, padx=(4, 0), pady=ALIS_UST_PADY
+        )
+        self.girdiler["dokuman"] = self.dokuman
+        ttk.Label(p3, text="Para Birimi", style="AlisUst.TLabel").grid(
+            row=2, column=0, padx=(0, 6), pady=ALIS_UST_PADY, sticky="w"
+        )
+        self._doviz_ozet_lbl = ttk.Label(p3, text="TRY", style="AlisUst.TLabel")
+        self._doviz_ozet_lbl.grid(row=2, column=1, padx=0, pady=ALIS_UST_PADY, sticky="w")
+        self._doviz_ac_btn = ttk.Button(
+            p3, text="Döviz / Kur", command=self._doviz_alani_ac_kapat, style="FaturaUst.TButton"
+        )
+        self._doviz_ac_btn.grid(row=2, column=2, padx=(4, 0), pady=ALIS_UST_PADY)
+        ttk.Label(
+            p3, text="Stok girişi ve lot bu depoya yazılır.", style="AlisUst.TLabel", foreground=ftema.IKINCIL
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        p3.columnconfigure(1, weight=1)
+
+        # 4 — Cari Özet
+        p4 = ttk.LabelFrame(ust, text="Cari Özet", style="AlisUst.TLabelframe")
+        p4.grid(row=0, column=3, sticky="nsew")
+        self._cari_ozet_etiketleri = {}
+        for sira, (anahtar, baslik) in enumerate((
+            ("mevcut", "Mevcut Borcumuz"),
+            ("fatura", "Bu Fatura"),
+            ("yeni", "Yeni Borcumuz"),
+            ("vade", "Ağırlıklı Ort. Vade"),
+        )):
+            ttk.Label(p4, text=baslik, style="AlisUst.TLabel").grid(
+                row=sira, column=0, sticky="w", padx=(0, 8), pady=ALIS_UST_PADY
+            )
+            etiket = tk.Label(
+                p4, text="—", font=ftema.font(10, "bold", self), fg=ftema.LACIVERT, anchor="e",
+                bg=ftema.BEYAZ,
+            )
+            etiket.grid(row=sira, column=1, sticky="e", pady=ALIS_UST_PADY)
+            self._cari_ozet_etiketleri[anahtar] = etiket
+        p4.columnconfigure(1, weight=1)
+        # Geriye dönük: servis/testler bu iki girdiyi okur
+        gizli = tk.Frame(p4)
+        self.girdiler["mevcut_bakiye"] = ttk.Entry(gizli)
+        self.girdiler["tahmini_bakiye"] = ttk.Entry(gizli)
+        self.yeni_bakiye_etiket = self._cari_ozet_etiketleri["yeni"]
+        self.ortalama_vade_etiket = self._cari_ozet_etiketleri["vade"]
+
+    def _tedarikci_degisti(self):
+        self._form_degisti()
+        self._bakiye_guncelle()
+        self._toolbar_guncelle()
+
+    def _tedarikci_listeden_sec(self, _event=None):
+        if str(self.tedarikci_combo.cget("state")) == "disabled":
+            return "break"
+        from app import MusteriSecimDialog
+
+        tedarikciler = list(dict.fromkeys(self.tedarikci_map.values()))
+        dialog = MusteriSecimDialog(
+            self, musteriler=tedarikciler, baslik="Tedarikçi Seçimi", kayit_adi="tedarikçi"
+        )
+        self.wait_window(dialog)
+        cari = getattr(dialog, "result", None)
+        if cari is not None:
+            self._tedarikci_sec(cari)
+            self._tedarikci_degisti()
+        return "break"
+
+    def _tedarikci_evraklari(self):
+        tedarikci = self.tedarikci_map.get(self.tedarikci.get())
+        if not tedarikci:
+            messagebox.showinfo("Tedarikçi", "Önce tedarikçi seçin.", parent=self)
+            return
+        from tedarikci_evrak_ui import TedarikciEvraklariDialog
+
+        self.wait_window(TedarikciEvraklariDialog(self, tedarikci))
+
+    def _mukerrer_uyar(self, _event=None):
+        tedarikci = self.tedarikci_map.get(self.tedarikci.get())
+        no = self.girdiler["tedarikci_fatura_no"].get().strip()
+        if not tedarikci or not no:
+            return
+        try:
+            mevcut = AlisFaturasiService.mukerrer_kontrol(
+                tedarikci.id, no, getattr(self.fatura, "id", None) if self.fatura else None
+            )
+        except Exception:
+            return
+        if mevcut:
+            self._mukerrer_kaydi_goster(mevcut[0], mevcut[1], no)
+
+    def _mukerrer_kaydi_goster(self, fatura_id: int, kayit_no: str, ted_no: str):
+        if messagebox.askyesno(
+            "Mükerrer tedarikçi faturası",
+            f"Bu tedarikçinin '{ted_no}' numaralı faturası zaten kayıtlı (kayıt no: {kayit_no}).\n"
+            "Mevcut kaydı açmak ister misiniz?",
+            parent=self,
+        ):
+            fatura = AlisFaturasiService.getir(fatura_id)
+            if fatura:
+                self.wait_window(AlisFaturasiDialog(self, fatura=fatura, cari_ac=self.cari_ac))
+
+    def _doviz_alani_ac_kapat(self):
+        cerceve = self._doviz_cerceve
+        if cerceve.winfo_manager():
+            cerceve.pack_forget()
+        else:
+            cerceve.pack(fill="x", pady=(0, 6), after=self._fatura_ust_panel)
+
+    def _doviz_gorunumu_guncelle(self):
+        pb = (self._doviz_para_birimi.get() if hasattr(self, "_doviz_para_birimi") else "TRY") or "TRY"
+        self._doviz_ozet_lbl.configure(text=pb.upper())
+        if pb.upper() != "TRY" and not self._doviz_cerceve.winfo_manager():
+            self._doviz_alani_ac_kapat()
 
     def _satir_olustur(self, parent):
         butonlar = ttk.Frame(parent)
@@ -1582,7 +1811,9 @@ class AlisFaturasiDialog(tk.Toplevel):
             "barkod", "kod", "ad", "aciklama", "miktar", "birim", "fiyat", "iskonto", "kdv",
             "net_birim", "lot", "lot_girisi", "toplam", "siparis_miktar", "irsaliye_miktar", "fatura_miktar",
         )
-        self.satir_tablosu = ttk.Treeview(parent, columns=kolonlar, show="headings", height=10)
+        self.satir_tablosu = ttk.Treeview(
+            parent, columns=kolonlar, show="headings", height=10, style=ALIS_TABLO_STILI
+        )
         basliklar = {
             "barkod": "Barkod", "kod": "Ürün Kodu", "ad": "Ürün Adı", "aciklama": "Açıklama",
             "miktar": "Miktar", "birim": "Birim", "fiyat": "Alış Fiyatı", "iskonto": "İskonto",
@@ -1644,27 +1875,61 @@ class AlisFaturasiDialog(tk.Toplevel):
 
         # Sabit alt banda pack(in_=...) edilebilmesi için Toplevel'in çocuğu olmalı;
         # kaydırma içindeki bir çerçevenin çocuğu dışarı taşınamaz (TclError).
-        toplamlar = ttk.LabelFrame(self, text="TOPLAMLAR", padding=6)
+        toplamlar = tk.Frame(self, bg=ftema.LACIVERT, padx=10, pady=6)
         self._alis_toplam_cerceve = toplamlar
-        self.satir_ozet = ttk.Label(
-            toplamlar,
-            text="Ara Toplam: 0,00 TL | İskonto: 0,00 TL | KDV: 0,00 TL | Genel: 0,00 TL",
-            wraplength=1000,
-        )
-        self.satir_ozet.pack(anchor="w")
-        islem_satir = ttk.Frame(toplamlar)
-        islem_satir.pack(anchor="e", fill="x", pady=(4, 0))
         self._alis_satir_brut = Decimal("0")
         self._alis_net_toplam = Decimal("0")
         self._fatura_persisted = bool(
             getattr(self, "fatura", None) and getattr(self.fatura, "id", None)
         )
-        ttk.Label(islem_satir, text="Brüt:").pack(side="left", padx=(0, 4))
-        self._alis_brut_lbl = ttk.Label(islem_satir, text="0,00 TL", width=12, anchor="e")
-        self._alis_brut_lbl.pack(side="left", padx=(0, 12))
-        ttk.Label(islem_satir, text="Genel Toplam:").pack(side="left", padx=(12, 2))
-        self._alis_net_lbl = ttk.Label(islem_satir, text="0,00 TL", width=14, anchor="e")
-        self._alis_net_lbl.pack(side="left")
+        sol = tk.Frame(toplamlar, bg=ftema.LACIVERT)
+        sol.pack(side="left", fill="x", expand=True)
+        self.satir_ozet = tk.Label(
+            sol,
+            text="Ara Toplam: 0,00 TL | İskonto: 0,00 TL | KDV: 0,00 TL | Genel: 0,00 TL",
+            bg=ftema.LACIVERT,
+            fg=ftema.BEYAZ,
+            font=ftema.font(10, root=self),
+            anchor="w",
+            justify="left",
+            wraplength=900,
+        )
+        self.satir_ozet.pack(anchor="w", fill="x")
+        brut_satir = tk.Frame(sol, bg=ftema.LACIVERT)
+        brut_satir.pack(anchor="w", pady=(2, 0))
+        tk.Label(
+            brut_satir, text="Brüt:", bg=ftema.LACIVERT, fg=ftema.BEYAZ, font=ftema.font(10, root=self)
+        ).pack(side="left")
+        self._alis_brut_lbl = tk.Label(
+            brut_satir,
+            text="0,00 TL",
+            bg=ftema.LACIVERT,
+            fg=ftema.BEYAZ,
+            font=ftema.font(10, "bold", root=self),
+            anchor="w",
+        )
+        self._alis_brut_lbl.pack(side="left", padx=(4, 0))
+
+        sag = tk.Frame(toplamlar, bg=ftema.LACIVERT)
+        sag.pack(side="right")
+        ftema.tk_buton(sag, "Kapat (Esc)", self.kapat_istegi, rol="ikincil").pack(
+            side="right", padx=(8, 0)
+        )
+        ftema.tk_buton(sag, "Kaydet (F1)", self.kaydet, rol="vurgu").pack(side="right", padx=(8, 0))
+        genel = tk.Frame(sag, bg=ftema.LACIVERT)
+        genel.pack(side="right", padx=(0, 12))
+        tk.Label(
+            genel, text="GENEL TOPLAM", bg=ftema.LACIVERT, fg=ftema.SARI, font=ftema.font(9, "bold", root=self)
+        ).pack(anchor="e")
+        self._alis_net_lbl = tk.Label(
+            genel,
+            text="0,00 TL",
+            bg=ftema.LACIVERT,
+            fg=ftema.SARI,
+            font=ftema.font(18, "bold", root=self),
+            anchor="e",
+        )
+        self._alis_net_lbl.pack(anchor="e")
 
     def _odeme_olustur(self, parent):
         cerceve = ttk.LabelFrame(parent, text="ÖDEMELER", padding=8)
@@ -2123,12 +2388,14 @@ class AlisFaturasiDialog(tk.Toplevel):
         tedarikci = self.tedarikci_map.get(self.tedarikci.get())
         if not tedarikci:
             self.mevcut_borc = Decimal("0")
+            self._cari_ozet = {"bakiye": Decimal("0"), "ortalama_vade": None}
             self._readonly_yaz("mevcut_bakiye", "0,00 TL")
             self._toplamlari_guncelle(Decimal("0"))
             return
         ozet = AlisFaturasiService.bakiye_ozeti(
             tedarikci.id, Decimal("0"), None, self.fatura.fatura_no if self.fatura else None
         )
+        self._cari_ozet = ozet
         self.mevcut_borc = ozet["bakiye"]
         self._readonly_yaz("mevcut_bakiye", para_goster(self.mevcut_borc))
         self._toplamlari_guncelle(self.mevcut_borc)
@@ -2182,6 +2449,41 @@ class AlisFaturasiDialog(tk.Toplevel):
         try:
             self._alis_odeme_ozet_yenile()
         except Exception:
+            pass
+        self._cari_ozet_yenile(satir_genel)
+
+    def _cari_ozet_yenile(self, fatura_toplami: Decimal):
+        etiketler = getattr(self, "_cari_ozet_etiketleri", None)
+        if not etiketler:
+            return
+        ozet = getattr(self, "_cari_ozet", None) or {}
+        mevcut = decimal(ozet.get("bakiye") or 0, "Bakiye")
+        odeme = sum((decimal(o["tutar"], "Ödeme") for o in getattr(self, "odemeler", [])), Decimal("0"))
+        kalan = fatura_toplami - odeme
+        yeni = mevcut + kalan
+        vade_metni = "—"
+        try:
+            vade = datetime.strptime(self.girdiler["vade_tarihi"].get(), "%d.%m.%Y").date()
+        except (ValueError, KeyError, tk.TclError):
+            vade = None
+        ort = ozet.get("ortalama_vade")
+        agirlik = Decimal("0")
+        pay = Decimal("0")
+        if ort and mevcut > 0:
+            agirlik += mevcut
+            pay += Decimal(ort.toordinal()) * mevcut
+        if vade and kalan > 0:
+            agirlik += kalan
+            pay += Decimal(vade.toordinal()) * kalan
+        if agirlik > 0:
+            vade_metni = tarih_goster(date.fromordinal(int(pay / agirlik)))
+        try:
+            etiketler["mevcut"].configure(text=para_goster(mevcut))
+            etiketler["fatura"].configure(text=para_goster(fatura_toplami))
+            etiketler["yeni"].configure(text=para_goster(yeni))
+            etiketler["vade"].configure(text=vade_metni)
+            self._readonly_yaz("tahmini_bakiye", para_goster(yeni))
+        except (tk.TclError, KeyError):
             pass
 
     def odeme_ekle(self):
@@ -2304,6 +2606,8 @@ class AlisFaturasiDialog(tk.Toplevel):
         try:
             fatura = self.fatura
             self._tedarikci_sec(fatura.cari)
+            self._readonly_yaz("fatura_no", fatura.fatura_no or "")
+            self._entry_yaz("tedarikci_fatura_no", getattr(fatura, "tedarikci_fatura_no", None) or "")
             self._entry_yaz("fatura_tarihi", tarih_goster(fatura.fatura_tarihi))
             self._entry_yaz(
                 "islem_saati",
@@ -2367,113 +2671,16 @@ class AlisFaturasiDialog(tk.Toplevel):
             self._odeme_listesini_yenile()
             # Legacy override yok; toplam satırlardan
             self._toplamlari_guncelle()
+            if hasattr(self, "_alis_toolbar"):
+                self._toolbar_guncelle()
+                self._doviz_gorunumu_guncelle()
         finally:
             self._fatura_yukleniyor = False
             self._fatura_form_kirli = False
 
     def kaydet(self):
-        try:
-            self._alis_editorleri_uygula()
-            tedarikci = self.tedarikci_map.get(self.tedarikci.get())
-            if not tedarikci:
-                raise ValueError("Aktif bir tedarikçi seçin.")
-            if not self.satirlar:
-                raise ValueError("En az bir fatura satırı ekleyin.")
-            satirlar_hesap = [
-                {
-                    **dict(s),
-                    "birim_fiyat": s.get("birim_alis_fiyati", s.get("birim_fiyat", 0)),
-                }
-                for s in self.satirlar
-            ]
-            satir_genel = AlisFaturasiService.toplam(satirlar_hesap)["genel_toplam"]
-            self._alis_satir_brut = satir_genel
-            self._alis_net_toplam = satir_genel
-            fatura_tarihi = datetime.strptime(self.girdiler["fatura_tarihi"].get(), "%d.%m.%Y").date()
-            vade_tarihi = datetime.strptime(self.girdiler["vade_tarihi"].get(), "%d.%m.%Y").date()
-            islem_saati = saat_dogrula(self.girdiler["islem_saati"].get())
-            satirlar = []
-            for satir in self.satirlar:
-                veri = dict(satir)
-                if not veri.get("lot_no"):
-                    veri["lot_no"] = StokService.otomatik_lot_no(tedarikci.unvan, fatura_tarihi)
-                veri["birim_fiyat"] = veri.get("birim_fiyat", veri.get("birim_alis_fiyati", 0))
-                if veri.get("birim_fiyat_doviz") in (None, "", 0, "0"):
-                    pb = getattr(self, "_doviz_para_birimi", None)
-                    if pb and (pb.get() or "TRY").upper() != "TRY":
-                        veri["birim_fiyat_doviz"] = veri["birim_fiyat"]
-                satirlar.append(veri)
-            odeme_tutari = sum((decimal(o["tutar"], "Ödeme") for o in self.odemeler), Decimal("0"))
-            ilk_odeme = self.odemeler[0] if self.odemeler else {}
-            siparis_id = self.kaynak_siparis.id if self.kaynak_siparis else (
-                self.fatura.siparis_id if self.fatura else None
-            )
-            irsaliye_id = self.kaynak_irsaliye.id if self.kaynak_irsaliye else (
-                self.fatura.irsaliye_id if self.fatura else None
-            )
-            if not siparis_id and self.kaynak_irsaliye and self.kaynak_irsaliye.siparis_id:
-                siparis_id = self.kaynak_irsaliye.siparis_id
-            yazilan_siparis = self.siparis_no.get().strip()
-            yazilan_irsaliye = self.irsaliye_no.get().strip()
-            if yazilan_siparis and not siparis_id:
-                eslesen = next(
-                    (s for s in AlisFaturasiService.acik_siparisler() if s.siparis_no == yazilan_siparis),
-                    None,
-                )
-                if not eslesen:
-                    raise ValueError("Yazılan sipariş numarası bulunamadı.")
-                if eslesen.cari_id != tedarikci.id:
-                    raise ValueError("Sipariş numarası seçilen tedarikçiye ait değil.")
-                siparis_id = eslesen.id
-            if yazilan_irsaliye and not irsaliye_id:
-                eslesen = next(
-                    (i for i in AlisFaturasiService.acik_irsaliyeler() if i.irsaliye_no == yazilan_irsaliye),
-                    None,
-                )
-                if not eslesen:
-                    raise ValueError("Yazılan irsaliye numarası bulunamadı.")
-                if eslesen.cari_id != tedarikci.id:
-                    raise ValueError("İrsaliye numarası seçilen tedarikçiye ait değil.")
-                irsaliye_id = eslesen.id
-            notlar = self.ayrintili_notlar.get("1.0", "end").strip()
-            aciklama = self.girdiler["aciklama"].get().strip()
-            if notlar:
-                aciklama = f"{aciklama}\n{notlar}".strip() if aciklama else notlar
-            veriler = {
-                "fatura_no": self.girdiler["fatura_no"].get().strip(),
-                "fatura_tarihi": fatura_tarihi,
-                "islem_saati": islem_saati,
-                "vade_tarihi": vade_tarihi,
-                "cari_id": tedarikci.id,
-                "sube_id": self._sube_map.get(self.sube.get()),
-                "siparis_id": siparis_id,
-                "irsaliye_id": irsaliye_id,
-                "depo": self.depo.get(),
-                "odeme_tutari": odeme_tutari,
-                "odeme_sekli": ilk_odeme.get("odeme_sekli"),
-                "odeme_hesabi": ilk_odeme.get("hesap"),
-                "aciklama": aciklama or None,
-                "dokuman_yolu": self.dokuman.get().strip() or None,
-                "row_version": int(getattr(self.fatura, "row_version", 1) or 1)
-                if self.fatura
-                else None,
-                "tl_brut_toplam": getattr(self, "_alis_satir_brut", Decimal("0")),
-                "tl_genel_toplam": getattr(self, "_alis_net_toplam", Decimal("0")),
-                "genel_islem_turu": None,
-                "genel_islem_orani": Decimal("0"),
-                "genel_islem_tutari": Decimal("0"),
-            }
-            if hasattr(self, "_doviz_para_birimi"):
-                veriler.update(doviz_verilerini_topla(self))
-            self.result = AlisFaturasiService.kaydet(
-                veriler,
-                satirlar,
-                self.fatura.id if self.fatura else None,
-            )
-        except ValueError as hata:
-            messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
-            return
-        self.destroy()
+        """Kaydeder; pencere açık kalır ve kayıt yeniden yüklenir."""
+        return self._kaydet_kapatmadan()
 
     def _masraf_dagitimlari(self):
         if not self.fatura:

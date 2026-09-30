@@ -27,7 +27,8 @@ from satis_tema import (
 )
 
 SATIN_ALMA_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
-    ("TEDARİKÇİ KARTLARI", "Cari, iletişim, risk, vade ve alış geçmişi", "tedarikci"),
+    ("TEDARİKÇİ KARTLARI", "Boş tedarikçi kartı açılır; kodla veya isimle hızlı arayın", "tedarikci"),
+    ("TEDARİKÇİ LİSTESİ", "Tüm tedarikçileri listeleyin, filtreleyin ve sıralayın", "tedarikci_liste"),
     ("SATIN ALMA TALEPLERİ", "Yeni satın alma talebi formu", "talep"),
     ("SATIN ALMA TALEP LİSTESİ", "Talepleri filtrele, onayla ve siparişe aktar", "talep_liste"),
     ("TEDARİKÇİ TEKLİFLERİ", "Çoklu tedarikçi fiyat ve şart karşılaştırması", "teklif"),
@@ -179,7 +180,8 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         talep_formu_ac(app)
 
     return {
-        "tedarikci": app.tedarikciler_goster,
+        "tedarikci": app.tedarikci_karti_ac,
+        "tedarikci_liste": app.tedarikciler_goster,
         "talep": talep_formu,
         "talep_liste": lambda: satin_alma_talepleri_goster(app),
         "teklif": lambda: tedarikci_teklifleri_goster(app),

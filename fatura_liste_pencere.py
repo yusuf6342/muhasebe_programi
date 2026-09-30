@@ -241,6 +241,9 @@ class FaturaListePencere(tk.Toplevel):
             "Satış Personeli" if satis else "Kullanıcı",
             "Oluşturma",
         )
+        if not satis:
+            self.kolonlar = ("no", "ted_no") + self.kolonlar[1:]
+            basliklar = ("Kayıt No", "Tedarikçi Fatura No") + basliklar[1:]
         self.tablo = ttk.Treeview(orta, columns=self.kolonlar, show="headings", selectmode="browse")
         para_kolonlari = {"matrah", "kdv", "toplam", "kapanan", "acik"}
         for k, b in zip(self.kolonlar, basliklar):
@@ -360,7 +363,9 @@ class FaturaListePencere(tk.Toplevel):
             # Tür güvenliği
             if r.get("document_type") != self.document_type:
                 continue
-            if no_q and no_q not in turkce_normalize(r.get("fatura_no") or ""):
+            if no_q and no_q not in turkce_normalize(
+                f"{r.get('fatura_no') or ''} {r.get('tedarikci_fatura_no') or ''}"
+            ):
                 continue
             if cari_q:
                 blob = turkce_normalize(f"{r.get('cari_kodu') or ''} {r.get('cari_ad') or r.get('musteri') or ''}")
@@ -416,6 +421,7 @@ class FaturaListePencere(tk.Toplevel):
     def _sirala(self, kolon: str):
         map_kolon = {
             "no": "fatura_no",
+            "ted_no": "tedarikci_fatura_no",
             "tarih": "fatura_tarihi",
             "cari_kod": "cari_kodu",
             "cari_ad": "cari_ad",
@@ -445,28 +451,26 @@ class FaturaListePencere(tk.Toplevel):
         dilim = self._filtreli[bas : bas + SAYFA_BOYUTU]
         for r in dilim:
             personel = r.get("sales_person_full_name") or r.get("created_by_full_name") or ""
-            self.tablo.insert(
-                "",
-                "end",
-                iid=str(r["id"]),
-                values=(
-                    r.get("fatura_no") or "",
-                    _tarih_goster(r.get("fatura_tarihi")),
-                    r.get("cari_kodu") or "",
-                    r.get("cari_ad") or r.get("musteri") or "",
-                    r.get("vergi_no") or "",
-                    r.get("evrak_durumu") or r.get("durum") or "",
-                    _para(r.get("matrah")),
-                    _para(r.get("kdv")),
-                    _para(r.get("genel_toplam")),
-                    _para(r.get("kapanan_tutar")) if "kapanan_tutar" in r else "",
-                    _para(r.get("acik_tutar")) if "acik_tutar" in r else "",
-                    r.get("odeme_durumu") or "",
-                    r.get("para_birimi") or "TRY",
-                    personel,
-                    _tarih_goster(r.get("olusturma_tarihi")),
-                ),
+            degerler = (
+                r.get("fatura_no") or "",
+                _tarih_goster(r.get("fatura_tarihi")),
+                r.get("cari_kodu") or "",
+                r.get("cari_ad") or r.get("musteri") or "",
+                r.get("vergi_no") or "",
+                r.get("evrak_durumu") or r.get("durum") or "",
+                _para(r.get("matrah")),
+                _para(r.get("kdv")),
+                _para(r.get("genel_toplam")),
+                _para(r.get("kapanan_tutar")) if "kapanan_tutar" in r else "",
+                _para(r.get("acik_tutar")) if "acik_tutar" in r else "",
+                r.get("odeme_durumu") or "",
+                r.get("para_birimi") or "TRY",
+                personel,
+                _tarih_goster(r.get("olusturma_tarihi")),
             )
+            if "ted_no" in self.kolonlar:
+                degerler = (degerler[0], r.get("tedarikci_fatura_no") or "") + degerler[1:]
+            self.tablo.insert("", "end", iid=str(r["id"]), values=degerler)
         toplam = len(self._filtreli)
         sayfa_say = max(1, (toplam + SAYFA_BOYUTU - 1) // SAYFA_BOYUTU)
         self.ozet.configure(

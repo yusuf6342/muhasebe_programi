@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -21,7 +21,39 @@ FATURA_DURUMLARI = ("AÇIK", "KAPALI", "İPTAL")
 ODEME_SEKILLERI = ("KASA ÖDEME", "GÖNDERİLEN HAVALE", "KREDİ KARTIYLA ÖDEME")
 
 
+class MukerrerTedarikciFaturaHatasi(ValueError):
+    def __init__(self, mesaj: str, fatura_id: int, fatura_no: str):
+        super().__init__(mesaj)
+        self.fatura_id = fatura_id
+        self.fatura_no = fatura_no
+
+
 class AlisFaturasiService:
+    @staticmethod
+    def mukerrer_tedarikci_faturasi(session, cari_id, tedarikci_fatura_no, haric_id=None):
+        """Aynı tedarikçinin aynı fatura numaralı iptal edilmemiş kaydı (firma ayrı veritabanındadır)."""
+        no = (tedarikci_fatura_no or "").strip()
+        if not no or not cari_id:
+            return None
+        sorgu = select(AlisFaturasi).where(
+            AlisFaturasi.cari_id == int(cari_id),
+            AlisFaturasi.durum != "İPTAL",
+            func.upper(AlisFaturasi.tedarikci_fatura_no) == no.upper(),
+        )
+        if haric_id:
+            sorgu = sorgu.where(AlisFaturasi.id != int(haric_id))
+        if hasattr(AlisFaturasi, "is_deleted"):
+            sorgu = sorgu.where(or_(AlisFaturasi.is_deleted.is_(False), AlisFaturasi.is_deleted.is_(None)))
+        return session.scalar(sorgu.limit(1))
+
+    @staticmethod
+    def mukerrer_kontrol(cari_id, tedarikci_fatura_no, haric_id=None):
+        with get_session() as session:
+            mevcut = AlisFaturasiService.mukerrer_tedarikci_faturasi(
+                session, cari_id, tedarikci_fatura_no, haric_id
+            )
+            return (int(mevcut.id), mevcut.fatura_no) if mevcut else None
+
     @staticmethod
     def aktif_tedarikcileri():
         from database.alis_siparisi_service import AlisSiparisiService
@@ -137,6 +169,7 @@ class AlisFaturasiService:
                     "odeme_durumu": "" if iptal else odeme_durumu(genel, kapanan),
                     "id": f.id,
                     "fatura_no": f.fatura_no or "",
+                    "tedarikci_fatura_no": getattr(f, "tedarikci_fatura_no", None) or "",
                     "fatura_tarihi": f.fatura_tarihi,
                     "cari_kodu": (cari.cari_kodu if cari else "") or "",
                     "cari_ad": (cari.unvan if cari else "") or "",
@@ -151,6 +184,72 @@ class AlisFaturasiService:
                     "document_type": "PURCHASE_INVOICE",
                 })
             return sonuc
+
+    @staticmethod
+    def tedarikci_evraklari(cari_id: int) -> dict[str, list[dict[str, Any]]]:
+        """Tedarikçi kartı için: faturalanmamış irsaliyeler, alış faturaları, alış iadeleri."""
+        from database.alis_iade_faturasi_service import AlisIadeFaturasiService
+        from database.models.alis_iade_faturasi import AlisIadeFaturasi
+
+        with get_session() as session:
+            irsaliyeler = session.scalars(
+                select(AlisIrsaliyesi)
+                .where(
+                    AlisIrsaliyesi.cari_id == int(cari_id),
+                    AlisIrsaliyesi.durum.in_(("AÇIK", "KISMİ FATURALANDI")),
+                )
+                .options(selectinload(AlisIrsaliyesi.satirlar), selectinload(AlisIrsaliyesi.siparis))
+                .order_by(AlisIrsaliyesi.irsaliye_tarihi.desc(), AlisIrsaliyesi.id.desc())
+            ).all()
+            faturalar = session.scalars(
+                select(AlisFaturasi)
+                .where(AlisFaturasi.cari_id == int(cari_id))
+                .options(selectinload(AlisFaturasi.siparis), selectinload(AlisFaturasi.irsaliye))
+                .order_by(AlisFaturasi.fatura_tarihi.desc(), AlisFaturasi.id.desc())
+            ).all()
+            iadeler = session.scalars(
+                select(AlisIadeFaturasi)
+                .where(AlisIadeFaturasi.cari_id == int(cari_id))
+                .options(selectinload(AlisIadeFaturasi.satirlar))
+                .order_by(AlisIadeFaturasi.iade_tarihi.desc(), AlisIadeFaturasi.id.desc())
+            ).all()
+            return {
+                "irsaliye": [
+                    {
+                        "id": i.id,
+                        "no": i.irsaliye_no,
+                        "tarih": i.irsaliye_tarihi,
+                        "siparis": i.siparis.siparis_no if i.siparis else "",
+                        "miktar": sum((s.miktar for s in i.satirlar), Decimal("0")),
+                        "kalan": sum((s.miktar - s.faturalanan_miktar for s in i.satirlar), Decimal("0")),
+                        "durum": i.durum,
+                    }
+                    for i in irsaliyeler
+                ],
+                "fatura": [
+                    {
+                        "id": f.id,
+                        "no": f.fatura_no,
+                        "ted_no": f.tedarikci_fatura_no or "",
+                        "tarih": f.fatura_tarihi,
+                        "siparis": f.siparis.siparis_no if f.siparis else "",
+                        "irsaliye": f.irsaliye.irsaliye_no if f.irsaliye else "",
+                        "genel": Decimal(str(f.tl_genel_toplam or 0)),
+                        "durum": f.durum,
+                    }
+                    for f in faturalar
+                ],
+                "iade": [
+                    {
+                        "id": i.id,
+                        "no": i.iade_no,
+                        "tarih": i.iade_tarihi,
+                        "genel": AlisIadeFaturasiService.toplam(i.satirlar)["genel_toplam"],
+                        "durum": i.durum,
+                    }
+                    for i in iadeler
+                ],
+            }
 
     @staticmethod
     def getir(fatura_id):
@@ -244,6 +343,18 @@ class AlisFaturasiService:
             for alan in ("cari_id", "siparis_id", "irsaliye_id", "depo", "odeme_sekli", "odeme_hesabi", "aciklama", "dokuman_yolu"):
                 setattr(fatura, alan, veriler.get(alan) or (("ANA DEPO" if alan == "depo" else None)))
             fatura.cari_id = int(veriler["cari_id"])
+            ted_no = (veriler.get("tedarikci_fatura_no") or "").strip() or None
+            mukerrer = AlisFaturasiService.mukerrer_tedarikci_faturasi(
+                session, fatura.cari_id, ted_no, fatura_id
+            )
+            if mukerrer is not None:
+                raise MukerrerTedarikciFaturaHatasi(
+                    f"Bu tedarikçinin '{ted_no}' numaralı faturası zaten kayıtlı "
+                    f"(kayıt no: {mukerrer.fatura_no}).",
+                    int(mukerrer.id),
+                    mukerrer.fatura_no,
+                )
+            fatura.tedarikci_fatura_no = ted_no
             from database.sube_service import SubeService
 
             fatura.sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
@@ -263,7 +374,7 @@ class AlisFaturasiService:
             for veri in satir_verileri:
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
                 birim_fiyat_doviz = decimal(
-                    veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)),
+                    veri.get("birim_fiyat_doviz") or veri.get("birim_fiyat", 0),
                     "Birim fiyat",
                     Decimal("0"),
                 )

@@ -123,6 +123,7 @@ a = Analysis(
         "invoice_print.siparis_docx",
         "database.siparis_form_view",
         "satin_alma_talep_ui",
+        "tedarikci_evrak_ui",
         "talep_cikti_ui",
         "invoice_print.talep_cikti",
         "invoice_print.talep_docx",
