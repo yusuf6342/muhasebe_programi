@@ -305,8 +305,11 @@ def urunu_faturaya_aktar(
     ek_temel = temel_miktar(miktar_ekle, birim, kod)
     sablon["temel_miktar"] = str(ek_temel)
 
+    from satir_ici_urun_giris import ekleme_konumu, giris_bileseni, toplu_ekleme_mi
+
+    konum = ekleme_konumu(dialog)
     hedef_idx = None
-    if birlestir:
+    if birlestir and konum is None:
         for i, mevcut in enumerate(dialog.satirlar):
             if _satir_birlestirilebilir(mevcut, sablon, depo=depo):
                 hedef_idx = i
@@ -342,14 +345,22 @@ def urunu_faturaya_aktar(
                 sablon = doviz_satir_kaydet_oncesi(dialog, sablon)
             except Exception:
                 pass
-        dialog.satirlar.append(sablon)
-        idx = len(dialog.satirlar) - 1
+        if konum is not None and 0 <= konum <= len(dialog.satirlar):
+            idx = konum
+            dialog.satirlar.insert(idx, sablon)
+        else:
+            dialog.satirlar.append(sablon)
+            idx = len(dialog.satirlar) - 1
 
     dialog._fatura_satirlari_hazir = True
     dialog._duzenlenen_satir = None
+    if toplu_ekleme_mi(dialog):
+        return idx
     dialog._satir_listesini_yenile()
     dialog._toplamlari_guncelle()
     _satiri_vurgula(dialog, idx)
+    if giris_bileseni(dialog) is not None:
+        return idx
     try:
         from fatura_satir_hucre_edit import satir_ilk_alana_odakla
 
@@ -359,10 +370,11 @@ def urunu_faturaya_aktar(
     return idx
 
 
-def urun_seciminden_aktar(dialog, degerler) -> int:
+def urun_seciminden_aktar(dialog, degerler, *, merkezi_fiyat: bool = False) -> int:
     """ProductSelectionDialog / stok listesi tuple → satıra aktar.
 
     degerler: (kod, ad, birim, stok_miktar, fiyat, kaynak?, kdv?[, product_id?])
+    merkezi_fiyat: listedeki fiyat yok sayılır; müşteri/cari fiyat kuralları uygulanır.
     """
     kod = (degerler[0] or "").strip()
     if not kod:
@@ -370,7 +382,7 @@ def urun_seciminden_aktar(dialog, degerler) -> int:
     ad = degerler[1] if len(degerler) > 1 else ""
     birim = degerler[2] if len(degerler) > 2 else None
     fiyat = None
-    if len(degerler) > 4 and str(degerler[4]).strip():
+    if not merkezi_fiyat and len(degerler) > 4 and str(degerler[4]).strip():
         try:
             fiyat = _d(degerler[4])
         except Exception:

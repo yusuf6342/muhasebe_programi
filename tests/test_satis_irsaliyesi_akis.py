@@ -484,10 +484,9 @@ class _EkranTemel(_IrsaliyeTemel):
 
     def _urun_ekle(self, d, miktar="2", birim="Koli"):
         d.urun_secildi(("MB001", "Birim Ürün", "Adet", "", "1"))
-        d.satir_girdileri["miktar"].delete(0, "end")
-        d.satir_girdileri["miktar"].insert(0, miktar)
-        d.satir_girdileri["birim"].set(birim)
-        d.satir_ekle()
+        idx = len(d.satirlar) - 1
+        d.satir_hucre_uygula(idx, "miktar", miktar)
+        d.satir_hucre_uygula(idx, "birim", birim)
 
 
 class SatisIrsaliyesiEkranTest(_EkranTemel):
@@ -511,7 +510,8 @@ class SatisIrsaliyesiEkranTest(_EkranTemel):
     def test_birim_secenekleri_stok_kartindan(self):
         d = self._dialog()
         d.urun_secildi(("MB001", "Birim Ürün", "Adet", "", "1"))
-        self.assertEqual(list(d.satir_girdileri["birim"].cget("values")), ["Adet", "Paket", "Koli"])
+        self.assertEqual(d._satir_birimleri(0), ["Adet", "Paket", "Koli"])
+        self.assertEqual(d.satir_tablosu.get_children()[-1], "__yeni__")
         d.destroy()
 
     def test_eksik_alanda_kaydetmez_ve_kayitli_gibi_davranmaz(self):
@@ -563,7 +563,7 @@ class SatisIrsaliyesiEkranTest(_EkranTemel):
         self.assertEqual(str(acik.btn["kaydet"].cget("state")), "disabled")
         self.assertEqual(str(acik.btn["sevk"].cget("state")), "disabled")
         self.assertEqual(str(acik.btn["sevk_geri"].cget("state")), "normal")
-        self.assertEqual(str(acik.satir_girdileri["miktar"].cget("state")), "disabled")
+        self.assertFalse(acik.satir_tablosu.exists("__yeni__"))
         self.assertFalse(acik.degisiklik_var())
         acik.sevk_geri_al()
         self.assertEqual(self._hareket_toplam("İRSALİYE ÇIKIŞ"), 0)
@@ -579,12 +579,11 @@ class SatisIrsaliyesiEkranTest(_EkranTemel):
         d = self._dialog(irsaliye=irs)
         self.assertEqual(d.satirlar[0]["siparis_no"], siparis.siparis_no)
         self.assertEqual(d._siparis_var.get(), siparis.siparis_no)
-        d.satir_tablosu.selection_set("0")
-        d.satir_duzenle()
-        self.assertEqual(list(d.satir_girdileri["birim"].cget("values")), ["Paket"])
-        d.satir_girdileri["miktar"].delete(0, "end")
-        d.satir_girdileri["miktar"].insert(0, "6")
-        d.satir_ekle()
+        self.assertEqual(d._satir_birimleri(0), ["Paket"])
+        with self.assertRaisesRegex(ValueError, "birimi"):
+            d.satir_hucre_uygula(0, "birim", "Adet")
+        self.assertFalse(d._satir_urun_degistir(0, ("MB001", "Birim Ürün", "Adet", "", "1")))
+        d.satir_hucre_uygula(0, "miktar", "6")
         self.assertTrue(d.kaydet(sessiz=True))
         self.assertEqual(self._sevk_miktari(ssid), Decimal("6"))
         d.destroy()

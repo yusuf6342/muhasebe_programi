@@ -117,6 +117,7 @@ a = Analysis(
         "invoice_print.irsaliye_cikti",
         "invoice_print.irsaliye_docx",
         "satis_siparisi_ui",
+        "satir_ici_urun_giris",
         "siparis_cikti_ui",
         "invoice_print.siparis_cikti",
         "invoice_print.siparis_docx",

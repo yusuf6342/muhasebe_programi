@@ -150,7 +150,13 @@ def ilk_duzenlenebilir_kolon(dialog, idx: int) -> str | None:
 
 
 def _urun_arama_odakla(dialog) -> None:
-    """Son satır son alan sonrası: Barkod / ürün kodu / ürün adı."""
+    """Satırın son alanı sonrası: tablo sonundaki boş ürün giriş satırı."""
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(dialog)
+    if giris is not None:
+        giris.odakla()
+        return
     for ad in ("barkod", "urun_kodu", "urun_adi"):
         w = (getattr(dialog, "satir_girdileri", None) or {}).get(ad)
         if w is not None:
@@ -272,6 +278,23 @@ def _editor_kapat(dialog) -> None:
     dialog._satir_hucre_editor = None
 
 
+def acik_editoru_uygula(dialog) -> bool:
+    """Kaydet öncesi açık hücre editöründeki değeri satıra yazar; geçersizse False."""
+    ed = getattr(dialog, "_satir_hucre_editor", None)
+    if ed is None:
+        return True
+    fn = getattr(ed, "_uygula_fn", None)
+    if fn is None:
+        _editor_kapat(dialog)
+        return True
+    dialog._satir_gezinme_kilit = True
+    try:
+        fn()
+    finally:
+        dialog._satir_gezinme_kilit = False
+    return getattr(dialog, "_satir_hucre_editor", None) is None
+
+
 def _yenile_koru(dialog, tablo, iid: str):
     # GENEL Entry odak bayrağı takılı kalırsa alt toplam güncellenmez
     try:
@@ -327,6 +350,12 @@ def hucre_duzenle(
         aciklama_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
 
 
+def _satir_ici_var(dialog) -> bool:
+    from satir_ici_urun_giris import giris_bileseni
+
+    return giris_bileseni(dialog) is not None
+
+
 def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
     """Enter/Tab sonrası tek adım — çift atlamayı önler."""
     if getattr(dialog, "_satir_gezinme_kilit", False):
@@ -338,7 +367,7 @@ def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
             hedef = find_next_editable_cell(
                 dialog, idx, kolon, direction=-1 if geri else 1
             )
-            if hedef is None:
+            if hedef is None or (not geri and hedef[0] != idx and _satir_ici_var(dialog)):
                 if not geri:
                     _urun_arama_odakla(dialog)
                 return
@@ -421,6 +450,7 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         return "break"
 
     editor.bind("<Return>", lambda e: _kaydet(tab=True))
+    editor._uygula_fn = lambda: _kaydet()
     editor.bind("<KP_Enter>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Return>", lambda e: _kaydet(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -519,6 +549,7 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
 
     editor.bind("<<ComboboxSelected>>", lambda e: _uygula(tab=True))
     editor.bind("<Return>", lambda e: _uygula(tab=True))
+    editor._uygula_fn = lambda: _uygula()
     editor.bind("<KP_Enter>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Return>", lambda e: _uygula(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -589,6 +620,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         return "break"
 
     editor.bind("<Return>", lambda e: _kaydet(tab=True))
+    editor._uygula_fn = lambda: _kaydet()
     editor.bind("<KP_Enter>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Return>", lambda e: _kaydet(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -659,6 +691,7 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
 
     editor.bind("<<ComboboxSelected>>", lambda e: _uygula(tab=True))
     editor.bind("<Return>", lambda e: _uygula(tab=True))
+    editor._uygula_fn = lambda: _uygula()
     editor.bind("<KP_Enter>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Return>", lambda e: _uygula(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -734,6 +767,7 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         return "break"
 
     editor.bind("<Return>", lambda e: _kaydet(tab=True))
+    editor._uygula_fn = lambda: _kaydet()
     editor.bind("<KP_Enter>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Return>", lambda e: _kaydet(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -839,6 +873,7 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
         return "break"
 
     editor.bind("<Return>", lambda e: _kaydet(tab=True))
+    editor._uygula_fn = lambda: _kaydet()
     editor.bind("<KP_Enter>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Return>", lambda e: _kaydet(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -913,6 +948,7 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
 
     editor.bind("<<ComboboxSelected>>", lambda e: _uygula(tab=True))
     editor.bind("<Return>", lambda e: _uygula(tab=True))
+    editor._uygula_fn = lambda: _uygula()
     editor.bind("<KP_Enter>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Return>", lambda e: _uygula(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -954,6 +990,7 @@ def aciklama_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> Non
         return "break"
 
     editor.bind("<Return>", lambda e: _kaydet(tab=True))
+    editor._uygula_fn = lambda: _kaydet()
     editor.bind("<KP_Enter>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Return>", lambda e: _kaydet(tab=True, geri=True))
     editor.bind("<Escape>", _iptal)
@@ -997,7 +1034,7 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
             return
         kolon = _kolon_adi(tablo, event)
         row = tablo.identify_row(event.y)
-        if not row or kolon not in DUZENLENEBILIR_KOLONLAR:
+        if not row or row == "__yeni__" or kolon not in DUZENLENEBILIR_KOLONLAR:
             _tooltip_gizle()
             try:
                 tablo.configure(cursor="")

@@ -384,6 +384,26 @@ def urun_hareketlerini_goster(dialog) -> None:
         messagebox.showerror("Hareket", str(hata), parent=dialog)
 
 
+def _urunu_degistir(dialog) -> None:
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(dialog)
+    idx = _tek_secim(dialog)
+    if giris is None or idx is None:
+        return
+    giris.urun_degistir_baslat(idx)
+
+
+def _araya_ekle(dialog) -> None:
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(dialog)
+    idx = _tek_secim(dialog)
+    if giris is None or idx is None or getattr(dialog, "_fatura_kilitli", False):
+        return
+    giris.araya_ekle(idx)
+
+
 # ─── Boş fatura mesajı ─────────────────────────────────────────────
 
 
@@ -397,8 +417,8 @@ def _bos_mesaj_guncelle(dialog) -> None:
             lbl = tk.Label(
                 tablo.master,
                 text=(
-                    "Faturaya ürün eklemek için barkod okutun,\n"
-                    "ürün kodu girin veya ürün adıyla arama yapın."
+                    "Faturaya ürün eklemek için ilk satırda barkod okutun,\n"
+                    "ürün kodu veya ürün adı yazın (F10: stok listesi)."
                 ),
                 font=("Segoe UI", 11),
                 fg="#667085",
@@ -407,7 +427,7 @@ def _bos_mesaj_guncelle(dialog) -> None:
             )
             dialog._fatura_bos_mesaj = lbl
         try:
-            lbl.place(in_=tablo, relx=0.5, rely=0.45, anchor="center")
+            lbl.place(in_=tablo, relx=0.5, rely=0.55, anchor="center")
             lbl.lift()
         except tk.TclError:
             pass
@@ -558,6 +578,15 @@ def baglam_menu_kur(dialog) -> None:
     )
     menu.add_command(label="İskontoyu Temizle", command=lambda: iskontoyu_temizle(dialog))
     menu.add_command(label="Satır Açıklaması Gir", command=lambda: satir_aciklama_gir(dialog))
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(dialog)
+    if giris is not None:
+        menu.add_separator()
+        menu.add_command(label="Ürünü Değiştir…", command=lambda: _urunu_degistir(dialog))
+        menu.add_command(label="Araya Ürün Ekle…", command=lambda: _araya_ekle(dialog))
+        menu.add_command(label="Ürün Seç… (F10)", command=giris.stok_listesi_ac)
+        menu.add_command(label="Yeni Stok Kartı", command=giris.yeni_stok_karti)
     menu.add_separator()
     menu.add_command(label="Stok Kartını Aç", command=lambda: stok_kartini_ac(dialog))
     menu.add_command(

@@ -364,18 +364,13 @@ class _SiparisEkranTemel(_EkranTemel, _SiparisTemel):
 
     def _urun_ekle(self, d, miktar="2", birim="Paket", fiyat=None, iskonto=None):
         d.urun_secildi(("MB001", "Birim Ürün", "Adet", "", "1"))
-        g = d.satir_girdileri
-        g["miktar"].delete(0, "end")
-        g["miktar"].insert(0, miktar)
-        g["birim"].set(birim)
-        d._birim_degisti()
+        idx = len(d.satirlar) - 1
+        d.satir_hucre_uygula(idx, "miktar", miktar)
+        d.satir_hucre_uygula(idx, "birim", birim)
         if fiyat is not None:
-            g["birim_fiyat"].delete(0, "end")
-            g["birim_fiyat"].insert(0, fiyat)
+            d.satir_hucre_uygula(idx, "fiyat", fiyat)
         if iskonto is not None:
-            g["iskonto_orani"].delete(0, "end")
-            g["iskonto_orani"].insert(0, iskonto)
-        d.satir_ekle()
+            d.satir_hucre_uygula(idx, "iskonto", iskonto)
 
 
 class AlinanSiparisEkranTest(_SiparisEkranTemel):
@@ -397,10 +392,12 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
     def test_urun_hesap_kaydet_yeniden_ac_duzenle_sil(self):
         d = self._kart()
         d._musteri_ata(self._cari())
-        self.assertEqual(list(d.satir_girdileri["birim"].cget("values")), ["Adet"])
+        self.assertTrue(d.satir_tablosu.exists("__yeni__"))
         self._urun_ekle(d, "3", "Adet", fiyat="33,335", iskonto="10")
-        self.assertEqual(list(d.satir_girdileri["birim"].cget("values")), ["Adet"])
+        self.assertIn("Paket", d._satir_birimleri(0))
         self._urun_ekle(d, "2", "Paket", fiyat="100")
+        self.assertEqual(d.satir_tablosu.get_children()[-1], "__yeni__")
+        self.assertEqual(d._toplam_lbl["kalem"].cget("text"), "2")
         self.assertEqual(d.satirlar[1]["birim"], "Paket")
         t = d.toplam_guncelle()
         beklenen = belge_toplamlari([
@@ -409,15 +406,15 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
         ])
         self.assertEqual(t["genel_toplam"], beklenen["genel_toplam"])
         self.assertIn("TL", d._toplam_lbl["genel"].cget("text"))
-        # canlı toplam: düzenlenen satırda miktar değişince toplam anında değişir
-        d.satir_tablosu.selection_set("1")
-        d.satir_duzenle()
-        d.satir_girdileri["miktar"].delete(0, "end")
-        d.satir_girdileri["miktar"].insert(0, "5")
-        d._satir_tutar_canli()
+        # hücrede miktar değişince toplam anında değişir; geri alınca eski toplam
+        d.satir_hucre_uygula(1, "miktar", "5")
         self.assertNotEqual(d.toplam_guncelle()["genel_toplam"], beklenen["genel_toplam"])
-        d.satir_temizle()
+        d.satir_hucre_uygula(1, "miktar", "2")
+        self.assertEqual(d.toplam_guncelle()["genel_toplam"], beklenen["genel_toplam"])
+        # yarım kalan arama metni kayda girmez
+        d._satir_ici_giris.ac("ad", "yarım metin")
         self.assertTrue(d.kaydet(sessiz=True))
+        self.assertEqual(len(d.satirlar), 2)
         self.assertTrue(d.kaydet(sessiz=True))
         sid = d.siparis.id
         d.destroy()
@@ -428,11 +425,7 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
         self.assertEqual(acik.toplam_guncelle()["genel_toplam"], beklenen["genel_toplam"])
         self.assertFalse(acik.degisiklik_var())
         ilk_idler = [s["id"] for s in acik.satirlar]
-        acik.satir_tablosu.selection_set("0")
-        acik.satir_duzenle()
-        acik.satir_girdileri["miktar"].delete(0, "end")
-        acik.satir_girdileri["miktar"].insert(0, "4")
-        acik.satir_ekle()
+        acik.satir_hucre_uygula(0, "miktar", "4")
         acik.satir_tablosu.selection_set("1")
         acik.satir_kaldir()
         self.assertTrue(acik.degisiklik_var())
@@ -443,18 +436,40 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
 
     def test_manuel_satir_ad_birim_zorunlu(self):
         d = self._kart()
-        d._manuel_var.set(True)
-        d._manuel_degisti()
-        d.satir_girdileri["miktar"].insert(0, "1")
-        d.satir_ekle()
+        with patch("satis_siparisi_ui.simpledialog.askstring", return_value=""):
+            self.assertIsNone(d.manuel_satir_ekle(""))
         self.assertEqual(d.satirlar, [])
-        self.assertIn("ürün adı", str(self.mesajlar[1].call_args))
-        d.satir_girdileri["urun_adi"].insert(0, "Özel imalat kapak")
-        d.satir_girdileri["birim"].set("Takım")
-        d.satir_ekle()
+        idx = d.manuel_satir_ekle("Özel imalat kapak")
+        with self.assertRaisesRegex(ValueError, "ürün adı"):
+            d.satir_hucre_uygula(idx, "ad", "")
+        with self.assertRaisesRegex(ValueError, "Birim"):
+            d.satir_hucre_uygula(idx, "birim", "")
+        d.satir_hucre_uygula(idx, "birim", "Takım")
+        self.assertIn("Takım", d._satir_birimleri(idx))
         self.assertEqual(d.satirlar[0]["urun_kodu"], "MANUEL")
+        self.assertEqual(d.satirlar[0]["urun_adi"], "Özel imalat kapak")
         self.assertEqual(d.satirlar[0]["birim"], "Takım")
         self.assertTrue(d.satirlar[0]["is_manual_item"])
+        d.destroy()
+
+    def test_barkod_ayni_satiri_artirir_secim_yeni_satir(self):
+        d = self._kart()
+        d._musteri_ata(self._cari())
+        giris = d._satir_ici_giris
+        giris.son_islem = "barkod"
+        d._satir_ici_urun_ekle(("MB001", "Birim Ürün", "Adet", "", "1"), None)
+        d._satir_ici_urun_ekle(("MB001", "Birim Ürün", "Adet", "", "1"), None)
+        giris.son_islem = "secim"
+        self.assertEqual(len(d.satirlar), 1)
+        self.assertEqual(d.satirlar[0]["miktar"], Decimal("2"))
+        d.urun_secildi(("MB001", "Birim Ürün", "Adet", "", "1"))
+        self.assertEqual(len(d.satirlar), 2)
+        d._satir_ici_urun_ekle(("MB001", "Birim Ürün", "Adet", "", "1"), 0)
+        self.assertEqual(len(d.satirlar), 3)
+        d.satir_tablosu.selection_set("0")
+        d.satir_cogalt()
+        self.assertEqual(len(d.satirlar), 4)
+        self.assertNotIn("id", d.satirlar[1])
         d.destroy()
 
     def test_eksik_musteri_kaydetmez(self):
@@ -490,14 +505,15 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
         self.assertEqual(degerler[11:15], ("4", "0", "6", "10"))
         self.assertEqual(str(d.musteri.cget("state")), "disabled")
         self.assertEqual(str(d.btn["sil"].cget("state")), "disabled")
-        d.satir_tablosu.selection_set("0")
-        d.satir_duzenle()
-        self.assertEqual(list(d.satir_girdileri["birim"].cget("values")), ["Paket"])
-        d.satir_girdileri["miktar"].delete(0, "end")
-        d.satir_girdileri["miktar"].insert(0, "3")
-        d.satir_ekle()
+        self.assertEqual(d._satir_birimleri(0), ["Paket"])
+        with self.assertRaisesRegex(ValueError, "altına indirilemez"):
+            d.satir_hucre_uygula(0, "miktar", "3")
+        with self.assertRaisesRegex(ValueError, "birimi değiştirilemez"):
+            d.satir_hucre_uygula(0, "birim", "Adet")
         self.assertEqual(d.satirlar[0]["miktar"], Decimal("10"))
-        self.assertIn("altına indirilemez", str(self.mesajlar[1].call_args))
+        self.assertFalse(d._satir_urun_degistir(0, ("MB001", "Birim Ürün", "Adet", "", "1")))
+        d.satir_hucre_uygula(0, "miktar", "12")
+        self.assertEqual(d.satirlar[0]["miktar"], Decimal("12"))
         d.satir_temizle()
         d.satir_tablosu.selection_set("0")
         d.satir_kaldir()

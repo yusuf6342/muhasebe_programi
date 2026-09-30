@@ -36,6 +36,14 @@ def _depo_fatura(fatura_dialog) -> str:
 
 
 def _urun_adi_arama(fatura_dialog) -> str:
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(fatura_dialog)
+    if giris is not None and giris._rol in ("ad", "kod"):
+        try:
+            return (giris._var.get() or "").strip()
+        except Exception:
+            return ""
     try:
         w = (getattr(fatura_dialog, "satir_girdileri", None) or {}).get("urun_adi")
         if w is not None:
@@ -544,9 +552,18 @@ class HizliStokKartiDialog(tk.Toplevel):
         fd = self.fatura_dialog
         if fd is None:
             return
-        from fatura_urun_aktar_service import urun_seciminden_aktar
+        from satir_ici_urun_giris import giris_bileseni
 
         fiyat = StokService.satis_fiyati_1(stok.stok_kodu)
+        giris = giris_bileseni(fd)
+        if giris is not None:
+            try:
+                giris.stoktan_ekle(stok, fiyat_hint if (fiyat_hint or "").strip() else fiyat)
+            except Exception as exc:
+                messagebox.showerror("Belge", str(exc), parent=self)
+            return
+        from fatura_urun_aktar_service import urun_seciminden_aktar
+
         if fiyat_hint and str(fiyat_hint).strip():
             try:
                 fiyat = decimal(fiyat_hint, "Satış fiyatı")

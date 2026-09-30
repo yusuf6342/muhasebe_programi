@@ -115,7 +115,10 @@ def _satir_birlestirilebilir(mevcut: dict, yeni: dict, *, depo: str) -> bool:
     """Aynı stok/birim/fiyat/iskonto/KDV/depo/PB — özel satırlar birleşmez.
 
     Manuel fiyatlı satırda fiyat karşılaştırması atlanır (miktar artar, fiyat korunur).
+    Sipariş / irsaliyeden gelen satırın miktarı barkodla artırılmaz.
     """
+    if mevcut.get("siparis_satiri_id") or mevcut.get("irsaliye_satiri_id"):
+        return False
     if (mevcut.get("urun_kodu") or "").strip() != (yeni.get("urun_kodu") or "").strip():
         return False
     if (mevcut.get("birim") or "").strip() != (yeni.get("birim") or "").strip():
@@ -343,7 +346,7 @@ def fatura_barkod_isle(dialog, ham_barkod: str | None = None) -> str:
             _barkod_odak(dialog)
             return "break"
 
-        _satira_uygula(dialog, kayit, okutulan_barkod=kod)
+        dialog._son_barkod_idx = _satira_uygula(dialog, kayit, okutulan_barkod=kod)
         _ses_basari()
     except ValueError as hata:
         _ses_hata()
@@ -359,6 +362,13 @@ def fatura_barkod_isle(dialog, ham_barkod: str | None = None) -> str:
 
 
 def _barkod_odak(dialog) -> None:
+    from satir_ici_urun_giris import giris_bileseni
+
+    giris = giris_bileseni(dialog)
+    if giris is not None:
+        if not giris.kilitli():
+            giris.ac("barkod")
+        return
     entry = getattr(dialog, "barkod_okut_entry", None)
     if entry is None:
         return
@@ -472,8 +482,11 @@ def _coklu_sec(dialog, liste: list[dict]) -> dict | None:
     return secim["kayit"]
 
 
-def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
-    """Yeni satır ekle veya uygun satırda miktar +1."""
+def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> int | None:
+    """Yeni satır ekle veya uygun satırda miktar +1. Dönüş: satır indeksi (eklenmediyse None)."""
+    from satir_ici_urun_giris import ekleme_konumu
+
+    konum = ekleme_konumu(dialog)
     depo = ""
     try:
         depo = (dialog.depo.get() or "").strip()
@@ -581,7 +594,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
 
     # Eşleşen satır ara (barkod öncelikli, sonra koşullu birleşim)
     hedef_idx = None
-    for i, mevcut in enumerate(dialog.satirlar):
+    for i, mevcut in enumerate(dialog.satirlar if konum is None else ()):
         ayni_barkod = (
             (mevcut.get("barkod") or "").strip() == (sablon["barkod"] or "").strip()
             and bool(sablon["barkod"])
@@ -611,7 +624,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
             if hazir is None:
                 _durum_yaz(dialog, f"Eklenmedi: {sablon.get('urun_adi') or sablon['urun_kodu']}", hata=True)
                 _barkod_odak(dialog)
-                return
+                return None
             sablon = hazir
     else:
         artis_onayla = belge_kancasi(dialog, "_satir_miktar_artisi_onayla")
@@ -621,7 +634,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         ):
             _durum_yaz(dialog, f"Miktar artırılmadı: {mevcut.get('urun_adi') or ''}", hata=True)
             _barkod_odak(dialog)
-            return
+            return None
 
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
@@ -644,8 +657,12 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
                 sablon = doviz_satir_kaydet_oncesi(dialog, sablon)
             except Exception:
                 pass
-        dialog.satirlar.append(sablon)
-        idx = len(dialog.satirlar) - 1
+        if konum is not None and 0 <= konum <= len(dialog.satirlar):
+            idx = konum
+            dialog.satirlar.insert(idx, sablon)
+        else:
+            dialog.satirlar.append(sablon)
+            idx = len(dialog.satirlar) - 1
         artis = False
 
     dialog._fatura_satirlari_hazir = True
@@ -677,6 +694,7 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
     except Exception:
         pass
     _barkod_odak(dialog)
+    return idx
 
 
 def _eksi_stok_kontrol(

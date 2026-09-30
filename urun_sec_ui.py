@@ -107,8 +107,11 @@ class UrunSecDialog(tk.Toplevel):
         sadece_stokta=False,
         depo_ad=None,
         ayrintili=False,
+        coklu=False,
     ):
         super().__init__(parent)
+        self.coklu = bool(coklu)
+        self._secim_sirasi: list[str] = []
         self.title("Ürün Seçimi" + (" — Stokta Olanlar" if sadece_stokta else ""))
         self.geometry("1040x520" if ayrintili else "980x420")
         self.minsize(720, 280)
@@ -249,10 +252,12 @@ class UrunSecDialog(tk.Toplevel):
             cerceve,
             columns=kolonlar,
             show="headings",
-            selectmode="browse",
+            selectmode="extended" if self.coklu else "browse",
             style=_STIL_ADI,
             height=8,
         )
+        if self.coklu:
+            self.tablo.bind("<<TreeviewSelect>>", self._secim_sirasi_guncelle, add="+")
         for kolon, baslik, genislik, ank in (
             ("kod", "Stok Kodu", 110, "center"),
             ("ad", "Ürün Adı", 360, "w"),
@@ -304,6 +309,12 @@ class UrunSecDialog(tk.Toplevel):
         self.yeni_btn.pack(side="left")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Seç", command=self.sec).pack(side="right", padx=8)
+        if self.coklu:
+            ttk.Label(
+                alt,
+                text="Ctrl+tık ile birden fazla ürün seçebilirsiniz (seçim sırasıyla eklenir).",
+                foreground="#627D98",
+            ).pack(side="left", padx=12)
 
         self.listeyi_yenile()
         if self.ayrintili:
@@ -495,6 +506,7 @@ class UrunSecDialog(tk.Toplevel):
 
     def _listeyi_tabloya_yaz(self):
         """Arama sonucu hazır; Treeview'ı doldur (ana thread)."""
+        self._secim_sirasi = []
         for item in self.tablo.get_children():
             self.tablo.delete(item)
 
@@ -580,9 +592,18 @@ class UrunSecDialog(tk.Toplevel):
     def _tek_tik(self, event):
         """Satırın herhangi bir yerine tıklanınca tüm satır seçilsin."""
         row = self.tablo.identify_row(event.y)
+        if self.coklu and int(getattr(event, "state", 0) or 0) & 0x5:
+            return
         if row:
             self.tablo.selection_set(row)
             self.tablo.focus(row)
+
+    def _secim_sirasi_guncelle(self, _event=None):
+        secili = set(self.tablo.selection())
+        self._secim_sirasi = [i for i in self._secim_sirasi if i in secili]
+        for iid in self.tablo.selection():
+            if iid not in self._secim_sirasi:
+                self._secim_sirasi.append(iid)
 
     def _cift_tik(self, _event=None):
         self.sec()
@@ -688,6 +709,23 @@ class UrunSecDialog(tk.Toplevel):
     def sec(self):
         secim = self.tablo.selection()
         if not secim or not self.on_select:
+            return
+        if self.coklu and len(secim) > 1:
+            self._secim_sirasi_guncelle()
+            sira = [i for i in self._secim_sirasi if i in secim] or list(secim)
+            degerler_listesi = []
+            for iid in sira:
+                try:
+                    i = int(iid)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < len(self._urunler):
+                    degerler_listesi.append(self._callback_degerleri(self._urunler[i]))
+            callback = self.on_select
+            self.on_select = None
+            self.destroy()
+            for degerler in degerler_listesi:
+                callback(degerler)
             return
         try:
             idx = int(secim[0])

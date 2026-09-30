@@ -244,10 +244,9 @@ class TeklifEkraniAkisTest(unittest.TestCase):
             entry.insert(0, deger)
 
     def _ekle(self, dlg, kod, miktar, birim, maliyet="", ad=None, manuel=False):
-        self._giris(dlg.urun_maliyet, maliyet)
-        dlg._secili_urun = None
         dlg.add_product_to_quote(
-            quantity=D(str(miktar)), unit_id=birim, urun_kodu=kod, urun_adi=ad, manuel=manuel
+            quantity=D(str(miktar)), unit_id=birim, urun_kodu=kod, urun_adi=ad, manuel=manuel,
+            maliyet=D(maliyet.replace(",", ".")) if maliyet else None,
         )
 
     @staticmethod
@@ -259,18 +258,14 @@ class TeklifEkraniAkisTest(unittest.TestCase):
         return dlg.ic_maliyet_degerleri[anahtar].cget("text")
 
     def _satiri_duzenle(self, dlg, idx, miktar=None, birim=None, maliyet=None):
-        item = dlg.satir_tablo.get_children()[idx]
-        dlg._giris_temiz_koruma = False
-        dlg.satir_tablo.selection_set(item)
-        dlg._satir_secildi()
-        dlg._duzenlenen_satir_idx = idx
+        """Satır içi hücre düzenleme; maliyet ana birim alış fiyatıdır (hücrede seçili birime çevrilir)."""
         if miktar is not None:
-            self._giris(dlg.urun_miktar, str(miktar))
+            dlg.teklif_hucre_uygula(idx, "miktar", str(miktar))
         if birim is not None:
-            dlg.urun_birim.set(birim)
+            dlg.teklif_hucre_uygula(idx, "birim", birim)
         if maliyet is not None:
-            self._giris(dlg.urun_maliyet, maliyet)
-        dlg._satir_guncelle()
+            carpan = D(str(dlg.satirlar[idx].get("birim_carpani") or 1))
+            dlg.teklif_hucre_uygula(idx, "alis", str(D(maliyet.replace(",", ".")) * carpan))
 
     # —— senaryo ——
     def test_ic_ekran_maliyet_kaydet_yeniden_ac_ve_musteri_gorunumu(self):
