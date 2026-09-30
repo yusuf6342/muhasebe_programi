@@ -171,8 +171,8 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         )
 
 
-def test_kurulumu_giris_ipucu() -> str:
-    """Yalnız test kurulumunda ve yönetici ilk parolasını henüz değiştirmemişken giriş ipucu."""
+def test_kurulumu_ilk_parola() -> str:
+    """Yalnız test kurulumunda ve yönetici ilk parolasını henüz değiştirmemişken ilk parola."""
     from database import database as db
 
     if not db.TEST_KURULUMU:
@@ -185,15 +185,21 @@ def test_kurulumu_giris_ipucu() -> str:
                 return ""
         for satir in dosya.read_text(encoding="utf-8").splitlines():
             if satir.startswith("Parola:"):
-                parola = satir.split(":", 1)[1].strip()
-                return (
-                    "Test kurulumu — ilk giriş\n"
-                    f"Kullanıcı adı: admin    Şifre: {parola}\n"
-                    "Girişten sonra kendi şifrenizi belirleyeceksiniz."
-                )
+                return satir.split(":", 1)[1].strip()
     except Exception:
         return ""
     return ""
+
+
+def test_kurulumu_giris_ipucu() -> str:
+    parola = test_kurulumu_ilk_parola()
+    if not parola:
+        return ""
+    return (
+        "Test kurulumu — ilk giriş\n"
+        f"Kullanıcı adı: admin    Şifre: {parola}\n"
+        "Girişten sonra kendi şifrenizi belirleyeceksiniz."
+    )
 
 
 class GirisDialog(tk.Toplevel):
@@ -267,11 +273,9 @@ class GirisDialog(tk.Toplevel):
 
         self.hata = ttk.Label(alt, text="", foreground="#c62828", anchor="center")
         self.hata.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ipucu = test_kurulumu_giris_ipucu()
-        if ipucu:
-            ttk.Label(
-                cerceve, text=ipucu, foreground="#1565C0", justify="center", anchor="center"
-            ).grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        self._ilk_parola = test_kurulumu_ilk_parola()
+        if self._ilk_parola:
+            self._ilk_parola_alani_kur(cerceve)
 
         butonlar = ttk.Frame(alt)
         butonlar.grid(row=1, column=0)
@@ -316,6 +320,44 @@ class GirisDialog(tk.Toplevel):
     def _sifre_goster_gizle(self) -> None:
         self.sifre.configure(show="" if self._sifre_gorunur.get() else "*")
 
+    def _ilk_parola_alani_kur(self, cerceve) -> None:
+        """Test kurulumu ilk girişi: parola seçilebilir alanda, Kopyala / alana yaz düğmeleriyle."""
+        kutu = ttk.LabelFrame(cerceve, text="Test kurulumu — ilk giriş", padding=(10, 6))
+        kutu.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        kutu.columnconfigure(1, weight=1)
+        ttk.Label(kutu, text="Kullanıcı adı: admin", foreground="#1565C0").grid(
+            row=0, column=0, columnspan=4, sticky="w"
+        )
+        ttk.Label(kutu, text="İlk şifre:", foreground="#1565C0").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=(4, 0)
+        )
+        self.ilk_parola_alani = ttk.Entry(kutu, width=22, font=("Consolas", 11))
+        self.ilk_parola_alani.insert(0, self._ilk_parola)
+        self.ilk_parola_alani.configure(state="readonly")
+        self.ilk_parola_alani.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        ttk.Button(kutu, text="Kopyala", command=self._ilk_parolayi_kopyala).grid(
+            row=1, column=2, padx=(6, 0), pady=(4, 0)
+        )
+        ttk.Button(kutu, text="Şifre alanına yaz", command=self._ilk_parolayi_yaz).grid(
+            row=1, column=3, padx=(6, 0), pady=(4, 0)
+        )
+        self._ilk_parola_durum = ttk.Label(
+            kutu, text="Girişten sonra kendi şifrenizi belirleyeceksiniz.", foreground="#555555"
+        )
+        self._ilk_parola_durum.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+    def _ilk_parolayi_kopyala(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._ilk_parola)
+        self.update()
+        self._ilk_parola_durum.configure(text="Şifre panoya kopyalandı — Ctrl+V ile yapıştırabilirsiniz.")
+
+    def _ilk_parolayi_yaz(self) -> None:
+        self.sifre.delete(0, "end")
+        self.sifre.insert(0, self._ilk_parola)
+        self.sifre.focus_set()
+        self._ilk_parola_durum.configure(text="Şifre alana yazıldı — Giriş Yap'a basın.")
+
     def _cikis(self) -> None:
         self.result = False
         self.destroy()
@@ -338,7 +380,7 @@ class GirisDialog(tk.Toplevel):
 
 
 class SifreDegistirDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, *, zorunlu: bool = False):
+    def __init__(self, parent: tk.Misc, *, zorunlu: bool = False, mevcut_sifre: str = ""):
         super().__init__(parent)
         self.title("Şifre Değiştir")
         self.resizable(False, False)
@@ -378,7 +420,11 @@ class SifreDegistirDialog(tk.Toplevel):
         if not zorunlu:
             ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="left", padx=(0, 8))
         ttk.Button(butonlar, text="Kaydet", command=self._kaydet).pack(side="left")
-        self.eski.focus_set()
+        if mevcut_sifre:
+            self.eski.insert(0, mevcut_sifre)
+            self.yeni.focus_set()
+        else:
+            self.eski.focus_set()
 
     def _zorunlu_iptal(self) -> None:
         messagebox.showwarning(
@@ -1063,7 +1109,9 @@ def oturum_akisi_calistir(parent: tk.Tk) -> bool:
             return False
 
         if oturum.sifre_degistirmeli:
-            sifre = SifreDegistirDialog(parent, zorunlu=True)
+            sifre = SifreDegistirDialog(
+                parent, zorunlu=True, mevcut_sifre=test_kurulumu_ilk_parola()
+            )
             parent.wait_window(sifre)
             if not sifre.result:
                 AuthService.cikis()

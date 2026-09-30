@@ -100,6 +100,60 @@ class TestFirmasiBootstrapTest(unittest.TestCase):
             self.assertEqual(self._firmalar(system_db), [("RAY001", RAY_UNVAN)])
 
 
+class IlkParolaKopyalamaTest(unittest.TestCase):
+    PAROLA = "Xy7-kopya-42"
+
+    # Marka görselleri ilk Tk köküne önbelleklenir; testler tek kökü paylaşır
+    @classmethod
+    def setUpClass(cls):
+        import tkinter as tk
+
+        cls.root = tk.Tk()
+        cls.root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.root.destroy()
+
+    def test_giris_ekraninda_parola_kopyalanir_ve_alana_yazilir(self):
+        import auth_ui
+
+        with mock.patch.object(auth_ui, "test_kurulumu_ilk_parola", return_value=self.PAROLA):
+            dlg = auth_ui.GirisDialog(self.root)
+        try:
+            self.assertEqual(dlg.ilk_parola_alani.get(), self.PAROLA)
+            self.assertEqual(str(dlg.ilk_parola_alani.cget("state")), "readonly")
+            dlg._ilk_parolayi_kopyala()
+            self.assertEqual(self.root.clipboard_get(), self.PAROLA)
+            dlg._ilk_parolayi_yaz()
+            self.assertEqual(dlg.sifre.get(), self.PAROLA)
+        finally:
+            dlg.grab_release()
+            dlg.destroy()
+
+    def test_test_kurulumu_disinda_parola_alani_yok(self):
+        import auth_ui
+
+        with mock.patch.object(auth_ui, "test_kurulumu_ilk_parola", return_value=""):
+            dlg = auth_ui.GirisDialog(self.root)
+        try:
+            self.assertFalse(hasattr(dlg, "ilk_parola_alani"))
+        finally:
+            dlg.grab_release()
+            dlg.destroy()
+
+    def test_zorunlu_degisiklikte_mevcut_sifre_hazir_gelir(self):
+        import auth_ui
+
+        dlg = auth_ui.SifreDegistirDialog(self.root, zorunlu=True, mevcut_sifre=self.PAROLA)
+        try:
+            self.assertEqual(dlg.eski.get(), self.PAROLA)
+            self.assertEqual(dlg.yeni.get(), "")
+        finally:
+            dlg.grab_release()
+            dlg.destroy()
+
+
 class TestKurulumuBayraklariTest(unittest.TestCase):
     def test_giris_ipucu_test_kurulumu_disinda_bos(self):
         import auth_ui
