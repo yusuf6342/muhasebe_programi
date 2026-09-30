@@ -158,7 +158,7 @@ def _musteri_blok(vm: InvoicePrintViewModel) -> str:
 
 def _belge_meta(vm: InvoicePrintViewModel) -> str:
     parcalar = [
-        _meta_satir("Fatura No", vm.fatura_no),
+        _meta_satir(vm.belge_no_etiketi or "Fatura No", vm.fatura_no),
         _meta_satir("Tarih", vm.fatura_tarihi),
         _meta_satir("Saat", vm.islem_saati),
         _meta_satir("Vade", vm.vade_tarihi),
@@ -222,7 +222,7 @@ def _toplamlar(vm: InvoicePrintViewModel) -> str:
     if a.get("yaziyla_toplam_goster", True) and vm.yaziyla_toplam:
         yazi = f"<div class='yaziyla'>{_e(vm.yaziyla_toplam)}</div>"
     return (
-        "<div class='ozet'><div class='ozet-baslik'>Fatura Özeti</div>"
+        f"<div class='ozet'><div class='ozet-baslik'>{_e(vm.ozet_basligi or 'Fatura Özeti')}</div>"
         f"<table>{''.join(satirlar)}</table>{yazi}</div>"
     )
 
@@ -270,8 +270,11 @@ def _not_banka_imza(vm: InvoicePrintViewModel) -> str:
     return "".join(bloklar)
 
 
-def _css(zoom_pct: int = 100) -> str:
+def _css(zoom_pct: int = 100, ters_renk: bool = False) -> str:
     scale = max(50, min(200, int(zoom_pct))) / 100.0
+    # Beyaz zemindeki lacivert yazılar okunaklılık için korunur; yalnız renkli bölgeler yer değiştirir
+    serit, vurgu = (SARI, LACIVERT) if ters_renk else (LACIVERT, SARI)
+    th_bg, th_fg = (SARI, LACIVERT) if ters_renk else (LACIVERT, "#fff")
     return f"""
 @page {{ size: A4 portrait; margin: 12mm; }}
 * {{ box-sizing: border-box; }}
@@ -306,7 +309,7 @@ body {{
   transform: rotate(-28deg); letter-spacing: 2px; text-align: center;
 }}
 .icerik {{ position: relative; z-index: 2; }}
-.firma {{ display: flex; gap: 14px; align-items: flex-start; border-bottom: 2px solid {LACIVERT}; padding-bottom: 8px; }}
+.firma {{ display: flex; gap: 14px; align-items: flex-start; border-bottom: 2px solid {serit}; padding-bottom: 8px; }}
 .firma.kucuk {{ border-bottom: 1px solid {GRI}; padding-bottom: 4px; font-size: 8.5pt; }}
 .logo {{ max-height: 22mm; max-width: 55mm; object-fit: contain; }}
 .logo-kucuk {{ max-height: 10mm; max-width: 28mm; object-fit: contain; }}
@@ -318,7 +321,7 @@ body {{
 }}
 h1 {{
   margin: 0; font-size: 16pt; color: {LACIVERT}; letter-spacing: .5px;
-  border-left: 5px solid {SARI}; padding-left: 8px;
+  border-left: 5px solid {vurgu}; padding-left: 8px;
 }}
 .belge-meta {{ min-width: 58mm; font-size: 8.5pt; }}
 .meta-row {{ display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid {GRI}; padding: 2px 0; }}
@@ -330,8 +333,8 @@ h1 {{
 .musteri span {{ color: #6B7280; }}
 table.urunler {{ width: 100%; border-collapse: collapse; margin-top: 6px; table-layout: fixed; }}
 table.urunler th {{
-  background: {LACIVERT}; color: #fff; font-weight: 600; font-size: 8pt;
-  padding: 5px 4px; border: 1px solid {LACIVERT};
+  background: {th_bg}; color: {th_fg}; font-weight: 600; font-size: 8pt;
+  padding: 5px 4px; border: 1px solid {th_bg};
 }}
 table.urunler td {{
   border-bottom: 1px solid {GRI}; padding: 4px; vertical-align: top; font-size: 8.5pt;
@@ -346,7 +349,7 @@ table.urunler .r {{ text-align: right; white-space: nowrap; }}
 .ozet-baslik {{ font-weight: 700; color: {LACIVERT}; margin-bottom: 4px; }}
 .ozet table {{ width: 100%; border-collapse: collapse; }}
 .ozet td {{ padding: 3px 0; font-size: 8.5pt; }}
-.ozet .genel td {{ font-size: 11pt; font-weight: 800; color: {LACIVERT}; border-top: 2px solid {SARI}; padding-top: 6px; }}
+.ozet .genel td {{ font-size: 11pt; font-weight: 800; color: {LACIVERT}; border-top: 2px solid {vurgu}; padding-top: 6px; }}
 .yaziyla {{ margin-top: 6px; font-size: 8pt; font-style: italic; color: #374151; }}
 .notlar, .banka {{ flex: 1; font-size: 8.5pt; }}
 .alt-baslik {{ font-weight: 700; color: {LACIVERT}; margin-bottom: 4px; }}
@@ -402,7 +405,7 @@ def render_invoice_html(
                 f"<div class='baslik-satir'><h1 style='font-size:12pt'>{_e(vm.belge_turu)} "
                 f"(devam)</h1>"
                 f"<div class='belge-meta'>"
-                f"{_meta_satir('Fatura No', vm.fatura_no)}"
+                f"{_meta_satir(vm.belge_no_etiketi or 'Fatura No', vm.fatura_no)}"
                 f"{_meta_satir('Müşteri', (vm.musteri or {}).get('unvan') or '')}"
                 f"</div></div>"
             )
@@ -438,7 +441,7 @@ def render_invoice_html(
     return f"""<!DOCTYPE html>
 <html lang="tr"><head><meta charset="utf-8"/>
 <title>{_e(vm.belge_turu)} {_e(vm.fatura_no)}</title>
-<style>{_css(zoom_pct)}</style>
+<style>{_css(zoom_pct, bool(getattr(vm, "ters_renk", False)))}</style>
 </head><body>
 {tb}
 {''.join(sayfa_html)}

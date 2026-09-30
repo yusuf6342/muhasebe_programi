@@ -80,6 +80,8 @@ def kolon_duzenlenebilir_mi(dialog, idx: int, kolon: str) -> bool:
         return False
     if kolon not in EDITABLE_COLUMN_ORDER:
         return False
+    if kolon in getattr(dialog, "DUZENLENEMEZ_KOLONLAR", ()):
+        return False
     if not _kolon_gorunur_mu(dialog, kolon):
         return False
     if not (0 <= idx < len(getattr(dialog, "satirlar", []) or [])):
@@ -303,6 +305,8 @@ def hucre_duzenle(
     on_done: Callable[[], None] | None = None,
 ) -> None:
     """Kolona göre uygun editörü aç."""
+    if kolon in getattr(dialog, "DUZENLENEMEZ_KOLONLAR", ()):
+        return
     if kolon == "miktar":
         miktar_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
     elif kolon == "birim":
@@ -561,7 +565,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         try:
             from fatura_manuel_fiyat_ui import maliyet_alti_kontrol
 
-            if not maliyet_alti_kontrol(
+            if getattr(dialog, "MALIYET_ALTI_KONTROLU", True) and not maliyet_alti_kontrol(
                 yeni,
                 satir,
                 yontem=dialog.yontem.get() if hasattr(dialog, "yontem") else None,
@@ -769,11 +773,12 @@ def iskonto_yuzde_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
 
     satir_iskontolari_ac(
         dialog,
-        belge_turu="Satış",
+        belge_turu=getattr(dialog, "ISKONTO_BELGE_TURU", "Satış"),
         satir=satir,
         fiyat_alani="birim_satis_fiyati",
         on_uygula=_uygula,
         satir_kimlik=idx,
+        tek_kademe=bool(getattr(dialog, "TEK_KADEME_ISKONTO", False)),
     )
 
 
@@ -820,7 +825,8 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
         if brut <= 0:
             oran = Decimal("0")
         else:
-            oran = (tutar / brut * Decimal("100")).quantize(Decimal("0.0001"))
+            hane = Decimal("0.01") if getattr(dialog, "TEK_KADEME_ISKONTO", False) else Decimal("0.0001")
+            oran = (tutar / brut * Decimal("100")).quantize(hane)
         satir["iskonto_orani"] = str(oran)
         satir["iskonto_orani_2"] = "0"
         satir["iskonto_orani_3"] = "0"

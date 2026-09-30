@@ -19,29 +19,34 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 EKRAN_SATIS = "satis_faturasi_satirlari"
+EKRAN_SATIS_IADE = "satis_iade_faturasi_satirlari"
 EKRAN_ALIS = "alis_faturasi_satirlari"
+
+_SATIS_KOLONLARI: tuple[tuple[str, str, int, int, int, bool, bool], ...] = (
+    ("sec", "☐", 36, 32, 48, True, True),
+    ("sira", "Sıra", 48, 40, 80, True, False),
+    ("urun_kodu", "Ürün Kodu", 95, 90, 220, True, False),
+    ("urun_adi", "Ürün Adı", 220, 180, 500, True, True),
+    ("barkod", "Barkod", 110, 80, 220, True, False),
+    ("miktar", "Miktar", 78, 65, 140, True, False),
+    ("birim", "Birim", 70, 50, 120, True, False),
+    ("fiyat", "Birim Fiyat", 100, 70, 200, True, False),
+    ("para_birimi", "PB", 50, 40, 80, True, False),
+    ("kur", "Kur", 70, 50, 120, True, False),
+    ("iskonto", "İskonto %", 160, 100, 280, True, False),
+    ("iskonto_tutar", "İskonto Tutarı", 110, 90, 200, True, False),
+    ("kdv", "KDV %", 80, 72, 120, True, False),
+    ("kdv_tutar", "KDV Tutarı", 90, 70, 180, True, False),
+    ("net_birim", "Net Birim Fiyat", 110, 90, 200, True, False),
+    ("toplam", "Net Tutar", 110, 90, 220, True, False),
+    ("aciklama", "Açıklama", 140, 120, 400, True, False),
+)
 
 # id, baslik, genislik, min_w, max_w, gorunur, zorunlu
 FATURA_SATIR_KOLON_TANIM: dict[str, tuple[tuple[str, str, int, int, int, bool, bool], ...]] = {
-    EKRAN_SATIS: (
-        ("sec", "☐", 36, 32, 48, True, True),
-        ("sira", "Sıra", 48, 40, 80, True, False),
-        ("urun_kodu", "Ürün Kodu", 95, 90, 220, True, False),
-        ("urun_adi", "Ürün Adı", 220, 180, 500, True, True),
-        ("barkod", "Barkod", 110, 80, 220, True, False),
-        ("miktar", "Miktar", 78, 65, 140, True, False),
-        ("birim", "Birim", 70, 50, 120, True, False),
-        ("fiyat", "Birim Fiyat", 100, 70, 200, True, False),
-        ("para_birimi", "PB", 50, 40, 80, True, False),
-        ("kur", "Kur", 70, 50, 120, True, False),
-        ("iskonto", "İskonto %", 160, 100, 280, True, False),
-        ("iskonto_tutar", "İskonto Tutarı", 110, 90, 200, True, False),
-        ("kdv", "KDV %", 80, 72, 120, True, False),
-        ("kdv_tutar", "KDV Tutarı", 90, 70, 180, True, False),
-        ("net_birim", "Net Birim Fiyat", 110, 90, 200, True, False),
-        ("toplam", "Net Tutar", 110, 90, 220, True, False),
-        ("aciklama", "Açıklama", 140, 120, 400, True, False),
-    ),
+    EKRAN_SATIS: _SATIS_KOLONLARI,
+    EKRAN_SATIS_IADE: _SATIS_KOLONLARI
+    + (("kaynak", "Kaynak Satış", 140, 100, 260, True, False),),
     EKRAN_ALIS: (
         ("barkod", "Barkod", 110, 80, 220, True, False),
         ("kod", "Ürün Kodu", 100, 90, 220, True, False),
@@ -623,7 +628,7 @@ class FaturaSatirKolonAyarDialog(tk.Toplevel):
                 parent=self,
             )
             return
-        if self.ekran_kodu == EKRAN_SATIS:
+        if self.ekran_kodu in (EKRAN_SATIS, EKRAN_SATIS_IADE):
             sira_g = (self.ayarlar["kolonlar"].get("sira") or {}).get("gorunur", True)
             ad_g = (self.ayarlar["kolonlar"].get("urun_adi") or {}).get("gorunur", True)
             if not sira_g and not ad_g:

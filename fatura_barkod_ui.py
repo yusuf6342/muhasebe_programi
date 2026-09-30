@@ -104,6 +104,13 @@ def _fiyat_norm(deger) -> str:
         return str(deger or "0")
 
 
+def belge_kancasi(dialog, ad: str):
+    """Belge türünün sınıfta tanımladığı satır kancası (ör. iade kaynak bağı); yoksa None."""
+    if not callable(getattr(type(dialog), ad, None)):
+        return None
+    return getattr(dialog, ad)
+
+
 def _satir_birlestirilebilir(mevcut: dict, yeni: dict, *, depo: str) -> bool:
     """Aynı stok/birim/fiyat/iskonto/KDV/depo/PB — özel satırlar birleşmez.
 
@@ -586,6 +593,36 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
             hedef_idx = i
             break
 
+    if hedef_idx is None:
+        try:
+            maliyetler = StokService.maliyetler(sablon["urun_kodu"], depo) if depo else {}
+            for alan, anahtar in (
+                ("fifo_birim_maliyeti", "fifo"),
+                ("son_alis_birim_maliyeti", "son_alis"),
+                ("ortalama_birim_maliyeti", "ortalama"),
+                ("agirlikli_ortalama_birim_maliyeti", "agirlikli"),
+            ):
+                sablon[alan] = str(maliyetler.get(anahtar, 0))
+        except Exception:
+            pass
+        hazirla = belge_kancasi(dialog, "_yeni_satir_hazirla")
+        if hazirla is not None:
+            hazir = hazirla(sablon)
+            if hazir is None:
+                _durum_yaz(dialog, f"Eklenmedi: {sablon.get('urun_adi') or sablon['urun_kodu']}", hata=True)
+                _barkod_odak(dialog)
+                return
+            sablon = hazir
+    else:
+        artis_onayla = belge_kancasi(dialog, "_satir_miktar_artisi_onayla")
+        mevcut = dialog.satirlar[hedef_idx]
+        if artis_onayla is not None and not artis_onayla(
+            mevcut, _d(mevcut.get("miktar")) + miktar_ekle
+        ):
+            _durum_yaz(dialog, f"Miktar artırılmadı: {mevcut.get('urun_adi') or ''}", hata=True)
+            _barkod_odak(dialog)
+            return
+
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
         yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
@@ -600,17 +637,6 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> None:
         artis = True
     else:
         sablon["temel_miktar"] = str(ek_temel)
-        try:
-            maliyetler = StokService.maliyetler(sablon["urun_kodu"], depo) if depo else {}
-            for alan, anahtar in (
-                ("fifo_birim_maliyeti", "fifo"),
-                ("son_alis_birim_maliyeti", "son_alis"),
-                ("ortalama_birim_maliyeti", "ortalama"),
-                ("agirlikli_ortalama_birim_maliyeti", "agirlikli"),
-            ):
-                sablon[alan] = str(maliyetler.get(anahtar, 0))
-        except Exception:
-            pass
         if hasattr(dialog, "_doviz_para_birimi"):
             try:
                 from doviz_fatura_panel import doviz_satir_kaydet_oncesi

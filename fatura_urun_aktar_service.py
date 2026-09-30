@@ -13,6 +13,7 @@ from database.stok_service import StokService, decimal
 from fatura_barkod_ui import (
     _musteri_fiyat,
     _satir_birlestirilebilir,
+    belge_kancasi,
 )
 from fatura_satir_birim_service import birim_satis_fiyati, temel_miktar
 
@@ -311,9 +312,20 @@ def urunu_faturaya_aktar(
                 hedef_idx = i
                 break
 
+    if hedef_idx is None:
+        # Belge türüne özgü kontrol (ör. iade kaynak bağı); None → satır eklenmez
+        hazirla = belge_kancasi(dialog, "_yeni_satir_hazirla")
+        if hazirla is not None:
+            sablon = hazirla(sablon)
+            if sablon is None:
+                return -1
+
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
         yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
+        artis_onayla = belge_kancasi(dialog, "_satir_miktar_artisi_onayla")
+        if artis_onayla is not None and not artis_onayla(mevcut, yeni_miktar):
+            return -1
         # Stok kontrolü yalnızca Kaydet ve Onayla sırasında
         mevcut["miktar"] = str(yeni_miktar)
         mevcut["temel_miktar"] = str(

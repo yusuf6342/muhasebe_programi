@@ -620,7 +620,10 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
     except Exception:
         pass
 
-    return build_from_satirlar(
+    durum = getattr(kart, "_print_durum", None) or durum
+    onaylandi = bool(getattr(kart, "_print_onaylandi", onaylandi))
+
+    vm = build_from_satirlar(
         fatura_id=int(fatura_id) if fatura_id else None,
         fatura_no=fatura_no,
         fatura_tarihi=tarih,
@@ -653,6 +656,12 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
         kaynak_siparis_olusturan=_kart_siparis_olusturan(kart),
         satis_personeli=_kart_satis_personeli(kart),
     )
+    vm.ters_renk = bool(getattr(kart, "_print_ters_renk", False))
+    vm.belge_no_etiketi = getattr(kart, "_print_belge_no_etiketi", None) or vm.belge_no_etiketi
+    vm.ozet_basligi = getattr(kart, "_print_ozet_basligi", None) or vm.ozet_basligi
+    if getattr(kart, "_print_tahsil_gizle", False):
+        vm.ayarlar = dict(vm.ayarlar or {}, tahsil_kalan_goster=False)
+    return vm
 
 
 def _kart_hazirlayan(kart) -> str:

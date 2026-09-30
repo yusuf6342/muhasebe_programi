@@ -532,6 +532,78 @@ def alt_ozet_cubugu(parent, *, pack: bool = True) -> dict:
     }
 
 
+_LACIVERT_TONLARI = frozenset(
+    c.lower() for c in (LACIVERT, LACIVERT_ORTA, LACIVERT_HOVER, "#1B2A4A")
+)
+_SARI_TONLARI = frozenset(c.lower() for c in (SARI, SARI_HOVER))
+
+
+def _ters_zemin(renk: str) -> str | None:
+    r = (renk or "").lower()
+    if r in _LACIVERT_TONLARI:
+        return SARI_HOVER if r == LACIVERT_HOVER.lower() else SARI
+    if r in _SARI_TONLARI:
+        return LACIVERT_HOVER if r == SARI_HOVER.lower() else LACIVERT
+    return None
+
+
+def _ters_yazi(zemin_eski: str, yazi: str) -> str | None:
+    """Sarıya dönen zeminde yazı lacivert, laciverte dönen zeminde sarı olur."""
+    z = (zemin_eski or "").lower()
+    y = (yazi or "").lower()
+    if z in _LACIVERT_TONLARI and y in {BEYAZ.lower(), "#ffffff", "white"} | _SARI_TONLARI:
+        return LACIVERT
+    if z in _SARI_TONLARI and y in _LACIVERT_TONLARI | {METIN.lower()}:
+        return SARI
+    return None
+
+
+def renkleri_tersle(kok, *, haric=()) -> None:
+    """Kurumsal lacivert/sarı zeminli tk widget'larında renkleri yer değiştirir.
+
+    ttk widget'ları ve durum renkleri (yeşil/kırmızı vb.) değişmez; her widget bir kez işlenir.
+    """
+    haric_idler = {str(w) for w in haric if w is not None}
+    yigin = [kok]
+    while yigin:
+        w = yigin.pop()
+        try:
+            yigin.extend(w.winfo_children())
+        except tk.TclError:
+            continue
+        if str(w) in haric_idler or getattr(w, "_ters_renk_uygulandi", False):
+            continue
+        try:
+            bg = str(w.cget("bg"))
+        except (tk.TclError, AttributeError):
+            continue
+        yeni_bg = _ters_zemin(bg)
+        ayar: dict[str, str] = {}
+        if yeni_bg:
+            ayar["bg"] = yeni_bg
+            for anahtar in ("fg", "activeforeground"):
+                try:
+                    yeni = _ters_yazi(bg, str(w.cget(anahtar)))
+                except tk.TclError:
+                    continue
+                if yeni:
+                    ayar[anahtar] = yeni
+        for anahtar in ("activebackground", "highlightbackground"):
+            try:
+                yeni = _ters_zemin(str(w.cget(anahtar)))
+            except tk.TclError:
+                continue
+            if yeni:
+                ayar[anahtar] = yeni
+        if not ayar:
+            continue
+        try:
+            w.configure(**ayar)
+            w._ters_renk_uygulandi = True
+        except tk.TclError:
+            pass
+
+
 def validation_panel(parent) -> dict:
     """Onay öncesi kısa doğrulama paneli (gizlenebilir)."""
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None

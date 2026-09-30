@@ -28,7 +28,10 @@ def safe_pdf_filename(vm: InvoicePrintViewModel) -> str:
     no = re.sub(r"[^\w\-]+", "_", vm.fatura_no or "Yeni")
     gun = date.today().isoformat()
     tur_u = (vm.belge_turu or "").upper()
-    tur = "Alis" if ("ALI" in tur_u and "SAT" not in tur_u) else "Satis"
+    if "İADE" in tur_u or "IADE" in tur_u:
+        tur = "Satis_Iade"
+    else:
+        tur = "Alis" if ("ALI" in tur_u and "SAT" not in tur_u) else "Satis"
     return f"{tur}_Faturasi_{no}_{musteri}_{gun}.pdf"
 
 

@@ -48,6 +48,10 @@ class InvoicePrintKdvSatir:
 class InvoicePrintViewModel:
     fatura_id: int | None = None
     belge_turu: str = "SATIŞ FATURASI"
+    belge_no_etiketi: str = "Fatura No"
+    ozet_basligi: str = "Fatura Özeti"
+    # Kurumsal lacivert/sarı bölgeler yer değiştirir (ör. satıştan iade)
+    ters_renk: bool = False
     sablon_id: str = "kurumsal"
     # Firma
     firma: dict[str, Any] = field(default_factory=dict)

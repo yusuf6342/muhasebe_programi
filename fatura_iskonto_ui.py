@@ -35,8 +35,10 @@ class SatirIskontolariDialog(tk.Toplevel):
         on_uygula: Callable[[dict[str, Any]], None] | None = None,
         kdv_dahil: bool = False,
         satir_kimlik: Any = None,
+        tek_kademe: bool = False,
     ):
         super().__init__(parent)
+        self._tek_kademe = bool(tek_kademe)
         self.transient(parent)
         self.grab_set()  # modal — seçim değişince eski satıra yazılmaz
         self.resizing = False
@@ -92,13 +94,17 @@ class SatirIskontolariDialog(tk.Toplevel):
         form.pack(fill="x", padx=12, pady=6)
         self._oran_vars: dict[str, tk.StringVar] = {}
         self._oran_entries: dict[str, ttk.Entry] = {}
-        for i, (etiket, anahtar) in enumerate(
-            (
-                ("1. İskonto %", "iskonto_orani"),
-                ("2. İskonto %", "iskonto_orani_2"),
-                ("3. İskonto %", "iskonto_orani_3"),
-            )
-        ):
+        kademeler = (
+            ("1. İskonto %", "iskonto_orani"),
+            ("2. İskonto %", "iskonto_orani_2"),
+            ("3. İskonto %", "iskonto_orani_3"),
+        )
+        for anahtar in ("iskonto_orani_2", "iskonto_orani_3"):
+            if self._tek_kademe:
+                self._oran_vars[anahtar] = tk.StringVar(value="0")
+        if self._tek_kademe:
+            kademeler = (("İskonto %", "iskonto_orani"),)
+        for i, (etiket, anahtar) in enumerate(kademeler):
             ttk.Label(form, text=etiket, font=("Segoe UI", 11)).grid(
                 row=i, column=0, sticky="w", pady=6, padx=(0, 12)
             )
@@ -236,6 +242,8 @@ class SatirIskontolariDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("İskonto", str(hata), parent=self)
             return
+        if self._tek_kademe:
+            i1 = Decimal(str(i1)).quantize(Decimal("0.01"))
         self._uygulaniyor = True
         self._pasif_set(True)
         try:
@@ -260,6 +268,7 @@ def satir_iskontolari_ac(
     on_uygula: Callable[[dict[str, Any]], None],
     kdv_dahil: bool = False,
     satir_kimlik: Any = None,
+    tek_kademe: bool = False,
 ) -> SatirIskontolariDialog:
     return SatirIskontolariDialog(
         parent,
@@ -269,6 +278,7 @@ def satir_iskontolari_ac(
         on_uygula=on_uygula,
         kdv_dahil=kdv_dahil,
         satir_kimlik=satir_kimlik,
+        tek_kademe=tek_kademe,
     )
 
 

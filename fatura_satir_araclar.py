@@ -183,26 +183,27 @@ def satir_cogalt(dialog) -> None:
         yeni["temel_miktar"] = str(temel_miktar(Decimal("1"), birim, kod))
     except Exception:
         yeni["temel_miktar"] = "1"
-    # Stok kontrolü — iki satır toplamı
-    try:
-        from fatura_barkod_ui import _eksi_stok_kontrol, _urun_talep_toplami
+    # Stok kontrolü — iki satır toplamı (stok girişi yapan belgede gerekmez)
+    if not getattr(dialog, "STOK_GIRIS_BELGESI", False):
+        try:
+            from fatura_barkod_ui import _eksi_stok_kontrol, _urun_talep_toplami
 
-        depo = ""
-        if hasattr(dialog, "depo"):
-            depo = dialog.depo.get().strip()
-        talep = _urun_talep_toplami(dialog, kod) + temel_miktar(Decimal("1"), birim, kod)
-        _eksi_stok_kontrol(
-            dialog,
-            {"stok_adi": yeni.get("urun_adi"), "stok_kodu": kod},
-            depo,
-            urun_kodu=kod,
-            proje_miktar_toplam=talep,
-        )
-    except ValueError as hata:
-        messagebox.showwarning("Stok", str(hata), parent=dialog)
-        return
-    except Exception:
-        pass
+            depo = ""
+            if hasattr(dialog, "depo"):
+                depo = dialog.depo.get().strip()
+            talep = _urun_talep_toplami(dialog, kod) + temel_miktar(Decimal("1"), birim, kod)
+            _eksi_stok_kontrol(
+                dialog,
+                {"stok_adi": yeni.get("urun_adi"), "stok_kodu": kod},
+                depo,
+                urun_kodu=kod,
+                proje_miktar_toplam=talep,
+            )
+        except ValueError as hata:
+            messagebox.showwarning("Stok", str(hata), parent=dialog)
+            return
+        except Exception:
+            pass
     insert_at = idx + 1
     dialog.satirlar.insert(insert_at, yeni)
     _yenile(dialog, secim=[insert_at])
@@ -310,6 +311,9 @@ def _coklu_iskonto_duzenle(dialog) -> None:
 
 def satir_aciklama_gir(dialog) -> None:
     if getattr(dialog, "_fatura_kilitli", False):
+        return
+    if "aciklama" in getattr(dialog, "DUZENLENEMEZ_KOLONLAR", ()):
+        messagebox.showinfo("Açıklama", "Bu belgede satır açıklaması tutulmaz.", parent=dialog)
         return
     idx = _tek_secim(dialog)
     if idx is None:
