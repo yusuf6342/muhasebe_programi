@@ -275,6 +275,52 @@ def siparis_secim_satirlari(siparis: SatisSiparisi, *, hedef: str) -> list[dict[
     return sonuc
 
 
+def siparis_irsaliye_secim_satirlari(
+    siparis: SatisSiparisi,
+    *,
+    form_satirlar: list[dict[str, Any]] | None = None,
+    bu_irsaliye_db_satirlar=None,
+) -> list[dict[str, Any]]:
+    """Siparişten irsaliyeye aktarım seçimi; formda ve bu irsaliyenin kaydında duran miktar hesaba katılır.
+
+    Kayıtlı irsaliyede irsaliyelenen_miktar bu belgenin satırlarını da içerir; DB katkısı
+    geri eklenir, formdaki miktar düşülür (mükerrer sevk yok).
+    """
+    form_satirlar = list(form_satirlar or [])
+    sonuc: list[dict[str, Any]] = []
+    for satir in siparis.satirlar or []:
+        miktar = decimal(satir.miktar or 0, "Miktar", Decimal("0"))
+        sevk = decimal(satir.irsaliyelenen_miktar or 0, "Sevk", Decimal("0"))
+        db_bu = kayitli_fatura_siparis_satir_miktari(bu_irsaliye_db_satirlar, satir.id)
+        form_bu = formdaki_siparis_satir_miktari(form_satirlar, satir.id)
+        onceki = sevk - db_bu
+        kalan = miktar - onceki - form_bu
+        if kalan <= 0:
+            continue
+        sonuc.append(
+            {
+                "kaynak_satir_id": satir.id,
+                "siparis_satiri_id": satir.id,
+                "siparis_no": siparis.siparis_no,
+                "urun_kodu": satir.urun_kodu,
+                "urun_adi": satir.urun_adi,
+                "aciklama": bos_metin(satir.aciklama),
+                "birim": satir.birim,
+                "siparis_miktar": miktar,
+                "onceki_miktar": onceki + form_bu,
+                "kalan_miktar": kalan,
+                "bu_belge_miktar": kalan,
+                "birim_satis_fiyati": satir.birim_satis_fiyati,
+                "birim_fiyat": satir.birim_satis_fiyati,
+                "iskonto_orani": satir.iskonto_orani,
+                "kdv_orani": satir.kdv_orani,
+                "irsaliyelenen_miktar": onceki,
+                "faturalanan_miktar": satir.faturalanan_miktar or 0,
+            }
+        )
+    return sonuc
+
+
 def irsaliye_secim_satirlari(irsaliye: SatisIrsaliyesi) -> list[dict[str, Any]]:
     """Kısmi irsaliye→fatura seçim satırları."""
     sonuc: list[dict[str, Any]] = []

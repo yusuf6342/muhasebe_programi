@@ -18,7 +18,9 @@ class SatisNavigasyonTest(unittest.TestCase):
         self.assertIn("SATIŞ FATURALARI", hub)
         self.assertIn("ALINAN SİPARİŞLER", hub)
         self.assertIn("TEKLİFLER", hub)
-        self.assertIn("SATIŞ İRSALİYELERİ", hub)
+        self.assertIn("SATIŞ İRSALİYESİ", hub)
+        self.assertIn("SATIŞ İRSALİYESİ LİSTESİ", hub)
+        self.assertNotIn("SATIŞ İRSALİYELERİ", hub)
         self.assertIn("CARİ HESAP İŞLEMLERİ", hub)
         self.assertIn("RAPORLAR", hub)
         anahtarlar = [k[2] for k in SATIS_HUB_KARTLARI]

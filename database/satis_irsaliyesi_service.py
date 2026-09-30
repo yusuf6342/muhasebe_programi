@@ -79,6 +79,24 @@ def durum_gosterim(durum: str | None) -> str:
     return LEGACY_DURUM_MAP.get(d, d)
 
 
+def faturalama_durumu(satirlar) -> str:
+    """Faturalanmadı / Kısmen faturalandı / Faturalandı (satır miktarlarından)."""
+    toplam = sum((Decimal(str(s.miktar or 0)) for s in satirlar or []), Decimal("0"))
+    fatura = sum((Decimal(str(s.faturalanan_miktar or 0)) for s in satirlar or []), Decimal("0"))
+    if fatura <= 0:
+        return "Faturalanmadı"
+    if toplam > 0 and all(faturalanacak_kalan(s) <= 0 for s in satirlar):
+        return "Faturalandı"
+    return "Kısmen faturalandı"
+
+
+def fatura_sonrasi_durum(irsaliye) -> str:
+    """Fatura bağı kalmayınca irsaliyenin dönmesi gereken durum (stok bayrağına göre)."""
+    if getattr(irsaliye, "stok_cikis_yapildi", False):
+        return "TESLİM EDİLDİ" if getattr(irsaliye, "fiili_teslim_tarihi", None) else "SEVK EDİLDİ"
+    return "TASLAK"
+
+
 class SatisIrsaliyesiService:
     @staticmethod
     def schema_hazirla() -> None:
@@ -194,6 +212,122 @@ class SatisIrsaliyesiService:
         SatisSiparisiService.durumu_guncelle(session, siparis_id)
 
     @staticmethod
+    def _satir_siparis_idleri(session, satirlar) -> set[int]:
+        idler: set[int] = set()
+        for satir in satirlar or []:
+            ssid = getattr(satir, "siparis_satiri_id", None)
+            if not ssid:
+                continue
+            siparis_satiri = session.get(SatisSiparisiSatiri, int(ssid))
+            if siparis_satiri is not None and siparis_satiri.siparis_id:
+                idler.add(int(siparis_satiri.siparis_id))
+        return idler
+
+    @staticmethod
+    def _siparis_sevkini_geri_al(session, satirlar) -> None:
+        for satir in satirlar or []:
+            if not satir.siparis_satiri_id:
+                continue
+            siparis_satiri = session.get(SatisSiparisiSatiri, satir.siparis_satiri_id)
+            if siparis_satiri:
+                siparis_satiri.irsaliyelenen_miktar = max(
+                    Decimal("0"), Decimal(str(siparis_satiri.irsaliyelenen_miktar or 0)) - satir.miktar
+                )
+
+    @staticmethod
+    def _temel_miktar(session, stok_kodu: str, miktar, birim: str | None) -> Decimal:
+        """Evrak miktarını stok kartının temel birimine çevirir (depo lotları temel birimde tutulur)."""
+        from database.models.stok import StokKarti
+        from database.stok_service import StokService
+
+        stok = session.scalar(
+            select(StokKarti)
+            .options(selectinload(StokKarti.birimler))
+            .where(StokKarti.stok_kodu == stok_kodu)
+        )
+        if stok is None:
+            return decimal(miktar, "Miktar", Decimal("0"))
+        ana = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
+        return StokService.temel_miktara_cevir(miktar, (birim or ana).strip() or ana, stok, ana)
+
+    @staticmethod
+    def _bagli_fatura_satirlari(session, irsaliye, *, iptal_dahil: bool = False):
+        from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
+
+        idler = [int(s.id) for s in irsaliye.satirlar if getattr(s, "id", None) is not None]
+        if not idler:
+            return []
+        sorgu = (
+            select(SatisFaturasiSatiri, SatisFaturasi)
+            .join(SatisFaturasi, SatisFaturasiSatiri.fatura_id == SatisFaturasi.id)
+            .where(SatisFaturasiSatiri.irsaliye_satiri_id.in_(idler))
+        )
+        if not iptal_dahil:
+            sorgu = sorgu.where(SatisFaturasi.durum != "İPTAL")
+        return list(session.execute(sorgu).all())
+
+    @staticmethod
+    def _bagli_fatura_nolari(session, irsaliye, *, iptal_dahil: bool = False) -> list[str]:
+        nolar: list[str] = []
+        for _satir, fatura in SatisIrsaliyesiService._bagli_fatura_satirlari(
+            session, irsaliye, iptal_dahil=iptal_dahil
+        ):
+            if fatura.fatura_no not in nolar:
+                nolar.append(fatura.fatura_no)
+        return nolar
+
+    @staticmethod
+    def _fatura_bagi_engeli(session, irsaliye, islem: str) -> None:
+        nolar = SatisIrsaliyesiService._bagli_fatura_nolari(session, irsaliye)
+        if nolar or any(Decimal(str(s.faturalanan_miktar or 0)) > 0 for s in irsaliye.satirlar):
+            bagli = ", ".join(nolar) if nolar else "kayıtlı fatura"
+            raise ValueError(
+                f"Faturaya bağlanmış irsaliye {islem}.\n"
+                f"Bağlı fatura: {bagli}\n"
+                "Önce bağlı faturayı iptal edin veya irsaliye satırlarını faturadan çıkarın."
+            )
+
+    @staticmethod
+    def bagli_faturalar(irsaliye_id: int) -> list[dict[str, Any]]:
+        """İrsaliye satırlarına bağlı (iptal edilmemiş) satış faturaları."""
+        with get_session() as session:
+            irsaliye = session.scalar(
+                select(SatisIrsaliyesi)
+                .options(selectinload(SatisIrsaliyesi.satirlar))
+                .where(SatisIrsaliyesi.id == int(irsaliye_id))
+            )
+            if irsaliye is None:
+                return []
+            sonuc: dict[int, dict[str, Any]] = {}
+            for satir, fatura in SatisIrsaliyesiService._bagli_fatura_satirlari(session, irsaliye):
+                kayit = sonuc.setdefault(
+                    int(fatura.id),
+                    {
+                        "fatura_id": int(fatura.id),
+                        "fatura_no": fatura.fatura_no,
+                        "fatura_tarihi": fatura.fatura_tarihi,
+                        "durum": fatura.durum,
+                        "onaylandi": bool(getattr(fatura, "onaylandi", False)),
+                        "miktar": Decimal("0"),
+                    },
+                )
+                kayit["miktar"] += Decimal(str(satir.miktar or 0))
+            return list(sonuc.values())
+
+    @staticmethod
+    def _faturayla_stoktan_dusen(session, irsaliye) -> list[str]:
+        """İrsaliye sevk edilmeden onaylanan ve kendi stok çıkışını yapan fatura numaraları."""
+        nolar: list[str] = []
+        for satir, fatura in SatisIrsaliyesiService._bagli_fatura_satirlari(session, irsaliye):
+            if not getattr(fatura, "onaylandi", False):
+                continue
+            if (satir.lot_cikisi or "") == "İrsaliye stokundan":
+                continue
+            if fatura.fatura_no not in nolar:
+                nolar.append(fatura.fatura_no)
+        return nolar
+
+    @staticmethod
     def _musteri_snap(session, irsaliye: SatisIrsaliyesi, cari_id: int) -> None:
         cari = session.get(Cari, cari_id)
         if not cari:
@@ -227,8 +361,12 @@ class SatisIrsaliyesiService:
             "para_birimi",
             "belge_turu",
         ):
-            if alan in veriler:
+            if alan not in veriler:
+                continue
+            if alan in ("depo", "para_birimi", "belge_turu"):
                 setattr(irsaliye, alan, veriler.get(alan) or getattr(irsaliye, alan, None))
+            else:
+                setattr(irsaliye, alan, (str(veriler.get(alan) or "").strip()) or None)
         if "is_priced" in veriler:
             irsaliye.is_priced = bool(veriler["is_priced"])
         if "kur" in veriler and veriler["kur"] is not None:
@@ -279,22 +417,18 @@ class SatisIrsaliyesiService:
                 raise ValueError("İrsaliye bulunamadı.")
             if irsaliye.durum == "İPTAL":
                 return
-            if any(satir.faturalanan_miktar > 0 for satir in irsaliye.satirlar):
-                raise ValueError("Faturalanmış irsaliye iptal edilemez.")
-            for satir in irsaliye.satirlar:
-                if satir.siparis_satiri_id:
-                    siparis_satiri = session.get(SatisSiparisiSatiri, satir.siparis_satiri_id)
-                    if siparis_satiri:
-                        siparis_satiri.irsaliyelenen_miktar = max(
-                            Decimal("0"), siparis_satiri.irsaliyelenen_miktar - satir.miktar
-                        )
+            SatisIrsaliyesiService._fatura_bagi_engeli(session, irsaliye, "iptal edilemez")
+            siparis_idleri = SatisIrsaliyesiService._satir_siparis_idleri(session, irsaliye.satirlar)
+            SatisIrsaliyesiService._siparis_sevkini_geri_al(session, irsaliye.satirlar)
             if getattr(irsaliye, "stok_cikis_yapildi", False):
                 StokService.irsaliye_cikis_iptal(session, irsaliye.irsaliye_no)
                 irsaliye.stok_cikis_yapildi = False
                 irsaliye.stock_posted_at = None
             irsaliye.durum = "İPTAL"
             stamp_cancel(irsaliye, reason)
-            SatisIrsaliyesiService._siparis_durumunu_guncelle(session, irsaliye.siparis_id)
+            session.flush()
+            for siparis_id in siparis_idleri | {irsaliye.siparis_id or 0}:
+                SatisIrsaliyesiService._siparis_durumunu_guncelle(session, siparis_id or None)
             iid = int(irsaliye.id)
             ino = irsaliye.irsaliye_no
         from database.deleted_record_service import ENTITY_SATIS_IRSALIYE, safe_log_cancel
@@ -307,6 +441,145 @@ class SatisIrsaliyesiService:
             belge_no=ino,
             aciklama=reason,
         )
+
+    @staticmethod
+    def sevk_geri_al(irsaliye_id: int) -> SatisIrsaliyesi:
+        """İRSALİYE ÇIKIŞ hareketini ters kayıtla geri alır; belge TASLAK'a döner."""
+        yazma_zorunlu("satis_duzenleme")
+        SatisIrsaliyesiService.schema_hazirla()
+        from database.stok_service import StokService
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_update,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+
+        with get_session() as session:
+            irsaliye = session.scalar(
+                select(SatisIrsaliyesi)
+                .options(selectinload(SatisIrsaliyesi.satirlar))
+                .where(SatisIrsaliyesi.id == irsaliye_id)
+            )
+            if irsaliye is None:
+                raise ValueError("İrsaliye bulunamadı.")
+            if irsaliye.durum == "İPTAL":
+                raise ValueError("İptal edilmiş irsaliyenin sevki geri alınamaz.")
+            if not getattr(irsaliye, "stok_cikis_yapildi", False):
+                raise ValueError("Bu irsaliye için yapılmış bir stok çıkışı yok.")
+            SatisIrsaliyesiService._fatura_bagi_engeli(session, irsaliye, "sevki geri alınamaz")
+            StokService.irsaliye_cikis_iptal(session, irsaliye.irsaliye_no)
+            irsaliye.stok_cikis_yapildi = False
+            irsaliye.stock_posted_at = None
+            irsaliye.fiili_sevk_tarihi = None
+            irsaliye.fiili_sevk_saati = None
+            irsaliye.fiili_teslim_tarihi = None
+            irsaliye.durum = "TASLAK"
+            stamp_update(irsaliye)
+            session.flush()
+            iid = int(irsaliye.id)
+            ino = irsaliye.irsaliye_no
+        audit_document(
+            "IRSALIYE_SEVK_GERI_AL",
+            modul="satis_irsaliyesi",
+            kayit_id=str(iid),
+            belge_no=ino,
+            aciklama="İRSALİYE ÇIKIŞ ters kaydı",
+        )
+        return SatisIrsaliyesiService.getir(iid)
+
+    @staticmethod
+    def sil(irsaliye_id: int, sebep: str | None = None) -> str:
+        """Faturaya bağlanmamış irsaliyeyi stok ve sipariş etkilerini geri alarak siler."""
+        yazma_zorunlu("satis_duzenleme", "sil")
+        SatisIrsaliyesiService.schema_hazirla()
+        from database.stok_service import StokService
+        from database.user_audit import OturumGerekli, audit_document, require_user_session
+
+        reason = (sebep or "").strip() or "Kullanıcı tarafından silindi"
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+
+        with get_session() as session:
+            irsaliye = session.scalar(
+                select(SatisIrsaliyesi)
+                .options(selectinload(SatisIrsaliyesi.satirlar))
+                .where(SatisIrsaliyesi.id == irsaliye_id)
+            )
+            if irsaliye is None:
+                raise ValueError("İrsaliye bulunamadı.")
+            fatura_nolari = SatisIrsaliyesiService._bagli_fatura_nolari(
+                session, irsaliye, iptal_dahil=True
+            )
+            if fatura_nolari or any(
+                decimal(s.faturalanan_miktar or 0, "Fatura") > 0 for s in irsaliye.satirlar
+            ):
+                raise ValueError(
+                    "Faturaya bağlanmış irsaliye silinemez.\n"
+                    f"Bağlı fatura: {', '.join(fatura_nolari) or '-'}\n"
+                    "Fatura kaydı (iptal edilmiş olsa bile) bu irsaliye satırlarına bağlıdır; "
+                    "silmek yerine irsaliyeyi iptal edin."
+                )
+            snapshot = {
+                "irsaliye_no": irsaliye.irsaliye_no,
+                "tarih": str(irsaliye.irsaliye_tarihi),
+                "cari_id": irsaliye.cari_id,
+                "musteri": getattr(irsaliye, "musteri_unvan_snap", None) or "",
+                "durum": irsaliye.durum,
+                "depo": getattr(irsaliye, "depo", None) or "",
+                "satirlar": [
+                    {
+                        "urun_kodu": s.urun_kodu,
+                        "urun_adi": s.urun_adi,
+                        "miktar": str(s.miktar),
+                        "birim": s.birim,
+                        "siparis_satiri_id": s.siparis_satiri_id,
+                    }
+                    for s in irsaliye.satirlar
+                ],
+            }
+            siparis_idleri = SatisIrsaliyesiService._satir_siparis_idleri(session, irsaliye.satirlar)
+            if irsaliye.durum != "İPTAL":
+                SatisIrsaliyesiService._siparis_sevkini_geri_al(session, irsaliye.satirlar)
+            if getattr(irsaliye, "stok_cikis_yapildi", False):
+                StokService.irsaliye_cikis_iptal(session, irsaliye.irsaliye_no)
+            iid = int(irsaliye.id)
+            ino = irsaliye.irsaliye_no
+            baslik_siparis = irsaliye.siparis_id
+            session.delete(irsaliye)
+            session.flush()
+            for siparis_id in siparis_idleri | {baslik_siparis or 0}:
+                SatisIrsaliyesiService._siparis_durumunu_guncelle(session, siparis_id or None)
+        from database.deleted_record_service import (
+            ENTITY_SATIS_IRSALIYE,
+            safe_log_cancel_snapshot,
+        )
+
+        safe_log_cancel_snapshot(
+            ENTITY_SATIS_IRSALIYE,
+            iid,
+            note=f"Satış irsaliyesi silindi: {reason}",
+            snapshot=snapshot,
+            reason=reason,
+            record_code=ino,
+            record_title=snapshot["musteri"],
+            module="satis_irsaliyesi",
+        )
+        audit_document(
+            "IRSALIYE_SIL",
+            modul="satis_irsaliyesi",
+            kayit_id=str(iid),
+            belge_no=ino,
+            aciklama=reason,
+        )
+        return ino
 
     @staticmethod
     def aktif_musterileri() -> list[Cari]:
@@ -334,6 +607,69 @@ class SatisIrsaliyesiService:
             )
 
     @staticmethod
+    def siparis_aktarim_adaylari(cari_id: int, irsaliye_id: int | None = None) -> list[dict[str, Any]]:
+        """Müşterinin onaylı, sevk kalanı olan siparişleri (bu irsaliyenin kayıtlı payı kalan sayılır)."""
+        from database.satis_siparisi_service import SatisSiparisiService
+
+        SatisSiparisiService.schema_hazirla()
+        with get_session() as session:
+            bu_irsaliye: dict[int, Decimal] = {}
+            if irsaliye_id:
+                for ssid, miktar in session.execute(
+                    select(SatisIrsaliyesiSatiri.siparis_satiri_id, SatisIrsaliyesiSatiri.miktar)
+                    .join(SatisIrsaliyesi, SatisIrsaliyesiSatiri.irsaliye_id == SatisIrsaliyesi.id)
+                    .where(
+                        SatisIrsaliyesi.id == int(irsaliye_id),
+                        SatisIrsaliyesi.durum != "İPTAL",
+                        SatisIrsaliyesiSatiri.siparis_satiri_id.is_not(None),
+                    )
+                ).all():
+                    bu_irsaliye[int(ssid)] = bu_irsaliye.get(int(ssid), Decimal("0")) + decimal(
+                        miktar or 0, "Miktar"
+                    )
+            siparisler = session.scalars(
+                select(SatisSiparisi)
+                .where(
+                    SatisSiparisi.cari_id == int(cari_id),
+                    SatisSiparisi.durum.not_in(("İPTAL", "TASLAK")),
+                )
+                .options(selectinload(SatisSiparisi.satirlar), selectinload(SatisSiparisi.cari))
+                .order_by(SatisSiparisi.siparis_tarihi.desc(), SatisSiparisi.id.desc())
+            ).all()
+            sonuc: list[dict[str, Any]] = []
+            for siparis in siparisler:
+                toplam = Decimal("0")
+                kalan = Decimal("0")
+                urunler: list[str] = []
+                for satir in siparis.satirlar:
+                    miktar = decimal(satir.miktar or 0, "Miktar")
+                    satir_kalan = (
+                        miktar
+                        - decimal(satir.irsaliyelenen_miktar or 0, "Sevk")
+                        + bu_irsaliye.get(int(satir.id), Decimal("0"))
+                    )
+                    toplam += miktar
+                    if satir_kalan > 0:
+                        kalan += satir_kalan
+                        urunler.append(satir.urun_adi or satir.urun_kodu or "")
+                if kalan <= 0:
+                    continue
+                sonuc.append(
+                    {
+                        "siparis": siparis,
+                        "siparis_id": int(siparis.id),
+                        "siparis_no": siparis.siparis_no,
+                        "siparis_tarihi": siparis.siparis_tarihi,
+                        "termin_tarihi": getattr(siparis, "termin_tarihi", None),
+                        "durum": siparis.durum,
+                        "urunler": ", ".join(u for u in urunler if u),
+                        "siparis_miktar": toplam,
+                        "kalan_miktar": kalan,
+                    }
+                )
+            return sonuc
+
+    @staticmethod
     def depolar() -> list[str]:
         from database.stok_service import StokService
 
@@ -343,20 +679,62 @@ class SatisIrsaliyesiService:
             return ["ANA DEPO"]
 
     @staticmethod
-    def listele() -> list[dict[str, Any]]:
+    def listele(
+        baslangic: date | None = None,
+        bitis: date | None = None,
+        musteri: str | None = None,
+        evrak_no: str | None = None,
+        durum: str | None = None,
+    ) -> list[dict[str, Any]]:
+        from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
+
         SatisIrsaliyesiService.schema_hazirla()
         with get_session() as session:
+            sorgu = select(SatisIrsaliyesi).options(
+                selectinload(SatisIrsaliyesi.cari),
+                selectinload(SatisIrsaliyesi.siparis),
+                selectinload(SatisIrsaliyesi.satirlar),
+            )
+            if baslangic:
+                sorgu = sorgu.where(SatisIrsaliyesi.irsaliye_tarihi >= baslangic)
+            if bitis:
+                sorgu = sorgu.where(SatisIrsaliyesi.irsaliye_tarihi <= bitis)
+            evrak = (evrak_no or "").strip()
+            if evrak:
+                sorgu = sorgu.where(SatisIrsaliyesi.irsaliye_no.ilike(f"%{evrak}%"))
             irsaliyeler = session.scalars(
-                select(SatisIrsaliyesi)
-                .options(
-                    selectinload(SatisIrsaliyesi.cari),
-                    selectinload(SatisIrsaliyesi.siparis),
-                    selectinload(SatisIrsaliyesi.satirlar),
-                )
-                .order_by(SatisIrsaliyesi.id.desc())
+                sorgu.order_by(SatisIrsaliyesi.irsaliye_tarihi.desc(), SatisIrsaliyesi.id.desc())
             ).all()
+            aranan = (musteri or "").strip().casefold()
+            durum_filtre = (durum or "").strip()
+            fatura_satirlari = session.execute(
+                select(
+                    SatisFaturasiSatiri.irsaliye_satiri_id,
+                    SatisFaturasi.fatura_no,
+                    SatisFaturasi.durum,
+                )
+                .join(SatisFaturasi, SatisFaturasiSatiri.fatura_id == SatisFaturasi.id)
+                .where(SatisFaturasiSatiri.irsaliye_satiri_id.is_not(None))
+            ).all()
+            satir_faturalari: dict[int, set[str]] = {}
+            for satir_id, fatura_no, fatura_durum in fatura_satirlari:
+                if (fatura_durum or "") == "İPTAL":
+                    continue
+                satir_faturalari.setdefault(int(satir_id), set()).add(fatura_no or "")
             sonuc = []
             for irsaliye in irsaliyeler:
+                cari = irsaliye.cari
+                kod = getattr(cari, "cari_kodu", "") or ""
+                ad = getattr(irsaliye, "musteri_unvan_snap", None) or getattr(cari, "unvan", "") or ""
+                if aranan and aranan not in f"{kod} {ad}".casefold():
+                    continue
+                gosterim = durum_gosterim(irsaliye.durum)
+                fatura_durumu = faturalama_durumu(irsaliye.satirlar)
+                if durum_filtre and durum_filtre not in (gosterim, irsaliye.durum, fatura_durumu):
+                    continue
+                fatura_nolari = sorted(
+                    {no for s in irsaliye.satirlar for no in satir_faturalari.get(int(s.id), set())}
+                )
                 toplam = SatisIrsaliyesiService.toplam(irsaliye.satirlar)
                 faturalanan = sum(
                     (satir.faturalanan_miktar * satir.birim_fiyat for satir in irsaliye.satirlar),
@@ -379,6 +757,12 @@ class SatisIrsaliyesiService:
                         "sevk_miktar": sevk_miktar,
                         "fatura_miktar": fatura_miktar,
                         "fatura_kalani_miktar": sevk_miktar - fatura_miktar,
+                        "musteri_kodu": kod,
+                        "musteri_adi": ad,
+                        "depo": getattr(irsaliye, "depo", None) or "ANA DEPO",
+                        "durum": gosterim,
+                        "faturalama_durumu": fatura_durumu,
+                        "fatura_nolari": fatura_nolari,
                     }
                 )
             return sonuc
@@ -430,10 +814,25 @@ class SatisIrsaliyesiService:
         except OturumGerekli as exc:
             raise ValueError(str(exc)) from exc
 
-        irsaliye_tarihi = veriler["irsaliye_tarihi"]
+        irsaliye_tarihi = veriler.get("irsaliye_tarihi")
+        if not isinstance(irsaliye_tarihi, date):
+            raise ValueError("İrsaliye tarihi girin (GG.AA.YYYY).")
         if irsaliye_tarihi > date.today():
             raise ValueError("İrsaliye tarihi gelecek bir tarih olamaz.")
+        if not veriler.get("cari_id"):
+            raise ValueError("Müşteri seçin.")
+        if not satir_verileri:
+            raise ValueError("En az bir irsaliye satırı ekleyin.")
+        for sira, veri in enumerate(satir_verileri, start=1):
+            if not (str(veri.get("urun_kodu") or "").strip() and str(veri.get("urun_adi") or "").strip()):
+                raise ValueError(f"{sira}. satır: ürün kodu ve adı zorunludur.")
+            if decimal(veri.get("miktar") or 0, f"{sira}. satır miktarı") <= 0:
+                raise ValueError(f"{sira}. satır: miktar sıfırdan büyük olmalıdır.")
         with get_session() as session:
+            if session.get(Cari, int(veriler["cari_id"])) is None:
+                raise ValueError("Seçilen müşteri bulunamadı.")
+            eski_siparis_idleri: set[int] = set()
+            mevcut_satirlar: dict[int, SatisIrsaliyesiSatiri] = {}
             if irsaliye_id:
                 irsaliye = session.get(SatisIrsaliyesi, irsaliye_id)
                 if irsaliye is None:
@@ -441,18 +840,23 @@ class SatisIrsaliyesiService:
                 if irsaliye.durum == "İPTAL":
                     raise ValueError("İptal edilmiş irsaliye düzenlenemez.")
                 if getattr(irsaliye, "stok_cikis_yapildi", False):
-                    raise ValueError("Sevk edilmiş irsaliye satırları düzenlenemez. Önce iptal edin.")
-                if any(satir.faturalanan_miktar > 0 for satir in irsaliye.satirlar):
-                    raise ValueError("Faturalanmış irsaliye satırı düzenlenemez.")
-                for eski_satir in irsaliye.satirlar:
-                    if eski_satir.siparis_satiri_id:
-                        siparis_satiri = session.get(SatisSiparisiSatiri, eski_satir.siparis_satiri_id)
-                        if siparis_satiri:
-                            siparis_satiri.irsaliyelenen_miktar -= eski_satir.miktar
-                irsaliye.satirlar.clear()
+                    raise ValueError(
+                        "Sevk edilmiş irsaliye satırları düzenlenemez. "
+                        "Önce «Sevki Geri Al» ile stok çıkışını geri alın."
+                    )
+                SatisIrsaliyesiService._fatura_bagi_engeli(session, irsaliye, "değiştirilemez")
+                eski_siparis_idleri = SatisIrsaliyesiService._satir_siparis_idleri(
+                    session, irsaliye.satirlar
+                )
+                SatisIrsaliyesiService._siparis_sevkini_geri_al(session, irsaliye.satirlar)
+                mevcut_satirlar = {int(s.id): s for s in irsaliye.satirlar if s.id is not None}
                 yeni = False
             else:
                 ozel_no = (veriler.get("irsaliye_no") or "").strip()
+                if ozel_no and session.scalar(
+                    select(SatisIrsaliyesi.id).where(SatisIrsaliyesi.irsaliye_no == ozel_no)
+                ):
+                    raise ValueError(f"{ozel_no} numaralı irsaliye zaten kayıtlı; başka numara girin.")
                 irsaliye = SatisIrsaliyesi(
                     irsaliye_no=ozel_no or SatisIrsaliyesiService.irsaliye_no(),
                     durum="TASLAK",
@@ -480,63 +884,123 @@ class SatisIrsaliyesiService:
                 irsaliye.durum = "TASLAK"
 
             header_depo = getattr(irsaliye, "depo", None) or "ANA DEPO"
-            for veri in satir_verileri:
+            kullanilan: set[int] = set()
+            yeni_siparis_idleri: set[int] = set()
+            for sira, veri in enumerate(satir_verileri, start=1):
                 miktar = decimal(veri["miktar"], "İrsaliye miktarı", Decimal("0.0001"))
-                siparis_satiri_id = veri.get("siparis_satiri_id")
+                birim = (veri.get("birim") or "Adet").strip() or "Adet"
+                siparis_satiri_id = veri.get("siparis_satiri_id") or None
                 siparis_miktar = None
                 onceki_sevk = None
                 if siparis_satiri_id:
                     siparis_satiri = session.get(SatisSiparisiSatiri, int(siparis_satiri_id))
                     if siparis_satiri is None:
-                        raise ValueError("Bağlı sipariş satırı bulunamadı.")
+                        raise ValueError(f"{sira}. satır: bağlı sipariş satırı bulunamadı.")
+                    siparis = session.get(SatisSiparisi, siparis_satiri.siparis_id)
+                    siparis_durum = (getattr(siparis, "durum", "") or "").upper()
+                    if siparis_durum == "İPTAL":
+                        raise ValueError(
+                            f"{siparis.siparis_no} siparişi iptal edilmiş; satırı sevk edilemez."
+                        )
+                    if siparis_durum == "TASLAK":
+                        raise ValueError(
+                            f"{siparis.siparis_no} siparişi onaylanmamış (TASLAK); önce siparişi onaylayın."
+                        )
+                    if int(siparis.cari_id) != int(veriler["cari_id"]):
+                        raise ValueError(
+                            f"{sira}. satır başka müşterinin siparişine ({siparis.siparis_no}) bağlı."
+                        )
+                    siparis_birim = (siparis_satiri.birim or "Adet").strip() or "Adet"
+                    if birim.casefold() != siparis_birim.casefold():
+                        raise ValueError(
+                            f"{sira}. satır ({veri['urun_kodu']}): siparişten aktarılan satırın birimi "
+                            f"sipariş birimiyle aynı olmalıdır ({siparis_birim})."
+                        )
                     acik = siparis_satiri.miktar - siparis_satiri.irsaliyelenen_miktar
                     if miktar > acik:
-                        raise ValueError("İrsaliye miktarı siparişin açık miktarından büyük olamaz.")
+                        raise ValueError(
+                            f"{sira}. satır ({veri['urun_kodu']}): irsaliye miktarı ({miktar}) "
+                            f"siparişin kalan sevk miktarından ({acik}) büyük olamaz."
+                        )
                     siparis_satiri.irsaliyelenen_miktar += miktar
                     siparis_miktar = siparis_satiri.miktar
                     onceki_sevk = siparis_satiri.irsaliyelenen_miktar - miktar
-                irsaliye.satirlar.append(
-                    SatisIrsaliyesiSatiri(
-                        irsaliye_id=irsaliye.id if irsaliye.id else None,
-                        siparis_satiri_id=siparis_satiri_id,
-                        urun_kodu=veri["urun_kodu"],
-                        urun_adi=veri["urun_adi"],
-                        aciklama=veri.get("aciklama"),
-                        miktar=miktar,
-                        birim=veri["birim"],
-                        birim_fiyat=decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0")),
-                        iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto", Decimal("0")),
-                        kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0")),
-                        faturalanan_miktar=Decimal("0"),
-                        depo=veri.get("depo") or header_depo,
-                        lot_no=(veri.get("lot_no") or "") or None,
-                        siparis_miktar=siparis_miktar
-                        if siparis_miktar is not None
-                        else (
-                            decimal(veri["siparis_miktar"], "Sipariş miktar", Decimal("0"))
-                            if veri.get("siparis_miktar") not in (None, "")
-                            else None
-                        ),
-                        onceki_sevk=onceki_sevk
-                        if onceki_sevk is not None
-                        else (
-                            decimal(veri["onceki_sevk"], "Önceki sevk", Decimal("0"))
-                            if veri.get("onceki_sevk") not in (None, "")
-                            else None
-                        ),
+                    yeni_siparis_idleri.add(int(siparis.id))
+                alanlar = {
+                    "siparis_satiri_id": int(siparis_satiri_id) if siparis_satiri_id else None,
+                    "urun_kodu": str(veri["urun_kodu"]).strip(),
+                    "urun_adi": str(veri["urun_adi"]).strip(),
+                    "aciklama": veri.get("aciklama") or None,
+                    "miktar": miktar,
+                    "birim": birim,
+                    "birim_fiyat": decimal(veri.get("birim_fiyat") or 0, "Birim fiyat", Decimal("0")),
+                    "iskonto_orani": decimal(veri.get("iskonto_orani") or 0, "İskonto", Decimal("0")),
+                    "kdv_orani": decimal(
+                        veri.get("kdv_orani") if veri.get("kdv_orani") not in (None, "") else 20,
+                        "KDV",
+                        Decimal("0"),
+                    ),
+                    "depo": veri.get("depo") or header_depo,
+                    "lot_no": (veri.get("lot_no") or "") or None,
+                    "siparis_miktar": siparis_miktar
+                    if siparis_miktar is not None
+                    else (
+                        decimal(veri["siparis_miktar"], "Sipariş miktar", Decimal("0"))
+                        if veri.get("siparis_miktar") not in (None, "")
+                        else None
+                    ),
+                    "onceki_sevk": onceki_sevk
+                    if onceki_sevk is not None
+                    else (
+                        decimal(veri["onceki_sevk"], "Önceki sevk", Decimal("0"))
+                        if veri.get("onceki_sevk") not in (None, "")
+                        else None
+                    ),
+                }
+                ham_id = veri.get("irsaliye_satiri_id")
+                satir = mevcut_satirlar.get(int(ham_id)) if ham_id not in (None, "") else None
+                if satir is not None and int(satir.id) not in kullanilan:
+                    for alan, deger in alanlar.items():
+                        setattr(satir, alan, deger)
+                    kullanilan.add(int(satir.id))
+                else:
+                    irsaliye.satirlar.append(
+                        SatisIrsaliyesiSatiri(faturalanan_miktar=Decimal("0"), **alanlar)
+                    )
+            silinecekler = [s for sid, s in mevcut_satirlar.items() if sid not in kullanilan]
+            if silinecekler:
+                from database.models.satis_faturasi import SatisFaturasiSatiri
+
+                referansli = session.scalar(
+                    select(SatisFaturasiSatiri.id).where(
+                        SatisFaturasiSatiri.irsaliye_satiri_id.in_([int(s.id) for s in silinecekler])
                     )
                 )
+                if referansli:
+                    raise ValueError(
+                        "Silinen satırlardan biri (iptal edilmiş) bir faturada geçiyor; "
+                        "satırı silmek yerine miktarını değiştirin."
+                    )
+                for satir in silinecekler:
+                    irsaliye.satirlar.remove(satir)
             if not irsaliye.satirlar:
                 raise ValueError("En az bir irsaliye satırı ekleyin.")
+            if yeni_siparis_idleri and (
+                not irsaliye.siparis_id or int(irsaliye.siparis_id) not in yeni_siparis_idleri
+            ):
+                irsaliye.siparis_id = min(yeni_siparis_idleri)
             if yeni:
                 stamp_create(irsaliye)
             else:
                 stamp_update(irsaliye)
-            SatisIrsaliyesiService._siparis_durumunu_guncelle(session, irsaliye.siparis_id)
             try:
                 session.flush()
             except IntegrityError as hata:
-                raise ValueError("İrsaliye kaydedilemedi.") from hata
+                raise ValueError(
+                    "İrsaliye kaydedilemedi (numara çakışması veya bağlı kayıt hatası)."
+                ) from hata
+            for siparis_id in eski_siparis_idleri | yeni_siparis_idleri | {irsaliye.siparis_id or 0}:
+                SatisIrsaliyesiService._siparis_durumunu_guncelle(session, siparis_id or None)
             iid = int(irsaliye.id)
             ino = irsaliye.irsaliye_no
         audit_document(
@@ -616,10 +1080,15 @@ class SatisIrsaliyesiService:
                 raise ValueError("İptal edilmiş irsaliye sevk edilemez.")
             if getattr(irsaliye, "stok_cikis_yapildi", False):
                 raise ValueError("Bu irsaliye için stok çıkışı zaten yapılmış.")
-            if irsaliye.durum in ("FATURALANDI", "KISMİ FATURALANDI") and not getattr(
-                irsaliye, "stok_cikis_yapildi", False
-            ):
-                pass  # legacy faturalı ama stoksuz — allow posting stock once
+            stoklu_faturalar = SatisIrsaliyesiService._faturayla_stoktan_dusen(session, irsaliye)
+            if stoklu_faturalar:
+                raise ValueError(
+                    "Bu irsaliyeden kesilen onaylı fatura stok çıkışını zaten yaptı; "
+                    "irsaliye ayrıca sevk edilirse stok iki kez düşer.\n"
+                    f"Bağlı fatura: {', '.join(stoklu_faturalar)}"
+                )
+            if irsaliye.durum in ("FATURALANDI", "KISMİ FATURALANDI"):
+                pass  # fatura taslakta; stok çıkışı irsaliyeden yapılır, fatura onayı atlar
             elif irsaliye.durum not in SEVK_ONCESI and irsaliye.durum != "SEVK EDİLDİ":
                 if irsaliye.durum in SEVK_SONRASI:
                     raise ValueError("Bu irsaliye zaten sevk sürecinde.")
@@ -658,7 +1127,9 @@ class SatisIrsaliyesiService:
                         tarih,
                         satir.urun_kodu.strip(),
                         satir_depo,
-                        satir.miktar,
+                        SatisIrsaliyesiService._temel_miktar(
+                            session, satir.urun_kodu.strip(), satir.miktar, satir.birim
+                        ),
                         getattr(satir, "lot_no", None) or "",
                     )
                 except ValueError as hata:
@@ -723,7 +1194,8 @@ class SatisIrsaliyesiService:
             ):
                 raise ValueError("Önce sevk işlemi yapılmalıdır.")
             actor = current_actor()
-            irsaliye.durum = "KISMEN TESLİM EDİLDİ" if kismen else "TESLİM EDİLDİ"
+            if irsaliye.durum not in ("KISMİ FATURALANDI", "FATURALANDI"):
+                irsaliye.durum = "KISMEN TESLİM EDİLDİ" if kismen else "TESLİM EDİLDİ"
             irsaliye.fiili_teslim_tarihi = date.today()
             irsaliye.delivered_by_user_id = actor["user_id"]
             irsaliye.delivered_by_full_name = actor["full_name"]
@@ -827,7 +1299,9 @@ class SatisIrsaliyesiService:
                     iade.irsaliye_tarihi,
                     satir.urun_kodu.strip(),
                     getattr(satir, "depo", None) or depo,
-                    miktar,
+                    SatisIrsaliyesiService._temel_miktar(
+                        session, satir.urun_kodu.strip(), miktar, satir.birim
+                    ),
                     lot_no=getattr(satir, "lot_no", None) or "",
                 )
             if not iade.satirlar:

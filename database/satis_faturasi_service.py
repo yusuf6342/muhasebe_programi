@@ -69,11 +69,10 @@ class SatisFaturasiService:
         talepler: dict[str, dict[str, Any]] = {}
         for satir in fatura.satirlar:
             skip_stok = False
-            if fatura.irsaliye_id and getattr(satir, "irsaliye_satiri_id", None):
-                from database.models.satis_irsaliyesi import SatisIrsaliyesi
+            if getattr(satir, "irsaliye_satiri_id", None):
                 from database.satis_irsaliyesi_service import stok_cikis_gerekli
 
-                ir = session.get(SatisIrsaliyesi, fatura.irsaliye_id)
+                ir = SatisFaturasiService._satir_irsaliyesi(session, fatura, satir)
                 if ir is not None and not stok_cikis_gerekli(ir):
                     skip_stok = True
             if skip_stok:
@@ -470,11 +469,15 @@ class SatisFaturasiService:
                         "Bu fatura başka bir ekranda veya kullanıcıda değiştirilmiş. "
                         "Listeyi yenileyip faturayı tekrar açın."
                     )
+                onceki_irsaliye_satirlari = [
+                    int(s.irsaliye_satiri_id) for s in fatura.satirlar if s.irsaliye_satiri_id
+                ]
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
                 fatura.satirlar.clear()
                 fatura.tahsilatlar.clear()
                 fatura.row_version = mevcut_v + 1
             else:
+                onceki_irsaliye_satirlari = []
                 yeni = True
                 fatura = SatisFaturasi(
                     fatura_no=(veriler.get("fatura_no") or "").strip()
@@ -650,7 +653,9 @@ class SatisFaturasiService:
             else:
                 stamp_update(fatura)
             session.flush()
-            SatisFaturasiService._durumlari_guncelle(session, fatura)
+            SatisFaturasiService._durumlari_guncelle(
+                session, fatura, onceki_irsaliye_satirlari=onceki_irsaliye_satirlari
+            )
             try:
                 session.flush()
             except IntegrityError as hata:
@@ -767,11 +772,10 @@ class SatisFaturasiService:
             for satir in fatura.satirlar:
                 # İrsaliyeden stok çıkışı yapılmışsa fatura satırında tekrar çıkış yapma
                 skip_stok = False
-                if fatura.irsaliye_id and getattr(satir, "irsaliye_satiri_id", None):
-                    from database.models.satis_irsaliyesi import SatisIrsaliyesi
+                if getattr(satir, "irsaliye_satiri_id", None):
                     from database.satis_irsaliyesi_service import stok_cikis_gerekli
 
-                    ir = session.get(SatisIrsaliyesi, fatura.irsaliye_id)
+                    ir = SatisFaturasiService._satir_irsaliyesi(session, fatura, satir)
                     if ir is not None and not stok_cikis_gerekli(ir):
                         skip_stok = True
                         satir.lot_cikisi = "İrsaliye stokundan"
@@ -1041,21 +1045,43 @@ class SatisFaturasiService:
                     kaynak.faturalanan_miktar = max(Decimal("0"), kaynak.faturalanan_miktar - satir.miktar)
 
     @staticmethod
-    def _durumlari_guncelle(session, fatura):
+    def _satir_irsaliyesi(session, fatura, satir):
+        kaynak = session.get(SatisIrsaliyesiSatiri, int(satir.irsaliye_satiri_id))
+        irsaliye_id = kaynak.irsaliye_id if kaynak is not None else fatura.irsaliye_id
+        return session.get(SatisIrsaliyesi, irsaliye_id) if irsaliye_id else None
+
+    @staticmethod
+    def _durumlari_guncelle(session, fatura, onceki_irsaliye_satirlari=()):
         from database.satis_siparisi_service import SatisSiparisiService
+        from database.satis_irsaliyesi_service import fatura_sonrasi_durum
 
         siparis_id = fatura.siparis_id
-        if fatura.irsaliye_id:
-            belge = session.scalar(select(SatisIrsaliyesi).options(selectinload(SatisIrsaliyesi.satirlar)).where(SatisIrsaliyesi.id == fatura.irsaliye_id))
-            if belge:
-                kalan = [s.miktar - s.faturalanan_miktar for s in belge.satirlar]
-                belge.durum = (
-                    "FATURALANDI" if kalan and all(x <= 0 for x in kalan)
-                    else "KISMİ FATURALANDI" if any(s.faturalanan_miktar > 0 for s in belge.satirlar)
-                    else "AÇIK"
-                )
-                if not siparis_id:
-                    siparis_id = belge.siparis_id
+        irsaliye_idleri = {int(fatura.irsaliye_id)} if fatura.irsaliye_id else set()
+        satir_idleri = [
+            int(s.irsaliye_satiri_id) for s in fatura.satirlar if getattr(s, "irsaliye_satiri_id", None)
+        ] + [int(i) for i in onceki_irsaliye_satirlari or ()]
+        if satir_idleri:
+            irsaliye_idleri |= {
+                int(i)
+                for i in session.scalars(
+                    select(SatisIrsaliyesiSatiri.irsaliye_id).where(
+                        SatisIrsaliyesiSatiri.id.in_(satir_idleri)
+                    )
+                ).all()
+            }
+        for irsaliye_id in sorted(irsaliye_idleri):
+            belge = session.scalar(select(SatisIrsaliyesi).options(selectinload(SatisIrsaliyesi.satirlar)).where(SatisIrsaliyesi.id == irsaliye_id))
+            if belge is None or belge.durum == "İPTAL":
+                continue
+            kalan = [s.miktar - s.faturalanan_miktar for s in belge.satirlar]
+            if kalan and all(x <= 0 for x in kalan):
+                belge.durum = "FATURALANDI"
+            elif any(s.faturalanan_miktar > 0 for s in belge.satirlar):
+                belge.durum = "KISMİ FATURALANDI"
+            elif belge.durum in ("FATURALANDI", "KISMİ FATURALANDI"):
+                belge.durum = fatura_sonrasi_durum(belge)
+            if not siparis_id:
+                siparis_id = belge.siparis_id
         SatisSiparisiService.durumu_guncelle(session, siparis_id)
 
     @staticmethod

@@ -132,6 +132,51 @@ def render_invoice_to_pdf(vm: InvoicePrintViewModel, hedef: Path) -> Path:
     )
 
 
+def html_metnini_pdfe_cevir(html_metin: str, hedef: Path, *, belge_adi: str = "Belge") -> Path:
+    """Hazır A4 HTML metnini Chromium print-to-pdf ile PDF'e çevirir (irsaliye vb.)."""
+    hedef = Path(hedef)
+    hedef.parent.mkdir(parents=True, exist_ok=True)
+    klasor = Path(tempfile.gettempdir()) / "muhasebe_belge_a4"
+    klasor.mkdir(parents=True, exist_ok=True)
+    html_yol = klasor / f"belge_{datetime.now():%H%M%S}_{uuid.uuid4().hex[:6]}.html"
+    html_yol.write_text(html_metin, encoding="utf-8")
+    son_hata: Exception | None = None
+    for tarayici in _chrome_edge_paths():
+        try:
+            proc = subprocess.run(
+                [
+                    str(tarayici),
+                    "--headless=new",
+                    "--disable-gpu",
+                    "--no-pdf-header-footer",
+                    f"--print-to-pdf={hedef}",
+                    html_yol.resolve().as_uri(),
+                ],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            if hedef.is_file() and hedef.stat().st_size > 500:
+                try:
+                    html_yol.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return hedef
+            son_hata = RuntimeError(
+                (proc.stderr or b"").decode("utf-8", errors="ignore")[:300]
+                or f"exit={proc.returncode}"
+            )
+        except Exception as exc:
+            son_hata = exc
+            _LOG.warning("PDF motoru başarısız (%s): %s", tarayici.name, exc)
+    _LOG.error("%s PDF oluşturulamadı | yol=%s hata=%s", belge_adi, hedef, son_hata)
+    raise ValueError(
+        f"{belge_adi} PDF dosyası oluşturulamadı. Edge veya Chrome kurulu olmalı; "
+        "kayıt klasörünü ve dosya izinlerini kontrol edin.\n"
+        f"(Geçici HTML: {html_yol})"
+    )
+
+
 def render_preview_pdf_and_open(vm: InvoicePrintViewModel) -> Path:
     """Geçici PDF oluşturup varsayılan görüntüleyicide açar (kalıcı kayıt yok)."""
     eski_onizleme_pdflerini_temizle()

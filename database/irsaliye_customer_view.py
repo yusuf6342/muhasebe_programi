@@ -126,6 +126,24 @@ class CustomerDispatchViewModel:
     sevk_notu: str = ""
     siparis_no: str = ""
     para_birimi: str = "TRY"
+    toplam_miktar_goster: str = ""
+    aciklama: str = ""
+
+
+def miktar_metni(miktar) -> str:
+    """10 → '10', 2.5000 → '2,5' (tam sayının sıfırları silinmez)."""
+    metin = f"{_d(miktar):f}"
+    if "." in metin:
+        metin = metin.rstrip("0").rstrip(".")
+    return (metin or "0").replace(".", ",")
+
+
+def toplam_miktar_metni(satirlar) -> str:
+    """Birim bazında toplam miktar: '12 Adet · 3 Koli'."""
+    toplamlar: dict[str, Decimal] = {}
+    for s in satirlar:
+        toplamlar[s.birim or "Adet"] = toplamlar.get(s.birim or "Adet", Decimal("0")) + _d(s.miktar)
+    return " · ".join(f"{miktar_metni(m)} {b}" for b, m in toplamlar.items())
 
 
 class CustomerDispatchSecurityError(ValueError):
@@ -231,7 +249,7 @@ def build_customer_dispatch_from_dialog(dialog) -> CustomerDispatchViewModel:
                 iskonto_orani=iskonto,
                 kdv_orani=kdv,
                 satir_toplam=toplam,
-                miktar_goster=f"{miktar:f}".rstrip("0").rstrip(".") or "0",
+                miktar_goster=miktar_metni(miktar),
                 birim_fiyat_goster=_para(fiyat) if is_priced else "—",
                 iskonto_goster=f"%{iskonto}" if is_priced else "—",
                 kdv_oran_goster=f"%{kdv}" if is_priced else "—",
@@ -327,6 +345,8 @@ def build_customer_dispatch_from_dialog(dialog) -> CustomerDispatchViewModel:
         musteri_notu=musteri_notu,
         sevk_notu=sevk_notu,
         siparis_no=siparis_no,
+        toplam_miktar_goster=toplam_miktar_metni(lines),
+        aciklama=_g("aciklama") or (getattr(irsaliye, "aciklama", None) if irsaliye else "") or "",
     )
     assert_customer_model_safe(vm)
     return vm
@@ -373,16 +393,21 @@ def render_customer_dispatch_html(vm: CustomerDispatchViewModel) -> str:
         row += "</tr>"
         satir_html.append(row)
 
-    toplam_html = ""
+    toplam_miktar = vm.toplam_miktar_goster or toplam_miktar_metni(vm.satirlar)
+    toplam_html = (
+        f"<div class='toplam'><div class='miktar'>Toplam Miktar: {_e(toplam_miktar)}"
+        f" &nbsp;·&nbsp; Kalem: {len(vm.satirlar)}</div>"
+    )
     if vm.is_priced:
-        toplam_html = f"""
-        <div class="toplam">
+        toplam_html += f"""
           <div>Ara Toplam: {_e(vm.ara_goster)} {vm.para_birimi}</div>
           <div>KDV: {_e(vm.kdv_goster)} {vm.para_birimi}</div>
-          <div class="genel">Genel Toplam: {_e(vm.genel_goster)} {vm.para_birimi}</div>
-        </div>"""
+          <div class="genel">Genel Toplam: {_e(vm.genel_goster)} {vm.para_birimi}</div>"""
+    toplam_html += "</div>"
 
     notlar = ""
+    if vm.aciklama:
+        notlar += f"<div class='bolum'><strong>Açıklama</strong><p>{_e(vm.aciklama)}</p></div>"
     if vm.musteri_notu:
         notlar += f"<div class='bolum'><strong>Müşteri Notu</strong><p>{_e(vm.musteri_notu)}</p></div>"
     if vm.sevk_notu:
@@ -395,23 +420,30 @@ def render_customer_dispatch_html(vm: CustomerDispatchViewModel) -> str:
 <title>{_e(vm.onizleme_baslik)} — {_e(vm.irsaliye_no)}</title>
 <style>
 @page {{ size: A4; margin: 14mm; }}
-body {{ font-family: "Segoe UI", Arial, sans-serif; color: #1a1a1a; font-size: 11px; }}
-.header {{ display:flex; justify-content:space-between; border-bottom:3px solid #1B2A4A; padding-bottom:10px; margin-bottom:14px; }}
+body {{ font-family: "Segoe UI", Arial, sans-serif; color: #172B4D; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+.header {{ display:flex; justify-content:space-between; border-bottom:4px solid #F4C542; padding-bottom:10px; margin-bottom:14px; }}
 .logo {{ max-height:64px; }}
-h1 {{ color:#1B2A4A; margin:0 0 4px; font-size:20px; letter-spacing:1px; }}
-.meta {{ color:#475569; }}
+h1 {{ color:#102A43; margin:0 0 4px; font-size:20px; letter-spacing:1px; }}
+.meta {{ color:#627D98; }}
 .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }}
-.kutu {{ background:#F8FAFC; border:1px solid #E2E8F0; padding:10px; border-radius:4px; }}
-.kutu h3 {{ margin:0 0 6px; color:#1B2A4A; font-size:12px; }}
+.kutu {{ background:#F3F6F9; border:1px solid #D9E2EC; border-left:4px solid #F4C542; padding:10px; border-radius:4px; }}
+.kutu h3 {{ margin:0 0 6px; color:#102A43; font-size:12px; }}
 table {{ width:100%; border-collapse:collapse; margin-top:8px; }}
-th {{ background:#1B2A4A; color:#fff; padding:6px; text-align:left; }}
-td {{ border-bottom:1px solid #E2E8F0; padding:6px; vertical-align:top; }}
+thead {{ display:table-header-group; }}
+tfoot {{ display:table-footer-group; }}
+tr {{ page-break-inside:avoid; break-inside:avoid; }}
+th {{ background:#102A43; color:#fff; padding:6px; text-align:left; border-bottom:3px solid #F4C542; }}
+td {{ border-bottom:1px solid #D9E2EC; padding:6px; vertical-align:top; }}
+tbody tr:nth-child(even) td {{ background:#F8FAFC; }}
 .c {{ text-align:center; }} .r {{ text-align:right; }}
-.muted {{ color:#64748B; font-size:10px; margin-top:2px; }}
-.toplam {{ margin-top:12px; text-align:right; }}
-.toplam .genel {{ font-weight:700; font-size:13px; color:#1B2A4A; }}
-.bolum {{ margin-top:12px; }}
-.footer {{ margin-top:24px; font-size:9px; color:#94A3B8; border-top:1px solid #E2E8F0; padding-top:8px; }}
+.muted {{ color:#627D98; font-size:10px; margin-top:2px; }}
+.toplam {{ margin-top:12px; text-align:right; page-break-inside:avoid; }}
+.toplam .miktar {{ display:inline-block; background:#FFE89A; color:#081B2C; font-weight:700; padding:4px 10px; border-radius:3px; margin-bottom:4px; }}
+.toplam .genel {{ font-weight:700; font-size:13px; color:#102A43; }}
+.bolum {{ margin-top:12px; page-break-inside:avoid; }}
+.imza {{ display:flex; justify-content:space-between; margin-top:28px; page-break-inside:avoid; }}
+.imza div {{ width:45%; border-top:1px solid #102A43; padding-top:4px; text-align:center; color:#627D98; }}
+.footer {{ margin-top:24px; font-size:9px; color:#94A3B8; border-top:1px solid #D9E2EC; padding-top:8px; }}
 </style>
 </head>
 <body>
@@ -459,6 +491,7 @@ td {{ border-bottom:1px solid #E2E8F0; padding:6px; vertical-align:top; }}
 </table>
 {toplam_html}
 {notlar}
+<div class="imza"><div>Teslim Eden</div><div>Teslim Alan</div></div>
 <div class="footer">Bu belge müşteri sevk irsaliyesidir. Şirket içi notlar paylaşılmaz.</div>
 </body>
 </html>"""

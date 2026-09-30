@@ -72,8 +72,12 @@ class TestSevkEtStok(unittest.TestCase):
     @patch("database.stok_service.StokService.irsaliye_cikisi")
     @patch.object(SatisIrsaliyesiService, "schema_hazirla")
     @patch.object(SatisIrsaliyesiService, "getir")
+    @patch.object(
+        SatisIrsaliyesiService, "_temel_miktar", side_effect=lambda _s, _k, miktar, _b: miktar
+    )
     def test_sevk_et_calls_irsaliye_cikisi(
         self,
+        _mock_temel,
         mock_getir,
         mock_schema,
         mock_cikis,

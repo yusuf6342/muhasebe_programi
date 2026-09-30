@@ -40,8 +40,13 @@ SATIS_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
         "teklif",
     ),
     (
-        "SATIŞ İRSALİYELERİ",
-        "Sevk ve teslimat irsaliyelerini yönetin",
+        "SATIŞ İRSALİYESİ",
+        "Yeni ve boş irsaliye: müşteri, ürün, siparişten aktarım ve sevk",
+        "irsaliye_yeni",
+    ),
+    (
+        "SATIŞ İRSALİYESİ LİSTESİ",
+        "Kayıtlı irsaliyeleri ara, filtrele, aç ve faturalama durumunu izle",
         "irsaliye",
     ),
     (
@@ -127,6 +132,7 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "fatura": app.satis_faturalari_alt_menusu_goster,
         "siparis": app.satis_siparisleri_goster,
         "teklif": lambda: __import__("teklif_ui", fromlist=["teklifler_hub_goster"]).teklifler_hub_goster(app),
+        "irsaliye_yeni": app.satis_irsaliyesi_yeni_ac,
         "irsaliye": app.satis_irsaliyeleri_goster,
         "cari": lambda: cari_hesap_islemleri_goster(app),
         "rapor": lambda: satis_raporlar_hub_goster(app),
