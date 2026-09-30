@@ -104,6 +104,10 @@ class AlisSiparisiService:
         if termin_tarihi < siparis_tarihi:
             raise ValueError("Termin tarihi sipariş tarihinden önce olamaz.")
         beklenen_versiyon = veriler.get("row_version")
+        if any(v.get("talep_paylari") for v in satir_verileri):
+            from database.satin_alma_talep_service import SatinAlmaTalepService
+
+            SatinAlmaTalepService.schema_hazirla()
         with get_session() as session:
             if siparis_id:
                 siparis = session.get(AlisSiparisi, siparis_id)
@@ -173,6 +177,9 @@ class AlisSiparisiService:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Sipariş kaydedilemedi.") from hata
+            from database.satin_alma_talep_service import SatinAlmaTalepService
+
+            SatinAlmaTalepService.siparis_baglarini_yaz(session, siparis, satir_verileri)
             return siparis
 
     @staticmethod

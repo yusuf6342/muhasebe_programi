@@ -91,7 +91,7 @@ class _AlisSatirGirisi:
 
     @staticmethod
     def _alis_bagli(s: dict) -> bool:
-        if s.get("siparis_satiri_id") or s.get("kaynak_fatura_satiri_id"):
+        if s.get("siparis_satiri_id") or s.get("kaynak_fatura_satiri_id") or s.get("talep_paylari"):
             return True
         return any(
             decimal(s.get(k) or 0, "Miktar", Decimal("0")) > 0
@@ -302,7 +302,7 @@ class AlisSiparisOdemeDialog(tk.Toplevel):
 
 
 class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
-    def __init__(self, parent, siparis=None, cari=None):
+    def __init__(self, parent, siparis=None, cari=None, hazir_satirlar=None):
         super().__init__(parent)
         self.siparis = siparis
         self.result = None
@@ -355,6 +355,7 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
             foreground="#627D98",
         ).pack(side="left")
         ttk.Button(satir_btn, text="Satır Sil (Del)", command=self.satir_sil).pack(side="left", padx=6)
+        ttk.Button(satir_btn, text="Talepten Aktar", command=self.talepten_aktar).pack(side="left", padx=6)
         self.satir_ozet = ttk.Label(satir_btn, text="Sipariş tutarı: 0,00 TL")
         self.satir_ozet.pack(side="right")
 
@@ -387,6 +388,60 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
                 self._tedarikci_kart_uygula()
         else:
             self._bakiye_guncelle()
+        if hazir_satirlar:
+            self.talep_satirlarini_ekle(hazir_satirlar)
+
+    def talep_satirlarini_ekle(self, satirlar: list[dict]) -> None:
+        """Talep servisinden hazırlanan satırlar; aynı ürün/birimdeki talep satırıyla birleşir."""
+        for yeni in satirlar:
+            hedef = next(
+                (s for s in self.satirlar
+                 if s.get("talep_paylari") and s["urun_kodu"] == yeni["urun_kodu"]
+                 and (s.get("birim") or "").casefold() == (yeni.get("birim") or "").casefold()
+                 and not any(decimal(s.get(k) or 0, "M", Decimal("0")) > 0
+                             for k in ("irsaliyelenen_miktar", "faturalanan_miktar"))),
+                None,
+            )
+            if hedef is None:
+                self.satirlar.append(dict(yeni, talep_paylari=list(yeni.get("talep_paylari") or [])))
+                continue
+            hedef["miktar"] = decimal(hedef["miktar"], "Miktar", Decimal("0")) + decimal(yeni["miktar"], "Miktar")
+            hedef["talep_paylari"] = list(hedef["talep_paylari"]) + list(yeni.get("talep_paylari") or [])
+        self._satir_listesini_yenile()
+
+    def talepten_aktar(self):
+        from database.satin_alma_talep_service import SatinAlmaTalepService
+        from satin_alma_talep_ui import TalepAktarDialog
+
+        if not self._alis_bekleyenleri_uygula():
+            return
+        dlg = TalepAktarDialog(self)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        mevcut: dict[int, Decimal] = {}
+        for s in self.satirlar:
+            for p in s.get("talep_paylari") or []:
+                mevcut[int(p["talep_satiri_id"])] = mevcut.get(int(p["talep_satiri_id"]), Decimal("0")) + Decimal(
+                    str(p["miktar"]))
+        if self.siparis:
+            onceki = SatinAlmaTalepService.siparis_paylari(self.siparis.id)
+            for paylar in onceki.values():
+                for p in paylar:
+                    mevcut[int(p["talep_satiri_id"])] = mevcut.get(int(p["talep_satiri_id"]), Decimal("0")) - p["miktar"]
+        cakisan = [sid for sid in dlg.result if mevcut.get(sid, Decimal("0")) > 0]
+        if cakisan:
+            messagebox.showwarning(
+                "Talepten Aktar", "Seçilen talep satırlarının bir kısmı bu siparişe zaten eklenmiş (henüz kaydedilmemiş).",
+                parent=self,
+            )
+            return
+        try:
+            hazir = SatinAlmaTalepService.siparis_satirlari_hazirla(dlg.result)
+        except (ValueError, PermissionError) as hata:
+            messagebox.showerror("Talepten Aktar", str(hata), parent=self)
+            return
+        self.talep_satirlarini_ekle(hazir["satirlar"])
 
     def _genel_olustur(self, parent):
         """Üst kısım: 4 eşit bölme — Sipariş | Vade | Tedarikçi | Bakiyeler."""
@@ -662,8 +717,12 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
             self.durum.set(s.durum or "AÇIK")
         self.satirlar.clear()
         self.odemeler.clear()
+        from database.satin_alma_talep_service import SatinAlmaTalepService
+
+        talep_paylari = SatinAlmaTalepService.siparis_paylari(s.id)
         for satir in s.satirlar:
             self.satirlar.append({
+                "talep_paylari": talep_paylari.get(int(satir.id), []),
                 "urun_kodu": satir.urun_kodu, "urun_adi": satir.urun_adi,
                 "aciklama": satir.aciklama or "", "miktar": satir.miktar, "birim": satir.birim,
                 "birim_alis_fiyati": satir.birim_alis_fiyati,
@@ -974,6 +1033,9 @@ class AlisFaturasiDialog(tk.Toplevel):
             side="right", padx=4
         )
         ttk.Button(butonlar, text="İptal Et", command=self.faturayi_iptal_et).pack(side="right", padx=4)
+        ttk.Button(butonlar, text="Masraf Dağıtımları", command=self._masraf_dagitimlari).pack(
+            side="right", padx=4
+        )
         ttk.Button(butonlar, text="Kapat", command=self.destroy).pack(side="right", padx=4)
         self.bind("<F1>", self._f1_kaydet)
         self.bind("<F3>", self._f3_fatura_listesi)
@@ -2412,6 +2474,14 @@ class AlisFaturasiDialog(tk.Toplevel):
             messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
             return
         self.destroy()
+
+    def _masraf_dagitimlari(self):
+        if not self.fatura:
+            messagebox.showinfo("Masraf Dağıtımı", "Önce faturayı kaydedin.", parent=self)
+            return
+        from masraf_dagitim_ui import bagli_dagitimlar_goster
+
+        bagli_dagitimlar_goster(self, alis_fatura_id=int(self.fatura.id))
 
     def faturayi_iptal_et(self):
         if not self.fatura:

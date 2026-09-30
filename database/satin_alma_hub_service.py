@@ -47,7 +47,7 @@ class SatinAlmaHubService:
                         .select_from(SatinAlmaTalep)
                         .where(
                             SatinAlmaTalep.durum.in_(
-                                ("TASLAK", "ONAY BEKLİYOR", "ONAYLANDI")
+                                ("TASLAK", "ONAY BEKLİYOR", "ONAYA GÖNDERİLDİ", "ONAYLANDI")
                             )
                         )
                     )

@@ -1285,8 +1285,11 @@ class RaporService:
         satis_iade_net = satis_iade_brut - satis_iade_iskonto
         net_satislar = brut_satis - satis_iskonto - satis_iade_net
 
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        maliyete_aktarilan = MasrafDagitimService.maliyete_aktarilan_toplam(baslangic, bitis)
         alis_iade_net = alis_iade_brut - alis_iade_iskonto
-        net_alislar = alis_brut - alis_iskonto - alis_iade_net
+        net_alislar = alis_brut - alis_iskonto - alis_iade_net + maliyete_aktarilan
 
         smm = donem_basi_emtia + net_alislar - donem_sonu_emtia
         brut_kar = net_satislar - smm
@@ -1294,7 +1297,7 @@ class RaporService:
         toplam_gider_fis = (
             gider_fis_hizmet + gider_fis_faiz + gider_fis_masraf + gider_fis_diger
         )
-        toplam_giderler = toplam_gider_fis + hizmet_gider
+        toplam_giderler = toplam_gider_fis + hizmet_gider - maliyete_aktarilan
         net_kar = brut_kar + hizmet_gelir - toplam_giderler
 
         satirlar: list[dict[str, Any]] = []
@@ -1318,6 +1321,10 @@ class RaporService:
             satirlar.append(
                 _satir("Satınalma iadeleri (−)", -alis_iade_net, kaynak="alis_iade")
             )
+        if maliyete_aktarilan:
+            satirlar.append(
+                _satir("Maliyete aktarılan masraflar", maliyete_aktarilan, kaynak="masraf_dagitimi")
+            )
         satirlar.append(
             _satir("Net alışlar", net_alislar, seviye="ara_toplam", kaynak="net_alis")
         )
@@ -1338,6 +1345,10 @@ class RaporService:
         if hizmet_gider:
             satirlar.append(
                 _satir("Hizmet alış (gider) faturaları", hizmet_gider, kaynak="hizmet_gider")
+            )
+        if maliyete_aktarilan:
+            satirlar.append(
+                _satir("Maliyete aktarılan masraflar (−)", -maliyete_aktarilan, kaynak="masraf_dagitimi")
             )
         if gider_fis_hizmet:
             satirlar.append(
@@ -1379,6 +1390,7 @@ class RaporService:
                 "donem_basi_emtia": donem_basi_emtia,
                 "donem_ici_alislar": alis_brut - alis_iskonto,
                 "alis_iadeleri": alis_iade_net,
+                "maliyete_aktarilan_masraf": maliyete_aktarilan,
                 "net_alislar": net_alislar,
                 "donem_sonu_emtia": donem_sonu_emtia,
                 "smm": smm,

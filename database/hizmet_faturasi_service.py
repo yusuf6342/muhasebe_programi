@@ -193,6 +193,10 @@ class HizmetFaturasiService:
             raise ValueError("Vade tarihi fatura tarihinden önce olamaz.")
         if not satir_verileri:
             raise ValueError("En az bir fatura satırı ekleyin.")
+        if fatura_id:
+            from database.masraf_dagitim_service import MasrafDagitimService
+
+            MasrafDagitimService.kilit_kontrol(kaynak_id=int(fatura_id))
 
         with get_session() as session:
             if fatura_id:
@@ -371,6 +375,9 @@ class HizmetFaturasiService:
     @staticmethod
     def iptal_et(fatura_id):
         yazma_zorunlu("finans_duzenleme", "iptal")
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        MasrafDagitimService.kilit_kontrol(kaynak_id=int(fatura_id))
         with get_session() as session:
             fatura = session.scalar(
                 select(HizmetFaturasi)

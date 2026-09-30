@@ -126,6 +126,7 @@ class CariKartSmokeTest(unittest.TestCase):
 
     def test_ui_open_dirty_kaydet(self):
         import tkinter as tk
+        from unittest.mock import patch
 
         from cari_kart_ui import CariDialog
         from database.cari_service import CariService
@@ -133,6 +134,9 @@ class CariKartSmokeTest(unittest.TestCase):
         cari = CariService.getir(self.cari_id)
         root = tk.Tk()
         root.withdraw()
+        mb = patch("cari_kart_ui.messagebox")
+        mb.start()
+        self.addCleanup(mb.stop)
         try:
             dlg = CariDialog(root, cari=cari)
             root.update_idletasks()

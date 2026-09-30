@@ -235,6 +235,10 @@ class HizmetFaturaDialog(tk.Toplevel):
             side="right", padx=4
         )
         ttk.Button(ust_btn, text="İptal Et", command=self.iptal_et).pack(side="right", padx=4)
+        if self.hizmet_turu == "GIDER":
+            ttk.Button(ust_btn, text="Masraf Dağıtımları", command=self._masraf_dagitimlari).pack(
+                side="right", padx=4
+            )
         ttk.Button(ust_btn, text="Kapat", command=self.destroy).pack(side="right", padx=4)
         self.bind("<F1>", lambda _e: self.kaydet())
 
@@ -748,6 +752,14 @@ class HizmetFaturaDialog(tk.Toplevel):
             parent=self,
         )
         self.destroy()
+
+    def _masraf_dagitimlari(self):
+        if not self.fatura:
+            messagebox.showinfo("Masraf Dağıtımı", "Önce faturayı kaydedin.", parent=self)
+            return
+        from masraf_dagitim_ui import bagli_dagitimlar_goster
+
+        bagli_dagitimlar_goster(self, kaynak_id=int(self.fatura.id))
 
     def iptal_et(self):
         if not self.fatura:

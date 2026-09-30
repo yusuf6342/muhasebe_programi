@@ -39,6 +39,9 @@ class TahsilatMakbuzuEkranTest(unittest.TestCase):
         self._yamalar = [
             patch.object(kasa_makbuz_ui.messagebox, ad, side_effect=lambda *a, _ad=ad, **k: self.mesajlar.append((_ad, a)))
             for ad in ("showerror", "showinfo", "showwarning")
+        ] + [
+            # Kirli form kapatılırsa gerçek modal pencere testi kilitlemesin: varsayılan "kaydetmeden kapat"
+            patch.object(kasa_makbuz_ui.messagebox, "askyesnocancel", return_value=False),
         ]
         for y in self._yamalar:
             y.start()

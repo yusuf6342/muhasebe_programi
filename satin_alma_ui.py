@@ -28,7 +28,8 @@ from satis_tema import (
 
 SATIN_ALMA_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("TEDARİKÇİ KARTLARI", "Cari, iletişim, risk, vade ve alış geçmişi", "tedarikci"),
-    ("SATIN ALMA TALEPLERİ", "İç ihtiyaç ve yeniden sipariş talepleri", "talep"),
+    ("SATIN ALMA TALEPLERİ", "Yeni satın alma talebi formu", "talep"),
+    ("SATIN ALMA TALEP LİSTESİ", "Talepleri filtrele, onayla ve siparişe aktar", "talep_liste"),
     ("TEDARİKÇİ TEKLİFLERİ", "Çoklu tedarikçi fiyat ve şart karşılaştırması", "teklif"),
     ("SATIN ALMA SİPARİŞLERİ", "Sipariş, termin ve kısmi teslim takibi", "siparis"),
     ("ALIŞ İRSALİYELERİ", "Mal kabul ve faturalanmamış irsaliyeler", "irsaliye"),
@@ -53,6 +54,14 @@ RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = (
 )
 
 _SIMGELER = ("◎", "▤", "☰", "▸", "⇄", "▣", "◉", "▦", "◇", "◆", "○", "●")
+
+
+def __getattr__(ad: str):
+    if ad == "SatinAlmaTalepDialog":
+        from satin_alma_talep_ui import SatinAlmaTalepDialog
+
+        return SatinAlmaTalepDialog
+    raise AttributeError(ad)
 
 
 def _menu_isaretle(app):
@@ -164,9 +173,15 @@ def _hub_komutlar(app) -> dict[str, Callable]:
             geri_fn=lambda: satin_alma_hub_goster(app),
         )
 
+    def talep_formu():
+        from satin_alma_talep_ui import talep_formu_ac
+
+        talep_formu_ac(app)
+
     return {
         "tedarikci": app.tedarikciler_goster,
-        "talep": lambda: satin_alma_talepleri_goster(app),
+        "talep": talep_formu,
+        "talep_liste": lambda: satin_alma_talepleri_goster(app),
         "teklif": lambda: tedarikci_teklifleri_goster(app),
         "siparis": app.alis_siparisleri_goster,
         "irsaliye": app.alis_irsaliyeleri_goster,
@@ -273,135 +288,9 @@ def _liste_ust(app, baslik, alt, geri):
 
 
 def satin_alma_talepleri_goster(app) -> None:
-    from database.satin_alma_talep_service import DURUMLAR, SatinAlmaTalepService
+    from satin_alma_talep_ui import satin_alma_talep_listesi_goster
 
-    kok = _liste_ust(
-        app,
-        "SATIN ALMA TALEPLERİ",
-        "İç ihtiyaç talepleri; onay sonrası teklife veya siparişe aktarılır",
-        lambda: satin_alma_hub_goster(app),
-    )
-    arac = tk.Frame(kok, bg=ACIK_BG)
-    arac.pack(fill="x", padx=16, pady=8)
-    tk.Label(arac, text="Durum:", bg=ACIK_BG, fg=LACIVERT).pack(side="left")
-    durum = ttk.Combobox(arac, values=("Tümü",) + DURUMLAR, state="readonly", width=18)
-    durum.set("Tümü")
-    durum.pack(side="left", padx=6)
-
-    cerceve = ttk.Frame(kok)
-    cerceve.pack(fill="both", expand=True, padx=16, pady=8)
-    kolonlar = ("no", "tarih", "ihtiyac", "isteyen", "depo", "oncelik", "durum", "satir")
-    tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-    treeview_stil(tablo)
-    for k, b, w in (
-        ("no", "Talep No", 110),
-        ("tarih", "Tarih", 90),
-        ("ihtiyac", "İhtiyaç", 90),
-        ("isteyen", "İsteyen", 140),
-        ("depo", "Depo", 100),
-        ("oncelik", "Öncelik", 80),
-        ("durum", "Durum", 120),
-        ("satir", "Satır", 60),
-    ):
-        tablo.heading(k, text=b)
-        tablo.column(k, width=w)
-    tablo.pack(side="left", fill="both", expand=True)
-    ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview).pack(side="right", fill="y")
-
-    def yenile():
-        for i in tablo.get_children():
-            tablo.delete(i)
-        for r in SatinAlmaTalepService.listele(durum.get()):
-            tablo.insert(
-                "",
-                "end",
-                iid=str(r["id"]),
-                values=(
-                    r["talep_no"],
-                    _tarih(r["talep_tarihi"]),
-                    _tarih(r["ihtiyac_tarihi"]),
-                    r["isteyen"],
-                    r["depo"],
-                    r["oncelik"],
-                    r["durum"],
-                    r["satir_adet"],
-                ),
-            )
-
-    def yeni():
-        dlg = SatinAlmaTalepDialog(app)
-        app.wait_window(dlg)
-        yenile()
-
-    def duzenle():
-        sec = tablo.selection()
-        if not sec:
-            messagebox.showinfo("Seçim", "Talep seçin.", parent=app)
-            return
-        dlg = SatinAlmaTalepDialog(app, talep_id=int(sec[0]))
-        app.wait_window(dlg)
-        yenile()
-
-    def onaya_gonder():
-        sec = tablo.selection()
-        if not sec:
-            return
-        try:
-            SatinAlmaTalepService.durum_degistir(int(sec[0]), "ONAY BEKLİYOR")
-        except ValueError as e:
-            messagebox.showerror("Durum", str(e), parent=app)
-            return
-        yenile()
-
-    def onayla():
-        sec = tablo.selection()
-        if not sec:
-            return
-        try:
-            SatinAlmaTalepService.durum_degistir(int(sec[0]), "ONAYLANDI")
-        except ValueError as e:
-            messagebox.showerror("Durum", str(e), parent=app)
-            return
-        yenile()
-
-    def teklife():
-        sec = tablo.selection()
-        if not sec:
-            messagebox.showinfo("Seçim", "Talep seçin.", parent=app)
-            return
-        from database.alis_siparisi_service import AlisSiparisiService
-        from database.tedarikci_teklif_service import TedarikciTeklifService
-
-        tedarikciler = AlisSiparisiService.aktif_tedarikcileri()
-        if not tedarikciler:
-            messagebox.showerror("Teklif", "Aktif tedarikçi yok.", parent=app)
-            return
-        # İlk 3 tedarikçiye varsayılan (dialog ile seçim basit tutuldu)
-        dlg = TedarikciSecDialog(app, tedarikciler)
-        app.wait_window(dlg)
-        if not dlg.result:
-            return
-        try:
-            tid = TedarikciTeklifService.talepden_olustur(int(sec[0]), dlg.result)
-            SatinAlmaTalepService.durum_degistir(int(sec[0]), "ONAYLANDI")
-        except ValueError as e:
-            messagebox.showerror("Teklif", str(e), parent=app)
-            return
-        messagebox.showinfo("Teklif", f"Teklif oluşturuldu (id={tid}).", parent=app)
-        tedarikci_teklifleri_goster(app)
-
-    alt = tk.Frame(kok, bg=ACIK_BG)
-    alt.pack(fill="x", padx=16, pady=10)
-    tk_buton(alt, "Yeni", yeni, rol="yeni").pack(side="left")
-    tk_buton(alt, "Düzenle", duzenle, rol="duzenle").pack(side="left", padx=6)
-    tk_buton(alt, "Onaya Gönder", onaya_gonder, rol="ara").pack(side="left", padx=6)
-    tk_buton(alt, "Onayla", onayla, rol="kaydet").pack(side="left", padx=6)
-    tk_buton(alt, "Teklife Aktar", teklife, rol="duzenle").pack(side="left", padx=6)
-    tk_buton(alt, "Yenile", yenile, rol="ara").pack(side="right")
-    durum.bind("<<ComboboxSelected>>", lambda _e: yenile())
-    yenile()
-    if hasattr(app, "nav_sayfa_isaretle"):
-        app.nav_sayfa_isaretle(lambda: satin_alma_talepleri_goster(app))
+    satin_alma_talep_listesi_goster(app)
 
 
 def tedarikci_teklifleri_goster(app) -> None:
@@ -559,13 +448,20 @@ def tedarikci_fiyat_listeleri_goster(app) -> None:
 
 
 def masraf_dagitimi_goster(app) -> None:
+    from masraf_dagitim_ui import masraf_dagitimi_goster as goster
+
+    goster(app)
+
+
+def eski_fatura_masraflari_goster(app) -> None:
+    """Gider belgesi olmadan faturaya serbest tutar girilen eski masraf kayıtları."""
     from database.alis_masraf_service import MASRAF_TURLERI, YONTEMLER, AlisMasrafService
 
     kok = _liste_ust(
         app,
-        "MASRAF DAĞITIMI",
-        "Alış faturasına nakliye/hamaliye vb. ekleyip satırlara dağıtın",
-        lambda: satin_alma_hub_goster(app),
+        "ESKİ FATURA MASRAFLARI",
+        "Gider belgesine bağlı olmayan eski masraf kayıtları (genel muhasebe fişi üretmez)",
+        lambda: masraf_dagitimi_goster(app),
     )
     ust = ttk.Panedwindow(kok, orient="horizontal")
     ust.pack(fill="both", expand=True, padx=16, pady=8)
@@ -701,7 +597,7 @@ def masraf_dagitimi_goster(app) -> None:
     fatura_tablo.bind("<<TreeviewSelect>>", masraflari_yenile)
     faturalari_yenile()
     if hasattr(app, "nav_sayfa_isaretle"):
-        app.nav_sayfa_isaretle(lambda: masraf_dagitimi_goster(app))
+        app.nav_sayfa_isaretle(lambda: eski_fatura_masraflari_goster(app))
 
 
 def faturalanmamis_irsaliye_raporu_goster(app) -> None:
@@ -988,150 +884,6 @@ class _SatinAlmaSatirGirisi:
             return False
         self._satir_ici_giris.bekleyeni_uygula()
         return True
-
-
-class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
-    _KOLONLAR = (
-        ("kod", "Stok Kodu", 110), ("ad", "Ürün Adı", 250), ("miktar", "Miktar", 80),
-        ("birim", "Birim", 80), ("aciklama", "Açıklama", 180),
-    )
-
-    def __init__(self, parent, talep_id=None):
-        super().__init__(parent)
-        self.talep_id = talep_id
-        self._durum = "TASLAK"
-        self.title("Satın Alma Talebi")
-        self.geometry("760x520")
-        self.transient(parent)
-        self.grab_set()
-        from database.satin_alma_talep_service import ONCELIKLER, SatinAlmaTalepService
-        from database.stok_service import StokService
-        from satir_ici_urun_giris import HucreAlani, sayi_metni
-
-        self.StokService = StokService
-        self.SatinAlmaTalepService = SatinAlmaTalepService
-
-        ust = ttk.Frame(self, padding=10)
-        ust.pack(fill="x")
-        ttk.Label(ust, text="Talep No").grid(row=0, column=0, sticky="w")
-        self.no = ttk.Entry(ust, width=16)
-        self.no.grid(row=0, column=1, padx=4)
-        self.no.insert(0, SatinAlmaTalepService.talep_no() if not talep_id else "")
-        ttk.Label(ust, text="Tarih (GG.AA.YYYY)").grid(row=0, column=2, sticky="w")
-        self.tarih = ttk.Entry(ust, width=12)
-        self.tarih.grid(row=0, column=3, padx=4)
-        self.tarih.insert(0, date.today().strftime("%d.%m.%Y"))
-        ttk.Label(ust, text="İhtiyaç").grid(row=1, column=0, sticky="w", pady=4)
-        self.ihtiyac = ttk.Entry(ust, width=12)
-        self.ihtiyac.grid(row=1, column=1, padx=4)
-        ttk.Label(ust, text="Depo").grid(row=1, column=2, sticky="w")
-        self.depo = ttk.Entry(ust, width=16)
-        self.depo.grid(row=1, column=3, padx=4)
-        self.depo.insert(0, "ANA DEPO")
-        ttk.Label(ust, text="Öncelik").grid(row=2, column=0, sticky="w")
-        self.oncelik = ttk.Combobox(ust, values=ONCELIKLER, state="readonly", width=14)
-        self.oncelik.set("NORMAL")
-        self.oncelik.grid(row=2, column=1, padx=4)
-        ttk.Label(ust, text="Açıklama").grid(row=2, column=2, sticky="w")
-        self.aciklama = ttk.Entry(ust, width=28)
-        self.aciklama.grid(row=2, column=3, padx=4)
-
-        satir_fr = ttk.LabelFrame(self, text="Satırlar", padding=8)
-        satir_fr.pack(fill="both", expand=True, padx=10, pady=8)
-        self.satirlar = []
-        self._satir_alani_kur(
-            satir_fr,
-            [
-                HucreAlani("miktar", deger=lambda i: sayi_metni(self.satirlar[i].get("miktar") or 0)),
-                HucreAlani("birim", "secim", secenekler=self._satir_birimleri, serbest=False),
-                HucreAlani("aciklama", "metin", deger=lambda i: self.satirlar[i].get("aciklama") or ""),
-            ],
-            depo=lambda: self.depo.get().strip(),
-        )
-
-        alt = ttk.Frame(self)
-        alt.pack(fill="x", padx=10, pady=8)
-        ttk.Button(alt, text="Kaydet", command=self._kaydet).pack(side="right")
-        ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right", padx=6)
-
-        if talep_id:
-            self._yukle(talep_id)
-        self._satir_ici_giris.odakla()
-
-    def _kilitli(self) -> bool:
-        return getattr(self, "_durum", "TASLAK") in ("SİPARİŞE AKTARILDI", "İPTAL")
-
-    def _yeni_satir(self, degerler) -> dict:
-        kod = str(degerler[0] if degerler else "").strip()
-        if not kod:
-            raise ValueError("Stok bulunamadı.")
-        return {
-            "urun_kodu": kod,
-            "urun_adi": str(degerler[1] if len(degerler) > 1 else "").strip() or kod,
-            "birim": str(degerler[2] if len(degerler) > 2 else "").strip() or "Adet",
-            "miktar": Decimal("1"),
-            "aciklama": "",
-        }
-
-    def _satir_degerleri(self, s: dict) -> tuple:
-        from satir_ici_urun_giris import sayi_metni
-
-        return (s["urun_kodu"], s["urun_adi"], sayi_metni(s["miktar"]), s.get("birim") or "", s.get("aciklama") or "")
-
-    def _parse_tarih(self, metin):
-        metin = (metin or "").strip()
-        if not metin:
-            return None
-        return datetime.strptime(metin, "%d.%m.%Y").date()
-
-    def _yukle(self, talep_id):
-        t = self.SatinAlmaTalepService.getir(talep_id)
-        if not t:
-            return
-        self._durum = t.durum or "TASLAK"
-        self.no.delete(0, "end")
-        self.no.insert(0, t.talep_no)
-        self.tarih.delete(0, "end")
-        self.tarih.insert(0, _tarih(t.talep_tarihi))
-        if t.ihtiyac_tarihi:
-            self.ihtiyac.insert(0, _tarih(t.ihtiyac_tarihi))
-        self.depo.delete(0, "end")
-        self.depo.insert(0, t.depo or "ANA DEPO")
-        self.oncelik.set(t.oncelik or "NORMAL")
-        self.aciklama.insert(0, t.aciklama or "")
-        for s in t.satirlar or []:
-            self.satirlar.append(
-                {
-                    "urun_kodu": s.urun_kodu,
-                    "urun_adi": s.urun_adi,
-                    "birim": s.birim,
-                    "miktar": s.miktar,
-                    "aciklama": s.aciklama,
-                    "depo": s.depo,
-                }
-            )
-        self._satirlari_yenile()
-
-    def _kaydet(self):
-        if not self._bekleyenleri_uygula():
-            return
-        try:
-            veriler = {
-                "talep_no": self.no.get().strip(),
-                "talep_tarihi": self._parse_tarih(self.tarih.get()),
-                "ihtiyac_tarihi": self._parse_tarih(self.ihtiyac.get()),
-                "depo": self.depo.get().strip(),
-                "oncelik": self.oncelik.get(),
-                "aciklama": self.aciklama.get().strip(),
-                "durum": "TASLAK",
-            }
-            if not veriler["talep_tarihi"]:
-                raise ValueError("Talep tarihi zorunlu.")
-            self.SatinAlmaTalepService.kaydet(veriler, self.satirlar, self.talep_id)
-        except Exception as e:
-            messagebox.showerror("Kaydedilemedi", str(e), parent=self)
-            return
-        self.destroy()
 
 
 class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):

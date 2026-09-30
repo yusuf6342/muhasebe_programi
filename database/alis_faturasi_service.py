@@ -210,6 +210,10 @@ class AlisFaturasiService:
         if not satir_verileri:
             raise ValueError("En az bir fatura satırı ekleyin.")
         beklenen_versiyon = veriler.get("row_version")
+        if fatura_id:
+            from database.masraf_dagitim_service import MasrafDagitimService
+
+            MasrafDagitimService.kilit_kontrol(alis_fatura_id=int(fatura_id))
         with get_session() as session:
             if fatura_id:
                 fatura = session.get(AlisFaturasi, fatura_id)
@@ -418,6 +422,9 @@ class AlisFaturasiService:
     @staticmethod
     def iptal_et(fatura_id):
         yazma_zorunlu("alis_fatura_duzenleme", "alis_duzenleme", "iptal")
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        MasrafDagitimService.kilit_kontrol(alis_fatura_id=int(fatura_id))
         with get_session() as session:
             fatura = session.scalar(
                 select(AlisFaturasi)
