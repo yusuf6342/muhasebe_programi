@@ -165,6 +165,8 @@ a = Analysis(
         "fatura_satir_kolon_prefs",
         "fatura_tema",
         "fatura_acilis_cache",
+        "ekran_testi",
+        "database.ornek_veri",
     ],
     hookspath=[],
     hooksconfig={},

@@ -429,7 +429,7 @@ def hareket_belgeyi_ac(parent, tur: str, belge_no: str) -> bool:
         parent.wait_window(dialog)
         return True
 
-    if tur == "Satış" or belge_no.startswith(("SRAY", "SF-")):
+    if tur == "Satış" or belge_no.startswith(("SRAY", "SF-", "RAY-")):
         from app import CariDialog, SatisFaturasiDialog
         from database.models.satis_faturasi import SatisFaturasi
         from database.satis_faturasi_service import SatisFaturasiService

@@ -40,7 +40,7 @@ def belge_tipi_coz(tur: str | None, belge_no: str | None) -> str | None:
         return "satis_iade"
     if no.startswith(("AFAT-", "ARAY")) or t == "Alış":
         return "alis_faturasi"
-    if t == "Satış" or no.startswith("SF-"):
+    if t == "Satış" or no.startswith(("SF-", "RAY-")):
         return "satis_faturasi"
     if t in _FATURA_TURLERI:
         # Bilinmeyen önek ama fatura türü — satış varsay

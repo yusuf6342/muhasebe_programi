@@ -134,6 +134,8 @@ def _konum_dosyasi_yaz(db_yolu: Path) -> None:
 
 
 DB_DIR, DB_DIR_KAYNAGI = _db_dir_sec()
+TEST_KURULUMU = _test_kurulumu_mu()
+TEST_FIRMA_UNVAN = "TEST FİRMASI (Deneme)"
 _eski_db_tasi(DB_DIR)
 DB_PATH = (DB_DIR / "muhasebe.db").resolve()
 SYSTEM_DB_PATH = (DB_DIR / "system.db").resolve()
@@ -186,6 +188,8 @@ def baslangic_veri_uyarisi() -> str | None:
     """Veri klasöründe gerçek veri yoksa, boş DB oluşturulmadan önce gösterilecek metin."""
     if MUHASEBE_DB_ONCEDEN_VAR:
         return None
+    if TEST_KURULUMU and not SYSTEM_DB_ONCEDEN_VAR:
+        return None  # test kurulumu ilk açılışı main.test_ilk_acilis_sor ile sorulur
     if SYSTEM_DB_ONCEDEN_VAR:
         return (
             "DİKKAT: Bu veri klasöründe system.db var ama firma veritabanı "
@@ -367,10 +371,22 @@ def sistem_altyapisini_baslat() -> dict:
     from database.system.bootstrap import sistem_baslat, system_engine_olustur
     from database.session_manager import oturum
 
+    yeni_test = TEST_KURULUMU and not SYSTEM_DB_ONCEDEN_VAR
     sonuc = sistem_baslat(
         system_db_path=SYSTEM_DB_PATH,
         muhasebe_db_path=DB_PATH,
         sifre_dosyasi=DB_DIR / "ILK_YONETICI_SIFRE.txt",
+        yeni_firma_bilgisi=(
+            {
+                "unvan": TEST_FIRMA_UNVAN,
+                "kisa_ad": "Test Firması",
+                "adres": "Örnek Mah. Deneme Cad. No:1",
+                "il": "İstanbul",
+                "telefon": "0000 000 00 00",
+            }
+            if yeni_test
+            else None
+        ),
     )
 
     system_engine = system_engine_olustur(SYSTEM_DB_PATH)

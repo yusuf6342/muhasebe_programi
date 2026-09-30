@@ -5381,6 +5381,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             parent=self,
         ):
             return
+        ilk_kayit = not (self.fatura and getattr(self.fatura, "id", None))
         try:
             veriler, satirlar = self._fatura_kayit_verilerini_topla()
             kayit = SatisFaturasiService.kaydet(
@@ -5411,15 +5412,45 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         except Exception:
             pass
         parent = self.master
+        fatura_no = getattr(self.fatura, "fatura_no", "") or ""
         self.destroy()
+        yeni = None
         try:
-            SatisFaturasiDialog(parent)
+            yeni = SatisFaturasiDialog(parent)
         except Exception as hata:
             messagebox.showerror(
                 "Yeni fatura",
                 f"Fatura onaylandı ancak yeni ekran açılamadı:\n{hata}",
                 parent=parent,
             )
+        SatisFaturasiDialog._onaylanan_fatura_makbuzu(
+            yeni or parent, fatura_id, fatura_no, makbuz_ac=ilk_kayit
+        )
+
+    @staticmethod
+    def _onaylanan_fatura_makbuzu(parent, fatura_id, fatura_no, *, makbuz_ac=True):
+        """Onayla ve Yeni sonrası: ilk kayıtta kalan varsa bağlı tahsilat makbuzu, yoksa bilgi."""
+        try:
+            ozet = FinansService.fatura_tahsilat_ozeti(int(fatura_id))
+            kalan = Decimal(str((ozet or {}).get("kalan") or 0))
+            if makbuz_ac and kalan > Decimal("0.005"):
+                from kasa_makbuz_ui import KasaMakbuzDialog
+
+                KasaMakbuzDialog(parent, "TAHSILAT", fatura_id=int(fatura_id))
+                return
+        except Exception as hata:
+            messagebox.showerror(
+                "Tahsilat Makbuzu",
+                f"{fatura_no} onaylandı; ancak tahsilat makbuzu açılamadı.\n"
+                f"Makbuzu faturayı açıp Tahsilat Makbuzu düğmesiyle alabilirsiniz.\n\n{hata}",
+                parent=parent,
+            )
+            return
+        messagebox.showinfo(
+            "Onaylandı",
+            f"{fatura_no} kaydedildi ve onaylandı. Yeni boş fatura açıldı.",
+            parent=parent,
+        )
 
     def kaydet_ve_yeni(self):
         """Eski ad — Onayla ve Yeni."""
@@ -6450,13 +6481,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
     def _ek_fatura_bilgileri(self):
         """Satış faturası üst alanı: 4 orantılı bölüm + ürün şeridi (docx talimatı)."""
-        fatura_no = ""
-        try:
-            fatura_no = (self.girdiler["siparis_no"].get() or "").strip()
-        except (tk.TclError, KeyError, AttributeError):
-            fatura_no = ""
-        if not fatura_no or fatura_no.lower().startswith("otomatik"):
-            fatura_no = self.fatura.fatura_no if self.fatura else SatisFaturasiService.fatura_no()
+        # girdiler["siparis_no"] burada temel formun sipariş numarasıdır (SIP-…); fatura no değil
+        fatura_no = self.fatura.fatura_no if self.fatura else SatisFaturasiService.fatura_no()
 
         fatura_tarih = ""
         vade_tarih = ""

@@ -171,6 +171,31 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         )
 
 
+def test_kurulumu_giris_ipucu() -> str:
+    """Yalnız test kurulumunda ve yönetici ilk parolasını henüz değiştirmemişken giriş ipucu."""
+    from database import database as db
+
+    if not db.TEST_KURULUMU:
+        return ""
+    dosya = db.DB_DIR / "ILK_YONETICI_SIFRE.txt"
+    try:
+        with get_system_session() as session:
+            admin = session.scalar(select(User).where(User.kullanici_adi == "admin"))
+            if admin is None or not admin.sifre_degistirmeli:
+                return ""
+        for satir in dosya.read_text(encoding="utf-8").splitlines():
+            if satir.startswith("Parola:"):
+                parola = satir.split(":", 1)[1].strip()
+                return (
+                    "Test kurulumu — ilk giriş\n"
+                    f"Kullanıcı adı: admin    Şifre: {parola}\n"
+                    "Girişten sonra kendi şifrenizi belirleyeceksiniz."
+                )
+    except Exception:
+        return ""
+    return ""
+
+
 class GirisDialog(tk.Toplevel):
     def __init__(self, parent: tk.Tk):
         super().__init__(parent)
@@ -242,6 +267,11 @@ class GirisDialog(tk.Toplevel):
 
         self.hata = ttk.Label(alt, text="", foreground="#c62828", anchor="center")
         self.hata.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ipucu = test_kurulumu_giris_ipucu()
+        if ipucu:
+            ttk.Label(
+                cerceve, text=ipucu, foreground="#1565C0", justify="center", anchor="center"
+            ).grid(row=3, column=0, sticky="ew", pady=(12, 0))
 
         butonlar = ttk.Frame(alt)
         butonlar.grid(row=1, column=0)

@@ -87,6 +87,29 @@ from database.finans_service import FinansService
 from app import MuhasebeApp
 
 
+_ORNEK_VERI_ISTENDI = False
+
+
+def test_ilk_acilis_sor(parent) -> bool | None:
+    """Test kurulumu ilk açılışı: True=örnek veri, False=boş firma, None=çık."""
+    from tkinter import messagebox
+
+    from branding import APP_NAME
+
+    return messagebox.askyesnocancel(
+        f"{APP_NAME} — Test Kurulumu",
+        "Bu bilgisayarda ilk açılış: gerçek firma verisi yok ve yüklenmeyecek.\n\n"
+        f"Boş bir «{db.TEST_FIRMA_UNVAN}» oluşturulacak.\n"
+        f"Veri klasörü: {db.DB_DIR}\n\n"
+        "Ekranları denemek için birkaç örnek müşteri ve ürün eklensin mi?\n"
+        "(Hepsi adında «ÖRNEK VERİ» yazar, kodları ORN- ile başlar.)\n\n"
+        "Evet = örnek verili test firması\n"
+        "Hayır = tamamen boş test firması\n"
+        "İptal = programdan çık",
+        parent=parent,
+    )
+
+
 def baslatma_adimlari(progress) -> None:
     """Veritabanı ve servis hazırlığı — splash ilerleme geri çağrısı ile."""
     progress(5, "Sistem altyapısı başlatılıyor...")
@@ -118,6 +141,15 @@ def baslatma_adimlari(progress) -> None:
     progress(55, "Stok ve finans hazırlanıyor...")
     StokService.varsayilanlari_hazirla()
     FinansService.varsayilanlari_hazirla()
+
+    if _ORNEK_VERI_ISTENDI:
+        progress(62, "Örnek veri ekleniyor...")
+        try:
+            from database.ornek_veri import ornek_veri_ekle
+
+            print("Örnek veri:", ornek_veri_ekle())
+        except Exception as e:
+            print("Örnek veri eklenemedi:", e)
 
     progress(70, "Genel muhasebe kontrol ediliyor...")
     try:
@@ -169,6 +201,7 @@ def baslatma_adimlari(progress) -> None:
 
 
 def main():
+    import sys
     import threading
     import traceback
     from tkinter import messagebox
@@ -185,6 +218,29 @@ def main():
     install_toplevel_icon_hook()
 
     print(f"Veri klasörü: {db.veri_konumu_ozeti()}")
+    global _ORNEK_VERI_ISTENDI
+    ilk_test_acilisi = (
+        db.TEST_KURULUMU and not db.SYSTEM_DB_ONCEDEN_VAR and not db.MUHASEBE_DB_ONCEDEN_VAR
+    )
+    if "--ekran-testi" in sys.argv:
+        from ekran_testi import calistir
+
+        i = sys.argv.index("--ekran-testi")
+        rapor = sys.argv[i + 1] if len(sys.argv) > i + 1 else "ekran_testi_raporu.txt"
+        _ORNEK_VERI_ISTENDI = ilk_test_acilisi
+        sys.exit(calistir(rapor, baslatma_adimlari))
+    if ilk_test_acilisi:
+        import tkinter as tk
+
+        gecici = tk.Tk()
+        gecici.withdraw()
+        try:
+            secim = test_ilk_acilis_sor(gecici)
+        finally:
+            gecici.destroy()
+        if secim is None:
+            return
+        _ORNEK_VERI_ISTENDI = bool(secim)
     veri_uyarisi = db.baslangic_veri_uyarisi()
     if veri_uyarisi:
         import tkinter as tk

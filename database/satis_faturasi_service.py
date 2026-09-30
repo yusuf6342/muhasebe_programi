@@ -23,6 +23,7 @@ from database.finans_service import FinansService
 # Evrak durumu: TASLAK → (onay) AÇIK → İPTAL. Ödenme ayrı alanda (odeme_durumu).
 # "KAPALI" yalnız eski kayıtlarda okunur; ekranda AÇIK gösterilir.
 FATURA_DURUMLARI = ("TASLAK", "AÇIK", "İPTAL")
+SATIS_FATURA_ONEKI = "RAY-"
 TAHSILAT_SEKILLERI = ("NAKİT / KASA", "GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT")
 
 
@@ -1201,10 +1202,10 @@ class SatisFaturasiService:
 
     @staticmethod
     def fatura_no():
-        """SF-00001 formatında artan satış fatura numarası (tek sorgu)."""
+        """RAY-00001 formatında artan satış fatura numarası (tek sorgu)."""
         from sqlalchemy import text
 
-        onek = "SF-"
+        onek = SATIS_FATURA_ONEKI
         with get_session() as session:
             try:
                 max_sira = session.execute(

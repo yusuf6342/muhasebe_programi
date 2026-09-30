@@ -426,6 +426,92 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
         self.assertIn("Faturanın kalan tutarı: 300,00", dlg._bagli_makbuz_ozet_lbl.cget("text"))
         dlg.destroy()
 
+    def _yeni_fatura_doldur(self):
+        from database.cari_service import CariService
+        from database.models.stok import Depo, StokKarti
+
+        with get_session() as s:
+            if not s.scalar(select(Depo).where(Depo.ad == "ANA DEPO")):
+                s.add(Depo(ad="ANA DEPO", aktif=True))
+            if not s.scalar(select(StokKarti).where(StokKarti.stok_kodu == "U1")):
+                s.add(StokKarti(stok_kodu="U1", stok_adi="Masa", birim="Adet", aktif=True))
+        from database.stok_service import StokService
+
+        StokService.stok_girisi("U1", "ANA DEPO", "", date.today(), Decimal("10"), Decimal("50"))
+        dlg = self._fatura_ekrani()
+        dlg._musteri_secildi_callback(CariService.getir(self.musteri_id))
+        dlg.satirlar = [
+            {
+                "urun_kodu": "U1",
+                "urun_adi": "Masa",
+                "miktar": "1",
+                "birim": "Adet",
+                "birim_satis_fiyati": "100",
+                "kdv_orani": "20",
+                "iskonto_orani": "0",
+                "iskonto_orani_2": "0",
+                "iskonto_orani_3": "0",
+                "satir_para_birimi": "TRY",
+                "kur": "1",
+            }
+        ]
+        dlg._satir_listesini_yenile()
+        dlg.update_idletasks()
+        return dlg
+
+    def _mesajlari_yakala(self):
+        kayit = []
+
+        def f(tur, sonuc):
+            def g(*a, **_k):
+                kayit.append((tur,) + tuple(str(x) for x in a))
+                return sonuc
+
+            return g
+
+        return kayit, [
+            patch("app.messagebox.showinfo", f("info", "ok")),
+            patch("app.messagebox.showwarning", f("warning", "ok")),
+            patch("app.messagebox.showerror", f("error", "ok")),
+            patch("app.messagebox.askyesno", f("askyesno", True)),
+        ]
+
+    def test_yeni_fatura_kaydinda_makbuz_acilir(self):
+        dlg = self._yeni_fatura_doldur()
+        mesajlar, yamalar = self._mesajlari_yakala()
+        for y in yamalar:
+            y.start()
+        try:
+            with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere:
+                dlg.kaydet()
+        finally:
+            for y in yamalar:
+                y.stop()
+        self.assertFalse([m for m in mesajlar if m[0] == "error"], mesajlar)
+        self.assertTrue(dlg.fatura is not None and dlg.fatura.id)
+        self.assertRegex(dlg.fatura.fatura_no, r"^RAY-\d{5}$")
+        pencere.assert_called_once()
+        self.assertEqual(pencere.call_args.kwargs["fatura_id"], dlg.fatura.id)
+        dlg.destroy()
+
+    def test_onayla_ve_yeni_faturayi_onaylar_ve_makbuz_acar(self):
+        dlg = self._yeni_fatura_doldur()
+        mesajlar, yamalar = self._mesajlari_yakala()
+        for y in yamalar:
+            y.start()
+        try:
+            with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere:
+                dlg.onayla_ve_yeni()
+        finally:
+            for y in yamalar:
+                y.stop()
+        self.assertFalse([m for m in mesajlar if m[0] == "error"], mesajlar)
+        with get_session() as s:
+            son = s.scalar(select(SatisFaturasi).order_by(SatisFaturasi.id.desc()))
+            self.assertTrue(son.onaylandi)
+        pencere.assert_called_once()
+        self.assertEqual(pencere.call_args.kwargs["fatura_id"], son.id)
+
     def test_kaydedilmemis_faturada_once_kayit_uyarisi(self):
         dlg = self._fatura_ekrani()
         with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere, patch(

@@ -3182,6 +3182,13 @@ class StokService:
     @staticmethod
     def stok_girisi(stok_kodu, depo_adi, tedarikci, tarih, miktar, maliyet, lot_no=""):
         yazma_zorunlu("stok_duzenleme", "yeni_kayit")
+        return StokService._stok_girisi_kaydet(
+            stok_kodu, depo_adi, tedarikci, tarih, miktar, maliyet, lot_no
+        )
+
+    @staticmethod
+    def _stok_girisi_kaydet(stok_kodu, depo_adi, tedarikci, tarih, miktar, maliyet, lot_no=""):
+        """Yetki denetimsiz giriş; oturum açılmadan önceki sistem işleri (örnek veri) için."""
         miktar = decimal(miktar, "Miktar", Decimal("0.0001"))
         maliyet = decimal(maliyet, "Birim maliyet", Decimal("0"))
         with get_session() as session:

@@ -12,6 +12,9 @@
 #ifndef DistDir
   #define DistDir "..\dist\CinMuhasebe"
 #endif
+#ifndef BuildTag
+  #define BuildTag ""
+#endif
 
 [Setup]
 AppId={{8C3B6D2E-5A41-4F0B-9E7C-2B1D4A6F9C10}
@@ -25,7 +28,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\Output
-OutputBaseFilename=CinMuhasebe_Test_Kurulum_{#AppVersion}
+OutputBaseFilename=CinMuhasebe_Test_Kurulum_{#AppVersion}{#BuildTag}
 SetupIconFile=..\assets\branding\CinLogo.ico
 UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2

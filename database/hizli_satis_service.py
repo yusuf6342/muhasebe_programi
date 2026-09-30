@@ -464,8 +464,10 @@ class HizliSatisService:
 
     @staticmethod
     def _sonraki_fatura_no(session) -> str:
-        """Aynı oturumda SF-##### üretir (iç içe get_session yok)."""
-        onek = "SF-"
+        """Aynı oturumda RAY-##### üretir (iç içe get_session yok)."""
+        from database.satis_faturasi_service import SATIS_FATURA_ONEKI
+
+        onek = SATIS_FATURA_ONEKI
         numaralar = session.scalars(
             select(SatisFaturasi.fatura_no).where(SatisFaturasi.fatura_no.like(f"{onek}%"))
         ).all()

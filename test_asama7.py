@@ -277,10 +277,10 @@ def main() -> int:
         ray_sf_no != f2_sf_no or (f2_stok or 0) == 0,
         f"ray={ray_sf_no} f2={f2_sf_no}",
     )
-    # Yeni boş firmada SF-00001 beklenir
+    # Yeni boş firmada RAY-00001 beklenir
     r.check(
-        "Yeni firmada fatura no SF-00001'den başlar",
-        f2_sf_no == "SF-00001",
+        "Yeni firmada fatura no RAY-00001'den başlar",
+        f2_sf_no == "RAY-00001",
         f2_sf_no,
     )
 

@@ -981,6 +981,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 pass
         alt = ttk.Frame(self, padding=(6, 2, 6, 4))
         footer.pack(in_=alt, fill="x")
+        footer.lift(alt)
         # Alt banda Kaydet/Kapat tekrarı (kaydırırken de erişilebilir)
         btn = ttk.Frame(alt)
         btn.pack(fill="x", pady=(4, 0))
@@ -1527,9 +1528,9 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.satir_tablosu.bind("<F2>", self._alis_iskonto_ac)
         self.satir_tablosu.bind("<Button-3>", self._alis_satir_sag_tik)
 
-        toplamlar = ttk.LabelFrame(parent, text="TOPLAMLAR", padding=6)
-        toplamlar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=6)
-        # Sabit footer'a taşı (kaydırma dışında her zaman görünür)
+        # Sabit alt banda pack(in_=...) edilebilmesi için Toplevel'in çocuğu olmalı;
+        # kaydırma içindeki bir çerçevenin çocuğu dışarı taşınamaz (TclError).
+        toplamlar = ttk.LabelFrame(self, text="TOPLAMLAR", padding=6)
         self._alis_toplam_cerceve = toplamlar
         self.satir_ozet = ttk.Label(
             toplamlar,

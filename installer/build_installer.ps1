@@ -47,6 +47,8 @@ Write-Host "Surum: $surum"
 Write-Host "EXE klasoru: $dist"
 $cikti = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $root "Output" }
 New-Item -ItemType Directory -Path $cikti -Force | Out-Null
-& $Iscc "/DAppVersion=$surum" "/DDistDir=$dist" "/O$cikti" (Join-Path $PSScriptRoot "CinMuhasebe.iss")
+# Ayni surumun farkli derlemeleri karismasin: dosya adina derleme zamani eklenir
+$etiket = "_" + (Get-Date -Format "yyyyMMdd_HHmm")
+& $Iscc "/DAppVersion=$surum" "/DDistDir=$dist" "/DBuildTag=$etiket" "/O$cikti" (Join-Path $PSScriptRoot "CinMuhasebe.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC hata kodu: $LASTEXITCODE" }
-Get-Item (Join-Path $cikti "CinMuhasebe_Test_Kurulum_$surum.exe") | Format-List FullName, Length, LastWriteTime
+Get-Item (Join-Path $cikti "CinMuhasebe_Test_Kurulum_$surum$etiket.exe") | Format-List FullName, Length, LastWriteTime

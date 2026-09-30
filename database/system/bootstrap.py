@@ -333,7 +333,11 @@ def _ayar(session: Session, anahtar: str, deger: str | None = None) -> str | Non
     return kayit.deger if kayit else None
 
 
-def _ray_firmasi_olustur(session: Session, muhasebe_db_path: Path) -> Company:
+def _ray_firmasi_olustur(
+    session: Session, muhasebe_db_path: Path, yeni_firma_bilgisi: dict | None = None
+) -> Company:
+    """Varsayılan firma kaydı. ``yeni_firma_bilgisi`` yalnız ilk oluşturmada ünvan/adres verir
+    (test kurulumu); mevcut kayıt asla yeniden adlandırılmaz."""
     firma = session.scalar(select(Company).where(Company.firma_kodu == RAY_KOD))
     if firma is not None:
         # Yol güncel mi?
@@ -342,22 +346,23 @@ def _ray_firmasi_olustur(session: Session, muhasebe_db_path: Path) -> Company:
             firma.db_path = beklenen
         return firma
 
-    # Eski lokal firmalar tablosundaki ünvana yakın eşleşme
-    eski = session.scalar(
-        select(Company).where(Company.unvan.ilike("%Ray Mobilya%"))
-    )
-    if eski is not None:
-        return eski
+    if not yeni_firma_bilgisi:
+        # Eski lokal firmalar tablosundaki ünvana yakın eşleşme
+        eski = session.scalar(
+            select(Company).where(Company.unvan.ilike("%Ray Mobilya%"))
+        )
+        if eski is not None:
+            return eski
 
+    bilgi = {"unvan": RAY_UNVAN, "kisa_ad": "Ray Mobilya", **(yeni_firma_bilgisi or {})}
     uid = str(uuid.uuid4())
     firma = Company(
         firma_uid=uid,
         firma_kodu=RAY_KOD,
-        unvan=RAY_UNVAN,
-        kisa_ad="Ray Mobilya",
         varsayilan_para_birimi="TRY",
         aktif=True,
         db_path=str(muhasebe_db_path.resolve()),
+        **bilgi,
     )
     session.add(firma)
     session.flush()
@@ -419,6 +424,7 @@ def sistem_baslat(
     system_db_path: Path,
     muhasebe_db_path: Path,
     sifre_dosyasi: Path | None = None,
+    yeni_firma_bilgisi: dict | None = None,
 ) -> dict:
     """
     system.db oluştur/güncelle, roller, Ray Mobilya, admin.
@@ -455,7 +461,7 @@ def sistem_baslat(
             migration_uygula(session)
             izinler = _izinleri_doldur(session)
             roller = _rolleri_doldur(session, izinler)
-            firma = _ray_firmasi_olustur(session, muhasebe_db_path)
+            firma = _ray_firmasi_olustur(session, muhasebe_db_path, yeni_firma_bilgisi)
             user, ilk = _yonetici_olustur(session, roller, firma, sifre_yolu)
             _ayar(session, "son_firma_id", str(firma.id))
             _ayar(session, "tek_firma_otomatik_giris", "1")
