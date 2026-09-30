@@ -235,7 +235,8 @@ def calistir(rapor_yolu: str | Path, bootstrap) -> int:
             _dene(f"Ana menü → {anahtar}", _menu(anahtar))
 
         from alis_ui import AlisFaturasiDialog
-        from app import SatisFaturasiDialog, SatisSiparisiDialog
+        from app import SatisFaturasiDialog
+        from satis_siparisi_ui import SatisSiparisiKarti
         from cari_kart_ui import CariDialog
         from database.cari_service import CariService
         from stok_ui import StokKartiDialog
@@ -244,7 +245,7 @@ def calistir(rapor_yolu: str | Path, bootstrap) -> int:
         _dene("Satış faturası (yeni)", lambda: SatisFaturasiDialog(app, cari_ac=lambda c: CariDialog(app, c)))
         _dene("Alış faturası (yeni)", lambda: AlisFaturasiDialog(app))
         _dene("Teklif (yeni)", lambda: TeklifDialog(app))
-        _dene("Satış siparişi (yeni)", lambda: SatisSiparisiDialog(app))
+        _dene("Satış siparişi (yeni)", lambda: SatisSiparisiKarti(app))
         _dene("Stok kartı (yeni)", lambda: StokKartiDialog(app))
         if ilk_stok is not None:
             _dene("Stok kartı (mevcut kayıt)", lambda: StokKartiDialog(app, stok=_stok_yukle(ilk_stok)))

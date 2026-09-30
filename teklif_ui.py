@@ -5033,7 +5033,7 @@ class TeklifDialog(tk.Toplevel):
             return
         try:
             from database.satis_siparisi_service import SatisSiparisiService
-            from app import SatisSiparisiDialog
+            from satis_siparisi_ui import SatisSiparisiKarti
 
             siparis = SatisSiparisiService.getir(int(self.teklif.siparis_id))
             if not siparis:
@@ -5043,7 +5043,7 @@ class TeklifDialog(tk.Toplevel):
                 self.grab_release()
             except tk.TclError:
                 pass
-            dlg = SatisSiparisiDialog(self.app or self.master, siparis)
+            dlg = SatisSiparisiKarti(self.app or self.master, siparis)
             self.wait_window(dlg)
             try:
                 self.grab_set()

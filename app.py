@@ -17540,112 +17540,302 @@ class MuhasebeApp(tk.Tk):
             return
         self.irsaliye_listesini_yenile()
 
+    def satis_siparisi_yeni_ac(self):
+        """SATIŞLAR › Alınan Siparişler — her açılışta boş yeni sipariş kartı."""
+        from satis_siparisi_ui import SatisSiparisiKarti
+
+        try:
+            dialog = SatisSiparisiKarti(self)
+        except Exception as hata:  # noqa: BLE001 — kullanıcıya mesaj, ayrıntı günlüğe
+            from uygulama_log import hata_yaz
+
+            yol = hata_yaz("Alınan sipariş kartı açılamadı", hata)
+            messagebox.showerror(
+                "Sipariş kartı açılamadı",
+                f"{hata}" + (f"\n\nTeknik ayrıntı günlüğe kaydedildi:\n{yol}" if yol else ""),
+                parent=self,
+            )
+            return
+        self.wait_window(dialog)
+        if getattr(dialog, "result", None) and getattr(self, "siparis_tablosu", None) is not None:
+            try:
+                if self.siparis_tablosu.winfo_exists():
+                    self.siparis_listesini_yenile()
+            except tk.TclError:
+                pass
+
     def satis_siparisleri_goster(self):
         self._icerigi_temizle()
         from satis_tema import ekran_ust_cubugu, stil_uygula, tk_buton, treeview_stil
+        from database.satis_siparisi_service import (
+            ILERLEME_BEKLIYOR,
+            ILERLEME_KISMEN,
+            ILERLEME_TAMAM,
+            LISTE_GECIKEN,
+            SIPARIS_DURUMLARI,
+        )
 
         stil_uygula(root=self)
         govde = ekran_ust_cubugu(
             self,
-            "ALINAN SİPARİŞLER",
-            alt_baslik="Müşteri siparişlerini ve teslimat sürecini yönetin",
+            "ALINAN SİPARİŞ LİSTESİ",
+            alt_baslik="Kayıtlı siparişleri arayın, filtreleyin, açın; sevk ve fatura durumunu izleyin",
             geri_komut=lambda: satislar_hub_goster(self),
             geri_metin="← Satışlar",
         )
+        filtre = tk.Frame(govde, bg="#FFFFFF")
+        filtre.pack(fill="x", pady=(0, 6))
+        self._sip_filtre = {}
+
+        def _alan(etiket, anahtar, genislik, satir, sutun):
+            tk.Label(filtre, text=etiket, bg="#FFFFFF", fg="#172B4D").grid(
+                row=satir, column=sutun, padx=(6, 2), pady=2, sticky="w"
+            )
+            w = ttk.Entry(filtre, width=genislik)
+            w.grid(row=satir, column=sutun + 1, padx=(0, 6), pady=2, sticky="ew")
+            w.bind("<Return>", lambda _e: self.siparis_listesini_yenile())
+            self._sip_filtre[anahtar] = w
+            return w
+
+        bugun = date.today()
+        _alan("Başlangıç", "baslangic", 11, 0, 0).insert(0, date(bugun.year, 1, 1).strftime("%d.%m.%Y"))
+        _alan("Bitiş", "bitis", 11, 0, 2).insert(0, bugun.strftime("%d.%m.%Y"))
+        _alan("Müşteri (kod/ad)", "musteri", 22, 0, 4)
+        _alan("Sipariş / Müşteri Ref. No", "siparis_no", 16, 0, 6)
+        _alan("Termin Başl.", "termin_baslangic", 11, 1, 0)
+        _alan("Termin Bitiş", "termin_bitis", 11, 1, 2)
+        tk.Label(filtre, text="Durum", bg="#FFFFFF", fg="#172B4D").grid(row=1, column=4, padx=(6, 2), sticky="w")
+        durum_cb = ttk.Combobox(
+            filtre,
+            state="readonly",
+            width=22,
+            values=["Tümü", ILERLEME_BEKLIYOR, ILERLEME_KISMEN, ILERLEME_TAMAM, LISTE_GECIKEN]
+            + [d for d in SIPARIS_DURUMLARI],
+        )
+        durum_cb.set("Tümü")
+        durum_cb.grid(row=1, column=5, padx=(0, 6), sticky="w")
+        durum_cb.bind("<<ComboboxSelected>>", lambda _e: self.siparis_listesini_yenile())
+        self._sip_filtre["durum"] = durum_cb
+        tk_buton(filtre, "Listele", self.siparis_listesini_yenile, rol="ara").grid(row=0, column=8, padx=4)
+
+        def _temizle():
+            for anahtar, w in self._sip_filtre.items():
+                if anahtar == "durum":
+                    w.set("Tümü")
+                else:
+                    w.delete(0, "end")
+            self.siparis_listesini_yenile()
+
+        tk_buton(filtre, "Temizle", _temizle, rol="geri").grid(row=1, column=8, padx=4)
+        filtre.columnconfigure(5, weight=1)
+
         cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True, pady=(4, 0))
         kolonlar = (
-            "no",
-            "siparis_tarihi",
-            "termin",
-            "musteri_kodu",
-            "musteri",
-            "toplam",
-            "tahsilat",
-            "kalan",
-            "sevk_kalan",
-            "fatura_kalan",
-            "islem_yapan",
-            "olusturma",
-            "son_guncelleyen",
-            "onaylayan",
-            "durum",
+            "tarih", "no", "musteri_kodu", "musteri", "termin", "para_birimi", "toplam",
+            "durum", "ilerleme", "sevk", "fatura", "musteri_ref",
         )
-        basliklar = {
-            "no": "Sipariş Numarası",
-            "siparis_tarihi": "Sipariş Tarihi",
-            "termin": "Termin Tarihi",
-            "musteri_kodu": "Müşteri Kodu",
-            "musteri": "Müşteri Adı",
-            "toplam": "Sipariş Toplamı",
-            "tahsilat": "Tahsil Edilen",
-            "kalan": "Kalan Tahsilat",
-            "sevk_kalan": "Sevk Kalan",
-            "fatura_kalan": "Fatura Kalan",
-            "islem_yapan": "İşlemi Yapan",
-            "olusturma": "Oluşturma Tarihi",
-            "son_guncelleyen": "Son Güncelleyen",
-            "onaylayan": "Onaylayan",
-            "durum": "Durum",
-        }
+        basliklar = (
+            "Tarih", "Sipariş No", "Müşteri Kodu", "Müşteri Adı", "Termin", "Para Birimi", "Genel Toplam",
+            "Durum", "Sevk / Fatura Durumu", "Sevk (Edilen/Sipariş)", "Fatura (Edilen/Sipariş)", "Müşteri Ref.",
+        )
+        genislik = (90, 130, 100, 230, 90, 80, 120, 130, 150, 140, 140, 120)
         self.siparis_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         treeview_stil(self.siparis_tablosu)
-        for kolon in kolonlar:
-            self.siparis_tablosu.heading(kolon, text=basliklar[kolon])
-            self.siparis_tablosu.column(kolon, width=115, anchor="w")
-        self.siparis_tablosu.column("no", width=160)
-        self.siparis_tablosu.column("musteri", width=160)
+        self.siparis_tablosu.tag_configure("iptal", foreground="#D64545")
+        self.siparis_tablosu.tag_configure("tamam", foreground="#1F9D74")
+        self.siparis_tablosu.tag_configure("kismen", foreground="#B45F06")
+        self.siparis_tablosu.tag_configure("taslak", foreground="#627D98")
+        self.siparis_tablosu.tag_configure("gecikti", background="#FDE2E2")
+        self._sip_kolonlar = kolonlar
+        self._sip_basliklar = dict(zip(kolonlar, basliklar))
+        self._sip_siralama = (None, False)
+        self._sip_tik_satiri = None
+        self._sip_aciliyor = False
+        for kolon, baslik, gen in zip(kolonlar, basliklar, genislik):
+            self.siparis_tablosu.heading(kolon, text=baslik, command=lambda k=kolon: self._siparis_sirala(k))
+            self.siparis_tablosu.column(
+                kolon, width=gen, minwidth=60, stretch=(kolon == "musteri"),
+                anchor="e" if kolon in ("toplam", "sevk", "fatura") else "w",
+            )
         dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.siparis_tablosu.yview)
         yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=self.siparis_tablosu.xview)
         self.siparis_tablosu.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
         self.siparis_tablosu.grid(row=0, column=0, sticky="nsew")
         dikey.grid(row=0, column=1, sticky="ns")
         yatay.grid(row=1, column=0, sticky="ew")
-        cerceve.rowconfigure(0, weight=1); cerceve.columnconfigure(0, weight=1)
-        self.siparis_tablosu.bind("<Double-1>", lambda _event: self.siparis_ac())
-        alt = ttk.Frame(govde); alt.pack(fill="x", pady=10)
-        tk_buton(alt, "Yeni Sipariş", self.yeni_siparis, rol="yeni").pack(side="left")
-        tk_buton(alt, "Siparişi Aç / Düzenle", self.siparis_ac, rol="duzenle").pack(side="left", padx=8)
-        tk_buton(alt, "İrsaliyeye Çevir", self.siparis_irsaliyeye_cevir, rol="kaydet").pack(side="left")
-        tk_buton(alt, "Faturaya Çevir", self.siparis_faturaya_cevir, rol="kaydet").pack(side="left", padx=8)
-        tk_buton(alt, "İptal Et", self.siparis_iptal, rol="iptal").pack(side="left")
+        cerceve.rowconfigure(0, weight=1)
+        cerceve.columnconfigure(0, weight=1)
+        self.siparis_tablosu.bind("<ButtonPress-1>", self._siparis_tik_basildi, add="+")
+        self.siparis_tablosu.bind("<ButtonRelease-1>", self._siparis_tik_birakildi, add="+")
+        self.siparis_tablosu.bind("<Return>", lambda _e: self.siparis_ac())
+        self._sip_ozet = tk.Label(govde, text="", bg="#FFE89A", fg="#081B2C", anchor="w", padx=8, pady=4)
+        self._sip_ozet.pack(fill="x", pady=(6, 0))
+        alt = tk.Frame(govde, bg="#FFFFFF")
+        alt.pack(fill="x", pady=(8, 2))
+        for metin, komut, rol in (
+            ("Yeni Sipariş", self.yeni_siparis, "yeni"),
+            ("Aç / Düzenle", self.siparis_ac, "duzenle"),
+            ("İrsaliyeye Aktar", self.siparis_irsaliyeye_cevir, "kaydet"),
+            ("Faturaya Aktar", self.siparis_faturaya_cevir, "kaydet"),
+            ("İptal Et", self.siparis_iptal, "iptal"),
+            ("Yenile", self.siparis_listesini_yenile, "geri"),
+        ):
+            tk_buton(alt, metin, komut, rol=rol).pack(side="left", padx=(0, 8), pady=2)
+        cikti = tk.Frame(govde, bg="#FFFFFF")
+        cikti.pack(fill="x", pady=(2, 8))
+        tk.Label(cikti, text="Sipariş formu:", bg="#FFFFFF", fg="#172B4D").pack(side="left", padx=(0, 6))
+        for metin, islem in (
+            ("Önizleme", "onizleme"), ("Yazdır", "yazdir"), ("PDF Kaydet", "pdf"), ("Word Kaydet", "word"),
+        ):
+            tk_buton(cikti, metin, lambda i=islem: self.siparis_cikti(i), rol="yazdir").pack(
+                side="left", padx=(0, 8), pady=2
+            )
+        tk.Label(
+            cikti, text="Tek tık: siparişi aç  ·  Kırmızı zemin: termini geçmiş açık sipariş",
+            bg="#FFFFFF", fg="#627D98",
+        ).pack(side="right")
         self.siparis_listesini_yenile()
         self.nav_sayfa_isaretle(self.satis_siparisleri_goster)
-    def siparis_listesini_yenile(self):
-        from database.user_audit import display_user, format_dt
 
-        for item in self.siparis_tablosu.get_children():
-            self.siparis_tablosu.delete(item)
-        for kayit in SatisSiparisiService.listele():
+    def _siparis_tik_satiri(self, event):
+        tablo = self.siparis_tablosu
+        if tablo.identify_region(event.x, event.y) not in ("cell", "tree"):
+            return None
+        return tablo.identify_row(event.y) or None
+
+    def _siparis_tik_basildi(self, event):
+        self._sip_tik_satiri = self._siparis_tik_satiri(event)
+
+    def _siparis_tik_birakildi(self, event):
+        basilan, self._sip_tik_satiri = self._sip_tik_satiri, None
+        if int(getattr(event, "state", 0) or 0) & 0x0005:
+            return
+        satir = self._siparis_tik_satiri(event)
+        if not satir or satir != basilan or self._sip_aciliyor:
+            return
+        self.siparis_tablosu.selection_set(satir)
+        self.siparis_tablosu.focus(satir)
+        self.after_idle(lambda: self.siparis_ac(int(satir)))
+
+    def _siparis_sirala(self, kolon: str):
+        from ui_tablo_siralama import siralama_yonu_degistir
+
+        self._sip_siralama = siralama_yonu_degistir(*self._sip_siralama, kolon)
+        self.siparis_listesini_yenile()
+
+    def siparis_cikti(self, islem: str):
+        siparis_id = self._secili_siparis_id()
+        if siparis_id is None:
+            return
+        from siparis_cikti_ui import cikti_al
+
+        cikti_al(self, siparis_id, islem)
+
+    def _siparis_filtreleri(self) -> dict:
+        f = getattr(self, "_sip_filtre", {}) or {}
+
+        def _t(anahtar, ad):
+            metin = f[anahtar].get().strip() if anahtar in f else ""
+            if not metin:
+                return None
+            try:
+                return datetime.strptime(metin, "%d.%m.%Y").date()
+            except ValueError:
+                raise ValueError(f"{ad} tarihi GG.AA.YYYY biçiminde olmalı: «{metin}»") from None
+
+        durum = f["durum"].get() if "durum" in f else ""
+        return {
+            "baslangic": _t("baslangic", "Başlangıç"),
+            "bitis": _t("bitis", "Bitiş"),
+            "termin_baslangic": _t("termin_baslangic", "Termin başlangıç"),
+            "termin_bitis": _t("termin_bitis", "Termin bitiş"),
+            "musteri": f["musteri"].get().strip() if "musteri" in f else "",
+            "siparis_no": f["siparis_no"].get().strip() if "siparis_no" in f else "",
+            "durum": "" if durum in ("", "Tümü") else durum,
+        }
+
+    def siparis_listesini_yenile(self):
+        try:
+            filtreler = self._siparis_filtreleri()
+        except ValueError as hata:
+            messagebox.showwarning("Filtre", str(hata), parent=self)
+            return
+        from database.satis_siparisi_service import siparis_listesi_filtrele
+        from ui_tablo_siralama import (
+            dogal_belge_anahtar,
+            liste_sirala,
+            treeview_basliklari_guncelle,
+            turkce_metin_anahtar,
+        )
+
+        secili = self.siparis_tablosu.selection()
+        self.siparis_tablosu.delete(*self.siparis_tablosu.get_children())
+        kayitlar = siparis_listesi_filtrele(SatisSiparisiService.listele(), **filtreler)
+        kolon, azalan = getattr(self, "_sip_siralama", (None, False))
+        if kolon:
+            ham = {
+                "tarih": lambda k: k["siparis"].siparis_tarihi,
+                "no": lambda k: dogal_belge_anahtar(k["siparis"].siparis_no),
+                "musteri_kodu": lambda k: dogal_belge_anahtar(getattr(k["musteri"], "cari_kodu", "")),
+                "musteri": lambda k: turkce_metin_anahtar(getattr(k["musteri"], "unvan", "")),
+                "termin": lambda k: k["siparis"].termin_tarihi,
+                "para_birimi": lambda k: k["siparis"].para_birimi or "TRY",
+                "toplam": lambda k: k["toplam"],
+                "durum": lambda k: turkce_metin_anahtar(k["siparis"].durum),
+                "ilerleme": lambda k: turkce_metin_anahtar(k["ilerleme"]),
+                "sevk": lambda k: k["miktarlar"]["sevk_miktar"],
+                "fatura": lambda k: k["miktarlar"]["fatura_miktar"],
+                "musteri_ref": lambda k: dogal_belge_anahtar(k["siparis"].musteri_siparis_no),
+            }
+            kayitlar = liste_sirala(
+                kayitlar, anahtar_fn=ham[kolon], azalan=azalan, ikincil_fn=lambda k: k["siparis"].id
+            )
+        if getattr(self, "_sip_kolonlar", None):
+            treeview_basliklari_guncelle(
+                self.siparis_tablosu, self._sip_kolonlar, self._sip_basliklar,
+                aktif_kolon=kolon, azalan=azalan, komut_fn=self._siparis_sirala,
+            )
+        etiket_map = {"İPTAL": "iptal", "TAMAMLANDI": "tamam", "KISMEN TAMAMLANDI": "kismen", "TASLAK": "taslak"}
+        geciken = 0
+        for i, kayit in enumerate(kayitlar):
             siparis = kayit["siparis"]
             musteri = kayit["musteri"]
-            ilerleme = SatisSiparisiService.calculate_order_progress(siparis.satirlar)
+            m = kayit["miktarlar"]
+            etiketler = ["cift" if i % 2 else "tek"]
+            if kayit["ilerleme"] in etiket_map:
+                etiketler.append(etiket_map[kayit["ilerleme"]])
+            if kayit.get("gecikti"):
+                etiketler.append("gecikti")
+                geciken += 1
+            pb = siparis.para_birimi or "TRY"
+            ilerleme = kayit["ilerleme"] + ("  ⚠ GECİKTİ" if kayit.get("gecikti") else "")
             self.siparis_tablosu.insert(
                 "",
                 "end",
                 iid=str(siparis.id),
+                tags=tuple(etiketler),
                 values=(
-                    siparis.siparis_no,
                     tarih_goster(siparis.siparis_tarihi),
-                    tarih_goster(siparis.termin_tarihi),
+                    siparis.siparis_no,
                     musteri.cari_kodu if musteri else "",
                     musteri.unvan if musteri else "",
+                    tarih_goster(siparis.termin_tarihi),
+                    "TL" if pb == "TRY" else pb,
                     para_goster(kayit["toplam"]),
-                    para_goster(kayit["tahsilat"]),
-                    para_goster(kayit["kalan"]),
-                    f'{ilerleme["sevk_kalani"]:g}',
-                    f'{ilerleme["fatura_kalani"]:g}',
-                    display_user(siparis.created_by_full_name, siparis.created_by_user_id),
-                    format_dt(siparis.olusturma_tarihi),
-                    display_user(siparis.updated_by_full_name, siparis.updated_by_user_id)
-                    if siparis.updated_by_user_id or siparis.updated_by_full_name
-                    else "—",
-                    display_user(siparis.approved_by_full_name, siparis.approved_by_user_id)
-                    if siparis.approved_by_user_id or siparis.approved_by_full_name
-                    else "—",
                     siparis.durum,
+                    ilerleme,
+                    f'{m["sevk_miktar"]:g} / {m["siparis_miktar"]:g}',
+                    f'{m["fatura_miktar"]:g} / {m["siparis_miktar"]:g}',
+                    siparis.musteri_siparis_no or "",
                 ),
             )
+        if secili and self.siparis_tablosu.exists(secili[0]):
+            self.siparis_tablosu.selection_set(secili[0])
+            self.siparis_tablosu.see(secili[0])
+        if getattr(self, "_sip_ozet", None) is not None:
+            ek = f"  ·  {geciken} sipariş termini geçmiş" if geciken else ""
+            self._sip_ozet.configure(text=f"{len(kayitlar)} sipariş listelendi.{ek}")
 
     def _secili_siparis_id(self):
         secim = self.siparis_tablosu.selection()
@@ -17655,16 +17845,46 @@ class MuhasebeApp(tk.Tk):
         return int(secim[0])
 
     def yeni_siparis(self):
-        dialog = SatisSiparisiDialog(self); self.wait_window(dialog)
-        if dialog.result: self.siparis_listesini_yenile()
+        self.satis_siparisi_yeni_ac()
 
-    def siparis_ac(self):
-        siparis_id = self._secili_siparis_id()
-        if siparis_id is not None:
-            siparis = SatisSiparisiService.getir(siparis_id)
-            if siparis:
-                dialog = SatisSiparisiDialog(self, siparis); self.wait_window(dialog)
-                if dialog.result: self.siparis_listesini_yenile()
+    def siparis_ac(self, siparis_id: int | None = None):
+        """Kaydı benzersiz kimliğiyle açar (satır sırası kullanılmaz)."""
+        if getattr(self, "_sip_aciliyor", False):
+            return
+        if siparis_id is None:
+            siparis_id = self._secili_siparis_id()
+            if siparis_id is None:
+                return
+        from satis_siparisi_ui import SatisSiparisiKarti
+
+        self._sip_aciliyor = True
+        try:
+            siparis = SatisSiparisiService.getir(int(siparis_id))
+            if siparis is None:
+                messagebox.showwarning(
+                    "Sipariş", "Sipariş bulunamadı (silinmiş olabilir); liste yenileniyor.", parent=self
+                )
+            else:
+                dialog = SatisSiparisiKarti(self, siparis)
+                if dialog.winfo_exists():
+                    self.wait_window(dialog)
+        except Exception as hata:  # noqa: BLE001 — kullanıcıya mesaj, ayrıntı günlüğe
+            from uygulama_log import hata_yaz
+
+            yol = hata_yaz(f"Satış siparişi açılamadı (id={siparis_id})", hata)
+            messagebox.showerror(
+                "Sipariş açılamadı",
+                f"Sipariş açılırken bir hata oluştu:\n{hata}"
+                + (f"\n\nTeknik ayrıntı günlüğe kaydedildi:\n{yol}" if yol else ""),
+                parent=self,
+            )
+        finally:
+            self._sip_aciliyor = False
+        try:
+            if self.siparis_tablosu.winfo_exists():
+                self.siparis_listesini_yenile()
+        except (tk.TclError, AttributeError):
+            pass
 
     def siparis_irsaliyeye_cevir(self):
         siparis_id = self._secili_siparis_id()

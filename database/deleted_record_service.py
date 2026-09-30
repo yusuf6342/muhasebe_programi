@@ -529,7 +529,13 @@ class AuditDeleteService:
             if hasattr(obj, "aktif"):
                 obj.aktif = False
             if entity_type == ENTITY_SATIS_FATURA and (obj.durum or "").upper() == "TASLAK":
+                from database.satis_faturasi_service import SatisFaturasiService
+
+                # Taslak faturanın sipariş/irsaliye faturalanan miktarları serbest kalır.
+                SatisFaturasiService._baglantilari_geri_al(sess, obj.satirlar)
                 obj.durum = "İPTAL"
+                sess.flush()
+                SatisFaturasiService._durumlari_guncelle(sess, obj)
             sess.flush()
             return AuditDeleteService._log_dict(log)
 
@@ -1301,8 +1307,16 @@ class RestoreService:
                 obj.aktif = True
             if log.entity_type == ENTITY_SATIS_FATURA and (obj.durum or "") == "İPTAL":
                 # Taslak soft-delete iptale çekilmişti
+                from database.satis_faturasi_service import SatisFaturasiService
+
+                try:
+                    SatisFaturasiService._baglantilari_yeniden_uygula(session, obj.satirlar)
+                except ValueError as exc:
+                    raise SoftDeleteError(str(exc)) from exc
                 obj.durum = "TASLAK"
                 obj.onaylandi = False
+                session.flush()
+                SatisFaturasiService._durumlari_guncelle(session, obj)
 
             uid, uname = _user_meta()
             log.restore_status = "restored"

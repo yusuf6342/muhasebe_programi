@@ -251,14 +251,14 @@ class CariBekleyenSiparislerDialog(tk.Toplevel):
                     return
                 dlg = AlisSiparisiDialog(self, siparis=siparis)
             else:
-                from app import SatisSiparisiDialog
+                from satis_siparisi_ui import SatisSiparisiKarti
                 from database.satis_siparisi_service import SatisSiparisiService
 
                 siparis = SatisSiparisiService.getir(int(sid))
                 if siparis is None:
                     messagebox.showwarning("Sipariş", "Sipariş bulunamadı.", parent=self)
                     return
-                dlg = SatisSiparisiDialog(self, siparis=siparis)
+                dlg = SatisSiparisiKarti(self, siparis=siparis)
             self.wait_window(dlg)
             self.yenile()
             parent = self.parent_kart

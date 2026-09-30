@@ -17,8 +17,26 @@ from database.database import get_session
 from database.models.satis_faturasi import SatisFaturasiSatiri
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
-from database.satis_siparisi_service import bos_metin, decimal, satir_kalanlari
+from database.satis_siparisi_service import bos_metin, decimal, satir_kalanlari, siparis_tl_fiyati
 from database.turkce_normalize import turkce_normalize
+
+
+def _siparis_fiyat_alanlari(siparis, satir) -> dict[str, Any]:
+    """Aktarım fiyatı (TL) ve iskontolar; irsaliye tek oran taşıdığından eşdeğer oran da verilir."""
+    from database.iskonto_hesap_service import etkili_iskonto_orani
+
+    i1 = satir.iskonto_orani or 0
+    i2 = getattr(satir, "iskonto_orani_2", 0) or 0
+    i3 = getattr(satir, "iskonto_orani_3", 0) or 0
+    fiyat = siparis_tl_fiyati(siparis, satir)
+    return {
+        "birim_satis_fiyati": fiyat,
+        "birim_fiyat": fiyat,
+        "iskonto_orani": i1,
+        "iskonto_orani_2": i2,
+        "iskonto_orani_3": i3,
+        "etkili_iskonto": etkili_iskonto_orani(i1, i2, i3),
+    }
 
 
 IPTAL_DURUMLARI = frozenset({"İPTAL", "IPTAL"})
@@ -178,10 +196,7 @@ def siparis_fatura_aktarim_satirlari(
                 "aciklama": bos_metin(satir.aciklama),
                 "miktar": kalan,
                 "birim": satir.birim,
-                "birim_satis_fiyati": satir.birim_satis_fiyati,
-                "iskonto_orani": satir.iskonto_orani,
-                "iskonto_orani_2": 0,
-                "iskonto_orani_3": 0,
+                **{k: v for k, v in _siparis_fiyat_alanlari(siparis, satir).items() if k != "etkili_iskonto"},
                 "kdv_orani": satir.kdv_orani,
                 "fifo_birim_maliyeti": 0,
                 "son_alis_birim_maliyeti": 0,
@@ -264,9 +279,7 @@ def siparis_secim_satirlari(siparis: SatisSiparisi, *, hedef: str) -> list[dict[
                 "onceki_miktar": onceki,
                 "kalan_miktar": kalan,
                 "bu_belge_miktar": kalan,
-                "birim_satis_fiyati": satir.birim_satis_fiyati,
-                "birim_fiyat": satir.birim_satis_fiyati,
-                "iskonto_orani": satir.iskonto_orani,
+                **_siparis_fiyat_alanlari(siparis, satir),
                 "kdv_orani": satir.kdv_orani,
                 "irsaliyelenen_miktar": satir.irsaliyelenen_miktar or 0,
                 "faturalanan_miktar": satir.faturalanan_miktar or 0,
@@ -310,9 +323,7 @@ def siparis_irsaliye_secim_satirlari(
                 "onceki_miktar": onceki + form_bu,
                 "kalan_miktar": kalan,
                 "bu_belge_miktar": kalan,
-                "birim_satis_fiyati": satir.birim_satis_fiyati,
-                "birim_fiyat": satir.birim_satis_fiyati,
-                "iskonto_orani": satir.iskonto_orani,
+                **_siparis_fiyat_alanlari(siparis, satir),
                 "kdv_orani": satir.kdv_orani,
                 "irsaliyelenen_miktar": onceki,
                 "faturalanan_miktar": satir.faturalanan_miktar or 0,
@@ -396,8 +407,8 @@ def secimden_irsaliye_satirlari(secimler: list[dict[str, Any]]) -> list[dict[str
                 "miktar": miktar,
                 "birim": birim,
                 "birim_fiyat": s.get("birim_fiyat") or s.get("birim_satis_fiyati") or 0,
-                "iskonto_orani": s.get("iskonto_orani") or 0,
-                "kdv_orani": s.get("kdv_orani") or 20,
+                "iskonto_orani": s.get("etkili_iskonto", s.get("iskonto_orani")) or 0,
+                "kdv_orani": s.get("kdv_orani") if s.get("kdv_orani") not in (None, "") else 20,
                 "siparis_miktar": s.get("siparis_miktar"),
                 "onceki_sevk": s.get("onceki_miktar") or s.get("irsaliyelenen_miktar") or 0,
                 "lot_no": "",
@@ -426,9 +437,9 @@ def secimden_fatura_satirlari(
             "birim": birim,
             "birim_satis_fiyati": s.get("birim_satis_fiyati") or s.get("birim_fiyat") or 0,
             "iskonto_orani": s.get("iskonto_orani") or 0,
-            "iskonto_orani_2": 0,
-            "iskonto_orani_3": 0,
-            "kdv_orani": s.get("kdv_orani") or 20,
+            "iskonto_orani_2": s.get("iskonto_orani_2") or 0,
+            "iskonto_orani_3": s.get("iskonto_orani_3") or 0,
+            "kdv_orani": s.get("kdv_orani") if s.get("kdv_orani") not in (None, "") else 20,
             "fifo_birim_maliyeti": 0,
             "son_alis_birim_maliyeti": 0,
             "ortalama_birim_maliyeti": 0,

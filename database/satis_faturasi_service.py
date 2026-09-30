@@ -1045,6 +1045,34 @@ class SatisFaturasiService:
                     kaynak.faturalanan_miktar = max(Decimal("0"), kaynak.faturalanan_miktar - satir.miktar)
 
     @staticmethod
+    def _baglantilari_yeniden_uygula(session, satirlar):
+        """Geri yüklenen taslak: faturalanan miktarları kalanı aşmadan yeniden ayırır."""
+        for satir in satirlar:
+            miktar = Decimal(str(satir.miktar or 0))
+            if satir.irsaliye_satiri_id:
+                kaynak = session.get(SatisIrsaliyesiSatiri, satir.irsaliye_satiri_id)
+                if kaynak is None or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
+                    raise ValueError(
+                        f"{satir.urun_kodu}: irsaliyenin kalan miktarı başka faturaya aktarılmış; geri yüklenemez."
+                    )
+                kaynak.faturalanan_miktar += miktar
+                if kaynak.siparis_satiri_id:
+                    siparis_satiri = session.get(SatisSiparisiSatiri, kaynak.siparis_satiri_id)
+                    if siparis_satiri is not None:
+                        if miktar > siparis_satiri.miktar - siparis_satiri.faturalanan_miktar:
+                            raise ValueError(
+                                f"{satir.urun_kodu}: siparişin kalan miktarı başka faturaya aktarılmış; geri yüklenemez."
+                            )
+                        siparis_satiri.faturalanan_miktar += miktar
+            elif satir.siparis_satiri_id:
+                kaynak = session.get(SatisSiparisiSatiri, satir.siparis_satiri_id)
+                if kaynak is None or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
+                    raise ValueError(
+                        f"{satir.urun_kodu}: siparişin kalan miktarı başka faturaya aktarılmış; geri yüklenemez."
+                    )
+                kaynak.faturalanan_miktar += miktar
+
+    @staticmethod
     def _satir_irsaliyesi(session, fatura, satir):
         kaynak = session.get(SatisIrsaliyesiSatiri, int(satir.irsaliye_satiri_id))
         irsaliye_id = kaynak.irsaliye_id if kaynak is not None else fatura.irsaliye_id

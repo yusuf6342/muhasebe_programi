@@ -2757,9 +2757,9 @@ class CariDialog(tk.Toplevel):
     def yeni_siparis_ac(self):
         if not self.cari:
             return
-        from app import SatisSiparisiDialog
+        from satis_siparisi_ui import SatisSiparisiKarti
 
-        siparis = SatisSiparisiDialog(self, cari=self.cari)
+        siparis = SatisSiparisiKarti(self, cari=self.cari)
         self.wait_window(siparis)
         self.yenile()
 
