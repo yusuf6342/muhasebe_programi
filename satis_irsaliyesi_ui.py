@@ -6,14 +6,10 @@ Faturaya bağlanan irsaliye değiştirilemez / silinemez / iptal edilemez.
 
 from __future__ import annotations
 
-import os
-import tempfile
 import tkinter as tk
-import webbrowser
 from datetime import date, datetime
 from decimal import Decimal
-from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any
 
 from database.satis_irsaliyesi_service import (
@@ -151,6 +147,17 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
 
     def __init__(self, parent, irsaliye=None, siparis=None, cari=None, satir_override=None):
         super().__init__(parent)
+        try:
+            self._kur(parent, irsaliye, siparis, cari, satir_override)
+        except Exception:
+            try:
+                self.grab_release()
+                self.destroy()
+            except tk.TclError:
+                pass
+            raise
+
+    def _kur(self, parent, irsaliye, siparis, cari, satir_override):
         self.withdraw()
         self.irsaliye = None
         self.result = None
@@ -164,6 +171,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self._duzenlenen_index: int | None = None
         self._durum_var = tk.StringVar(value="TASLAK")
         self._is_priced = tk.BooleanVar(value=True)
+        self._fiyatli_cikti = tk.BooleanVar(value=False)
         self._musteri_var = tk.StringVar(value="")
         self._siparis_var = tk.StringVar(value="")
         self.title("Satış İrsaliyesi")
@@ -264,7 +272,14 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         ekle("faturalar", "Bağlı Faturalar", self.bagli_faturalari_goster, "duzenle")
         ekle("onizleme", "Önizleme", self.onizleme, "yazdir")
         ekle("yazdir", "Yazdır", self.yazdir, "yazdir")
-        ekle("pdf", "PDF", self.pdf_kaydet, "yazdir")
+        ekle("pdf", "PDF Kaydet", self.pdf_kaydet, "yazdir")
+        ekle("word", "Word Kaydet", self.word_kaydet, "yazdir")
+        cubuk.ekle(
+            tk.Checkbutton(
+                cubuk, text="Fiyatlı çıktı", variable=self._fiyatli_cikti, bg=ACIK_BG, fg=METIN,
+                activebackground=ACIK_BG, font=font(9, root=self),
+            )
+        )
         ekle("iptal", "İptal Et", self.iptal_et, "iptal")
         ekle("sil", "Sil", self.sil, "iptal")
         ekle("kapat", "Kapat", self.kapat, "geri")
@@ -359,9 +374,6 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self._etiket(frame, "Bağlı Sipariş", 2, 0)
         self.siparis_secimi = ttk.Entry(frame, textvariable=self._siparis_var, state="readonly")
         self.siparis_secimi.grid(row=2, column=1, columnspan=3, padx=4, pady=3, sticky="ew")
-        ttk.Checkbutton(
-            frame, text="Fiyatlı irsaliye (çıktıda fiyat göster)", variable=self._is_priced
-        ).grid(row=2, column=4, columnspan=2, sticky="w", padx=4)
         for c in (1, 3, 5):
             frame.columnconfigure(c, weight=1)
 
@@ -1466,98 +1478,25 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.destroy()
 
     # ------------------------------------------------------------- çıktılar
-    def _cikti_html(self) -> str | None:
-        from database.irsaliye_customer_view import (
-            CustomerDispatchSecurityError,
-            assert_customer_dispatch_safe,
-            build_customer_dispatch_from_dialog,
-            render_customer_dispatch_html,
-        )
-
-        if self.cari is None or not self.satirlar:
-            messagebox.showwarning("Çıktı", "Çıktı için müşteri ve en az bir ürün satırı gerekir.", parent=self)
+    def _cikti(self, islem: str):
+        """Kayıtlı veriden çıktı; kaydedilmemiş değişiklik varsa önce kaydetme sorulur."""
+        if not self._kayitli_ve_guncel("Çıktı"):
             return None
-        try:
-            vm = build_customer_dispatch_from_dialog(self)
-            html_metin = render_customer_dispatch_html(vm)
-            assert_customer_dispatch_safe(vm, html_metin)
-        except (CustomerDispatchSecurityError, ValueError) as exc:
-            messagebox.showerror("Çıktı", str(exc), parent=self)
-            return None
-        return html_metin
+        from irsaliye_cikti_ui import cikti_al
 
-    def _dosya_adi(self) -> str:
-        no = getattr(self.irsaliye, "irsaliye_no", None) or "Yeni"
-        musteri = (getattr(self.cari, "unvan", "") or "Musteri")[:30]
-        temiz = "".join(c if c.isalnum() else "_" for c in f"{no}_{musteri}")
-        return f"Satis_Irsaliyesi_{temiz}"
-
-    def _gecici_pdf(self, html_metin: str) -> Path | None:
-        from invoice_print.pdf_service import html_metnini_pdfe_cevir
-
-        hedef = Path(tempfile.gettempdir()) / "muhasebe_irsaliye" / f"{self._dosya_adi()}_{datetime.now():%H%M%S}.pdf"
-        try:
-            return html_metnini_pdfe_cevir(html_metin, hedef, belge_adi="İrsaliye")
-        except ValueError:
-            return None
-
-    def _html_ac(self, html_metin: str):
-        yol = Path(tempfile.gettempdir()) / f"{self._dosya_adi()}_{datetime.now():%H%M%S}.html"
-        yol.write_text(html_metin, encoding="utf-8")
-        webbrowser.open(yol.as_uri())
+        return cikti_al(self, self.irsaliye.id, islem, fiyatli=bool(self._fiyatli_cikti.get()))
 
     def onizleme(self):
-        html_metin = self._cikti_html()
-        if html_metin is None:
-            return
-        pdf = self._gecici_pdf(html_metin)
-        if pdf is not None:
-            try:
-                os.startfile(str(pdf))
-                return
-            except OSError:
-                pass
-        self._html_ac(html_metin)
+        return self._cikti("onizleme")
 
     def yazdir(self):
-        html_metin = self._cikti_html()
-        if html_metin is None:
-            return
-        pdf = self._gecici_pdf(html_metin)
-        if pdf is not None:
-            try:
-                os.startfile(str(pdf), "print")
-                return
-            except OSError:
-                try:
-                    os.startfile(str(pdf))
-                    messagebox.showinfo("Yazdır", "PDF açıldı; yazdırmak için Ctrl+P kullanın.", parent=self)
-                    return
-                except OSError:
-                    pass
-        self._html_ac(html_metin)
-        messagebox.showinfo("Yazdır", "Belge tarayıcıda açıldı; yazdırmak için Ctrl+P kullanın.", parent=self)
+        return self._cikti("yazdir")
 
     def pdf_kaydet(self):
-        html_metin = self._cikti_html()
-        if html_metin is None:
-            return
-        yol = filedialog.asksaveasfilename(
-            parent=self,
-            defaultextension=".pdf",
-            filetypes=[("PDF", "*.pdf")],
-            initialfile=f"{self._dosya_adi()}.pdf",
-        )
-        if not yol:
-            return
-        from invoice_print.pdf_service import html_metnini_pdfe_cevir
+        return self._cikti("pdf")
 
-        try:
-            html_metnini_pdfe_cevir(html_metin, Path(yol), belge_adi="İrsaliye")
-        except ValueError as hata:
-            messagebox.showerror("PDF", str(hata), parent=self)
-            return
-        messagebox.showinfo("PDF", f"İrsaliye PDF olarak kaydedildi:\n{yol}", parent=self)
+    def word_kaydet(self):
+        return self._cikti("word")
 
 
 class SiparisAktarimDialog(tk.Toplevel):

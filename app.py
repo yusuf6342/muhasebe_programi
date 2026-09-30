@@ -17199,8 +17199,13 @@ class MuhasebeApp(tk.Tk):
         genislik = (90, 120, 100, 220, 100, 110, 80, 90, 110, 130, 130, 150)
         self.irsaliye_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         treeview_stil(self.irsaliye_tablosu)
+        self._irs_kolonlar = kolonlar
+        self._irs_basliklar = dict(zip(kolonlar, basliklar))
+        self._irs_siralama: tuple[str | None, bool] = (None, False)
+        self._irs_tik_satiri = None
+        self._irs_aciliyor = False
         for kolon, baslik, gen in zip(kolonlar, basliklar, genislik):
-            self.irsaliye_tablosu.heading(kolon, text=baslik)
+            self.irsaliye_tablosu.heading(kolon, text=baslik, command=lambda k=kolon: self._irsaliye_sirala(k))
             self.irsaliye_tablosu.column(
                 kolon, width=gen, minwidth=60, stretch=(kolon == "musteri"),
                 anchor="e" if kolon in ("sevk_miktar", "fatura_miktar", "toplam") else "w",
@@ -17213,12 +17218,15 @@ class MuhasebeApp(tk.Tk):
         yatay.grid(row=1, column=0, sticky="ew")
         cerceve.rowconfigure(0, weight=1)
         cerceve.columnconfigure(0, weight=1)
-        self.irsaliye_tablosu.bind("<Double-1>", lambda _e: self.irsaliye_ac())
+        self.irsaliye_tablosu.bind("<ButtonPress-1>", self._irsaliye_tik_basildi, add="+")
+        self.irsaliye_tablosu.bind("<ButtonRelease-1>", self._irsaliye_tik_birakildi, add="+")
         self.irsaliye_tablosu.bind("<Return>", lambda _e: self.irsaliye_ac())
-        self._irs_ozet = tk.Label(govde, text="", bg="#FFE89A", fg="#081B2C", anchor="w", padx=8, pady=4)
+        self._irs_ozet = tk.Label(
+            govde, text="", bg="#FFE89A", fg="#081B2C", anchor="w", padx=8, pady=4,
+        )
         self._irs_ozet.pack(fill="x", pady=(6, 0))
         alt = tk.Frame(govde, bg="#FFFFFF")
-        alt.pack(fill="x", pady=8)
+        alt.pack(fill="x", pady=(8, 2))
         for metin, komut, rol in (
             ("Yeni İrsaliye", self.yeni_irsaliye, "yeni"),
             ("Aç / Düzenle", self.irsaliye_ac, "duzenle"),
@@ -17229,8 +17237,59 @@ class MuhasebeApp(tk.Tk):
             ("Yenile", self.irsaliye_listesini_yenile, "geri"),
         ):
             tk_buton(alt, metin, komut, rol=rol).pack(side="left", padx=(0, 8), pady=2)
+        cikti = tk.Frame(govde, bg="#FFFFFF")
+        cikti.pack(fill="x", pady=(2, 8))
+        tk.Label(cikti, text="Çıktı:", bg="#FFFFFF", fg="#172B4D").pack(side="left", padx=(0, 6))
+        for metin, islem in (
+            ("Önizleme", "onizleme"), ("Yazdır", "yazdir"), ("PDF Kaydet", "pdf"), ("Word Kaydet", "word"),
+        ):
+            tk_buton(cikti, metin, lambda i=islem: self.irsaliye_cikti(i), rol="yazdir").pack(
+                side="left", padx=(0, 8), pady=2
+            )
+        self._irs_fiyatli = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            cikti, text="Fiyatlı çıktı", variable=self._irs_fiyatli, bg="#FFFFFF", activebackground="#FFFFFF",
+        ).pack(side="left", padx=4)
+        tk.Label(
+            cikti, text="Tek tık: irsaliyeyi aç", bg="#FFFFFF", fg="#627D98",
+        ).pack(side="right")
         self.irsaliye_listesini_yenile()
         self.nav_sayfa_isaretle(self.satis_irsaliyeleri_goster)
+
+    def _irsaliye_tik_satiri(self, event):
+        """Yalnızca veri satırı hücresi; başlık, boşluk ve sütun ayırıcı None döner."""
+        tablo = self.irsaliye_tablosu
+        if tablo.identify_region(event.x, event.y) not in ("cell", "tree"):
+            return None
+        return tablo.identify_row(event.y) or None
+
+    def _irsaliye_tik_basildi(self, event):
+        self._irs_tik_satiri = self._irsaliye_tik_satiri(event)
+
+    def _irsaliye_tik_birakildi(self, event):
+        basilan, self._irs_tik_satiri = self._irs_tik_satiri, None
+        if int(getattr(event, "state", 0) or 0) & 0x0005:  # Shift / Ctrl ile yalnızca seçim
+            return
+        satir = self._irsaliye_tik_satiri(event)
+        if not satir or satir != basilan or self._irs_aciliyor:
+            return
+        self.irsaliye_tablosu.selection_set(satir)
+        self.irsaliye_tablosu.focus(satir)
+        self.after_idle(lambda: self.irsaliye_ac(int(satir)))
+
+    def _irsaliye_sirala(self, kolon: str):
+        from ui_tablo_siralama import siralama_yonu_degistir
+
+        self._irs_siralama = siralama_yonu_degistir(*self._irs_siralama, kolon)
+        self.irsaliye_listesini_yenile()
+
+    def irsaliye_cikti(self, islem: str):
+        irsaliye_id = self._secili_irsaliye_id()
+        if irsaliye_id is None:
+            return
+        from irsaliye_cikti_ui import cikti_al
+
+        cikti_al(self, irsaliye_id, islem, fiyatli=bool(self._irs_fiyatli.get()))
 
     def _irsaliye_filtreleri(self) -> dict:
         f = getattr(self, "_irs_filtre", {}) or {}
@@ -17259,9 +17318,40 @@ class MuhasebeApp(tk.Tk):
         except ValueError as hata:
             messagebox.showwarning("Filtre", str(hata), parent=self)
             return
+        from ui_tablo_siralama import (
+            dogal_belge_anahtar,
+            liste_sirala,
+            treeview_basliklari_guncelle,
+            turkce_metin_anahtar,
+        )
+
         secili = self.irsaliye_tablosu.selection()
         self.irsaliye_tablosu.delete(*self.irsaliye_tablosu.get_children())
         kayitlar = SatisIrsaliyesiService.listele(**filtreler)
+        kolon, azalan = getattr(self, "_irs_siralama", (None, False))
+        if kolon:
+            ham = {
+                "tarih": lambda k: k["irsaliye"].irsaliye_tarihi,
+                "no": lambda k: dogal_belge_anahtar(k["irsaliye"].irsaliye_no),
+                "musteri_kodu": lambda k: dogal_belge_anahtar(k["musteri_kodu"]),
+                "musteri": lambda k: turkce_metin_anahtar(k["musteri_adi"]),
+                "depo": lambda k: turkce_metin_anahtar(k["depo"]),
+                "siparis": lambda k: dogal_belge_anahtar(getattr(k["irsaliye"].siparis, "siparis_no", None)),
+                "sevk_miktar": lambda k: k.get("sevk_miktar", 0),
+                "fatura_miktar": lambda k: k.get("fatura_miktar", 0),
+                "toplam": lambda k: k["toplam"],
+                "durum": lambda k: turkce_metin_anahtar(k["durum"]),
+                "fatura_durumu": lambda k: turkce_metin_anahtar(k["faturalama_durumu"]),
+                "fatura_no": lambda k: dogal_belge_anahtar(", ".join(k["fatura_nolari"])),
+            }
+            kayitlar = liste_sirala(
+                kayitlar, anahtar_fn=ham[kolon], azalan=azalan, ikincil_fn=lambda k: k["irsaliye"].id
+            )
+        if getattr(self, "_irs_kolonlar", None):
+            treeview_basliklari_guncelle(
+                self.irsaliye_tablosu, self._irs_kolonlar, self._irs_basliklar,
+                aktif_kolon=kolon, azalan=azalan, komut_fn=self._irsaliye_sirala,
+            )
         for i, kayit in enumerate(kayitlar):
             irsaliye = kayit["irsaliye"]
             siparis = irsaliye.siparis
@@ -17304,18 +17394,42 @@ class MuhasebeApp(tk.Tk):
         if getattr(dialog, "result", None):
             self.irsaliye_listesini_yenile()
 
-    def irsaliye_ac(self):
-        irsaliye_id = self._secili_irsaliye_id()
+    def irsaliye_ac(self, irsaliye_id: int | None = None):
+        """Kaydı benzersiz kimliğiyle açar (satır sırası kullanılmaz)."""
+        if getattr(self, "_irs_aciliyor", False):
+            return
         if irsaliye_id is None:
-            return
-        irsaliye = SatisIrsaliyesiService.getir(irsaliye_id)
-        if irsaliye is None:
-            messagebox.showwarning("İrsaliye", "İrsaliye bulunamadı; liste yenileniyor.", parent=self)
-            self.irsaliye_listesini_yenile()
-            return
-        dialog = SatisIrsaliyesiDialog(self, irsaliye=irsaliye)
-        self.wait_window(dialog)
-        self.irsaliye_listesini_yenile()
+            irsaliye_id = self._secili_irsaliye_id()
+            if irsaliye_id is None:
+                return
+        self._irs_aciliyor = True
+        try:
+            irsaliye = SatisIrsaliyesiService.getir(int(irsaliye_id))
+            if irsaliye is None:
+                messagebox.showwarning(
+                    "İrsaliye", "İrsaliye bulunamadı (silinmiş olabilir); liste yenileniyor.", parent=self
+                )
+            else:
+                dialog = SatisIrsaliyesiDialog(self, irsaliye=irsaliye)
+                if dialog.winfo_exists():
+                    self.wait_window(dialog)
+        except Exception as hata:  # noqa: BLE001 — kullanıcıya mesaj, ayrıntı günlüğe
+            from uygulama_log import hata_yaz
+
+            yol = hata_yaz(f"Satış irsaliyesi açılamadı (id={irsaliye_id})", hata)
+            messagebox.showerror(
+                "İrsaliye açılamadı",
+                f"İrsaliye açılırken bir hata oluştu:\n{hata}"
+                + (f"\n\nTeknik ayrıntı günlüğe kaydedildi:\n{yol}" if yol else ""),
+                parent=self,
+            )
+        finally:
+            self._irs_aciliyor = False
+        try:
+            if self.irsaliye_tablosu.winfo_exists():
+                self.irsaliye_listesini_yenile()
+        except (tk.TclError, AttributeError):
+            pass
 
     def irsaliye_sevk(self):
         irsaliye_id = self._secili_irsaliye_id()

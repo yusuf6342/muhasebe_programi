@@ -168,7 +168,7 @@ class TestCustomerDispatchSecurity(unittest.TestCase):
         )
         html = render_customer_dispatch_html(vm)
         assert_customer_dispatch_safe(vm, html)
-        self.assertIn("SEVK İRSALİYESİ", html)
+        self.assertIn("SATIŞ İRSALİYESİ", html)
         self.assertNotIn("ic_not", html.lower())
 
 

@@ -104,7 +104,7 @@ class CustomerDispatchViewModel:
     """Müşteri sevk irsaliyesi — iç not / maliyet yok."""
 
     sablon_id: str = "customer_dispatch_template"
-    belge_baslik: str = "SEVK İRSALİYESİ"
+    belge_baslik: str = "SATIŞ İRSALİYESİ"
     onizleme_baslik: str = "Müşteri İrsaliye Ön İzlemesi"
     firma: dict[str, Any] = field(default_factory=dict)
     logo_data_uri: str | None = None
@@ -128,6 +128,9 @@ class CustomerDispatchViewModel:
     para_birimi: str = "TRY"
     toplam_miktar_goster: str = ""
     aciklama: str = ""
+    sevk_tarih_saat: str = ""
+    siparis_nolari: list[str] = field(default_factory=list)
+    olusturma: str = ""
 
 
 def miktar_metni(miktar) -> str:
@@ -138,12 +141,17 @@ def miktar_metni(miktar) -> str:
     return (metin or "0").replace(".", ",")
 
 
-def toplam_miktar_metni(satirlar) -> str:
-    """Birim bazında toplam miktar: '12 Adet · 3 Koli'."""
+def birim_toplamlari(satirlar) -> list[tuple[str, Decimal]]:
+    """Farklı birimler toplanmaz; her birim kendi toplamını alır (ilk görülme sırasıyla)."""
     toplamlar: dict[str, Decimal] = {}
     for s in satirlar:
         toplamlar[s.birim or "Adet"] = toplamlar.get(s.birim or "Adet", Decimal("0")) + _d(s.miktar)
-    return " · ".join(f"{miktar_metni(m)} {b}" for b, m in toplamlar.items())
+    return list(toplamlar.items())
+
+
+def toplam_miktar_metni(satirlar) -> str:
+    """Birim bazında toplam miktar: '12 Adet · 3 Koli'."""
+    return " · ".join(f"{miktar_metni(m)} {b}" for b, m in birim_toplamlari(satirlar))
 
 
 class CustomerDispatchSecurityError(ValueError):
@@ -180,6 +188,188 @@ def assert_customer_dispatch_safe(vm: CustomerDispatchViewModel, html_metin: str
     assert_customer_model_safe(vm)
     if html_metin:
         assert_customer_output_safe(html_metin)
+
+
+def _satir_modelleri(
+    satirlar_raw: list[dict[str, Any]], is_priced: bool
+) -> tuple[list[CustomerDispatchLine], Decimal, Decimal]:
+    lines: list[CustomerDispatchLine] = []
+    ara = Decimal("0")
+    kdv_t = Decimal("0")
+    for i, veri in enumerate(satirlar_raw, start=1):
+        miktar = _d(veri.get("miktar"))
+        fiyat = _d(veri.get("birim_fiyat")) if is_priced else Decimal("0")
+        iskonto = _d(veri.get("iskonto_orani"))
+        kdv = _d(veri.get("kdv_orani"), Decimal("20"))
+        net = miktar * fiyat * (Decimal(1) - iskonto / Decimal(100))
+        kdv_tut = net * kdv / Decimal(100) if is_priced else Decimal("0")
+        toplam = net + kdv_tut
+        ara += net
+        kdv_t += kdv_tut
+        lines.append(
+            CustomerDispatchLine(
+                sira=i,
+                urun_kodu=str(veri.get("urun_kodu") or ""),
+                urun_adi=str(veri.get("urun_adi") or ""),
+                aciklama=str(veri.get("aciklama") or ""),
+                miktar=miktar,
+                birim=str(veri.get("birim") or "Adet"),
+                birim_fiyat=fiyat,
+                iskonto_orani=iskonto,
+                kdv_orani=kdv,
+                satir_toplam=toplam,
+                miktar_goster=miktar_metni(miktar),
+                birim_fiyat_goster=_para(fiyat) if is_priced else "—",
+                iskonto_goster=f"%{miktar_metni(iskonto)}" if is_priced else "—",
+                kdv_oran_goster=f"%{miktar_metni(kdv)}" if is_priced else "—",
+                satir_toplam_goster=_para(toplam) if is_priced else "—",
+            )
+        )
+    return lines, ara, kdv_t
+
+
+def _firma_markasi() -> tuple[dict[str, Any], str | None]:
+    try:
+        from invoice_print.branding import load_company_branding, logo_data_uri
+
+        branding = load_company_branding()
+        return branding, logo_data_uri(branding.get("logo_yolu"))
+    except Exception:
+        return {}, None
+
+
+def _birlestir(*parcalar, ayrac: str = " / ") -> str:
+    return ayrac.join(str(p).strip() for p in parcalar if p and str(p).strip())
+
+
+def build_customer_dispatch_from_record(irsaliye_id: int, *, fiyatli: bool = False) -> CustomerDispatchViewModel:
+    """Kayıtlı irsaliyeden çıktı modeli (PDF ve Word aynı veriyi kullanır).
+
+    Varsayılan miktar esaslıdır; ``fiyatli=True`` ayrı çıktı seçeneğidir. İç not,
+    depo notu, maliyet ve kâr bilgisi modele alınmaz.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from database.database import get_session
+    from database.models.satis_irsaliyesi import SatisIrsaliyesi
+    from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
+
+    branding, logo = _firma_markasi()
+    with get_session() as session:
+        ir = session.scalar(
+            select(SatisIrsaliyesi)
+            .options(
+                selectinload(SatisIrsaliyesi.satirlar),
+                selectinload(SatisIrsaliyesi.cari),
+                selectinload(SatisIrsaliyesi.siparis),
+            )
+            .where(SatisIrsaliyesi.id == int(irsaliye_id))
+        )
+        if ir is None:
+            raise ValueError("İrsaliye bulunamadı; silinmiş olabilir.")
+        satirlar = sorted(ir.satirlar, key=lambda s: int(s.id or 0))
+        siparis_nolari: list[str] = []
+        if ir.siparis is not None and ir.siparis.siparis_no:
+            siparis_nolari.append(ir.siparis.siparis_no)
+        ssidler = [int(s.siparis_satiri_id) for s in satirlar if s.siparis_satiri_id]
+        if ssidler:
+            for no in session.scalars(
+                select(SatisSiparisi.siparis_no)
+                .join(SatisSiparisiSatiri, SatisSiparisiSatiri.siparis_id == SatisSiparisi.id)
+                .where(SatisSiparisiSatiri.id.in_(ssidler))
+                .order_by(SatisSiparisi.siparis_no)
+            ):
+                if no and no not in siparis_nolari:
+                    siparis_nolari.append(no)
+        cari = ir.cari
+        lines, ara, kdv_t = _satir_modelleri(
+            [
+                {
+                    "urun_kodu": s.urun_kodu,
+                    "urun_adi": s.urun_adi,
+                    "aciklama": s.aciklama,
+                    "miktar": s.miktar,
+                    "birim": s.birim,
+                    "birim_fiyat": s.birim_fiyat,
+                    "iskonto_orani": s.iskonto_orani,
+                    "kdv_orani": s.kdv_orani,
+                }
+                for s in satirlar
+            ],
+            fiyatli,
+        )
+        sevk_tarih_saat = ""
+        if ir.fiili_sevk_tarihi:
+            sevk_tarih_saat = _tarih(ir.fiili_sevk_tarihi)
+            if ir.fiili_sevk_saati:
+                sevk_tarih_saat += f" {ir.fiili_sevk_saati:%H:%M}"
+        musteri = {
+            "kod": getattr(cari, "cari_kodu", None) or ir.musteri_kodu_snap or "",
+            "unvan": getattr(cari, "unvan", None) or ir.musteri_unvan_snap or "",
+            "vergi_dairesi": getattr(cari, "vergi_dairesi", None) or ir.vergi_dairesi_snap or "",
+            "vergi_no": getattr(cari, "vergi_numarasi", None)
+            or getattr(cari, "tc_kimlik", None)
+            or ir.vergi_no_snap
+            or "",
+            "adres": _birlestir(
+                getattr(cari, "adres", None),
+                _birlestir(getattr(cari, "ilce", None), getattr(cari, "il", None)),
+                ayrac=" — ",
+            ),
+            "telefon": getattr(cari, "telefon", None) or "",
+        }
+        sevk = {
+            "adres": ir.sevk_adresi or "",
+            "il": ir.sevk_il or "",
+            "ilce": ir.sevk_ilce or "",
+            "teslim_kisi": ir.teslim_kisi or "",
+            "teslim_telefon": ir.teslim_telefon or "",
+            "sevkiyat_yontemi": ir.sevkiyat_yontemi or "",
+            "nakliyeci": ir.nakliyeci or "",
+            "plaka": ir.arac_plaka or "",
+            "sofor": ir.sofor_adi or "",
+            "takip_no": ir.takip_no or "",
+        }
+        vm = CustomerDispatchViewModel(
+            firma={
+                "unvan": branding.get("unvan") or "",
+                "adres": _birlestir(
+                    branding.get("adres"), _birlestir(branding.get("ilce"), branding.get("il")), ayrac=" — "
+                ),
+                "telefon": branding.get("telefon") or "",
+                "email": branding.get("email") or "",
+                "vergi_dairesi": branding.get("vergi_dairesi") or "",
+                "vergi_no": branding.get("vergi_no") or "",
+                "mersis": branding.get("mersis") or "",
+            },
+            logo_data_uri=logo,
+            irsaliye_no=ir.irsaliye_no or "",
+            irsaliye_tarihi=_tarih(ir.irsaliye_tarihi),
+            depo=ir.depo or "ANA DEPO",
+            durum=ir.durum or "",
+            is_priced=bool(fiyatli),
+            musteri=musteri,
+            sevk=sevk,
+            satirlar=lines,
+            ara_toplam=ara,
+            kdv_toplam=kdv_t,
+            genel_toplam=ara + kdv_t,
+            ara_goster=_para(ara) if fiyatli else "",
+            kdv_goster=_para(kdv_t) if fiyatli else "",
+            genel_goster=_para(ara + kdv_t) if fiyatli else "",
+            musteri_notu=(ir.musteri_notu or ir.ayrintili_notlar or "").strip(),
+            sevk_notu=(ir.sevk_notu or "").strip(),
+            siparis_no=", ".join(siparis_nolari),
+            para_birimi=ir.para_birimi or "TRY",
+            toplam_miktar_goster=toplam_miktar_metni(lines),
+            aciklama=(ir.aciklama or "").strip(),
+            sevk_tarih_saat=sevk_tarih_saat,
+            siparis_nolari=siparis_nolari,
+            olusturma=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        )
+    assert_customer_model_safe(vm)
+    return vm
 
 
 def build_customer_dispatch_from_dialog(dialog) -> CustomerDispatchViewModel:
@@ -223,39 +413,7 @@ def build_customer_dispatch_from_dialog(dialog) -> CustomerDispatchViewModel:
     elif irsaliye is not None:
         is_priced = bool(getattr(irsaliye, "is_priced", True))
 
-    satirlar_raw = list(getattr(dialog, "satirlar", []) or [])
-    lines: list[CustomerDispatchLine] = []
-    ara = Decimal("0")
-    kdv_t = Decimal("0")
-    for i, veri in enumerate(satirlar_raw, start=1):
-        miktar = _d(veri.get("miktar"))
-        fiyat = _d(veri.get("birim_fiyat")) if is_priced else Decimal("0")
-        iskonto = _d(veri.get("iskonto_orani"))
-        kdv = _d(veri.get("kdv_orani"), Decimal("20"))
-        net = miktar * fiyat * (Decimal(1) - iskonto / Decimal(100))
-        kdv_tut = net * kdv / Decimal(100) if is_priced else Decimal("0")
-        toplam = net + kdv_tut
-        ara += net
-        kdv_t += kdv_tut
-        lines.append(
-            CustomerDispatchLine(
-                sira=i,
-                urun_kodu=str(veri.get("urun_kodu") or ""),
-                urun_adi=str(veri.get("urun_adi") or ""),
-                aciklama=str(veri.get("aciklama") or ""),
-                miktar=miktar,
-                birim=str(veri.get("birim") or "Adet"),
-                birim_fiyat=fiyat,
-                iskonto_orani=iskonto,
-                kdv_orani=kdv,
-                satir_toplam=toplam,
-                miktar_goster=miktar_metni(miktar),
-                birim_fiyat_goster=_para(fiyat) if is_priced else "—",
-                iskonto_goster=f"%{iskonto}" if is_priced else "—",
-                kdv_oran_goster=f"%{kdv}" if is_priced else "—",
-                satir_toplam_goster=_para(toplam) if is_priced else "—",
-            )
-        )
+    lines, ara, kdv_t = _satir_modelleri(list(getattr(dialog, "satirlar", []) or []), is_priced)
 
     musteri = {
         "kod": getattr(musteri_obj, "cari_kodu", None)
@@ -356,32 +514,100 @@ def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
+def firma_vergi_metni(f: dict[str, Any]) -> str:
+    return _birlestir(
+        f"VD: {f['vergi_dairesi']}" if f.get("vergi_dairesi") else "",
+        f"VN: {f['vergi_no']}" if f.get("vergi_no") else "",
+        f"MERSİS: {f['mersis']}" if f.get("mersis") else "",
+        ayrac="  ·  ",
+    )
+
+
+def musteri_vergi_metni(m: dict[str, Any]) -> str:
+    return _birlestir(
+        f"Vergi Dairesi: {m['vergi_dairesi']}" if m.get("vergi_dairesi") else "",
+        f"Vergi/TC No: {m['vergi_no']}" if m.get("vergi_no") else "",
+        ayrac="  ·  ",
+    )
+
+
+def teslimat_satirlari(vm: CustomerDispatchViewModel) -> list[tuple[str, str]]:
+    """Teslimat kutusu (etiket, değer) — boş olanlar atlanır; PDF ve Word ortak."""
+    s = vm.sevk or {}
+    adres = _birlestir(s.get("adres"), _birlestir(s.get("ilce"), s.get("il")), ayrac=" — ")
+    satirlar = [
+        ("Teslimat Adresi", adres or (vm.musteri or {}).get("adres") or ""),
+        ("Teslim Alacak", _birlestir(s.get("teslim_kisi"), s.get("teslim_telefon"), ayrac=" · ")),
+        ("Sevkiyat", _birlestir(s.get("sevkiyat_yontemi"), s.get("nakliyeci"), ayrac=" · ")),
+        ("Araç / Şoför", _birlestir(s.get("plaka"), s.get("sofor"), ayrac=" · ")),
+        ("Takip No", s.get("takip_no") or ""),
+        ("Sipariş No", ", ".join(vm.siparis_nolari) or vm.siparis_no or ""),
+    ]
+    return [(k, v) for k, v in satirlar if v]
+
+
+def belge_bilgi_satirlari(vm: CustomerDispatchViewModel) -> list[tuple[str, str]]:
+    satirlar = [
+        ("İrsaliye No", vm.irsaliye_no),
+        ("Evrak Tarihi", vm.irsaliye_tarihi),
+        ("Sevk Tarihi / Saati", vm.sevk_tarih_saat),
+        ("Depo", vm.depo),
+    ]
+    return [(k, v) for k, v in satirlar if v]
+
+
+def not_bolumleri(vm: CustomerDispatchViewModel) -> list[tuple[str, str]]:
+    return [
+        (baslik, metin)
+        for baslik, metin in (
+            ("Açıklama", vm.aciklama),
+            ("Müşteri Notu", vm.musteri_notu),
+            ("Sevk Notu", vm.sevk_notu),
+        )
+        if (metin or "").strip()
+    ]
+
+
+def _cok_satir(metin: str) -> str:
+    return "<br/>".join(_e(p) for p in str(metin or "").splitlines())
+
+
 def render_customer_dispatch_html(vm: CustomerDispatchViewModel) -> str:
-    """A4 SEVK İRSALİYESİ HTML — fiyatlar is_priced=False ise gizlenir."""
+    """A4 dikey SATIŞ İRSALİYESİ HTML.
+
+    Sayfa altındaki «evrak no · Sayfa X / Y» satırı PDF üretiminden sonra basılır
+    (``invoice_print.irsaliye_cikti``); alt boşluk bunun için ayrılmıştır.
+    """
     assert_customer_model_safe(vm)
     f = vm.firma or {}
     m = vm.musteri or {}
-    s = vm.sevk or {}
-    logo = ""
-    if vm.logo_data_uri:
-        logo = f'<img class="logo" src="{vm.logo_data_uri}" alt="Logo"/>'
+    logo = f'<img class="logo" src="{vm.logo_data_uri}" alt="Logo"/>' if vm.logo_data_uri else ""
 
     if vm.is_priced:
-        head_extra = (
-            "<th>Birim Fiyat</th><th>İsk</th><th>KDV</th><th>Satır Toplam</th>"
+        colgroup = (
+            "<col style='width:8mm'/><col style='width:26mm'/><col/><col style='width:15mm'/>"
+            "<col style='width:18mm'/><col style='width:22mm'/><col style='width:11mm'/>"
+            "<col style='width:11mm'/><col style='width:25mm'/>"
         )
+        head_extra = "<th class='r'>Birim Fiyat</th><th class='c'>İsk.</th><th class='c'>KDV</th><th class='r'>Tutar</th>"
     else:
+        colgroup = (
+            "<col style='width:10mm'/><col style='width:34mm'/><col/>"
+            "<col style='width:20mm'/><col style='width:24mm'/>"
+        )
         head_extra = ""
 
     satir_html = []
     for line in vm.satirlar:
+        ad = _e(line.urun_adi)
+        if line.aciklama:
+            ad += f"<div class='muted'>{_e(line.aciklama)}</div>"
         row = (
             f"<tr><td class='c'>{line.sira}</td>"
-            f"<td>{_e(line.urun_kodu)}</td>"
-            f"<td>{_e(line.urun_adi)}"
-            f"{('<div class=\"muted\">' + _e(line.aciklama) + '</div>') if line.aciklama else ''}</td>"
-            f"<td class='r'>{_e(line.miktar_goster)}</td>"
+            f"<td class='kod'>{_e(line.urun_kodu)}</td>"
+            f"<td class='ad'>{ad}</td>"
             f"<td class='c'>{_e(line.birim)}</td>"
+            f"<td class='r miktar'>{_e(line.miktar_goster)}</td>"
         )
         if vm.is_priced:
             row += (
@@ -390,108 +616,164 @@ def render_customer_dispatch_html(vm: CustomerDispatchViewModel) -> str:
                 f"<td class='c'>{_e(line.kdv_oran_goster)}</td>"
                 f"<td class='r'>{_e(line.satir_toplam_goster)}</td>"
             )
-        row += "</tr>"
-        satir_html.append(row)
+        satir_html.append(row + "</tr>")
 
+    toplamlar = birim_toplamlari(vm.satirlar)
     toplam_miktar = vm.toplam_miktar_goster or toplam_miktar_metni(vm.satirlar)
+    birim_rozet = "".join(
+        f"<span class='rozet'>{_e(miktar_metni(mk))} {_e(b)}</span>" for b, mk in toplamlar
+    )
     toplam_html = (
-        f"<div class='toplam'><div class='miktar'>Toplam Miktar: {_e(toplam_miktar)}"
-        f" &nbsp;·&nbsp; Kalem: {len(vm.satirlar)}</div>"
+        "<div class='toplam'>"
+        f"<div class='toplam-miktar'><span class='etiket'>Toplam Miktar: {_e(toplam_miktar)}</span>"
+        f"<div class='rozetler'>{birim_rozet}</div>"
+        f"<div class='aciklama-kucuk'>Kalem: {len(vm.satirlar)}"
+        f"{' · Farklı birimler ayrı toplanır' if len(toplamlar) > 1 else ''}</div></div>"
     )
     if vm.is_priced:
-        toplam_html += f"""
-          <div>Ara Toplam: {_e(vm.ara_goster)} {vm.para_birimi}</div>
-          <div>KDV: {_e(vm.kdv_goster)} {vm.para_birimi}</div>
-          <div class="genel">Genel Toplam: {_e(vm.genel_goster)} {vm.para_birimi}</div>"""
+        pb = _e(vm.para_birimi)
+        toplam_html += (
+            "<table class='tutarlar'>"
+            f"<tr><td>Ara Toplam</td><td class='r'>{_e(vm.ara_goster)} {pb}</td></tr>"
+            f"<tr><td>KDV</td><td class='r'>{_e(vm.kdv_goster)} {pb}</td></tr>"
+            f"<tr class='genel'><td>Genel Toplam</td><td class='r'>{_e(vm.genel_goster)} {pb}</td></tr>"
+            "</table>"
+        )
     toplam_html += "</div>"
 
-    notlar = ""
-    if vm.aciklama:
-        notlar += f"<div class='bolum'><strong>Açıklama</strong><p>{_e(vm.aciklama)}</p></div>"
-    if vm.musteri_notu:
-        notlar += f"<div class='bolum'><strong>Müşteri Notu</strong><p>{_e(vm.musteri_notu)}</p></div>"
-    if vm.sevk_notu:
-        notlar += f"<div class='bolum'><strong>Sevk Notu</strong><p>{_e(vm.sevk_notu)}</p></div>"
+    notlar = "".join(
+        f"<div class='not'><strong>{_e(baslik)}</strong><p>{_cok_satir(metin)}</p></div>"
+        for baslik, metin in not_bolumleri(vm)
+    )
+    bilgi = "".join(
+        f"<tr><th>{_e(k)}</th><td>{_e(v)}</td></tr>" for k, v in belge_bilgi_satirlari(vm)
+    )
+    teslimat = "".join(
+        f"<div class='satir'><span>{_e(k)}</span><b>{_cok_satir(v)}</b></div>"
+        for k, v in teslimat_satirlari(vm)
+    )
+    musteri_vergi = musteri_vergi_metni(m)
+    firma_vergi = firma_vergi_metni(f)
+    firma_iletisim = _birlestir(
+        f"Tel: {f['telefon']}" if f.get("telefon") else "", f.get("email"), ayrac="  ·  "
+    )
+
+    def _imza_kutusu(baslik: str) -> str:
+        return (
+            f"<div class='imza-kutu'><h4>{baslik}</h4>"
+            "<div class='alan'><span>Adı Soyadı</span><i></i></div>"
+            "<div class='alan'><span>Tarih / Saat</span><i></i></div>"
+            "<div class='alan imza'><span>İmza</span><i></i></div></div>"
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="utf-8"/>
-<title>{_e(vm.onizleme_baslik)} — {_e(vm.irsaliye_no)}</title>
+<title>{_e(vm.belge_baslik)} — {_e(vm.irsaliye_no)}</title>
 <style>
-@page {{ size: A4; margin: 14mm; }}
-body {{ font-family: "Segoe UI", Arial, sans-serif; color: #172B4D; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-.header {{ display:flex; justify-content:space-between; border-bottom:4px solid #F4C542; padding-bottom:10px; margin-bottom:14px; }}
-.logo {{ max-height:64px; }}
-h1 {{ color:#102A43; margin:0 0 4px; font-size:20px; letter-spacing:1px; }}
-.meta {{ color:#627D98; }}
-.grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }}
-.kutu {{ background:#F3F6F9; border:1px solid #D9E2EC; border-left:4px solid #F4C542; padding:10px; border-radius:4px; }}
-.kutu h3 {{ margin:0 0 6px; color:#102A43; font-size:12px; }}
-table {{ width:100%; border-collapse:collapse; margin-top:8px; }}
-thead {{ display:table-header-group; }}
-tfoot {{ display:table-footer-group; }}
-tr {{ page-break-inside:avoid; break-inside:avoid; }}
-th {{ background:#102A43; color:#fff; padding:6px; text-align:left; border-bottom:3px solid #F4C542; }}
-td {{ border-bottom:1px solid #D9E2EC; padding:6px; vertical-align:top; }}
-tbody tr:nth-child(even) td {{ background:#F8FAFC; }}
-.c {{ text-align:center; }} .r {{ text-align:right; }}
-.muted {{ color:#627D98; font-size:10px; margin-top:2px; }}
-.toplam {{ margin-top:12px; text-align:right; page-break-inside:avoid; }}
-.toplam .miktar {{ display:inline-block; background:#FFE89A; color:#081B2C; font-weight:700; padding:4px 10px; border-radius:3px; margin-bottom:4px; }}
-.toplam .genel {{ font-weight:700; font-size:13px; color:#102A43; }}
-.bolum {{ margin-top:12px; page-break-inside:avoid; }}
-.imza {{ display:flex; justify-content:space-between; margin-top:28px; page-break-inside:avoid; }}
-.imza div {{ width:45%; border-top:1px solid #102A43; padding-top:4px; text-align:center; color:#627D98; }}
-.footer {{ margin-top:24px; font-size:9px; color:#94A3B8; border-top:1px solid #D9E2EC; padding-top:8px; }}
+@page {{ size: A4 portrait; margin: 12mm 12mm 18mm 12mm; }}
+* {{ box-sizing: border-box; }}
+html, body {{ margin:0; padding:0; }}
+body {{ font-family: "Segoe UI", Arial, sans-serif; color:#172B4D; font-size:9.5pt; line-height:1.35;
+  -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+.ust {{ display:flex; justify-content:space-between; align-items:flex-start; gap:8mm; }}
+.firma {{ flex:1; min-width:0; }}
+.logo {{ max-height:18mm; max-width:55mm; display:block; margin-bottom:2mm; }}
+.firma .unvan {{ font-size:12pt; font-weight:700; color:#102A43; }}
+.firma .meta {{ color:#486581; font-size:8.5pt; overflow-wrap:anywhere; }}
+.belge {{ width:84mm; flex:none; }}
+.belge h1 {{ margin:0 0 2mm; background:#102A43; color:#FFFFFF; font-size:15pt; letter-spacing:1px;
+  padding:2.5mm 4mm; border-left:5px solid #F4C542; }}
+.belge table {{ width:100%; border-collapse:collapse; }}
+.belge th {{ text-align:left; color:#627D98; font-weight:600; padding:1mm 2mm; width:29mm; white-space:nowrap; }}
+.belge td {{ font-weight:700; color:#102A43; padding:1mm 2mm; white-space:nowrap; }}
+.serit {{ height:2.2mm; background:#F4C542; margin:4mm 0 4mm; border-bottom:1.2mm solid #102A43; }}
+.kutular {{ display:flex; gap:4mm; margin-bottom:4mm; }}
+.kutu {{ flex:1; min-width:0; background:#F3F6F9; border:1px solid #D9E2EC; border-top:3px solid #102A43;
+  padding:2.5mm 3mm; break-inside:avoid; }}
+.kutu h3 {{ margin:0 0 1.5mm; color:#102A43; font-size:9pt; letter-spacing:.5px; }}
+.kutu .buyuk {{ font-size:10.5pt; font-weight:700; color:#102A43; overflow-wrap:anywhere; }}
+.kutu .satir {{ display:flex; gap:2mm; margin-top:1mm; }}
+.kutu .satir span {{ color:#627D98; width:27mm; flex:none; }}
+.kutu .satir b {{ font-weight:600; overflow-wrap:anywhere; min-width:0; }}
+table.urunler {{ width:100%; border-collapse:collapse; table-layout:fixed; }}
+table.urunler thead {{ display:table-header-group; }}
+table.urunler tr {{ break-inside:avoid; page-break-inside:avoid; }}
+table.urunler th {{ background:#102A43; color:#FFFFFF; padding:2mm 1.5mm; font-size:8.5pt; text-align:left;
+  border-bottom:2px solid #F4C542; }}
+table.urunler td {{ border-bottom:1px solid #D9E2EC; padding:1.6mm 1.5mm; vertical-align:top;
+  overflow-wrap:anywhere; word-break:break-word; }}
+table.urunler tbody tr:nth-child(even) td {{ background:#F8FAFC; }}
+.c {{ text-align:center !important; }} .r {{ text-align:right !important; }}
+td.miktar {{ font-weight:700; }}
+.muted {{ color:#627D98; font-size:8pt; margin-top:.5mm; }}
+.toplam {{ display:flex; justify-content:space-between; align-items:flex-start; gap:6mm; margin-top:3mm;
+  break-inside:avoid; }}
+.toplam-miktar .etiket {{ font-weight:700; color:#102A43; }}
+.rozetler {{ margin-top:1mm; }}
+.rozet {{ display:inline-block; background:#FFE89A; color:#081B2C; font-weight:700; padding:1mm 2.5mm;
+  margin:0 1.5mm 1.5mm 0; border-left:3px solid #102A43; }}
+.aciklama-kucuk {{ color:#627D98; font-size:8pt; }}
+table.tutarlar {{ border-collapse:collapse; min-width:62mm; }}
+table.tutarlar td {{ padding:1mm 2mm; }}
+table.tutarlar tr.genel td {{ background:#102A43; color:#F4C542; font-weight:700; }}
+.son {{ break-inside:avoid; page-break-inside:avoid; margin-top:5mm; }}
+.not {{ border:1px solid #D9E2EC; border-left:3px solid #F4C542; padding:2mm 3mm; margin-bottom:3mm;
+  break-inside:avoid; }}
+.not p {{ margin:1mm 0 0; overflow-wrap:anywhere; }}
+.teslim {{ display:flex; gap:6mm; break-inside:avoid; page-break-inside:avoid; }}
+.imza-kutu {{ flex:1; border:1.2px solid #102A43; }}
+.imza-kutu h4 {{ margin:0; background:#102A43; color:#F4C542; padding:1.8mm 3mm; font-size:9.5pt; letter-spacing:1px; }}
+.imza-kutu .alan {{ display:flex; align-items:flex-end; gap:2mm; padding:0 3mm; height:10mm; }}
+.imza-kutu .alan.imza {{ height:22mm; }}
+.imza-kutu .alan span {{ width:24mm; flex:none; color:#486581; padding-bottom:1mm; }}
+.imza-kutu .alan i {{ flex:1; border-bottom:1px dotted #486581; margin-bottom:1.5mm; }}
+.alt {{ margin-top:3mm; font-size:7.5pt; color:#94A3B8; }}
 </style>
 </head>
 <body>
-<div class="header">
-  <div>
+<div class="ust">
+  <div class="firma">
     {logo}
-    <div><strong>{_e(f.get("unvan"))}</strong></div>
+    <div class="unvan">{_e(f.get("unvan"))}</div>
     <div class="meta">{_e(f.get("adres"))}</div>
-    <div class="meta">{_e(f.get("telefon"))}</div>
+    <div class="meta">{_e(firma_iletisim)}</div>
+    <div class="meta">{_e(firma_vergi)}</div>
   </div>
-  <div style="text-align:right">
+  <div class="belge">
     <h1>{_e(vm.belge_baslik)}</h1>
-    <div><strong>No:</strong> {_e(vm.irsaliye_no)}</div>
-    <div><strong>Tarih:</strong> {_e(vm.irsaliye_tarihi)}</div>
-    <div><strong>Depo:</strong> {_e(vm.depo)}</div>
-    {f'<div><strong>Sipariş:</strong> {_e(vm.siparis_no)}</div>' if vm.siparis_no else ''}
+    <table>{bilgi}</table>
   </div>
 </div>
-<div class="grid">
+<div class="serit"></div>
+<div class="kutular">
   <div class="kutu">
-    <h3>Müşteri</h3>
-    <div><strong>{_e(m.get("unvan"))}</strong> ({_e(m.get("kod"))})</div>
-    <div>{_e(m.get("adres"))}</div>
-    <div>VD: {_e(m.get("vergi_dairesi"))} — VN: {_e(m.get("vergi_no"))}</div>
+    <h3>MÜŞTERİ</h3>
+    <div class="buyuk">{_e(m.get("unvan"))}</div>
+    <div class="satir"><span>Müşteri Kodu</span><b>{_e(m.get("kod"))}</b></div>
+    {f'<div class="satir"><span>Vergi Bilgisi</span><b>{_e(musteri_vergi)}</b></div>' if musteri_vergi else ''}
+    {f'<div class="satir"><span>Adres</span><b>{_e(m.get("adres"))}</b></div>' if m.get("adres") else ''}
   </div>
   <div class="kutu">
-    <h3>Sevk Adresi</h3>
-    <div>{_e(s.get("adres"))}</div>
-    <div>{_e(s.get("ilce"))} / {_e(s.get("il"))}</div>
-    <div>Teslim: {_e(s.get("teslim_kisi"))} — {_e(s.get("teslim_telefon"))}</div>
-    <div>Nakliye: {_e(s.get("nakliyeci"))} · Plaka: {_e(s.get("plaka"))}</div>
-    {f'<div>Takip: {_e(s.get("takip_no"))}</div>' if s.get("takip_no") else ''}
+    <h3>TESLİMAT</h3>
+    {teslimat}
   </div>
 </div>
-<table>
+<table class="urunler">
+  <colgroup>{colgroup}</colgroup>
   <thead>
-    <tr>
-      <th>#</th><th>Kod</th><th>Ürün</th><th>Miktar</th><th>Birim</th>
-      {head_extra}
-    </tr>
+    <tr><th class="c">Sıra</th><th>Stok Kodu</th><th>Ürün Adı / Açıklama</th><th class="c">Birim</th><th class="r">Miktar</th>{head_extra}</tr>
   </thead>
   <tbody>
     {''.join(satir_html)}
   </tbody>
 </table>
 {toplam_html}
-{notlar}
-<div class="imza"><div>Teslim Eden</div><div>Teslim Alan</div></div>
-<div class="footer">Bu belge müşteri sevk irsaliyesidir. Şirket içi notlar paylaşılmaz.</div>
+<div class="son">
+  {notlar}
+  <div class="teslim">{_imza_kutusu("TESLİM EDEN")}{_imza_kutusu("TESLİM ALAN")}</div>
+  <div class="alt">Bu belge müşteri sevk irsaliyesidir.{f' Oluşturulma: {_e(vm.olusturma)}' if vm.olusturma else ''}</div>
+</div>
 </body>
 </html>"""
