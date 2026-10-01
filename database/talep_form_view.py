@@ -1,4 +1,4 @@
-"""SATIN ALMA TALEP FORMU görünümü — şirket içi belge (A4 dikey).
+"""SATIN ALMA TALEBİ görünümü — şirket içi belge (A4 dikey).
 
 PDF ve Word aynı görünüm modelini kullanır. Fiyat kolonları yalnızca
 ``alis_talep_fiyat_gorme`` yetkisi olan ve fiyatlı çıktı isteyen kullanıcıda modele girer;
@@ -25,6 +25,7 @@ from database.irsaliye_customer_view import (
 )
 
 FILIGRANLI_DURUMLAR = {"TASLAK": "TASLAK", "İPTAL": "İPTAL", "REDDEDİLDİ": "REDDEDİLDİ"}
+TAHMINI_NOT = "Tahmini bedeller bilgi amaçlıdır; finansal kayıt değildir ve stok, cari veya muhasebe etkisi yoktur."
 
 
 @dataclass
@@ -43,7 +44,7 @@ class TalepFormSatiri:
 
 @dataclass
 class TalepFormViewModel:
-    belge_baslik: str = "SATIN ALMA TALEP FORMU"
+    belge_baslik: str = "SATIN ALMA TALEBİ"
     firma: dict[str, Any] = field(default_factory=dict)
     logo_data_uri: str | None = None
     talep_no: str = ""
@@ -64,13 +65,21 @@ class TalepFormViewModel:
     satirlar: list[TalepFormSatiri] = field(default_factory=list)
     toplam_miktar_goster: str = ""
     olusturma: str = ""
+    dovizli: bool = False
+    ekler: list[str] = field(default_factory=list)
 
     @property
     def filigran(self) -> str:
         return FILIGRANLI_DURUMLAR.get(self.durum, "")
 
+    @property
+    def tahmini_notu(self) -> str:
+        if not self.fiyatli:
+            return ""
+        return TAHMINI_NOT + (" Dövizli satırlar talepte kayıtlı kurla TL'ye çevrilmiştir." if self.dovizli else "")
 
-def build_talep_form(talep_id: int, fiyatli: bool = False) -> TalepFormViewModel:
+
+def build_talep_form(talep_id: int, fiyatli: bool = False, ek_listesi: bool = False) -> TalepFormViewModel:
     from database.satin_alma_talep_service import SatinAlmaTalepService
 
     d = SatinAlmaTalepService.detay(int(talep_id))
@@ -78,12 +87,16 @@ def build_talep_form(talep_id: int, fiyatli: bool = False) -> TalepFormViewModel
     branding, logo = _firma_markasi()
     lines: list[TalepFormSatiri] = []
     toplam = Decimal("0")
+    dovizli = False
     for i, s in enumerate(d["satirlar"], start=1):
         fiyat = s.get("tahmini_birim_fiyat") if fiyatli else None
         tutar = None
+        pb = (s.get("para_birimi") or "TRY").upper()
         if fiyat is not None:
-            tutar = _d(fiyat) * _d(s["miktar"]) * _d(s.get("kur") or 1)
-            toplam += tutar
+            tutar = _d(fiyat) * _d(s["miktar"])
+            dovizli = dovizli or pb != "TRY"
+            toplam += tutar * (_d(s.get("kur") or 1) if pb != "TRY" else Decimal("1"))
+        pb_metin = pb.replace("TRY", "TL")
         lines.append(TalepFormSatiri(
             sira=i,
             urun_kodu=str(s.get("urun_kodu") or ""),
@@ -93,10 +106,8 @@ def build_talep_form(talep_id: int, fiyatli: bool = False) -> TalepFormViewModel
             birim=str(s.get("birim") or "Adet"),
             miktar_goster=miktar_metni(s["miktar"]),
             ihtiyac=_tarih(s.get("ihtiyac_tarihi") or d.get("ihtiyac_tarihi")),
-            birim_fiyat_goster=(
-                f"{_para(fiyat)} {(s.get('para_birimi') or 'TRY').replace('TRY', 'TL')}" if fiyat is not None else ""
-            ),
-            tutar_goster=_para(tutar) if tutar is not None else "",
+            birim_fiyat_goster=f"{_para(fiyat)} {pb_metin}" if fiyat is not None else "",
+            tutar_goster=f"{_para(tutar)} {pb_metin}" if tutar is not None else "",
         ))
     toplamlar = birim_toplamlari(lines)
     return TalepFormViewModel(
@@ -129,6 +140,8 @@ def build_talep_form(talep_id: int, fiyatli: bool = False) -> TalepFormViewModel
         satirlar=lines,
         toplam_miktar_goster=" + ".join(f"{miktar_metni(m)} {b}" for b, m in toplamlar),
         olusturma=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        dovizli=dovizli,
+        ekler=[e["dosya_adi"] for e in d.get("ekler") or []] if ek_listesi else [],
     )
 
 
@@ -187,7 +200,7 @@ def _cok_satir(metin: str) -> str:
 
 
 def render_talep_form_html(vm: TalepFormViewModel) -> str:
-    """A4 dikey SATIN ALMA TALEP FORMU. Sayfa numarası PDF üretiminden sonra basılır."""
+    """A4 dikey SATIN ALMA TALEBİ. Sayfa numarası PDF üretiminden sonra basılır."""
     f = vm.firma or {}
     logo = f'<img class="logo" src="{vm.logo_data_uri}" alt="Logo"/>' if vm.logo_data_uri else ""
     kol = kolonlar(vm)
@@ -214,6 +227,11 @@ def render_talep_form_html(vm: TalepFormViewModel) -> str:
     toplam_tutar = (
         f"<table class='tutarlar'><tr class='genel'><td>Tahmini Toplam</td>"
         f"<td class='r'>{_e(vm.tahmini_toplam_goster)} TL</td></tr></table>" if vm.fiyatli else ""
+    )
+    tahmini_not = f"<div class='tahmini'>{_e(vm.tahmini_notu)}</div>" if vm.tahmini_notu else ""
+    ek_html = (
+        "<div class='not'><strong>Ekler</strong><ol>" + "".join(f"<li>{_e(a)}</li>" for a in vm.ekler)
+        + "</ol></div>" if vm.ekler else ""
     )
     filigran = f"<div class='filigran'>{_e(vm.filigran)}</div>" if vm.filigran else ""
     onay = onay_metni(vm)
@@ -280,6 +298,8 @@ table.tutarlar tr.genel td {{ background:#102A43; color:#F4C542; font-weight:700
 .not {{ border:1px solid #D9E2EC; border-left:3px solid #F4C542; padding:2mm 3mm; margin-bottom:3mm;
   break-inside:avoid; }}
 .not p {{ margin:1mm 0 0; overflow-wrap:anywhere; }}
+.not ol {{ margin:1mm 0 0 5mm; padding:0; overflow-wrap:anywhere; }}
+.tahmini {{ margin-top:2mm; font-size:7.5pt; color:#9A6700; text-align:right; break-inside:avoid; }}
 .imzalar {{ display:flex; gap:4mm; break-inside:avoid; page-break-inside:avoid; }}
 .imza-kutu {{ flex:1; border:1.2px solid #102A43; min-width:0; }}
 .imza-kutu h4 {{ margin:0; background:#102A43; color:#F4C542; padding:1.8mm 3mm; font-size:9pt; letter-spacing:1px; }}
@@ -324,10 +344,12 @@ table.tutarlar tr.genel td {{ background:#102A43; color:#F4C542; font-weight:700
     <div class="muted">Kalem: {len(vm.satirlar)}</div></div>
   {toplam_tutar}
 </div>
+{tahmini_not}
 <div class="son">
   {notlar}
+  {ek_html}
   <div class="imzalar">{_imza_kutusu("TALEP EDEN", vm.isteyen)}{_imza_kutusu("KONTROL EDEN")}{_imza_kutusu("ONAYLAYAN", vm.onaylayan, onay)}</div>
-  <div class="alt">Bu belge şirket içi satın alma talep formudur; sipariş yerine geçmez.{f' Oluşturulma: {_e(vm.olusturma)}' if vm.olusturma else ''}</div>
+  <div class="alt">Bu belge şirket içi satın alma talebidir; sipariş yerine geçmez.{f' Oluşturulma: {_e(vm.olusturma)}' if vm.olusturma else ''}</div>
 </div>
 </body>
 </html>"""

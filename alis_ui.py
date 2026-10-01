@@ -364,6 +364,7 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
         ).pack(side="left")
         ttk.Button(satir_btn, text="Satır Sil (Del)", command=self.satir_sil).pack(side="left", padx=6)
         ttk.Button(satir_btn, text="Talepten Aktar", command=self.talepten_aktar).pack(side="left", padx=6)
+        ttk.Button(satir_btn, text="Bağlı Talepler", command=self.bagli_talepler).pack(side="left")
         self.satir_ozet = ttk.Label(satir_btn, text="Sipariş tutarı: 0,00 TL")
         self.satir_ozet.pack(side="right")
 
@@ -416,6 +417,14 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
             hedef["miktar"] = decimal(hedef["miktar"], "Miktar", Decimal("0")) + decimal(yeni["miktar"], "Miktar")
             hedef["talep_paylari"] = list(hedef["talep_paylari"]) + list(yeni.get("talep_paylari") or [])
         self._satir_listesini_yenile()
+
+    def bagli_talepler(self):
+        from satin_alma_talep_ui import SiparisTalepleriDialog
+
+        if not self.siparis:
+            messagebox.showinfo("Bağlı Talepler", "Sipariş henüz kaydedilmedi.", parent=self)
+            return None
+        return SiparisTalepleriDialog(self, self.siparis.id, self.siparis.siparis_no)
 
     def talepten_aktar(self):
         from database.satin_alma_talep_service import SatinAlmaTalepService

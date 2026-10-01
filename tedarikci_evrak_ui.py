@@ -1,4 +1,4 @@
-"""Tedarikçi kartı — faturalanmamış irsaliye, alış faturası ve alış iade evrakları."""
+"""Tedarikçi kartı — sipariş, irsaliye, alış faturası, iade evrakları ve bağlı satın alma talepleri."""
 
 from __future__ import annotations
 
@@ -9,6 +9,18 @@ from tkinter import messagebox, ttk
 from database.alis_faturasi_service import AlisFaturasiService
 
 SEKMELER: tuple[tuple[str, str, tuple[tuple[str, str, int], ...]], ...] = (
+    (
+        "siparis",
+        "Alış Siparişleri",
+        (
+            ("no", "Sipariş No", 150),
+            ("tarih", "Tarih", 95),
+            ("termin", "Termin", 95),
+            ("satir", "Satır", 70),
+            ("acik_satir", "Teslim Bekleyen Satır", 150),
+            ("durum", "Durum", 140),
+        ),
+    ),
     (
         "irsaliye",
         "Faturalanmamış İrsaliyeler",
@@ -44,14 +56,25 @@ SEKMELER: tuple[tuple[str, str, tuple[tuple[str, str, int], ...]], ...] = (
             ("durum", "Durum", 90),
         ),
     ),
+    (
+        "talep",
+        "Bağlı Satın Alma Talepleri",
+        (
+            ("no", "Talep No", 120),
+            ("tarih", "Tarih", 95),
+            ("termin", "İhtiyaç Tarihi", 110),
+            ("isteyen", "Talep Eden", 160),
+            ("durum", "Durum", 190),
+        ),
+    ),
 )
-_SAYISAL = frozenset({"miktar", "kalan", "genel"})
+_SAYISAL = frozenset({"miktar", "kalan", "genel", "satir", "acik_satir"})
 
 
 def _hucre(kolon: str, deger) -> str:
     if deger is None:
         return ""
-    if kolon == "tarih" and hasattr(deger, "strftime"):
+    if kolon in ("tarih", "termin") and hasattr(deger, "strftime"):
         return deger.strftime("%d.%m.%Y")
     if kolon in _SAYISAL:
         d = Decimal(str(deger or 0))
@@ -133,6 +156,10 @@ class TedarikciEvraklariDialog(tk.Toplevel):
                 )
             self.defter.tab(self.tablolar[anahtar].master, text=f"{baslik} ({len(kayitlar)})")
 
+    @staticmethod
+    def _sekme_indeksi(anahtar: str) -> int:
+        return [a for a, _, _ in SEKMELER].index(anahtar)
+
     def _aktif_sekme(self) -> str:
         indeks = self.defter.index(self.defter.select())
         return SEKMELER[indeks][0]
@@ -153,9 +180,19 @@ class TedarikciEvraklariDialog(tk.Toplevel):
         evrak_id = self._secili_id(anahtar)
         if evrak_id is None:
             return
-        from alis_ui import AlisFaturasiDialog, AlisIadeFaturasiDialog, AlisIrsaliyesiDialog
+        from alis_ui import AlisFaturasiDialog, AlisIadeFaturasiDialog, AlisIrsaliyesiDialog, AlisSiparisiDialog
 
-        if anahtar == "irsaliye":
+        if anahtar == "siparis":
+            from database.alis_siparisi_service import AlisSiparisiService
+
+            siparis = AlisSiparisiService.getir(evrak_id)
+            if siparis:
+                self._ac_bekle(AlisSiparisiDialog(self, siparis=siparis))
+        elif anahtar == "talep":
+            from satin_alma_talep_ui import SatinAlmaTalepDialog
+
+            self._ac_bekle(SatinAlmaTalepDialog(self, talep_id=evrak_id))
+        elif anahtar == "irsaliye":
             from database.alis_irsaliyesi_service import AlisIrsaliyesiService
 
             irsaliye = AlisIrsaliyesiService.getir(evrak_id)
@@ -174,7 +211,7 @@ class TedarikciEvraklariDialog(tk.Toplevel):
 
     def irsaliyeyi_faturala(self):
         if self._aktif_sekme() != "irsaliye":
-            self.defter.select(0)
+            self.defter.select(self._sekme_indeksi("irsaliye"))
             messagebox.showinfo("İrsaliye", "Faturalanacak irsaliyeyi seçin.", parent=self)
             return
         evrak_id = self._secili_id("irsaliye")
@@ -189,7 +226,7 @@ class TedarikciEvraklariDialog(tk.Toplevel):
 
     def faturadan_iade(self):
         if self._aktif_sekme() != "fatura":
-            self.defter.select(1)
+            self.defter.select(self._sekme_indeksi("fatura"))
             messagebox.showinfo("İade", "İade edilecek alış faturasını seçin.", parent=self)
             return
         evrak_id = self._secili_id("fatura")

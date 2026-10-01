@@ -1,4 +1,4 @@
-"""Satın alma talep formu çıktı işlemleri (Önizleme, Yazdır, PDF, Word).
+"""Satın alma talebi çıktı işlemleri (Önizleme, Yazdır, PDF, Word).
 
 Çıktı her zaman kayıtlı talepten üretilir; çıktı almak talep kaydını değiştirmez.
 """
@@ -35,8 +35,17 @@ def fiyatli_mi(parent) -> bool:
     return bool(messagebox.askyesno("Talep Çıktısı", "Tahmini fiyatlar çıktıda gösterilsin mi?", parent=parent))
 
 
+def ek_listesi_mi(parent, talep_id: int) -> bool:
+    from database.satin_alma_talep_service import SatinAlmaTalepService
+
+    if not SatinAlmaTalepService.detay(int(talep_id)).get("ekler"):
+        return False
+    return bool(messagebox.askyesno("Talep Çıktısı", "Ek listesi çıktıya eklensin mi?", parent=parent))
+
+
 def cikti_al(parent, talep_id: int, islem: str, fiyatli: bool | None = None,
-             hedef: str | Path | None = None, yazici: str | None = None) -> Path | None:
+             hedef: str | Path | None = None, yazici: str | None = None,
+             ek_listesi: bool | None = None) -> Path | None:
     """Kayıtlı talepten çıktı üretir. Dönüş: oluşan dosya (vazgeçilirse/hata olursa None)."""
     from invoice_print import talep_cikti as tc
 
@@ -45,8 +54,10 @@ def cikti_al(parent, talep_id: int, islem: str, fiyatli: bool | None = None,
     try:
         if fiyatli is None:
             fiyatli = fiyatli_mi(parent)
+        if ek_listesi is None:
+            ek_listesi = ek_listesi_mi(parent, talep_id)
         _mesgul(parent, True)
-        vm = tc.cikti_modeli(talep_id, fiyatli=fiyatli)
+        vm = tc.cikti_modeli(talep_id, fiyatli=fiyatli, ek_listesi=ek_listesi)
         if not vm.satirlar:
             raise ValueError("Talepte ürün satırı yok; çıktı alınamaz.")
         if islem == "onizleme":

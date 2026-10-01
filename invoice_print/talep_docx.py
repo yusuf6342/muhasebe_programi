@@ -1,4 +1,4 @@
-"""SATIN ALMA TALEP FORMU Word (.docx) çıktısı — düzenlenebilir metin ve tablolar."""
+"""SATIN ALMA TALEBİ Word (.docx) çıktısı — düzenlenebilir metin ve tablolar."""
 
 from __future__ import annotations
 
@@ -159,6 +159,8 @@ def render_talep_docx(vm: TalepFormViewModel, hedef: Path) -> Path:
     if vm.fiyatli:
         _run(_paragraf(doc, once=2, hiza=WD_ALIGN_PARAGRAPH.RIGHT), f"Tahmini Toplam: {vm.tahmini_toplam_goster} TL",
              boyut=10, kalin=True, renk=LACIVERT)
+        _run(_paragraf(doc, once=1, hiza=WD_ALIGN_PARAGRAPH.RIGHT), vm.tahmini_notu, boyut=7.5,
+             renk=RGBColor(0x9A, 0x67, 0x00))
 
     if vm.aciklama:
         np_ = _paragraf(doc, once=8, sonra=0)
@@ -166,6 +168,13 @@ def render_talep_docx(vm: TalepFormViewModel, hedef: Path) -> Path:
         _run(np_, "Açıklama", boyut=9, kalin=True, renk=LACIVERT)
         for parca in vm.aciklama.splitlines() or [""]:
             _run(_paragraf(doc, sonra=0), parca, boyut=8.5)
+
+    if vm.ekler:
+        ep = _paragraf(doc, once=6, sonra=0)
+        ep.paragraph_format.keep_with_next = True
+        _run(ep, "Ekler", boyut=9, kalin=True, renk=LACIVERT)
+        for no, ad in enumerate(vm.ekler, start=1):
+            _run(_paragraf(doc, sonra=0), f"{no}. {ad}", boyut=8.5)
 
     ara = _paragraf(doc, once=6, sonra=0)
     ara.paragraph_format.keep_with_next = True
@@ -200,7 +209,7 @@ def render_talep_docx(vm: TalepFormViewModel, hedef: Path) -> Path:
 
     _run(
         _paragraf(doc, once=2),
-        "Bu belge şirket içi satın alma talep formudur; sipariş yerine geçmez."
+        "Bu belge şirket içi satın alma talebidir; sipariş yerine geçmez."
         + (f" Oluşturulma: {vm.olusturma}" if vm.olusturma else ""),
         boyut=7.5, renk=RGBColor(0x94, 0xA3, 0xB8),
     )

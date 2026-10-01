@@ -213,7 +213,47 @@ class AlisFaturasiService:
                 .options(selectinload(AlisIadeFaturasi.satirlar))
                 .order_by(AlisIadeFaturasi.iade_tarihi.desc(), AlisIadeFaturasi.id.desc())
             ).all()
+            from database.models.alis_siparisi import AlisSiparisi
+
+            siparisler = session.scalars(
+                select(AlisSiparisi)
+                .where(AlisSiparisi.cari_id == int(cari_id))
+                .options(selectinload(AlisSiparisi.satirlar))
+                .order_by(AlisSiparisi.siparis_tarihi.desc(), AlisSiparisi.id.desc())
+            ).all()
+            try:
+                from database.satin_alma_talep_service import SatinAlmaTalepService
+
+                talepler = SatinAlmaTalepService.tedarikci_talepleri(int(cari_id))
+            except Exception:  # noqa: BLE001
+                talepler = []
             return {
+                "siparis": [
+                    {
+                        "id": s.id,
+                        "no": s.siparis_no,
+                        "tarih": s.siparis_tarihi,
+                        "termin": s.termin_tarihi,
+                        "satir": len(s.satirlar),
+                        "acik_satir": sum(
+                            1 for x in s.satirlar
+                            if x.miktar > max(x.irsaliyelenen_miktar or 0, x.faturalanan_miktar or 0)
+                        ),
+                        "durum": s.durum,
+                    }
+                    for s in siparisler
+                ],
+                "talep": [
+                    {
+                        "id": t["id"],
+                        "no": t["talep_no"],
+                        "tarih": t["tarih"],
+                        "termin": t["ihtiyac_tarihi"],
+                        "isteyen": t["isteyen"],
+                        "durum": t["durum"],
+                    }
+                    for t in talepler
+                ],
                 "irsaliye": [
                     {
                         "id": i.id,

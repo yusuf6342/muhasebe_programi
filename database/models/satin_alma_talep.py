@@ -81,6 +81,9 @@ class SatinAlmaTalepSatiri(Base):
     fiyat_kaynagi: Mapped[str | None] = mapped_column(String(60), nullable=True)
     iptal_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     iptal_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # İade edilen malın kullanıcı kararıyla yeniden aktarılabilir ihtiyaca açılan kısmı
+    yeniden_acilan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    yeniden_acma_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     talep: Mapped["SatinAlmaTalep"] = relationship(
         "SatinAlmaTalep", back_populates="satirlar"

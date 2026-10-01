@@ -60,6 +60,13 @@ ONCELIKLER = ("DÜŞÜK", "NORMAL", "YÜKSEK", "ACİL")
 ONAYLI_DURUMLAR = (DURUM_ONAYLANDI, ESKI_SIPARISE_AKTARILDI)
 ACIK_DURUMLAR = (DURUM_TASLAK, DURUM_GONDERILDI, DURUM_ONAYLANDI, ESKI_SIPARISE_AKTARILDI)
 SIFIR = Decimal("0")
+EK_UZANTILARI = frozenset({
+    ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".doc", ".docx", ".xls", ".xlsx", ".csv",
+    ".txt", ".dwg", ".dxf", ".step", ".stp", ".zip", ".msg", ".eml",
+})
+EK_AZAMI_BAYT = 20 * 1024 * 1024
+RAPOR_ALANLARI = ("talep", "onayli", "siparis", "teslim", "iade", "net_teslim", "bekleyen_teslim", "iptal",
+                  "yeniden_acilan", "kalan")
 
 
 def _d(v) -> Decimal:
@@ -143,7 +150,15 @@ class SatinAlmaTalepService:
                     "(SELECT 1 FROM stok_kartlari s WHERE s.stok_kodu = satin_alma_talep_satirlari.urun_kodu)"
                 ))
 
+        def _v2(e) -> None:
+            _v1(e)
+            eksik_kolonlari_ekle(e, "satin_alma_talep_satirlari", {
+                "yeniden_acilan_miktar": "NUMERIC(18,4) NOT NULL DEFAULT 0",
+                "yeniden_acma_nedeni": "VARCHAR(300)",
+            })
+
         surum_uygula(motor, "satin_alma_talep", 1, _v1)
+        surum_uygula(motor, "satin_alma_talep", 2, _v2)
 
     @staticmethod
     def _tablo_var(session) -> bool:
@@ -200,14 +215,15 @@ class SatinAlmaTalepService:
                 .where(SatinAlmaTalepSiparisBagi.talep_satiri_id.in_(idler), AlisSiparisi.durum != "İPTAL")
                 .order_by(SatinAlmaTalepSiparisBagi.id)
             ).all()
-        teslim_satir: dict[int, Decimal] = {}
         sonuc = {
             int(s.id): {"talep": _d(s.miktar), "onayli": _d(s.miktar) if onayli else SIFIR, "siparis": SIFIR,
-                        "teslim": SIFIR, "iptal": _d(s.iptal_miktar), "siparisler": []}
+                        "teslim": SIFIR, "iade": SIFIR, "iptal": _d(s.iptal_miktar),
+                        "yeniden_acilan": _d(getattr(s, "yeniden_acilan_miktar", 0)), "siparisler": []}
             for s in satirlar
         }
-        # Sipariş satırının teslim alınan miktarı, o satıra bağlı paylara id sırasıyla dağıtılır.
+        # Sipariş satırının teslim/iade miktarı, o satıra bağlı paylara id sırasıyla dağıtılır.
         tum_baglar_satir: dict[int, list] = {}
+        iade_satir: dict[int, Decimal] = {}
         if baglar:
             sip_satir_idler = {int(ss.id) for _b, ss, _s in baglar}
             for b in session.scalars(
@@ -216,27 +232,59 @@ class SatinAlmaTalepService:
                 .order_by(SatinAlmaTalepSiparisBagi.id)
             ).all():
                 tum_baglar_satir.setdefault(int(b.siparis_satiri_id), []).append(b)
+            iade_satir = SatinAlmaTalepService._siparis_satiri_iadeleri(session, sip_satir_idler)
+
+        def _dagit(toplam: Decimal, ss_id: int, bag_id: int) -> Decimal:
+            kalan_miktar = toplam
+            for diger in tum_baglar_satir.get(ss_id, []):
+                pay = min(_d(diger.miktar), max(SIFIR, kalan_miktar))
+                kalan_miktar -= pay
+                if int(diger.id) == bag_id:
+                    return pay
+            return SIFIR
+
         for bag, ss, sip in baglar:
             kayit = sonuc[int(bag.talep_satiri_id)]
             kayit["siparis"] += _d(bag.miktar)
             alinan = max(_d(ss.irsaliyelenen_miktar), _d(ss.faturalanan_miktar))
-            if int(ss.id) not in teslim_satir:
-                teslim_satir[int(ss.id)] = alinan
-            payim = SIFIR
-            kalan_alinan = alinan
-            for diger in tum_baglar_satir.get(int(ss.id), []):
-                pay = min(_d(diger.miktar), max(SIFIR, kalan_alinan))
-                kalan_alinan -= pay
-                if int(diger.id) == int(bag.id):
-                    payim = pay
-                    break
+            payim = _dagit(alinan, int(ss.id), int(bag.id))
+            iadem = min(payim, _dagit(iade_satir.get(int(ss.id), SIFIR), int(ss.id), int(bag.id)))
             kayit["teslim"] += payim
+            kayit["iade"] += iadem
             kayit["siparisler"].append({
                 "siparis_id": int(sip.id), "siparis_no": sip.siparis_no, "siparis_satiri_id": int(ss.id),
-                "miktar": _d(bag.miktar), "teslim": payim, "durum": sip.durum,
+                "miktar": _d(bag.miktar), "teslim": payim, "iade": iadem, "durum": sip.durum,
+                "termin_tarihi": sip.termin_tarihi,
             })
         for k in sonuc.values():
-            k["kalan"] = max(SIFIR, k["onayli"] - k["siparis"] - k["iptal"])
+            k["kalan"] = max(SIFIR, k["onayli"] - k["siparis"] - k["iptal"] + k["yeniden_acilan"])
+            k["net_teslim"] = max(SIFIR, k["teslim"] - k["iade"])
+            k["bekleyen_teslim"] = max(SIFIR, k["siparis"] - k["teslim"])
+            k["yeniden_acilabilir"] = max(SIFIR, k["iade"] - k["yeniden_acilan"])
+        return sonuc
+
+    @staticmethod
+    def _siparis_satiri_iadeleri(session, sip_satir_idler: set[int]) -> dict[int, Decimal]:
+        """Sipariş satırı → iptal edilmemiş alış iadelerinde geri gönderilen miktar."""
+        from database.models.alis_faturasi import AlisFaturasiSatiri
+        from database.models.alis_iade_faturasi import AlisIadeFaturasi, AlisIadeFaturasiSatiri
+        from database.models.alis_irsaliyesi import AlisIrsaliyesiSatiri
+
+        if not sip_satir_idler:
+            return {}
+        sonuc: dict[int, Decimal] = {}
+        rows = session.execute(
+            select(AlisIadeFaturasiSatiri.miktar, AlisFaturasiSatiri.siparis_satiri_id,
+                   AlisIrsaliyesiSatiri.siparis_satiri_id)
+            .join(AlisIadeFaturasi, AlisIadeFaturasi.id == AlisIadeFaturasiSatiri.iade_id)
+            .join(AlisFaturasiSatiri, AlisFaturasiSatiri.id == AlisIadeFaturasiSatiri.kaynak_fatura_satiri_id)
+            .outerjoin(AlisIrsaliyesiSatiri, AlisIrsaliyesiSatiri.id == AlisFaturasiSatiri.irsaliye_satiri_id)
+            .where(AlisIadeFaturasi.durum != "İPTAL")
+        ).all()
+        for miktar, dogrudan, irsaliyeden in rows:
+            ss_id = dogrudan or irsaliyeden
+            if ss_id and int(ss_id) in sip_satir_idler:
+                sonuc[int(ss_id)] = sonuc.get(int(ss_id), SIFIR) + _d(miktar)
         return sonuc
 
     @staticmethod
@@ -268,25 +316,54 @@ class SatinAlmaTalepService:
         from database.models.stok import Depo, StokKarti, StokLotu
 
         kod = (urun_kodu or "").strip()
+        zaman = datetime.now()
         if not kod:
-            return {"stok": SIFIR, "bekleyen": SIFIR}
+            return {"stok": SIFIR, "bekleyen": SIFIR, "toplam_stok": SIFIR, "diger_depo": SIFIR,
+                    "en_yakin_termin": None, "zaman": zaman}
         stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
-        mevcut = SIFIR
+        mevcut = toplam_stok = SIFIR
         if stok is not None:
             q = select(func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).where(StokLotu.stok_id == stok.id)
+            toplam_stok = _d(session.scalar(q))
+            mevcut = toplam_stok
             if depo:
                 depo_id = session.scalar(select(Depo.id).where(Depo.ad == depo))
-                if depo_id is not None:
-                    q = q.where(StokLotu.depo_id == depo_id)
-            mevcut = _d(session.scalar(q))
+                mevcut = _d(session.scalar(q.where(StokLotu.depo_id == depo_id))) if depo_id is not None else SIFIR
         bekleyen = SIFIR
-        for ss in session.scalars(
-            select(AlisSiparisiSatiri)
+        termin = None
+        for ss, sip_termin in session.execute(
+            select(AlisSiparisiSatiri, AlisSiparisi.termin_tarihi)
             .join(AlisSiparisi)
             .where(AlisSiparisiSatiri.urun_kodu == kod, AlisSiparisi.durum.notin_(("İPTAL", "FATURALI")))
         ).all():
-            bekleyen += max(SIFIR, _d(ss.miktar) - max(_d(ss.irsaliyelenen_miktar), _d(ss.faturalanan_miktar)))
-        return {"stok": mevcut, "bekleyen": bekleyen}
+            acik = max(SIFIR, _d(ss.miktar) - max(_d(ss.irsaliyelenen_miktar), _d(ss.faturalanan_miktar)))
+            if acik > 0:
+                bekleyen += acik
+                if sip_termin and (termin is None or sip_termin < termin):
+                    termin = sip_termin
+        return {"stok": mevcut, "bekleyen": bekleyen, "toplam_stok": toplam_stok,
+                "diger_depo": max(SIFIR, toplam_stok - mevcut) if depo else SIFIR,
+                "en_yakin_termin": termin, "zaman": zaman}
+
+    @staticmethod
+    def depo_stoklari(urun_kodu: str) -> list[dict[str, Any]]:
+        """Ürünün depo bazlı mevcut stoku (bilgi amaçlı; transfer veya rezervasyon yapılmaz)."""
+        from database.models.stok import Depo, StokKarti, StokLotu
+
+        kod = (urun_kodu or "").strip()
+        if not kod:
+            return []
+        with get_session() as session:
+            stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+            if stok is None:
+                return []
+            rows = session.execute(
+                select(Depo.ad, func.coalesce(func.sum(StokLotu.kalan_miktar), 0))
+                .join(StokLotu, StokLotu.depo_id == Depo.id)
+                .where(StokLotu.stok_id == stok.id)
+                .group_by(Depo.ad).order_by(Depo.ad)
+            ).all()
+        return [{"depo": ad, "miktar": _d(m)} for ad, m in rows if _d(m) != 0]
 
     # ------------------------------------------------------------- sorgular
     @staticmethod
@@ -302,7 +379,9 @@ class SatinAlmaTalepService:
         stok: str | None = None,
         gorunum: str | None = None,
     ) -> list[dict[str, Any]]:
-        """gorunum: None | 'onay_bekleyen' | 'geciken'."""
+        """gorunum: None | 'onay_bekleyen' | 'geciken' | 'aktarilmamis' | 'kismen'."""
+        yetki_zorunlu("alis_talep_goruntuleme", "alis_talep_duzenleme", "alis_talep_onay", "alis_goruntuleme",
+                      mesaj="Satın alma taleplerini görüntüleme yetkiniz yok.")
         SatinAlmaTalepService.schema_hazirla()
         fiyat_gor = yetki_var("alis_talep_fiyat_gorme", "maliyet_gorma")
         n_no = turkce_normalize((no or "").strip())
@@ -345,8 +424,16 @@ class SatinAlmaTalepService:
                                   default=None)
                     if not (acik and ihtiyac and ihtiyac < bugun and t.durum in ACIK_DURUMLAR):
                         continue
+                toplam_siparis = sum((m["siparis"] for m in miktarlar.values()), SIFIR)
+                toplam_kalan = sum((m["kalan"] for m in miktarlar.values()), SIFIR)
+                if gorunum == "aktarilmamis" and not (
+                        t.durum in ONAYLI_DURUMLAR and toplam_siparis <= 0 and toplam_kalan > 0):
+                    continue
+                if gorunum == "kismen" and not (
+                        t.durum in ONAYLI_DURUMLAR and toplam_siparis > 0 and toplam_kalan > 0):
+                    continue
                 tahmini = None
-                if fiyat_gor:
+                if fiyat_gor and any(s.tahmini_birim_fiyat is not None for s in t.satirlar):
                     tahmini = sum(
                         (_d(s.miktar) * _d(s.tahmini_birim_fiyat) * (_d(s.kur) if (s.para_birimi or "TRY") != "TRY"
                                                                      else Decimal("1"))
@@ -385,6 +472,8 @@ class SatinAlmaTalepService:
         """Form ve çıktı için başlık + satır miktarları + geçmiş + ekler."""
         from database.models.cari import Cari
 
+        yetki_zorunlu("alis_talep_goruntuleme", "alis_talep_duzenleme", "alis_talep_onay", "alis_goruntuleme",
+                      mesaj="Satın alma taleplerini görüntüleme yetkiniz yok.")
         SatinAlmaTalepService.schema_hazirla()
         fiyat_gor = yetki_var("alis_talep_fiyat_gorme", "maliyet_gorma")
         with get_session() as session:
@@ -421,7 +510,13 @@ class SatinAlmaTalepService:
                     "fiyat_kaynagi": s.fiyat_kaynagi if fiyat_gor else None,
                     "iptal_nedeni": s.iptal_nedeni,
                     "mevcut_stok": bilgi["stok"], "bekleyen_siparis": bilgi["bekleyen"],
-                    **{k: m[k] for k in ("onayli", "siparis", "teslim", "iptal", "kalan", "siparisler")},
+                    "diger_depo_stok": bilgi["diger_depo"], "bekleyen_termin": bilgi["en_yakin_termin"],
+                    "stok_zamani": bilgi["zaman"],
+                    "yeniden_acma_nedeni": s.yeniden_acma_nedeni,
+                    "siparis_termin": min((x["termin_tarihi"] for x in m["siparisler"]
+                                           if x["termin_tarihi"] and x["miktar"] > x["teslim"]), default=None),
+                    **{k: m[k] for k in ("onayli", "siparis", "teslim", "iade", "net_teslim", "bekleyen_teslim",
+                                         "iptal", "yeniden_acilan", "yeniden_acilabilir", "kalan", "siparisler")},
                 })
             sonuc["satirlar"] = satirlar
             sonuc["fiyat_gorunur"] = fiyat_gor
@@ -462,6 +557,8 @@ class SatinAlmaTalepService:
                 stok_id = int(stok.id)
             fiyat = veri.get("tahmini_birim_fiyat")
             pb = (veri.get("para_birimi") or "TRY").upper()
+            if pb != "TRY" and fiyat not in (None, "") and not veri.get("kur"):
+                raise ValueError(f"{sira}. satır: {pb} tahmini fiyat için kur girin (TL karşılığı kurla hesaplanır).")
             hazir.append({
                 "sira": sira,
                 "urun_kodu": kod,
@@ -488,7 +585,9 @@ class SatinAlmaTalepService:
         satir_verileri: list[dict[str, Any]],
         talep_id: int | None = None,
         beklenen_versiyon: int | None = None,
+        tekrar_gerekcesi: str | None = None,
     ) -> int:
+        """``tekrar_gerekcesi``: aynı ürün için açık talep uyarısına rağmen devam edilirse geçmişe yazılır."""
         yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme", "yeni_kayit")
         SatinAlmaTalepService.schema_hazirla()
         if not satir_verileri:
@@ -541,6 +640,9 @@ class SatinAlmaTalepService:
                     session.flush()
                     SatinAlmaTalepService._gecmis(session, talep.id, islem, None, talep.durum,
                                                   f"{len(satir_verileri)} satır")
+                    if (tekrar_gerekcesi or "").strip():
+                        SatinAlmaTalepService._gecmis(session, talep.id, "TEKRAR TALEP GEREKÇESİ", None, None,
+                                                      tekrar_gerekcesi.strip()[:500])
                     return int(talep.id)
             except IntegrityError:
                 if talep_id or deneme == 2:
@@ -663,7 +765,7 @@ class SatinAlmaTalepService:
 
     @staticmethod
     def iptal_et(talep_id: int, neden: str = "") -> None:
-        yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme", "iptal")
+        yazma_zorunlu("alis_talep_iptal", "alis_talep_duzenleme", "alis_duzenleme", "iptal")
         SatinAlmaTalepService.schema_hazirla()
 
         def _g(session, t):
@@ -680,7 +782,7 @@ class SatinAlmaTalepService:
     @staticmethod
     def kalan_iptal(talep_satiri_id: int, miktar, neden: str) -> None:
         """Onaylı talebin siparişe aktarılmamış kalanını (kısmen) kapatır."""
-        yazma_zorunlu("alis_talep_duzenleme", "alis_talep_onay", "alis_duzenleme")
+        yazma_zorunlu("alis_talep_iptal", "alis_talep_duzenleme", "alis_talep_onay", "alis_duzenleme")
         neden = (neden or "").strip()
         if not neden:
             raise ValueError("Kalan iptal nedeni zorunludur.")
@@ -701,6 +803,179 @@ class SatinAlmaTalepService:
             t.row_version = int(t.row_version or 1) + 1
             SatinAlmaTalepService._gecmis(session, t.id, "KALAN İPTAL", t.durum, t.durum,
                                           f"{s.urun_kodu} {miktar.normalize():f} {s.birim}: {neden}")
+
+    @staticmethod
+    def iadeyi_yeniden_ac(talep_satiri_id: int, miktar, neden: str) -> None:
+        """Tedarikçiye iade edilen miktarın bir kısmını açık kullanıcı kararıyla yeniden aktarılabilir yapar.
+
+        Otomatik sipariş oluşturmaz; yalnızca talebin kalan (aktarılabilir) miktarını artırır.
+        """
+        yazma_zorunlu("alis_talep_onay", "alis_talep_duzenleme", "alis_duzenleme")
+        neden = (neden or "").strip()
+        if not neden:
+            raise ValueError("Yeniden açma nedeni zorunludur.")
+        miktar = decimal(miktar, "Yeniden açılacak miktar", Decimal("0.0001"))
+        SatinAlmaTalepService.schema_hazirla()
+        with get_session() as session:
+            s = session.get(SatinAlmaTalepSatiri, int(talep_satiri_id))
+            if s is None:
+                raise ValueError("Talep satırı bulunamadı.")
+            t = session.get(SatinAlmaTalep, int(s.talep_id))
+            if t.durum not in ONAYLI_DURUMLAR:
+                raise ValueError("Yalnızca onaylı talepte iade edilen miktar yeniden ihtiyaca açılabilir.")
+            m = SatinAlmaTalepService._satir_miktarlari(session, [s], True)[int(s.id)]
+            if miktar > m["yeniden_acilabilir"]:
+                raise ValueError(
+                    f"Yeniden açılabilir iade miktarı {m['yeniden_acilabilir'].normalize():f} {s.birim}; aşılamaz."
+                )
+            s.yeniden_acilan_miktar = _d(s.yeniden_acilan_miktar) + miktar
+            s.yeniden_acma_nedeni = neden[:300]
+            t.row_version = int(t.row_version or 1) + 1
+            SatinAlmaTalepService._gecmis(session, t.id, "İADEYİ YENİDEN AÇ", t.durum, t.durum,
+                                          f"{s.urun_kodu} {miktar.normalize():f} {s.birim}: {neden}")
+
+    @staticmethod
+    def sil(talep_id: int) -> None:
+        """Yalnızca siparişe bağlanmamış taslak silinir; diğer durumlar kontrollü iptal ister."""
+        yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme")
+        yetki_zorunlu("silme", "alis_talep_onay", mesaj="Talep silmek için silme yetkiniz yok.")
+        SatinAlmaTalepService.schema_hazirla()
+        with get_session() as session:
+            t = session.scalar(select(SatinAlmaTalep).options(selectinload(SatinAlmaTalep.satirlar))
+                               .where(SatinAlmaTalep.id == int(talep_id)))
+            if t is None:
+                raise ValueError("Talep bulunamadı.")
+            if t.durum != DURUM_TASLAK:
+                raise ValueError(f"'{t.durum}' durumundaki talep silinemez; gerekçeyle iptal edin.")
+            idler = [int(s.id) for s in t.satirlar]
+            if idler and SatinAlmaTalepService._tablo_var(session) and session.scalar(
+                select(func.count()).select_from(SatinAlmaTalepSiparisBagi)
+                .where(SatinAlmaTalepSiparisBagi.talep_satiri_id.in_(idler))
+            ):
+                raise ValueError("Siparişe bağlı talep silinemez.")
+            for model in (SatinAlmaTalepGecmisi, SatinAlmaTalepEki):
+                for kayit in session.scalars(select(model).where(model.talep_id == int(t.id))).all():
+                    session.delete(kayit)
+            session.delete(t)
+
+    @staticmethod
+    def bagli_belgeler(talep_id: int) -> list[dict[str, Any]]:
+        """Talebe bağlı alış siparişleri ve onlardan oluşan irsaliye/fatura/iade belgeleri."""
+        from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
+        from database.models.alis_iade_faturasi import AlisIadeFaturasi, AlisIadeFaturasiSatiri
+        from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri
+        from database.models.alis_siparisi import AlisSiparisi
+
+        SatinAlmaTalepService.schema_hazirla()
+        sonuc: list[dict[str, Any]] = []
+        with get_session() as session:
+            if not SatinAlmaTalepService._tablo_var(session):
+                return []
+            ss_idler = set(session.scalars(
+                select(SatinAlmaTalepSiparisBagi.siparis_satiri_id)
+                .join(SatinAlmaTalepSatiri, SatinAlmaTalepSatiri.id == SatinAlmaTalepSiparisBagi.talep_satiri_id)
+                .where(SatinAlmaTalepSatiri.talep_id == int(talep_id))
+            ).all())
+            if not ss_idler:
+                return []
+            for sip in session.scalars(
+                select(AlisSiparisi).join(SatinAlmaTalepSiparisBagi,
+                                          SatinAlmaTalepSiparisBagi.siparis_id == AlisSiparisi.id)
+                .where(SatinAlmaTalepSiparisBagi.siparis_satiri_id.in_(ss_idler)).distinct()
+                .order_by(AlisSiparisi.id)
+            ).all():
+                sonuc.append({"tur": "Sipariş", "id": int(sip.id), "no": sip.siparis_no,
+                              "tarih": sip.siparis_tarihi, "durum": sip.durum})
+            irs_satir_idler = set()
+            for irs, irs_satir_id in session.execute(
+                select(AlisIrsaliyesi, AlisIrsaliyesiSatiri.id)
+                .join(AlisIrsaliyesiSatiri, AlisIrsaliyesiSatiri.irsaliye_id == AlisIrsaliyesi.id)
+                .where(AlisIrsaliyesiSatiri.siparis_satiri_id.in_(ss_idler)).order_by(AlisIrsaliyesi.id)
+            ).all():
+                irs_satir_idler.add(int(irs_satir_id))
+                if not any(x["tur"] == "İrsaliye" and x["id"] == int(irs.id) for x in sonuc):
+                    sonuc.append({"tur": "İrsaliye", "id": int(irs.id), "no": irs.irsaliye_no,
+                                  "tarih": irs.irsaliye_tarihi, "durum": irs.durum})
+            kosul = AlisFaturasiSatiri.siparis_satiri_id.in_(ss_idler)
+            if irs_satir_idler:
+                kosul = kosul | AlisFaturasiSatiri.irsaliye_satiri_id.in_(irs_satir_idler)
+            fat_satir_idler = set()
+            for fat, fat_satir_id in session.execute(
+                select(AlisFaturasi, AlisFaturasiSatiri.id)
+                .join(AlisFaturasiSatiri, AlisFaturasiSatiri.fatura_id == AlisFaturasi.id)
+                .where(kosul).order_by(AlisFaturasi.id)
+            ).all():
+                fat_satir_idler.add(int(fat_satir_id))
+                if not any(x["tur"] == "Fatura" and x["id"] == int(fat.id) for x in sonuc):
+                    sonuc.append({"tur": "Fatura", "id": int(fat.id), "no": fat.fatura_no,
+                                  "tarih": fat.fatura_tarihi, "durum": fat.durum})
+            if fat_satir_idler:
+                for iade in session.scalars(
+                    select(AlisIadeFaturasi)
+                    .join(AlisIadeFaturasiSatiri, AlisIadeFaturasiSatiri.iade_id == AlisIadeFaturasi.id)
+                    .where(AlisIadeFaturasiSatiri.kaynak_fatura_satiri_id.in_(fat_satir_idler))
+                    .distinct().order_by(AlisIadeFaturasi.id)
+                ).all():
+                    sonuc.append({"tur": "İade", "id": int(iade.id), "no": iade.iade_no,
+                                  "tarih": iade.iade_tarihi, "durum": iade.durum})
+        return sonuc
+
+    @staticmethod
+    def siparis_talepleri(siparis_id: int) -> list[dict[str, Any]]:
+        """Alış siparişine pay aktaran talepler (sipariş kartından kaynak belgeye geçiş)."""
+        SatinAlmaTalepService.schema_hazirla()
+        with get_session() as session:
+            if not SatinAlmaTalepService._tablo_var(session):
+                return []
+            rows = session.execute(
+                select(SatinAlmaTalep.id, SatinAlmaTalep.talep_no, SatinAlmaTalep.talep_tarihi,
+                       SatinAlmaTalep.isteyen_kullanici, SatinAlmaTalepSatiri.urun_kodu,
+                       SatinAlmaTalepSatiri.birim, func.sum(SatinAlmaTalepSiparisBagi.miktar))
+                .join(SatinAlmaTalepSatiri, SatinAlmaTalepSatiri.talep_id == SatinAlmaTalep.id)
+                .join(SatinAlmaTalepSiparisBagi,
+                      SatinAlmaTalepSiparisBagi.talep_satiri_id == SatinAlmaTalepSatiri.id)
+                .where(SatinAlmaTalepSiparisBagi.siparis_id == int(siparis_id))
+                .group_by(SatinAlmaTalep.id, SatinAlmaTalep.talep_no, SatinAlmaTalep.talep_tarihi,
+                          SatinAlmaTalep.isteyen_kullanici, SatinAlmaTalepSatiri.urun_kodu,
+                          SatinAlmaTalepSatiri.birim)
+                .order_by(SatinAlmaTalep.id)
+            ).all()
+        return [{"id": int(r[0]), "talep_no": r[1], "tarih": r[2], "isteyen": r[3] or "", "urun_kodu": r[4],
+                 "birim": r[5], "miktar": _d(r[6])} for r in rows]
+
+    @staticmethod
+    def tedarikci_talepleri(cari_id: int) -> list[dict[str, Any]]:
+        """Satırında önerilen tedarikçi olan veya bu tedarikçinin siparişine bağlanan talepler."""
+        from database.models.alis_siparisi import AlisSiparisi
+
+        SatinAlmaTalepService.schema_hazirla()
+        with get_session() as session:
+            idler = set(session.scalars(
+                select(SatinAlmaTalepSatiri.talep_id).where(SatinAlmaTalepSatiri.onerilen_tedarikci_id == int(cari_id))
+            ).all())
+            if SatinAlmaTalepService._tablo_var(session):
+                idler |= set(session.scalars(
+                    select(SatinAlmaTalepSatiri.talep_id)
+                    .join(SatinAlmaTalepSiparisBagi,
+                          SatinAlmaTalepSiparisBagi.talep_satiri_id == SatinAlmaTalepSatiri.id)
+                    .join(AlisSiparisi, AlisSiparisi.id == SatinAlmaTalepSiparisBagi.siparis_id)
+                    .where(AlisSiparisi.cari_id == int(cari_id))
+                ).all())
+            if not idler:
+                return []
+            sonuc = []
+            for t in session.scalars(
+                select(SatinAlmaTalep).options(selectinload(SatinAlmaTalep.satirlar))
+                .where(SatinAlmaTalep.id.in_(idler)).order_by(SatinAlmaTalep.talep_tarihi.desc(),
+                                                               SatinAlmaTalep.id.desc())
+            ).all():
+                m = SatinAlmaTalepService._satir_miktarlari(session, t.satirlar, t.durum in ONAYLI_DURUMLAR)
+                sonuc.append({
+                    "id": int(t.id), "talep_no": t.talep_no, "tarih": t.talep_tarihi,
+                    "ihtiyac_tarihi": t.ihtiyac_tarihi, "isteyen": t.isteyen_kullanici or "",
+                    "durum": SatinAlmaTalepService._gorunen_durum(t.durum, m), "satir_adet": len(t.satirlar),
+                })
+            return sonuc
 
     @staticmethod
     def durum_degistir(talep_id: int, yeni_durum: str) -> None:
@@ -757,6 +1032,8 @@ class SatinAlmaTalepService:
         from database.stok_service import StokService
 
         yetki_zorunlu("alis_siparis_duzenleme", "alis_duzenleme")
+        yetki_zorunlu("alis_talep_aktarim", "alis_talep_onay", "alis_duzenleme",
+                      mesaj="Talebi siparişe aktarma yetkiniz yok.")
         SatinAlmaTalepService.schema_hazirla()
         if not miktarlar:
             raise ValueError("Aktarılacak talep satırı seçin.")
@@ -877,12 +1154,15 @@ class SatinAlmaTalepService:
                 .join(AlisSiparisi, AlisSiparisi.id == SatinAlmaTalepSiparisBagi.siparis_id)
                 .where(SatinAlmaTalepSiparisBagi.talep_satiri_id == ts_id, AlisSiparisi.durum != "İPTAL")
             ))
-            if toplam_aktif + _d(ts.iptal_miktar) > _d(ts.miktar):
-                kalan = max(SIFIR, _d(ts.miktar) - _d(ts.iptal_miktar) - (toplam_aktif - yeni_toplam.get(ts_id, SIFIR)))
+            tavan = _d(ts.miktar) + _d(ts.yeniden_acilan_miktar)
+            if toplam_aktif + _d(ts.iptal_miktar) > tavan:
+                kalan = max(SIFIR, tavan - _d(ts.iptal_miktar) - (toplam_aktif - yeni_toplam.get(ts_id, SIFIR)))
                 raise ValueError(
                     f"{t.talep_no} / {ts.urun_kodu}: talebin kalan miktarı ({kalan.normalize():f} {ts.birim}) aşıldı."
                 )
             fark = yeni_toplam.get(ts_id, SIFIR) - eski_toplam.get(ts_id, SIFIR)
+            if fark > 0 and not yetki_var("alis_talep_aktarim", "alis_talep_onay", "alis_duzenleme"):
+                raise ValueError("Talebi siparişe aktarma yetkiniz yok.")
             if fark:
                 SatinAlmaTalepService._gecmis(
                     session, t.id, "SİPARİŞE AKTAR" if fark > 0 else "SİPARİŞTEN GERİ AÇ", t.durum, t.durum,
@@ -922,9 +1202,20 @@ class SatinAlmaTalepService:
 
     # ------------------------------------------------------------- rapor
     @staticmethod
-    def urun_bazli_rapor(baslangic: date | None = None, bitis: date | None = None) -> list[dict[str, Any]]:
+    def urun_bazli_rapor(baslangic: date | None = None, bitis: date | None = None, *, depo: str | None = None,
+                         stok: str | None = None) -> list[dict[str, Any]]:
+        """Ürün + birim bazında talep akışı. Farklı birimler ayrı satırda kalır, toplanmaz.
+
+        ``kalan`` siparişe aktarılmamış açık ihtiyaç; ``bekleyen_teslim`` sipariş verilmiş ama teslim alınmamış.
+        """
+        yetki_zorunlu("alis_talep_goruntuleme", "alis_talep_duzenleme", "alis_talep_onay", "alis_rapor_goruntuleme",
+                      mesaj="Satın alma talep raporu için yetkiniz yok.")
         SatinAlmaTalepService.schema_hazirla()
         toplam: dict[tuple, dict] = {}
+        depo = (depo or "").strip()
+        if depo in ("Tümü", "TÜMÜ"):
+            depo = ""
+        n_stok = turkce_normalize((stok or "").strip())
         with get_session() as session:
             q = select(SatinAlmaTalep).options(selectinload(SatinAlmaTalep.satirlar)).where(
                 SatinAlmaTalep.durum != DURUM_IPTAL)
@@ -935,15 +1226,18 @@ class SatinAlmaTalepService:
             for t in session.scalars(q).all():
                 m = SatinAlmaTalepService._satir_miktarlari(session, t.satirlar, t.durum in ONAYLI_DURUMLAR)
                 for s in t.satirlar:
+                    if depo and (s.depo or t.depo or "") != depo:
+                        continue
+                    if n_stok and n_stok not in turkce_normalize(f"{s.urun_kodu or ''} {s.urun_adi}"):
+                        continue
                     k = m[int(s.id)]
                     anahtar = (s.urun_kodu or "", s.urun_adi if not s.urun_kodu else "", s.birim)
                     r = toplam.setdefault(anahtar, {
                         "urun_kodu": s.urun_kodu, "urun_adi": s.urun_adi, "birim": s.birim, "talep_sayisi": 0,
-                        "talep": SIFIR, "onayli": SIFIR, "siparis": SIFIR, "teslim": SIFIR, "iptal": SIFIR,
-                        "kalan": SIFIR,
+                        **{a: SIFIR for a in RAPOR_ALANLARI},
                     })
                     r["talep_sayisi"] += 1
-                    for alan in ("talep", "onayli", "siparis", "teslim", "iptal", "kalan"):
+                    for alan in RAPOR_ALANLARI:
                         r[alan] += k[alan]
         return sorted(toplam.values(), key=lambda r: (r["urun_kodu"] or "", r["urun_adi"] or ""))
 
@@ -962,6 +1256,21 @@ class SatinAlmaTalepService:
         kaynak = Path(kaynak_yol)
         if not kaynak.is_file():
             raise ValueError("Dosya bulunamadı.")
+        if kaynak.suffix.lower() not in EK_UZANTILARI:
+            raise ValueError(
+                f"'{kaynak.suffix or 'uzantısız'}' türündeki dosya eklenemez.\n"
+                f"İzin verilen türler: {', '.join(sorted(EK_UZANTILARI))}"
+            )
+        boyut = kaynak.stat().st_size
+        if boyut <= 0:
+            raise ValueError("Boş dosya eklenemez.")
+        if boyut > EK_AZAMI_BAYT:
+            raise ValueError(
+                f"Dosya çok büyük ({boyut / 1024 / 1024:.1f} MB). En fazla {EK_AZAMI_BAYT // 1024 // 1024} MB eklenebilir."
+            )
+        with get_session() as session:
+            if session.get(SatinAlmaTalep, int(talep_id)) is None:
+                raise ValueError("Talep bulunamadı; önce talebi kaydedin.")
         klasor = SatinAlmaTalepService._ek_klasoru(talep_id)
         klasor.mkdir(parents=True, exist_ok=True)
         hedef = klasor / kaynak.name
@@ -979,9 +1288,34 @@ class SatinAlmaTalepService:
             return int(e.id)
 
     @staticmethod
+    def ek_sil(ek_id: int) -> None:
+        """Ek kaydını ve programın ek klasöründeki kopyasını kaldırır (kaynak dosyaya dokunmaz)."""
+        yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme")
+        with get_session() as session:
+            e = session.get(SatinAlmaTalepEki, int(ek_id))
+            if e is None:
+                raise ValueError("Ek bulunamadı.")
+            t = session.get(SatinAlmaTalep, int(e.talep_id))
+            if t is not None and t.durum not in (DURUM_TASLAK, DURUM_REDDEDILDI):
+                raise ValueError(f"'{t.durum}' durumundaki talebin eki kaldırılamaz.")
+            yol = SatinAlmaTalepService._ek_klasoru(e.talep_id) / e.dosya_adi
+            SatinAlmaTalepService._gecmis(session, e.talep_id, "EK SİL", None, None, e.dosya_adi)
+            session.delete(e)
+        try:
+            yol.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
     def ek_yolu(ek_id: int) -> Path:
         with get_session() as session:
             e = session.get(SatinAlmaTalepEki, int(ek_id))
             if e is None:
                 raise ValueError("Ek bulunamadı.")
-            return SatinAlmaTalepService._ek_klasoru(e.talep_id) / e.dosya_adi
+            yol = SatinAlmaTalepService._ek_klasoru(e.talep_id) / e.dosya_adi
+        if not yol.is_file():
+            raise ValueError(
+                f"'{e.dosya_adi}' eki kayıtlı ancak dosya diskte bulunamadı.\n"
+                f"Beklenen konum: {yol}\nDosya taşınmış veya silinmiş olabilir; ek listesinden kaldırıp yeniden ekleyin."
+            )
+        return yol

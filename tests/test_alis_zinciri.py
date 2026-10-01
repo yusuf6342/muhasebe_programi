@@ -356,8 +356,9 @@ class AlisZinciriTest(unittest.TestCase):
         self.assertEqual(evrak["irsaliye"][0]["kalan"], Decimal("6"))
         self.assertEqual(evrak["fatura"][0]["ted_no"], "E-1")
         self.assertEqual(evrak["fatura"][0]["irsaliye"], irs.irsaliye_no)
+        self.assertEqual([s["no"] for s in evrak["siparis"]], [sip.siparis_no])
         self.assertEqual(AlisFaturasiService.tedarikci_evraklari(self.t2),
-                         {"irsaliye": [], "fatura": [], "iade": []})
+                         {"siparis": [], "talep": [], "irsaliye": [], "fatura": [], "iade": []})
         with get_session() as s:
             cari = s.get(Cari, self.t1)
             with self.assertRaises(SoftDeleteError):

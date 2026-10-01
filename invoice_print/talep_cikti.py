@@ -1,4 +1,4 @@
-"""SATIN ALMA TALEP FORMU A4 çıktıları — PDF (Chromium) ve Word (.docx) aynı görünüm modelinden."""
+"""SATIN ALMA TALEBİ A4 çıktıları — PDF (Chromium) ve Word (.docx) aynı görünüm modelinden."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from invoice_print.irsaliye_cikti import _sayfa_bilgisi_bas
 _LOG = logging.getLogger("invoice_print.talep")
 
 
-def cikti_modeli(talep_id: int, fiyatli: bool = False) -> TalepFormViewModel:
-    return build_talep_form(int(talep_id), fiyatli=fiyatli)
+def cikti_modeli(talep_id: int, fiyatli: bool = False, ek_listesi: bool = False) -> TalepFormViewModel:
+    return build_talep_form(int(talep_id), fiyatli=fiyatli, ek_listesi=ek_listesi)
 
 
 def varsayilan_dosya_adi(vm: TalepFormViewModel, uzanti: str) -> str:

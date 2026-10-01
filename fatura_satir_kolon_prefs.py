@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 EKRAN_SATIS = "satis_faturasi_satirlari"
 EKRAN_SATIS_IADE = "satis_iade_faturasi_satirlari"
 EKRAN_ALIS = "alis_faturasi_satirlari"
+EKRAN_TALEP = "satin_alma_talep_satirlari"
 
 _SATIS_KOLONLARI: tuple[tuple[str, str, int, int, int, bool, bool], ...] = (
     ("sec", "☐", 36, 32, 48, True, True),
@@ -65,12 +66,36 @@ FATURA_SATIR_KOLON_TANIM: dict[str, tuple[tuple[str, str, int, int, int, bool, b
         ("irsaliye_miktar", "İrsaliye Miktarı", 100, 70, 160, True, False),
         ("fatura_miktar", "Fatura Miktarı", 100, 70, 160, True, False),
     ),
+    EKRAN_TALEP: (
+        ("kod", "Stok Kodu", 90, 70, 200, True, False),
+        ("ad", "Ürün Adı", 190, 140, 450, True, True),
+        ("aciklama", "Teknik Açıklama", 170, 100, 400, True, False),
+        ("birim", "Birim", 60, 45, 110, True, False),
+        ("miktar", "Miktar", 70, 55, 130, True, True),
+        ("siparis", "Sipariş", 65, 50, 120, True, False),
+        ("teslim", "Teslim", 65, 50, 120, True, False),
+        ("iade", "İade", 55, 45, 110, True, False),
+        ("iptal", "İptal", 55, 45, 110, True, False),
+        ("kalan", "Kalan", 65, 50, 120, True, False),
+        ("stok", "Depo Stok", 75, 55, 130, True, False),
+        ("diger", "Diğer Depolar", 85, 55, 140, True, False),
+        ("bekleyen", "Bekleyen Sip.", 85, 60, 140, True, False),
+        ("termin", "Bekl. Termin", 90, 70, 130, True, False),
+        ("tedarikci", "Önerilen Tedarikçi", 140, 90, 300, True, False),
+        ("ihtiyac", "İhtiyaç", 80, 70, 120, True, False),
+        ("fiyat", "Tahmini B.Fiyat", 95, 70, 160, True, False),
+        ("pb", "Döviz", 50, 40, 80, True, False),
+        ("kur", "Kur", 65, 50, 120, True, False),
+        ("kaynak", "Fiyat Kaynağı", 105, 70, 200, True, False),
+        ("tutar", "Tahmini Tutar", 95, 70, 170, True, False),
+    ),
 }
 
 _SAG_HIZA = frozenset(
-    {"fiyat", "toplam", "miktar", "iskonto_tutar", "kdv_tutar", "kur", "net_birim"}
+    {"fiyat", "toplam", "miktar", "iskonto_tutar", "kdv_tutar", "kur", "net_birim",
+     "stok", "diger", "bekleyen", "tutar", "siparis", "teslim", "iade", "iptal", "kalan"}
 )
-_ORTA_HIZA = frozenset({"sec", "sira", "birim", "para_birimi", "kdv"})
+_ORTA_HIZA = frozenset({"sec", "sira", "birim", "para_birimi", "kdv", "pb", "termin", "ihtiyac"})
 
 
 def _ayar_kimlik() -> tuple[str, str]:
