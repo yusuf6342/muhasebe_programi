@@ -1265,10 +1265,17 @@ class KasaMakbuzDialog(tk.Toplevel):
             firma = (firma_bilgisi().get("unvan") or "").strip()
         except Exception:
             firma = ""
+        brut = oz.get("brut_toplam")
+        brut_notu = (
+            f" (Brüt {_para(brut)})"
+            if brut is not None and abs(Decimal(str(brut)) - Decimal(str(oz["genel_toplam"]))) >= Decimal("0.01")
+            else ""
+        )
         satirlar = [
             f"Bağlı satış faturası: {oz['fatura_no']} ({durum})" + (f" · Firma: {firma}" if firma else ""),
             f"Müşteri: {oz['cari_kodu']} — {oz['cari_unvan']}",
-            f"Fatura toplamı {_para(oz['genel_toplam'])} · Tahsil edilen {_para(oz['tahsil_edilen'])} · "
+            f"Fatura net toplamı {_para(oz['genel_toplam'])}{brut_notu} · "
+            f"Tahsil edilen {_para(oz['tahsil_edilen'])} · "
             f"Faturanın kalan ödenmemiş tutarı {_para(oz['kalan'])}",
         ]
         return "\n".join(satirlar)

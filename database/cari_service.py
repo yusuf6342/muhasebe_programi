@@ -1162,7 +1162,7 @@ class CariService:
             aylik: dict[str, Decimal] = {}
             satirlar = []
             for fatura in faturalar:
-                genel = SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
+                genel = SatisFaturasiService.net_toplam(fatura)
                 toplam_ciro += genel
                 toplam_tahsilat += fatura.tahsilat_tutari or Decimal("0")
                 unvan = fatura.cari.unvan if fatura.cari else "-"

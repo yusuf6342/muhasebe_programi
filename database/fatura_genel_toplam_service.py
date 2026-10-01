@@ -188,6 +188,27 @@ def satir_genelinden_brut(satir_genel_toplam: Decimal) -> Decimal:
     return kurus(satir_genel_toplam)
 
 
+def fatura_net_toplami(fatura, satir_genel_toplam) -> Decimal:
+    """Cari borç / tahsilat esası olan Net.
+
+    Uzlaşma, genel indirim-masraf veya yuvarlama uygulanmış faturada satırlar Brüt'ü verir;
+    nihai tutar kayıtlı ``tl_genel_toplam``dır. Bu işlemler yoksa satır toplamı esastır
+    (eski kayıtlarda ``tl_genel_toplam`` boş/eskimiş olabilir).
+    """
+    satir = kurus(satir_genel_toplam)
+    tur = islem_turunu_normalize(getattr(fatura, "genel_islem_turu", None))
+    islem = kurus(getattr(fatura, "genel_islem_tutari", 0) or 0)
+    duzeltme = kurus(getattr(fatura, "invoice_rounding_adjustment", 0) or 0)
+    yuvarlama = bool(getattr(fatura, "rounding_applied", False))
+    if not ((tur != ISLEM_YOK and islem != 0) or duzeltme != 0 or yuvarlama):
+        return satir
+    net = getattr(fatura, "tl_genel_toplam", None)
+    if net is not None:
+        return kurus(net)
+    brut = getattr(fatura, "tl_brut_toplam", None) or satir
+    return kurus(net_hesapla(brut, tur, islem) + duzeltme)
+
+
 def eski_kayit_normalize(
     *,
     tl_genel_toplam: Decimal | None = None,

@@ -375,7 +375,7 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
         from database.satis_faturasi_service import SatisFaturasiService
 
         try:
-            sonuc["esas_tutar"] = _kurus(SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"])
+            sonuc["esas_tutar"] = _kurus(SatisFaturasiService.net_toplam(fatura))
         except Exception:
             sonuc["esas_tutar"] = Decimal("0")
         sonuc["kalan"] = sonuc["esas_tutar"]

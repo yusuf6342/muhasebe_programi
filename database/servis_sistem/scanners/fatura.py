@@ -114,6 +114,14 @@ def scan_fatura(rapor: CheckReport, *, yon: str = "satis") -> None:
     if has_table(eng, hdr):
         cols = table_columns(eng, hdr)
         if {"tl_matrah", "tl_kdv", "tl_genel_toplam"}.issubset(cols):
+            # Uzlaşma / genel indirim-masraf: matrah+kdv Brüt'e eşittir, Net farklıdır.
+            if {"tl_brut_toplam", "genel_islem_tutari"}.issubset(cols):
+                beklenen = (
+                    "CASE WHEN COALESCE(f.genel_islem_tutari,0) != 0 "
+                    "THEN COALESCE(f.tl_brut_toplam,0) ELSE COALESCE(f.tl_genel_toplam,0) END"
+                )
+            else:
+                beklenen = "COALESCE(f.tl_genel_toplam,0)"
             bad = fetchall(
                 eng,
                 f"""
@@ -124,7 +132,7 @@ def scan_fatura(rapor: CheckReport, *, yon: str = "satis") -> None:
                 WHERE COALESCE(f.durum, '') != 'İPTAL' {del_clause}
                   AND ABS(
                     (COALESCE(f.tl_matrah,0) + COALESCE(f.tl_kdv,0))
-                    - COALESCE(f.tl_genel_toplam,0)
+                    - {beklenen}
                   ) > :tol
                 LIMIT :lim
                 """,

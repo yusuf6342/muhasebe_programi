@@ -253,6 +253,9 @@ class MuhasebeEntegrasyonService:
                 matrah = decimal(t["ara_toplam"] - t["iskonto"])
                 kdv = decimal(t["kdv"])
                 genel = decimal(t["genel_toplam"])
+            elif genel != matrah + kdv:
+                # Uzlaşma / genel indirim-masraf: fark satış hesabında netleşir, fiş dengeli kalır.
+                matrah = genel - kdv
             tarih = f.fatura_tarihi
             no = f.fatura_no
             tahsilat = decimal(f.tahsilat_tutari or 0)

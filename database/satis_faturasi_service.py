@@ -810,7 +810,7 @@ class SatisFaturasiService:
                 satir.lot_cikisi = stok_cikisi["lot_cikisi"]
                 satir.fifo_birim_maliyeti = stok_cikisi["fifo_birim_maliyeti"]
 
-            toplam = SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
+            toplam = SatisFaturasiService.net_toplam(fatura)
             tahsilat_toplam = Decimal(str(fatura.tahsilat_tutari or 0))
             if tahsilat_toplam > toplam:
                 raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
@@ -1176,6 +1176,15 @@ class SatisFaturasiService:
                     "net_fiyat": net_birim,
                 })
             return kayitlar
+
+    @staticmethod
+    def net_toplam(fatura) -> Decimal:
+        """Cari borç ve tahsilat esası: uzlaşma/genel işlem sonrası Net (yoksa satır toplamı)."""
+        from database.fatura_genel_toplam_service import fatura_net_toplami
+
+        return fatura_net_toplami(
+            fatura, SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
+        )
 
     @staticmethod
     def toplam(satirlar):

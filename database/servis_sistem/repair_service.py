@@ -1172,9 +1172,14 @@ class RepairService:
                 "tl_kdv": str(_dec(fatura.tl_kdv)),
                 "tl_genel_toplam": str(_dec(fatura.tl_genel_toplam)),
             }
+            genel_islem = _dec(getattr(fatura, "genel_islem_tutari", 0) or 0) != 0
             fatura.tl_matrah = _dec(toplam["ara_toplam"] - toplam["iskonto"])
             fatura.tl_kdv = _dec(toplam["kdv"])
-            fatura.tl_genel_toplam = _dec(toplam["genel_toplam"])
+            if genel_islem:
+                # Uzlaşılan Net korunur; satırlardan yalnız Brüt yenilenir.
+                fatura.tl_brut_toplam = _dec(toplam["genel_toplam"])
+            else:
+                fatura.tl_genel_toplam = _dec(toplam["genel_toplam"])
             after = {
                 "yon": yon,
                 "fatura_id": fid,

@@ -140,7 +140,6 @@ class RaporService:
                 .order_by(SatisFaturasi.fatura_tarihi, SatisFaturasi.id)
             ).all()
             for fatura in faturalar:
-                toplam = SatisFaturasiService.toplam(fatura.satirlar)
                 stok_satirlari = []
                 for satir in fatura.satirlar:
                     net = satir.miktar * satir.birim_fiyat * (
@@ -184,7 +183,7 @@ class RaporService:
                     "tur": "Satış Faturası",
                     "belge_no": fatura.fatura_no,
                     "aciklama": fatura.aciklama or f"Vade: {fatura.vade_tarihi:%d.%m.%Y}",
-                    "borc": toplam["genel_toplam"],
+                    "borc": SatisFaturasiService.net_toplam(fatura),
                     "alacak": Decimal("0"),
                     "stok_satirlari": stok_satirlari,
                     "sira": fatura.id,

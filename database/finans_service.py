@@ -3788,10 +3788,10 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
 
     @staticmethod
     def _fatura_genel_toplami(fatura) -> Decimal:
-        """Onayda cari borca yazılan tutarla aynı kaynak (satırların genel toplamı)."""
+        """Onayda cari borca yazılan tutarla aynı kaynak (uzlaşma sonrası Net)."""
         from database.satis_faturasi_service import SatisFaturasiService
 
-        return Decimal(str(SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]))
+        return Decimal(str(SatisFaturasiService.net_toplam(fatura)))
 
     @staticmethod
     def _fatura_cari_hareketi(session, fatura):
@@ -3974,6 +3974,7 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         """Satış faturası tahsilat özeti: toplam, tahsil edilen, kalan ve bağlı tahsilat makbuzları."""
         from database.models.cari import Cari
         from database.models.satis_faturasi import SatisFaturasi
+        from database.satis_faturasi_service import SatisFaturasiService
 
         FinansService.fatura_makbuz_bag_tablosu_hazirla()
         with get_session() as session:
@@ -4034,6 +4035,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 "iptal": (fatura.durum or "") == "İPTAL",
                 "durum": fatura.durum or "",
                 "genel_toplam": genel,
+                "brut_toplam": Decimal(
+                    str(SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"])
+                ),
                 "tahsil_edilen": max(Decimal("0"), genel - kalan),
                 "kalan": kalan,
                 "makbuzlar": makbuzlar,
