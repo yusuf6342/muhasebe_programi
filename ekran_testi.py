@@ -1,10 +1,12 @@
 """Kurulu test EXE'si için ekran açılış denetimi.
 
-    CinMuhasebe.exe --ekran-testi C:\\yol\\rapor.txt
+    CinMuhasebe.exe --ekran-testi C:\\yol\\rapor.txt [--kayit-dene]
 
 Yalnız test kurulumunda (veya MUHASEBE_DB_DIR ile) çalışır; gerçek veri klasöründe reddeder.
 İlk yönetici parolasıyla otomatik giriş yapar, ana menüleri ve belge/kart ekranlarını
 ekran dışında açıp kapatır, sonucu rapor dosyasına yazar. Parolayı değiştirmez, kayıt yapmaz.
+``--kayit-dene`` yalnız MUHASEBE_DB_DIR ile verilen geçici klasörde kabul edilir: Satın Alma
+talebi ve masraf dağıtımı test kaydı oluşturup listeden yeniden açar.
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ def _otomatik_giris(_parent) -> bool:
     return True
 
 
-def calistir(rapor_yolu: str | Path, bootstrap) -> int:
+def calistir(rapor_yolu: str | Path, bootstrap, *, kayit_dene: bool = False) -> int:
     from database import database as db
 
     rapor = Path(rapor_yolu)
@@ -262,6 +264,15 @@ def calistir(rapor_yolu: str | Path, bootstrap) -> int:
         _dene("Cari kart (yeni)", lambda: CariDialog(app))
         if ilk_cari is not None:
             _dene("Cari kart (mevcut kayıt)", lambda: CariDialog(app, CariService.getir(ilk_cari)))
+
+        _satin_alma_menuleri(app, _dene)
+        if kayit_dene:
+            if db.DB_DIR_KAYNAGI != "MUHASEBE_DB_DIR":
+                basarisiz += 1
+                satirlar.append("HATA  --kayit-dene yalnız MUHASEBE_DB_DIR geçici klasöründe çalışır")
+            else:
+                _dene("Satın alma talebi: kaydet → listeden yeniden aç", lambda: _talep_kayit_denetimi(app))
+                _dene("Masraf dağıtımı: kaydet → listeden yeniden aç", lambda: _masraf_kayit_denetimi(app))
     except Exception:
         basarisiz += 1
         satirlar.append("HATA  Program açılışı")
@@ -284,6 +295,186 @@ def calistir(rapor_yolu: str | Path, bootstrap) -> int:
     satirlar.append("SONUÇ: " + ("BAŞARILI" if basarisiz == 0 else f"{basarisiz} HATA"))
     rapor.write_text("\n".join(satirlar) + "\n", encoding="utf-8")
     return 0 if basarisiz == 0 else 1
+
+
+def _bekle(app, kosul, sure: float = 20.0) -> bool:
+    import time
+
+    bitis = time.monotonic() + sure
+    while time.monotonic() < bitis:
+        app.update()
+        if not getattr(app, "_busy_pending", False) and kosul():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _alt_widgetlar(kok):
+    yigin = list(kok.winfo_children())
+    while yigin:
+        w = yigin.pop()
+        yield w
+        yigin.extend(w.winfo_children())
+
+
+def _hub_karti(app, baslik: str):
+    return next(
+        (w for w in _alt_widgetlar(app.icerik)
+         if w.__class__.__name__ == "HubKart" and getattr(w, "_baslik", "") == baslik),
+        None,
+    )
+
+
+def _gorunur_metinler(kok) -> list[str]:
+    return [
+        str(w.cget("text")) for w in _alt_widgetlar(kok)
+        if isinstance(w, tk.Label) and w.winfo_ismapped()
+    ]
+
+
+def _satin_alma_hubuna_don(app) -> None:
+    from satin_alma_ui import satin_alma_hub_goster
+
+    app.sayfa_goster("satin_alma", ust_duzey=True)
+    _bekle(app, lambda: app._ekran_yoneticisi.aktif_anahtar() == "satin_alma")
+    satin_alma_hub_goster(app)
+    if not _bekle(app, lambda: _hub_karti(app, "MASRAF DAĞITIMI") is not None):
+        raise RuntimeError("Satın Alma hub kartları çizilmedi")
+
+
+def _kart_tikla_liste(app, kart: str, baslik: str):
+    _satin_alma_hubuna_don(app)
+    _hub_karti(app, kart)._click()
+    if not _bekle(app, lambda: _hub_karti(app, kart) is None and baslik in _gorunur_metinler(app.icerik)):
+        raise RuntimeError(
+            f"«{baslik}» ekranı görünür olmadı; içerikte {len(app.icerik.winfo_children())} çerçeve var"
+        )
+    return next(w for w in _alt_widgetlar(app.icerik) if w.winfo_class() == "Treeview")
+
+
+def _kart_tikla_pencere(app, kart: str):
+    _satin_alma_hubuna_don(app)
+    once = {str(w) for w in app.winfo_children()}
+    _hub_karti(app, kart)._click()
+    yeni: list = []
+
+    def acildi():
+        yeni[:] = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel) and str(w) not in once]
+        return bool(yeni)
+
+    if not _bekle(app, acildi):
+        raise RuntimeError("kart tıklandı ama pencere açılmadı")
+    if not yeni[0].winfo_viewable():
+        raise RuntimeError("pencere açıldı ama görünür değil")
+    return yeni[0]
+
+
+def _satin_alma_menuleri(app, dene) -> None:
+    def liste(baslik):
+        def ac():
+            _kart_tikla_liste(app, baslik, baslik)
+
+        return ac
+
+    dene("Satın Alma → MASRAF DAĞITIMI kartı (liste görünür)", liste("MASRAF DAĞITIMI"))
+    dene("Satın Alma → SATIN ALMA TALEP LİSTESİ kartı (liste görünür)", liste("SATIN ALMA TALEP LİSTESİ"))
+    dene("Satın Alma → SATIN ALMA TALEPLERİ kartı (form)", lambda: _kart_tikla_pencere(app, "SATIN ALMA TALEPLERİ"))
+
+
+def _ekran_testi_kayitlari() -> dict:
+    """Geçici test klasöründe masraf dağıtımı için tedarikçi, ürün, alış ve gider belgesi."""
+    from datetime import date
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from database.alis_faturasi_service import AlisFaturasiService
+    from database.database import get_session
+    from database.hizmet_faturasi_service import HizmetFaturasiService
+    from database.models.alis_faturasi import AlisFaturasiSatiri
+    from database.models.cari import Cari
+    from database.models.hizmet import HizmetKarti
+    from database.models.stok import StokKarti
+
+    with get_session() as s:
+        if s.scalar(select(StokKarti.id).where(StokKarti.stok_kodu == "EKRANTEST")) is None:
+            s.add(StokKarti(stok_kodu="EKRANTEST", stok_adi="Ekran Testi Ürünü", birim="Adet", aktif=True,
+                            is_deleted=False))
+        if s.scalar(select(HizmetKarti.id).where(HizmetKarti.hizmet_kodu == "EKRANNAK")) is None:
+            s.add(HizmetKarti(hizmet_kodu="EKRANNAK", hizmet_adi="Ekran Testi Nakliye", hizmet_turu="GIDER",
+                              birim="Adet", aktif=True))
+        for kod, unvan in (("EKRANTED", "Ekran Testi Tedarikçi"), ("EKRANNAKL", "Ekran Testi Nakliyeci")):
+            if s.scalar(select(Cari.id).where(Cari.cari_kodu == kod)) is None:
+                s.add(Cari(cari_kodu=kod, unvan=unvan, cari_turu="Tedarikçi", aktif=True))
+    with get_session() as s:
+        tedarikci = s.scalar(select(Cari.id).where(Cari.cari_kodu == "EKRANTED"))
+        nakliyeci = s.scalar(select(Cari.id).where(Cari.cari_kodu == "EKRANNAKL"))
+    bugun = date.today()
+    alis = AlisFaturasiService.kaydet(
+        {"fatura_tarihi": bugun, "vade_tarihi": bugun, "cari_id": tedarikci, "depo": "ANA DEPO",
+         "odeme_tutari": Decimal("0")},
+        [{"urun_kodu": "EKRANTEST", "urun_adi": "Ekran Testi Ürünü", "miktar": Decimal("10"), "birim": "Adet",
+          "birim_fiyat": Decimal("100"), "iskonto_orani": Decimal("0"), "kdv_orani": Decimal("20")}],
+    )
+    gider = HizmetFaturasiService.kaydet(
+        {"fatura_tarihi": bugun, "vade_tarihi": bugun, "cari_id": nakliyeci, "fatura_turu": "GIDER",
+         "odeme_tutari": Decimal("0")},
+        [{"hizmet_kodu": "EKRANNAK", "miktar": Decimal("1"), "birim_fiyat": Decimal("100"),
+          "kdv_orani": Decimal("20")}],
+    )
+    with get_session() as s:
+        alis_satir = s.scalar(select(AlisFaturasiSatiri.id).where(AlisFaturasiSatiri.fatura_id == alis.id))
+    return {"alis_satir": int(alis_satir), "gider_id": int(gider.id)}
+
+
+def _talep_kayit_denetimi(app):
+    from decimal import Decimal
+
+    from satin_alma_talep_ui import talep_formu_ac
+
+    d = _kart_tikla_pencere(app, "SATIN ALMA TALEPLERİ")
+    satir = d._yeni_satir(("EKRANTEST", "Ekran Testi Ürünü", "Adet"))
+    satir["miktar"] = Decimal("3")
+    d.satirlar.append(satir)
+    d._satirlari_yenile()
+    d.departman.insert(0, "Ekran testi")
+    if not d._kaydet():
+        raise RuntimeError(f"talep kaydedilemedi: {d.mesaj_lbl.cget('text')}")
+    tid = d.talep_id
+    d.destroy()
+    tablo = _kart_tikla_liste(app, "SATIN ALMA TALEP LİSTESİ", "SATIN ALMA TALEP LİSTESİ")
+    if str(tid) not in tablo.get_children():
+        raise RuntimeError(f"kaydedilen talep (id={tid}) listede yok")
+    d2 = talep_formu_ac(app, tid)
+    if d2 is None or d2.departman.get() != "Ekran testi" or len(d2.satirlar) != 1:
+        raise RuntimeError("yeniden açılan talep kaydedilen bilgileri göstermiyor")
+    return d2
+
+
+def _masraf_kayit_denetimi(app):
+    from database.masraf_dagitim_service import MasrafDagitimService
+    from masraf_dagitim_ui import MasrafDagitimDialog
+    from satin_alma_ui import pencere_ac
+
+    veri = _ekran_testi_kayitlari()
+    d = pencere_ac(app, MasrafDagitimDialog, baslik="Masraf dağıtımı")
+    if d is None:
+        raise RuntimeError("masraf dağıtımı kartı açılmadı")
+    d.kaynak_ayarla(veri["gider_id"])
+    d.hedef_ekle([h for h in MasrafDagitimService.hedef_satirlar() if h["satir_id"] == veri["alis_satir"]])
+    if not d.taslak_kaydet(sessiz=True):
+        raise RuntimeError("masraf dağıtımı taslağı kaydedilemedi")
+    did = d.dagitim_id
+    d.destroy()
+    tablo = _kart_tikla_liste(app, "MASRAF DAĞITIMI", "MASRAF DAĞITIMI")
+    if str(did) not in tablo.get_children():
+        raise RuntimeError(f"kaydedilen dağıtım (id={did}) listede yok")
+    d2 = pencere_ac(app, MasrafDagitimDialog, dagitim_id=did, baslik="Masraf dağıtımı")
+    if d2 is None or d2.kaynak["id"] != veri["gider_id"] or [h["satir_id"] for h in d2.hedefler] != [
+        veri["alis_satir"]
+    ]:
+        raise RuntimeError("yeniden açılan dağıtım kaydedilen bilgileri göstermiyor")
+    return d2
 
 
 def _stok_yukle(stok_id: int):

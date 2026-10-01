@@ -53,7 +53,7 @@ def _durum_etiketi(durum: str) -> str:
 def masraf_dagitimi_goster(app) -> None:
     from database.access import yetki_var
     from database.masraf_dagitim_service import DURUMLAR, MasrafDagitimService
-    from satin_alma_ui import _liste_ust, satin_alma_hub_goster
+    from satin_alma_ui import _liste_ust, pencere_ac, satin_alma_hub_goster
 
     kok = _liste_ust(
         app,
@@ -139,8 +139,17 @@ def masraf_dagitimi_goster(app) -> None:
             )
 
     def ac(dagitim_id=None):
-        dlg = MasrafDagitimDialog(app, dagitim_id=dagitim_id)
-        app.wait_window(dlg)
+        if dagitim_id is None and not yetki_var("alis_masraf_duzenleme", "alis_masraf_onay"):
+            messagebox.showwarning(
+                "Masraf Dağıtımı — yetki",
+                "Yeni masraf dağıtımı oluşturma yetkiniz yok.\n"
+                "Gerekli izin: Alış masraf düzenleme veya Alış masraf onay.",
+                parent=app,
+            )
+            return
+        dlg = pencere_ac(app, MasrafDagitimDialog, dagitim_id=dagitim_id, baslik="Masraf dağıtımı")
+        if dlg is not None and dlg.winfo_exists():
+            app.wait_window(dlg)
         yenile()
 
     def secili_ac(_e=None):
@@ -157,10 +166,7 @@ def masraf_dagitimi_goster(app) -> None:
 
     alt = tk.Frame(kok, bg=ACIK_BG)
     alt.pack(fill="x", padx=16, pady=10)
-    yeni_btn = tk_buton(alt, "Yeni", lambda: ac(None), rol="yeni")
-    yeni_btn.pack(side="left")
-    if not yetki_var("alis_masraf_duzenleme", "alis_masraf_onay"):
-        yeni_btn.configure(state="disabled")
+    tk_buton(alt, "Yeni", lambda: ac(None), rol="yeni").pack(side="left")
     tk_buton(alt, "Aç", secili_ac, rol="duzenle").pack(side="left", padx=6)
     tk_buton(alt, "Eski Fatura Masrafları", eski, rol="geri").pack(side="left", padx=6)
     tk_buton(alt, "Listele", yenile, rol="ara").pack(side="right")

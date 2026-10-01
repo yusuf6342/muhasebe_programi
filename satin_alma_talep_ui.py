@@ -9,7 +9,7 @@ from decimal import Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import fatura_tema as ftema
-from satin_alma_ui import _SatinAlmaSatirGirisi, _liste_ust, _para, _tarih
+from satin_alma_ui import _SatinAlmaSatirGirisi, _liste_ust, _para, _tarih, pencere_ac
 from satis_tema import (
     ACIK_BG,
     ACIK_SARI,
@@ -65,8 +65,8 @@ def _depolar() -> list[str]:
         return ["ANA DEPO"]
 
 
-def talep_formu_ac(app, talep_id: int | None = None) -> "SatinAlmaTalepDialog":
-    return SatinAlmaTalepDialog(app, talep_id=talep_id)
+def talep_formu_ac(app, talep_id: int | None = None) -> "SatinAlmaTalepDialog | None":
+    return pencere_ac(app, SatinAlmaTalepDialog, talep_id=talep_id, baslik="Satın alma talebi")
 
 
 def _talep_kolonlari() -> tuple[tuple[str, str, int], ...]:
@@ -1436,8 +1436,9 @@ def satin_alma_talep_listesi_goster(app) -> dict:
         ciz()
 
     def ac(talep_id=None):
-        dlg = SatinAlmaTalepDialog(app, talep_id=talep_id)
-        app.wait_window(dlg)
+        dlg = talep_formu_ac(app, talep_id)
+        if dlg is not None and dlg.winfo_exists():
+            app.wait_window(dlg)
         yenile()
 
     def secili_id() -> int | None:
@@ -1474,7 +1475,8 @@ def satin_alma_talep_listesi_goster(app) -> dict:
     tk_buton(alt, "Yeni Talep", lambda: ac(None), rol="yeni").pack(side="left")
     tk_buton(alt, "Aç", secili_ac, rol="duzenle").pack(side="left", padx=6)
     tk_buton(alt, "Sil", sil, rol="iptal").pack(side="left")
-    tk_buton(alt, "Ürün Bazlı Rapor", lambda: UrunBazliRaporDialog(app), rol="geri").pack(side="left", padx=6)
+    tk_buton(alt, "Ürün Bazlı Rapor", lambda: pencere_ac(app, UrunBazliRaporDialog, baslik="Ürün bazlı talep raporu"),
+             rol="geri").pack(side="left", padx=6)
     tk_buton(alt, "Listele", yenile, rol="ara").pack(side="right")
     tablo.bind("<Double-1>", secili_ac)
     tablo.bind("<Return>", secili_ac)

@@ -228,7 +228,7 @@ def main():
         i = sys.argv.index("--ekran-testi")
         rapor = sys.argv[i + 1] if len(sys.argv) > i + 1 else "ekran_testi_raporu.txt"
         _ORNEK_VERI_ISTENDI = ilk_test_acilisi
-        sys.exit(calistir(rapor, baslatma_adimlari))
+        sys.exit(calistir(rapor, baslatma_adimlari, kayit_dene="--kayit-dene" in sys.argv))
     if ilk_test_acilisi:
         import tkinter as tk
 

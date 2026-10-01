@@ -259,6 +259,9 @@ def stoklar_raporlar_hub_goster(app) -> None:
 
 
 def _liste_ust(app, baslik, alt, geri):
+    temizle = getattr(app, "_icerigi_temizle", None)
+    if callable(temizle):
+        temizle()
     stil_uygula(root=app)
     _menu_isaretle(app)
     try:

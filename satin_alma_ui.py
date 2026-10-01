@@ -87,6 +87,59 @@ def _nav(app, komut: Callable):
         komut()
 
 
+def acilis_hatasi_goster(app, baslik: str, hata: BaseException) -> None:
+    """Ekran/pencere açılamadıysa kullanıcıya nedeni gösterir; beklenmeyen hatayı günlüğe yazar."""
+    if isinstance(hata, PermissionError):
+        messagebox.showwarning(f"{baslik} — yetki", f"{baslik} açılamadı:\n{hata}", parent=app)
+        return
+    from uygulama_log import hata_yaz
+
+    yol = hata_yaz(f"{baslik} açılamadı", hata)
+    messagebox.showerror(
+        f"{baslik} açılamadı",
+        f"{baslik} açılırken bir hata oluştu:\n{hata}"
+        + (f"\n\nTeknik ayrıntı günlüğe kaydedildi:\n{yol}" if yol else ""),
+        parent=app,
+    )
+
+
+def _guvenli(app, baslik: str, komut: Callable) -> Callable:
+    def calistir():
+        try:
+            komut()
+        except Exception as hata:  # noqa: BLE001 — Tk geri çağrısında sessizce kaybolmasın
+            acilis_hatasi_goster(app, baslik, hata)
+
+    return calistir
+
+
+def pencereyi_one_getir(pencere) -> None:
+    try:
+        pencere.deiconify()
+        pencere.lift()
+        pencere.focus_force()
+    except tk.TclError:
+        pass
+
+
+def pencere_ac(app, sinif, *args, baslik: str, **kwargs):
+    """Belge penceresini açıp öne getirir; kurulum hatasında yarım pencereyi kapatıp nedeni gösterir."""
+    onceki = {str(w) for w in app.winfo_children()}
+    try:
+        pencere = sinif(app, *args, **kwargs)
+    except Exception as hata:  # noqa: BLE001
+        for w in app.winfo_children():
+            if isinstance(w, tk.Toplevel) and str(w) not in onceki:
+                try:
+                    w.destroy()
+                except tk.TclError:
+                    pass
+        acilis_hatasi_goster(app, baslik, hata)
+        return None
+    pencereyi_one_getir(pencere)
+    return pencere
+
+
 def _para(tutar) -> str:
     try:
         from ana_panel_tema import para_tr
@@ -149,7 +202,7 @@ def _kart_izgara(app, parent, kartlar, komut_haritasi: dict[str, Callable], *, s
             ızgara,
             baslik=baslik,
             aciklama=aciklama,
-            komut=lambda fn=komut: _nav(app, fn),
+            komut=lambda fn=komut, b=baslik: _nav(app, _guvenli(app, b, fn)),
             simge=_SIMGELER[i % len(_SIMGELER)],
         )
         kart.grid(row=r, column=c, sticky="nsew", padx=8, pady=8)
@@ -275,6 +328,9 @@ def satin_alma_raporlar_hub_goster(app) -> None:
 
 
 def _liste_ust(app, baslik, alt, geri):
+    temizle = getattr(app, "_icerigi_temizle", None)
+    if callable(temizle):
+        temizle()
     stil_uygula(root=app)
     _menu_isaretle(app)
     try:
@@ -740,7 +796,7 @@ class _SatinAlmaSatirGirisi:
         kaydirma.pack(side="right", fill="y")
         ttk.Label(
             parent,
-            text="Ürün eklemek için son satıra barkod okutun, kod veya ad yazın (F10: stok listesi). "
+            text="Ürün eklemek için son satıra barkod okutun veya ürün adı yazın (F10: stok listesi). "
             "Hücreye çift tıklayarak düzenleyin; Del satırı siler.",
             foreground="#475569",
         ).pack(anchor="w", pady=(4, 0))
