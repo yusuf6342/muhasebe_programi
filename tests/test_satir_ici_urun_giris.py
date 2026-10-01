@@ -117,15 +117,28 @@ class SatirIciBilesenTest(_GirisTemel):
 
     def test_barkod_dogrudan_ekler_bulunamayan_mesaj_verir(self):
         pen, _tablo, giris, eklenen, _ = self._kur()
-        giris.ac("kod", "8690000000017")
+        giris.ac("barkod", "8690000000017")
         giris._enter()
         self.assertEqual([e[0] for e in eklenen], ["MB001"])
         self.assertEqual(giris.son_islem, "secim")
-        giris.ac("kod", "0000000000000")
+        giris.ac("barkod", "0000000000000")
         with patch.object(giris, "_durum_yaz") as durum:
             giris._barkod("0000000000000")
         self.assertEqual(len(eklenen), 1)
         self.assertIn("0000000000000", str(durum.call_args))
+        pen.destroy()
+
+    def test_yalniz_barkod_ve_ad_kutusu_kod_bilgi_amacli(self):
+        pen, tablo, giris, eklenen, _ = self._kur()
+        self.assertEqual(giris._roller(), ["barkod", "ad"])
+        self.assertEqual(giris.kolonlar, {"barkod": "kod", "ad": "ad"})
+        self.assertEqual(tablo.set(YENI_SATIR_IID, "kod"), "▦ Barkod okutun")
+        self.assertIn("Ürün adı", tablo.set(YENI_SATIR_IID, "ad"))
+        giris.ac("kod", "")
+        self.assertEqual(giris._rol, "ad")
+        giris.ac("ad", "MB001")
+        giris._enter()
+        self.assertEqual([e[0] for e in eklenen], ["MB001"])
         pen.destroy()
 
     def test_coklu_secim_sirasiyla_ve_tek_yenileme(self):
@@ -284,6 +297,68 @@ class TeklifSatirGirisiTest(_GirisTemel):
         self.assertFalse(d.satir_tablo.exists(YENI_SATIR_IID))
         self.assertIsNone(d._teklif_urun_ekle(deg, None))
         d.destroy()
+
+
+class EvrakUrunAramaAlanlariTest(_GirisTemel):
+    """Her evrakta yalnız barkod + ürün adı kutusu; barkod okutma, birleşme ve ad araması."""
+
+    BARKOD = "8690000000017"
+
+    def _kartlar(self):
+        import app
+        from alis_ui import AlisFaturasiDialog, AlisIadeFaturasiDialog, AlisIrsaliyesiDialog, AlisSiparisiDialog
+        from satin_alma_ui import SatinAlmaTalepDialog
+        from satis_irsaliyesi_ui import SatisIrsaliyesiDialog
+        from satis_siparisi_ui import SatisSiparisiKarti
+        from teklif_ui import TeklifDialog
+
+        return [
+            ("Satış faturası", lambda: app.SatisFaturasiDialog(self.root, cari=self._cari()), "barkod"),
+            ("Satıştan iade", lambda: app.SatisIadeFaturasiDialog(self.root, cari=self._cari()), "barkod"),
+            ("Alış faturası", lambda: AlisFaturasiDialog(self.root), "barkod"),
+            ("Alış iade", lambda: AlisIadeFaturasiDialog(self.root), "kod"),
+            ("Alış siparişi", lambda: AlisSiparisiDialog(self.root), "kod"),
+            ("Alış irsaliyesi", lambda: AlisIrsaliyesiDialog(self.root), "kod"),
+            ("Satış irsaliyesi", lambda: SatisIrsaliyesiDialog(self.root), "kod"),
+            ("Alınan sipariş", lambda: SatisSiparisiKarti(self.root, cari=self._cari()), "kod"),
+            ("Teklif", lambda: TeklifDialog(self.root), "kod"),
+            ("Satın alma talebi", lambda: SatinAlmaTalepDialog(self.root), "kod"),
+        ]
+
+    def test_her_evrakta_barkod_ve_ad_aramasi(self):
+        with patch("ui_pencere.belge_penceresini_hazirla", lambda win, **_k: (win.withdraw(), {})[1]), \
+                patch("tkinter.messagebox.showinfo"), patch("tkinter.messagebox.showwarning"), \
+                patch("tkinter.messagebox.showerror"), patch("tkinter.messagebox.askyesno", return_value=True):
+            for ad, yap, barkod_kolonu in self._kartlar():
+                with self.subTest(evrak=ad):
+                    d = yap()
+                    d.withdraw()
+                    g = d._satir_ici_giris
+                    self.assertEqual(sorted(g.kolonlar), ["ad", "barkod"])
+                    self.assertEqual(g.kolonlar["barkod"], barkod_kolonu)
+                    self.assertNotIn("kod", g._roller())
+                    for kolon, rol in g.kolon_rol.items():
+                        self.assertIn(rol, ("barkod", "ad"), kolon)
+                    if "iade" in ad.casefold():
+                        d.destroy()
+                        continue
+
+                    satirlar = d.satirlar
+                    g.ac("barkod", self.BARKOD)
+                    g._enter()
+                    g.ac("barkod", self.BARKOD)
+                    g._enter()
+                    self.assertEqual(len(satirlar), 1, "aynı barkod yeni satır açmamalı")
+                    self.assertEqual(Decimal(str(satirlar[0]["miktar"])), Decimal("2"))
+
+                    with patch.object(g, "miktara_git", None), patch.object(g, "sadece_stokta_ad", False):
+                        g.ac("ad", "birim ürün")
+                        g._enter()
+                    toplam = sum(Decimal(str(s["miktar"])) for s in satirlar if s.get("urun_kodu") == "MB001")
+                    self.assertEqual(toplam, Decimal("3"), "ürün adıyla seçilen ürün evraka aktarılmalı")
+                    self.assertEqual(d.satir_tablosu.get_children()[-1] if hasattr(d, "satir_tablosu")
+                                     else d.satir_tablo.get_children()[-1], YENI_SATIR_IID)
+                    d.destroy()
 
 
 class CiktiGirisSatiriTest(_GirisTemel):

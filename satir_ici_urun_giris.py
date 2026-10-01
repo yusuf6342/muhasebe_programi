@@ -1,9 +1,10 @@
 """Evrak satır tablolarında satır içi ürün girişi — ortak bileşen.
 
-Ürün tablosunun sonunda her zaman bir boş giriş satırı durur. Barkod / ürün kodu /
-ürün adı hücresine yazılır; ad ve kodda gecikmeli (debounce) arama açılır listesi,
-barkod ve tam kodda doğrudan sorgu çalışır. F10 stok listesini açar, sağ tık menüsü
-Ürün Seç / Stok Kartını Aç / Yeni Stok Kartı sunar.
+Ürün tablosunun sonunda her zaman bir boş giriş satırı durur. Yalnızca iki arama
+alanı vardır: barkod (okutma, doğrudan sorgu) ve ürün adı (gecikmeli arama listesi;
+tam barkod / tam ürün kodu da çözülür). Ürün kodu kolonu bilgi amaçlıdır; tabloda
+barkod kolonu yoksa barkod kutusu giriş satırının kod hücresinde durur. F10 stok
+listesini açar, sağ tık menüsü Ürün Seç / Stok Kartını Aç / Yeni Stok Kartı sunar.
 
 Boş giriş satırı belge satırı değildir: ``satirlar`` listesine girmez; kayıt,
 yazdırma, toplam, stok ve satır sayısına katılmaz. Belgeye özgü kurallar (fiyat
@@ -26,9 +27,11 @@ DEBOUNCE_MS = 250
 SAYFA = 25
 AZAMI_SONUC = 100
 ONBELLEK_SN = 30.0
-ROLLER = ("barkod", "kod", "ad")
+ROLLER = ("barkod", "ad")
 HIZLI_STOK_KAYNAGI = "Hızlı Stok"
-_YER_TUTUCU = "➕ Ürün eklemek için barkod okutun, kod veya ad yazın  (F10: stok listesi)"
+_YER_TUTUCU = "➕ Ürün adı yazın  (F10: stok listesi)"
+_BARKOD_YER_TUTUCU = "▦ Barkod okutun"
+_EDITOR_MIN_GENISLIK = 80
 
 
 # ─── Yardımcılar ───────────────────────────────────────────────────
@@ -609,6 +612,8 @@ class SatirIciUrunGirisi:
         self.tablo = tablo
         self.urun_ekle_fn = urun_ekle
         self.kolonlar = {r: k for r, k in kolonlar.items() if r in ROLLER and k}
+        if "barkod" not in self.kolonlar and kolonlar.get("kod"):
+            self.kolonlar = {"barkod": kolonlar["kod"], **self.kolonlar}
         self.rol_kolon = dict(self.kolonlar)
         self.kolon_rol = {k: r for r, k in self.kolonlar.items()}
         self.barkod_isle_fn = barkod_isle
@@ -708,9 +713,10 @@ class SatirIciUrunGirisi:
                 return
             kolonlar = list(t["columns"])
             degerler = [""] * len(kolonlar)
-            hedef = self.kolonlar.get("ad") or self.kolonlar.get("kod")
-            if hedef in kolonlar:
-                degerler[kolonlar.index(hedef)] = self.yer_tutucu
+            for rol, metin in (("barkod", _BARKOD_YER_TUTUCU), ("ad", self.yer_tutucu)):
+                hedef = self.kolonlar.get(rol)
+                if hedef in kolonlar:
+                    degerler[kolonlar.index(hedef)] = metin
             if t.exists(YENI_SATIR_IID):
                 t.item(YENI_SATIR_IID, values=degerler, tags=("yeni_giris",))
                 t.move(YENI_SATIR_IID, "", "end")
@@ -802,7 +808,7 @@ class SatirIciUrunGirisi:
             return
         x, y, w, h = box
         try:
-            self.entry.place(x=x, y=y, width=max(w, 200), height=max(h, 24))
+            self.entry.place(x=x, y=y, width=max(w, _EDITOR_MIN_GENISLIK), height=max(h, 24))
             self.entry.lift()
             if odakla:
                 self.entry.focus_set()
@@ -1142,7 +1148,7 @@ class SatirIciUrunGirisi:
 
     def _barkod(self, metin: str) -> None:
         if self._hedef_idx is not None:
-            messagebox.showinfo("Ürün", "Dolu satırda ürün değiştirmek için ad veya kod ile seçin.", parent=self.dialog)
+            messagebox.showinfo("Ürün", "Dolu satırda ürün değiştirmek için ürün adı ile seçin.", parent=self.dialog)
             return
         konum = self._ekleme_konumu
         if self.barkod_isle_fn is not None:
@@ -1268,8 +1274,7 @@ class SatirIciUrunGirisi:
         dlg = UrunSecDialog(
             self.dialog,
             on_select=secilenler.append,
-            ad=metin if rol != "kod" else "",
-            kod=metin if rol == "kod" else "",
+            ad=metin,
             depo_ad=(self.depo() or None),
             ayrintili=True,
             coklu=hedef is None,

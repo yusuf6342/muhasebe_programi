@@ -376,7 +376,6 @@ class SatisSiparisiKarti(tk.Toplevel):
             miktara_git=lambda idx: self._hucre.duzenle(idx, "miktar"),
             depo=lambda: self.depo.get() or "",
             satir_menusu=self._satir_menusu,
-            yer_tutucu="➕ Ürün ekle: barkod okutun, kod veya ad yazın  (F10: stok listesi)",
         )
         manuel = lambda i: bool(self.satirlar[i].get("is_manual_item"))  # noqa: E731
         self._hucre = SatirHucreDuzenleyici(

@@ -890,7 +890,7 @@ class TeklifDialog(tk.Toplevel):
 
         ttk.Label(
             aksiyon,
-            text="Ürün eklemek için tablonun son satırına barkod okutun, kod veya ad yazın (F10: stok listesi).",
+            text="Ürün eklemek için tablonun son satırına barkod okutun veya ürün adı yazın (F10: stok listesi).",
             foreground="#475569",
         ).pack(side="left", padx=(2, 8))
         _btn3d(aksiyon, "Satırı Sil (Del)", self._satir_sil, KIRMIZI).pack(side="left", padx=2)
@@ -3426,7 +3426,6 @@ class TeklifDialog(tk.Toplevel):
             miktara_git=lambda idx: self._hucre.duzenle(idx, "miktar"),
             depo=self._teklif_depo,
             satir_menusu=self._teklif_satir_menusu,
-            yer_tutucu="➕ Ürün ekle: barkod okutun, kod veya ad yazın  (F10: stok listesi)",
         )
 
         def _fiyat_izni(_i):

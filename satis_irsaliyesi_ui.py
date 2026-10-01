@@ -449,7 +449,6 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
             depo=lambda: self.depo.get() or "",
             sadece_stokta_ad=True,
             satir_menusu=self._satir_menusu,
-            yer_tutucu="➕ Ürün ekle: barkod okutun, kod veya ad yazın  (F10: stok listesi)",
         )
         self._hucre = SatirHucreDuzenleyici(
             self,

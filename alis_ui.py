@@ -71,7 +71,6 @@ class _AlisSatirGirisi:
             fiyat_turu="alis",
             alis_fiyati=lambda kod: StokService.son_alis_fiyati(kod, None),
             satir_menusu=self._alis_satir_menusu,
-            yer_tutucu="➕ Ürün ekle: barkod okutun, kod veya ad yazın  (F10: stok listesi)",
         )
         self._hucre = SatirHucreDuzenleyici(
             self,
@@ -2054,8 +2053,7 @@ class AlisFaturasiDialog(tk.Toplevel):
             fiyat_turu="alis",
             alis_fiyati=lambda kod: StokService.son_alis_fiyati(kod, None),
             satir_menusu=self._alis_fatura_satir_menusu,
-            yer_tutucu="➕ Ürün ekle: barkod okutun, kod veya ad yazın  (F10: stok listesi)",
-            ilk_rol="kod",
+            ilk_rol="barkod",
         )
 
         def _fiyat_degeri(i):

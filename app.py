@@ -9537,7 +9537,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         return "break"
 
     def _satir_ici_giris_kur(self):
-        """Ürün tablosunun sonundaki boş satırdan barkod / kod / ad ile ürün girişi."""
+        """Ürün tablosunun sonundaki boş satırdan barkod veya ürün adı ile ürün girişi."""
         if getattr(self, "_satir_ici_giris", None) is not None or not hasattr(self, "satir_tablosu"):
             return
         from satir_ici_urun_giris import SatirIciUrunGirisi
