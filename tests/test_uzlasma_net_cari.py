@@ -297,6 +297,30 @@ class UzlasmaGecmisDuzeltmeTest(unittest.TestCase):
         with get_session() as s:
             self.assertEqual(d.kuru_calisma(s)["kalemler"], [])
 
+    def test_uzlasmasiz_faturadaki_kurus_farki_kapsam_disi(self):
+        from database import uzlasma_net_duzeltme as d
+
+        f = SatisFaturasiService.kaydet(_veriler(self, net=BRUT), SATIR)
+        SatisFaturasiService.onayla(f.id)
+        with get_session() as s:
+            h = s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == f.fatura_no))
+            h.satis_tutari = h.kalan_acik_tutar = BRUT - Decimal("0.01")
+        with get_session() as s:
+            self.assertEqual(d.kuru_calisma(s)["kalemler"], [])
+
+    def test_dovizli_fatura_borc_esasina_gore(self):
+        from database import uzlasma_net_duzeltme as d
+
+        fid = _uzlasmali_fatura(self)
+        self._eski_surum_gibi_brut_yaz(fid, "0")
+        no = SatisFaturasiService.getir(fid).fatura_no
+        for esas, karar in (("TL_SABIT", d.DUZELT), ("DOVIZ_SABIT", d.MANUEL)):
+            with get_session() as s:
+                h = s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == no))
+                h.para_birimi, h.borc_esasi = "USD", esas
+            with get_session() as s:
+                self.assertEqual([k["karar"] for k in d.kuru_calisma(s)["kalemler"]], [karar])
+
     def test_fazla_tahsilat_manuel_incelemeye_kalir(self):
         from database import uzlasma_net_duzeltme as d
 

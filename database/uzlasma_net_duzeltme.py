@@ -10,11 +10,12 @@ Uygulama (önce doğrulanmış yedek alınır; gerçek veri klasöründe ek onay
     python -m database.uzlasma_net_duzeltme --db KOPYA.db --uygula --yedek-klasoru YEDEK
 
 Kurallar:
-- Yalnız onaylı, iptal/silinmiş olmayan satış faturaları; borç satırı Net'ten farklı olanlar.
+- Yalnız onaylı, iptal/silinmiş olmayan, Net'i Brüt'ten farklı (uzlaşmalı) satış faturaları;
+  borç satırı Net'ten farklı olanlar. Uzlaşmasız faturalardaki kuruş farkları kapsam dışıdır.
 - Tahsilatlar, makbuz bağları ve kapatma kayıtları değişmez: kapanan tutar (borç − kalan) korunur,
   yeni kalan = Net − kapanan.
-- Kapanan tutar Net'i aşıyorsa (fazla tahsilat) veya fatura dövizliyse otomatik düzeltilmez,
-  manuel inceleme listesine alınır.
+- Kapanan tutar Net'i aşıyorsa (fazla tahsilat) veya borç döviz sabitse (DOVIZ_SABIT) otomatik
+  düzeltilmez, manuel inceleme listesine alınır. TL sabit borçlu dövizli fatura TL Net'le düzeltilir.
 - Tüm düzeltmeler tek transaction'dadır; tekrar çalıştırma yeni değişiklik üretmez.
 """
 
@@ -72,16 +73,20 @@ def kuru_calisma(session) -> dict:
         )
         if hareket is None:
             continue
+        brut = _k(SatisFaturasiService.toplam(f.satirlar)["genel_toplam"])
         net = _k(SatisFaturasiService.net_toplam(f))
         eski = _k(hareket.satis_tutari)
-        if abs(eski - net) < KURUS:
+        # Uzlaşmasız faturadaki kuruş farkları (aktarım / eski hesap) bu düzeltmenin kapsamı dışında.
+        if net == brut or abs(eski - net) < KURUS:
             continue
         eski_kalan = _k(hareket.kalan_acik_tutar)
         kapanan = eski - eski_kalan
         yeni_kalan = net - kapanan
-        doviz = (hareket.para_birimi or "TRY").upper() != "TRY"
-        if doviz:
-            karar, neden = MANUEL, "Dövizli fatura; otomatik düzeltilmez."
+        doviz_sabit = (hareket.para_birimi or "TRY").upper() != "TRY" and (
+            (hareket.borc_esasi or "TL_SABIT") == "DOVIZ_SABIT"
+        )
+        if doviz_sabit:
+            karar, neden = MANUEL, "Döviz sabit borçlu fatura; otomatik düzeltilmez."
         elif yeni_kalan < 0:
             karar, neden = MANUEL, (
                 f"Kapanan {kapanan} TL Net {net} TL'yi aşıyor (fazla tahsilat); otomatik düzeltilmez."
@@ -94,7 +99,7 @@ def kuru_calisma(session) -> dict:
                 "fatura_no": f.fatura_no,
                 "cari_id": int(f.cari_id),
                 "hareket_id": int(hareket.id),
-                "brut": _k(SatisFaturasiService.toplam(f.satirlar)["genel_toplam"]),
+                "brut": brut,
                 "net": net,
                 "eski_borc": eski,
                 "eski_kalan": eski_kalan,
