@@ -132,11 +132,16 @@ def satir_sil(dialog, *, neden: str = "") -> None:
             parent=dialog,
         )
         return
-    idxs = _secili_indeksler(dialog)
+    from satir_ici_urun_giris import satir_editorlerini_kapat
+
+    # Açık hücre editörü (KDV kutusu vb.) önce kapanmalı: aksi hâlde silinen satırın üstünde
+    # kalır ve vurgulu hücre etiketleri yeniden çizilemez
+    satir_editorlerini_kapat(dialog)
+    idxs = _secili_indeksler(dialog) or _aktif_satir(dialog)
     if not idxs:
         messagebox.showinfo(
             "Satır sil",
-            "Silmek için satır seçin veya başındaki kutuyu işaretleyin.",
+            "Silmek için bir ürün satırı seçin veya başındaki kutuyu işaretleyin.",
             parent=dialog,
         )
         return
@@ -159,11 +164,38 @@ def satir_sil(dialog, *, neden: str = "") -> None:
     for i in reversed(idxs):
         dialog.satirlar.pop(i)
     _audit_satir_sil(dialog, silinen, neden=neden or "kullanici_sil")
+    satir_silme_sonrasi(dialog)
+
+
+def _aktif_satir(dialog) -> list[int]:
+    """İşaret/seçim yoksa klavye odağındaki ürün satırı (giriş satırı hariç)."""
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if tablo is None:
+        return []
+    try:
+        idx = int(tablo.focus())
+    except (TypeError, ValueError, tk.TclError):
+        return []
+    return [idx] if 0 <= idx < len(dialog.satirlar) else []
+
+
+def satir_silme_sonrasi(dialog) -> None:
+    """Silinen satırlardan kalan seçim, işaret, editör ve vurgu etiketlerini temizler."""
+    from satir_ici_urun_giris import satir_editorlerini_kapat, silme_sonrasi_odakla, tablo_secimini_temizle
+
+    satir_editorlerini_kapat(dialog, uygula=False)
     if hasattr(dialog, "_satir_isaretleri"):
         dialog._satir_isaretleri = set()
     dialog._duzenlenen_satir = None
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if tablo is not None:
+        tablo_secimini_temizle(tablo)
+    temizle = getattr(dialog, "_fatura_satir_vurgulu_overlay_temizle", None)
+    if temizle is not None:
+        temizle()
     _yenile(dialog)
     _bos_mesaj_guncelle(dialog)
+    silme_sonrasi_odakla(dialog)
 
 
 def satir_cogalt(dialog) -> None:
@@ -442,8 +474,37 @@ def _bos_mesaj_guncelle(dialog) -> None:
 # ─── Araç çubuğu + menü + kısayollar ───────────────────────────────
 
 
+def satir_islemleri_doldur(dialog, menu: tk.Menu) -> None:
+    """«Satır İşlemleri» menüsü: tablo satırlarına uygulanan işlemlerin tek listesi."""
+    menu.add_command(label="Satırı Düzenle (F2)", command=lambda: satir_duzenle(dialog))
+    menu.add_command(label="Satırı Çoğalt (Ctrl+D)", command=lambda: satir_cogalt(dialog))
+    menu.add_command(label="Üste Taşı (Alt+↑)", command=lambda: satir_uste_tasi(dialog))
+    menu.add_command(label="Alta Taşı (Alt+↓)", command=lambda: satir_alta_tasi(dialog))
+    menu.add_separator()
+    menu.add_command(
+        label="Fiyatı Stok Kartından Yenile", command=lambda: fiyati_yenile(dialog)
+    )
+    menu.add_command(
+        label="Fiyatı Kilitle / Dağıtıma Kapalı",
+        command=lambda: dagitima_kilitle_ac_kapa(dialog),
+    )
+    menu.add_command(
+        label="Çoklu İskonto Düzenle", command=lambda: _coklu_iskonto_duzenle(dialog)
+    )
+    menu.add_command(label="İskontoyu Temizle", command=lambda: iskontoyu_temizle(dialog))
+    menu.add_command(label="Satır Açıklaması Gir", command=lambda: satir_aciklama_gir(dialog))
+    menu.add_separator()
+    menu.add_command(label="Satır Sil (Del)", command=lambda: satir_sil(dialog))
+    if hasattr(dialog, "_fatura_kolon_ayarlari_ac"):
+        menu.add_separator()
+        menu.add_command(label="Kolon Ayarları…", command=dialog._fatura_kolon_ayarlari_ac)
+
+
 def arac_cubugu_kur(dialog) -> None:
-    """Ürün satırları tablosunun hemen altına ince işlem çubuğu yerleştir."""
+    """Ürün satırları ızgarası: tablo, kaydırma çubukları ve özet hizalanır.
+
+    Satır işlemleri ayrı çubukta değil; «Satır İşlemleri» menüsü ve sağ tık menüsündedir.
+    """
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
@@ -453,6 +514,7 @@ def arac_cubugu_kur(dialog) -> None:
             dialog._satir_arac_cubugu.destroy()
         except tk.TclError:
             pass
+        dialog._satir_arac_cubugu = None
 
     # Mevcut kaydırma çubuklarını ve özet çerçevesini bul
     dikey = yatay = ozet = None
@@ -480,56 +542,13 @@ def arac_cubugu_kur(dialog) -> None:
     except Exception:
         pass
 
-    cubuk = tk.Frame(parent, bg="#0B2A4A", height=34)
-    dialog._satir_arac_cubugu = cubuk
-    try:
-        cubuk.grid_propagate(False)
-    except tk.TclError:
-        pass
-
-    ic = tk.Frame(cubuk, bg="#0B2A4A")
-    ic.pack(fill="x", padx=4, pady=2)
-
-    def _btn(metin, komut, *, bg="#163E66", active="#1A4068", bold=False):
-        b = tk.Button(
-            ic,
-            text=metin,
-            command=komut,
-            font=("Segoe UI", 8, "bold") if bold else ("Segoe UI", 8),
-            bg=bg,
-            fg="#FFFFFF",
-            activebackground=active,
-            activeforeground="#FFFFFF",
-            relief="flat",
-            padx=8,
-            pady=2,
-            cursor="hand2",
-        )
-        b.pack(side="left", padx=2)
-        return b
-
-    _btn("Satırı Düzenle", lambda: satir_duzenle(dialog))
-    _btn("Satırı Çoğalt", lambda: satir_cogalt(dialog))
-    _btn("Üste Taşı", lambda: satir_uste_tasi(dialog))
-    _btn("Alta Taşı", lambda: satir_alta_tasi(dialog))
-    if hasattr(dialog, "_fatura_siparisten_getir"):
-        _btn("Siparişten Getir (Alt+S)", dialog._fatura_siparisten_getir)
-    _btn("Fiyatı Yenile", lambda: fiyati_yenile(dialog))
-    _btn("Dağıtıma Kilitle", lambda: dagitima_kilitle_ac_kapa(dialog))
-    _btn("Çoklu İskonto", lambda: _coklu_iskonto_duzenle(dialog))
-    _btn("İskontoyu Temizle", lambda: iskontoyu_temizle(dialog))
-    _btn("Satır Açıklaması", lambda: satir_aciklama_gir(dialog))
-    if hasattr(dialog, "_fatura_kolon_ayarlari_ac"):
-        _btn("Kolon Ayarları", dialog._fatura_kolon_ayarlari_ac)
-
-    # Ürün şeridi 0 | tablo 1 | yatay 2 | araç 3 | özet 4 (araç tablonun hemen altında)
+    # Ürün şeridi 0 | tablo 1 | yatay 2 | (mesajlar 3) | özet 4
     try:
         tablo.grid_configure(row=1, column=0, sticky="nsew")
         if dikey is not None:
             dikey.grid_configure(row=1, column=1, sticky="ns")
         if yatay is not None:
             yatay.grid_configure(row=2, column=0, sticky="ew")
-        cubuk.grid(row=3, column=0, columnspan=2, sticky="ew", pady=0)
         if ozet is not None:
             ozet.grid_configure(row=4, column=0, columnspan=2, sticky="ew", pady=0)
         parent.rowconfigure(0, weight=0, minsize=0)
@@ -558,26 +577,12 @@ def baglam_menu_kur(dialog) -> None:
     except Exception:
         master = dialog.satir_tablosu
     menu = tk.Menu(master, tearoff=0)
-    menu.add_command(label="Düzenle", command=lambda: satir_duzenle(dialog))
-    menu.add_command(label="Seçili Satırı Sil", command=lambda: satir_sil(dialog))
-    menu.add_command(label="Satırı Çoğalt", command=lambda: satir_cogalt(dialog))
-    menu.add_separator()
-    menu.add_command(label="Üste Taşı", command=lambda: satir_uste_tasi(dialog))
-    menu.add_command(label="Alta Taşı", command=lambda: satir_alta_tasi(dialog))
-    menu.add_separator()
-    menu.add_command(
-        label="Fiyatı Stok Kartından Yenile", command=lambda: fiyati_yenile(dialog)
-    )
-    menu.add_command(
-        label="Fiyatı Kilitle / Dağıtıma Kapalı",
-        command=lambda: dagitima_kilitle_ac_kapa(dialog),
-    )
-    menu.add_command(
-        label="Çoklu İskonto Düzenle",
-        command=lambda: _coklu_iskonto_duzenle(dialog),
-    )
-    menu.add_command(label="İskontoyu Temizle", command=lambda: iskontoyu_temizle(dialog))
-    menu.add_command(label="Satır Açıklaması Gir", command=lambda: satir_aciklama_gir(dialog))
+    satir_islemleri_doldur(dialog, menu)
+    kolon_menu = None
+    if hasattr(dialog, "_fatura_kolon_ayarlari_ac"):
+        kolon_menu = tk.Menu(master, tearoff=0)
+        kolon_menu.add_command(label="Kolon Ayarları…", command=dialog._fatura_kolon_ayarlari_ac)
+    dialog._satir_kolon_ctx = kolon_menu
     from satir_ici_urun_giris import giris_bileseni
 
     giris = giris_bileseni(dialog)
@@ -596,6 +601,12 @@ def baglam_menu_kur(dialog) -> None:
 
     def _sag_tik(event):
         tablo = dialog.satir_tablosu
+        if kolon_menu is not None and tablo.identify_region(event.x, event.y) == "heading":
+            try:
+                kolon_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                kolon_menu.grab_release()
+            return "break"
         row = tablo.identify_row(event.y)
         satir_var = bool(row)
         if row:
@@ -675,3 +686,4 @@ def fatura_satir_araclari_kur(dialog) -> None:
     baglam_menu_kur(dialog)
     kisayollar_kur(dialog)
     _bos_mesaj_guncelle(dialog)
+    dialog._satir_araclari_hazir = True

@@ -21,6 +21,26 @@ def _para_goster(tutar, pb="TRY") -> str:
     return f"{metin} {pb}"
 
 
+def _dec(deger) -> Decimal:
+    try:
+        return Decimal(str(deger or 0).replace(",", "."))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+
+
+def _satir_pb_kur(satir: dict) -> tuple[str, Decimal]:
+    pb = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
+    if pb in ("TRY", "TL"):
+        return "TRY", Decimal("1")
+    return pb, _dec(satir.get("kur"))
+
+
+def _satir_pb_kur_yaz(satir: dict, pb: str, kur: Decimal) -> None:
+    satir["satir_para_birimi"] = pb
+    satir["para_birimi"] = pb
+    satir["kur"] = "1" if pb == "TRY" else str(kur)
+
+
 def doviz_paneli_kur(kart, ust_cerceve: ttk.LabelFrame) -> None:
     """Fatura kartına para birimi / kur panelini ekler."""
     kart._doviz_para_birimi = tk.StringVar(value="TRY")
@@ -139,6 +159,14 @@ def doviz_para_birimi_degisti(kart) -> None:
         kart._doviz_sabitlendi.set(True)
         kart._doviz_kur_giris.configure(state="disabled")
         kart._doviz_sabit_etiket.configure(text="✓ TL fatura")
+        degisti = False
+        for satir in getattr(kart, "satirlar", []):
+            if _satir_pb_kur(satir)[0] != "TRY":
+                _satir_pb_kur_yaz(satir, "TRY", Decimal("1"))
+                satir["birim_fiyat_doviz"] = 0
+                degisti = True
+        if degisti and hasattr(kart, "_satir_listesini_yenile"):
+            kart._satir_listesini_yenile()
     else:
         kart._doviz_kur_giris.configure(state="normal")
         kart._doviz_sabitlendi.set(False)
@@ -251,6 +279,21 @@ def doviz_kuru_sabitle(kart) -> None:
     doviz_ozet_guncelle(kart)
 
 
+def _eski_doviz_cevir(satir: dict, alan: str, kur: Decimal) -> None:
+    """Alış vb. kartlar: saklı döviz birim fiyatından TL üretir."""
+    bf_doviz = satir.get("birim_fiyat_doviz")
+    if bf_doviz is None:
+        bf_doviz = satir.get(alan, 0)
+        satir["birim_fiyat_doviz"] = bf_doviz
+    bf_doviz = _dec(bf_doviz)
+    if bf_doviz > 0:
+        tl_bf = DovizService.dovizden_tle(bf_doviz, kur, Decimal("0.0001"))
+        satir[alan] = tl_bf
+        if alan == "birim_fiyat":
+            satir["birim_alis_fiyati"] = tl_bf
+        satir["birim_fiyat_doviz"] = bf_doviz
+
+
 def doviz_satirlari_tl_cevir(kart) -> None:
     """Döviz birim fiyatlarını TL'ye çevirip mevcut satır listesini günceller."""
     pb = (kart._doviz_para_birimi.get() or "TRY").upper()
@@ -260,22 +303,29 @@ def doviz_satirlari_tl_cevir(kart) -> None:
         kur = Decimal(str(kart._doviz_kur.get().replace(",", ".")))
     except (InvalidOperation, ValueError):
         return
+    if kur <= 0:
+        return
     for satir in getattr(kart, "satirlar", []):
         alan = _fiyat_alani(kart, satir)
-        bf_doviz = satir.get("birim_fiyat_doviz")
-        if bf_doviz is None:
-            bf_doviz = satir.get(alan, 0)
-            satir["birim_fiyat_doviz"] = bf_doviz
-        try:
-            bf_doviz = Decimal(str(bf_doviz or 0))
-        except (InvalidOperation, TypeError):
-            bf_doviz = Decimal("0")
-        if bf_doviz > 0:
+        if alan != "birim_satis_fiyati":
+            _eski_doviz_cevir(satir, alan, kur)
+            continue
+        eski_pb, eski_kur = _satir_pb_kur(satir)
+        if eski_pb == pb and eski_kur > 0:
+            # Satırın TL fiyatı esastır; döviz fiyatı mevcut satır kurundan türetilir
+            bf_doviz = _dec(satir.get(alan)) / eski_kur
+        else:
+            bf_doviz = satir.get("birim_fiyat_doviz")
+            if bf_doviz is None:
+                bf_doviz = satir.get(alan, 0)
+            bf_doviz = _dec(bf_doviz)
+        if bf_doviz > 0 and not (eski_pb == pb and eski_kur == kur):
             tl_bf = DovizService.dovizden_tle(bf_doviz, kur, Decimal("0.0001"))
             satir[alan] = tl_bf
             if alan == "birim_fiyat":
                 satir["birim_alis_fiyati"] = tl_bf
-            satir["birim_fiyat_doviz"] = bf_doviz
+        satir["birim_fiyat_doviz"] = bf_doviz.quantize(Decimal("0.0001")) if bf_doviz > 0 else 0
+        _satir_pb_kur_yaz(satir, pb, kur)
     if hasattr(kart, "_satir_listesini_yenile"):
         kart._satir_listesini_yenile()
     if hasattr(kart, "_bakiye_guncelle"):
@@ -322,7 +372,11 @@ def doviz_verilerini_topla(kart) -> dict:
     if pb != "TRY":
         for satir in getattr(kart, "satirlar", []):
             alan = _fiyat_alani(kart, satir)
-            bf = Decimal(str(satir.get("birim_fiyat_doviz") or satir.get(alan) or 0))
+            if alan == "birim_satis_fiyati":
+                # Satış satırı TL esaslıdır; döviz ara toplamı ekrandaki TL fiyattan türetilir
+                bf = _dec(satir.get(alan)) / kur if kur > 0 else Decimal("0")
+            else:
+                bf = Decimal(str(satir.get("birim_fiyat_doviz") or satir.get(alan) or 0))
             miktar = Decimal(str(satir.get("miktar") or 0))
             isk1 = Decimal(str(satir.get("iskonto_orani", 0) or 0))
             isk2 = Decimal(str(satir.get("iskonto_orani_2", 0) or 0))
@@ -386,6 +440,8 @@ def doviz_satir_kaydet_oncesi(kart, satir: dict) -> dict:
             satir["birim_alis_fiyati"] = tl
         elif alan == "birim_satis_fiyati":
             satir["birim_fiyat"] = tl
+        if kur > 0 and alan == "birim_satis_fiyati":
+            _satir_pb_kur_yaz(satir, pb, kur)
     except (InvalidOperation, ValueError):
         pass
     return satir

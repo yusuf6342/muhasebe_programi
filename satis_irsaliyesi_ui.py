@@ -999,10 +999,14 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         ek = ""
         if veri.get("siparis_satiri_id"):
             ek = f"\n\nSatır {veri.get('siparis_no') or 'sipariş'} siparişine bağlı; kayıttan sonra miktar siparişte yeniden sevk bekler."
+        from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
+
+        satir_editorlerini_kapat(self)
         if messagebox.askyesno("Satırı sil", f"«{veri.get('urun_adi')}» satırı silinsin mi?{ek}", parent=self):
             self.satirlar.pop(idx)
             self.satir_temizle()
             self.satir_listesini_yenile()
+            satir_silme_sonrasi_temizle(self, self.satir_tablosu)
 
     # ----------------------------------------------------- siparişten aktarım
     def siparisten_aktar(self):

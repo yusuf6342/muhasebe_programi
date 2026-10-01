@@ -243,12 +243,16 @@ class _AlisSatirGirisi:
             self._hucre.ilk_alana(idx)
 
     def satir_sil(self):
+        from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
+
         idx = self._alis_secili()
         if idx is None:
             return "break"
+        satir_editorlerini_kapat(self)
         if messagebox.askyesno("Sil", "Satır silinsin mi?", parent=self):
             self.satirlar.pop(idx)
             self._alis_yenile()
+            satir_silme_sonrasi_temizle(self, self.satir_tablosu)
         return "break"
 
     def _alis_bekleyenleri_uygula(self) -> bool:
@@ -2263,12 +2267,16 @@ class AlisFaturasiDialog(tk.Toplevel):
             self._satir_ici_giris.araya_ekle(idx)
 
     def satir_sil(self):
+        from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
+
         idx = self._alis_secili_index()
         if idx is None:
             return "break"
+        satir_editorlerini_kapat(self)
         if messagebox.askyesno("Sil", "Satır silinsin mi?", parent=self):
             self.satirlar.pop(idx)
             self._alis_fatura_yenile()
+            satir_silme_sonrasi_temizle(self, self.satir_tablosu)
         return "break"
 
     def stok_listesi_ac(self):

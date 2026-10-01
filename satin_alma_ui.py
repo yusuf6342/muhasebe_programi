@@ -924,11 +924,15 @@ class _SatinAlmaSatirGirisi:
         return satir_indeksi(self.satir_tablosu, sec[0]) if sec else None
 
     def satir_sil(self) -> None:
+        from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
+
         idx = self._secili_index()
         if idx is None or self._kilitli():
             return
+        satir_editorlerini_kapat(self)
         del self.satirlar[idx]
         self._satirlari_yenile()
+        satir_silme_sonrasi_temizle(self, self.satir_tablosu)
 
     def _satir_menusu(self, idx: int) -> list:
         return [

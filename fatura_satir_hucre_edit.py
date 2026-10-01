@@ -561,6 +561,35 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         pass
 
 
+def _satir_pb(satir: dict) -> str:
+    pb = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
+    return "TRY" if pb == "TL" else pb
+
+
+def _satir_kuru(satir: dict) -> Decimal:
+    if _satir_pb(satir) == "TRY":
+        return Decimal("1")
+    kur = _d(satir.get("kur"), Decimal("0"))
+    return kur if kur > 0 else Decimal("0")
+
+
+def _tl_fiyat(doviz_fiyat, satir: dict) -> Decimal:
+    """Satır hesap esası TL'dir: döviz birim fiyat × satır kuru."""
+    return (_d(doviz_fiyat) * _satir_kuru(satir)).quantize(Decimal("0.0001"))
+
+
+def _baslik_doviz_pb(dialog) -> str | None:
+    """Fatura başlığı dövizliyse para birimini döner (satır PB/kuru başlıktan yönetilir)."""
+    var = getattr(dialog, "_doviz_para_birimi", None)
+    if var is None:
+        return None
+    try:
+        pb = (var.get() or "TRY").upper()
+    except Exception:
+        return None
+    return None if pb in ("TRY", "TL") else pb
+
+
 def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     if getattr(dialog, "_fatura_kilitli", False):
         messagebox.showwarning("Fiyat", "Onaylı faturada fiyat değiştirilemez.", parent=dialog)
@@ -579,7 +608,15 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     tablo = dialog.satir_tablosu
     iid = str(idx)
     satir = dialog.satirlar[idx]
-    mevcut = str(satir.get("birim_satis_fiyati") or "0").replace(".", ",")
+    satir_pb = _satir_pb(satir)
+    doviz_giris = satir_pb != "TRY" and _satir_kuru(satir) > 0
+    if doviz_giris:
+        mevcut_deger = (
+            _d(satir.get("birim_satis_fiyati")) / _satir_kuru(satir)
+        ).quantize(Decimal("0.0001"))
+    else:
+        mevcut_deger = satir.get("birim_satis_fiyati")
+    mevcut = str(mevcut_deger or "0").replace(".", ",")
     editor, var = _overlay_entry(dialog, tablo, iid, "fiyat", mevcut, justify="right")
     if editor is None:
         return
@@ -597,7 +634,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             from fatura_manuel_fiyat_ui import maliyet_alti_kontrol
 
             if getattr(dialog, "MALIYET_ALTI_KONTROLU", True) and not maliyet_alti_kontrol(
-                yeni,
+                _tl_fiyat(yeni, satir) if doviz_giris else yeni,
                 satir,
                 yontem=dialog.yontem.get() if hasattr(dialog, "yontem") else None,
                 parent=dialog,
@@ -606,11 +643,12 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
                 return "break"
         except Exception:
             pass
-        satir["birim_satis_fiyati"] = str(yeni)
-        satir["manuel_fiyat"] = True
-        pb = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
-        if pb not in ("TRY", "TL"):
+        if doviz_giris:
             satir["birim_fiyat_doviz"] = str(yeni)
+            satir["birim_satis_fiyati"] = str(_tl_fiyat(yeni, satir))
+        else:
+            satir["birim_satis_fiyati"] = str(yeni)
+        satir["manuel_fiyat"] = True
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
@@ -633,12 +671,19 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         return
     if not (0 <= idx < len(dialog.satirlar)):
         return
+    baslik_pb = _baslik_doviz_pb(dialog)
+    if baslik_pb:
+        messagebox.showinfo(
+            "Para Birimi",
+            f"Bu fatura {baslik_pb} olarak düzenleniyor. Satır para birimi ve kuru "
+            "fatura başlığındaki döviz panelinden yönetilir.",
+            parent=dialog,
+        )
+        return
     tablo = dialog.satir_tablosu
     iid = str(idx)
     satir = dialog.satirlar[idx]
-    mevcut = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
-    if mevcut == "TL":
-        mevcut = "TRY"
+    mevcut = _satir_pb(satir)
     _editor_kapat(dialog)
     box = _hucre_bbox(tablo, iid, "para_birimi")
     if not box:
@@ -673,12 +718,17 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             if on_done:
                 on_done()
             return "break"
-        # Kur
+        # TL birim fiyat (hesap esası) korunur; döviz fiyatı yeni kurdan türetilir
+        tl_fiyat = _d(satir.get("birim_satis_fiyati"))
         if yeni == "TRY":
             satir["kur"] = "1"
+            satir["birim_fiyat_doviz"] = 0
         else:
             kur = _satir_kur_varsayilan(dialog, yeni)
             satir["kur"] = str(kur)
+            satir["birim_fiyat_doviz"] = (
+                str((tl_fiyat / kur).quantize(Decimal("0.0001"))) if kur > 0 else 0
+            )
         satir["satir_para_birimi"] = yeni
         satir["para_birimi"] = yeni
         _editor_kapat(dialog)
@@ -736,11 +786,20 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         return
     if not (0 <= idx < len(dialog.satirlar)):
         return
+    baslik_pb = _baslik_doviz_pb(dialog)
+    if baslik_pb:
+        messagebox.showinfo(
+            "Kur",
+            f"Bu fatura {baslik_pb} olarak düzenleniyor. Kur, fatura başlığındaki "
+            "döviz panelinden değiştirilir (tüm satırlar aynı kurla hesaplanır).",
+            parent=dialog,
+        )
+        return
     tablo = dialog.satir_tablosu
     iid = str(idx)
     satir = dialog.satirlar[idx]
-    pb = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
-    if pb in ("TRY", "TL"):
+    pb = _satir_pb(satir)
+    if pb == "TRY":
         messagebox.showinfo("Kur", "TL satırında kur sabittir (1).", parent=dialog)
         return
     mevcut = str(satir.get("kur") or "1").replace(".", ",")
@@ -757,7 +816,14 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         if yeni <= 0:
             messagebox.showerror("Kur", "Kur sıfırdan büyük olmalıdır.", parent=dialog)
             return "break"
+        eski_kur = _satir_kuru(satir)
+        doviz_fiyat = (
+            _d(satir.get("birim_satis_fiyati")) / eski_kur if eski_kur > 0 else Decimal("0")
+        )
         satir["kur"] = str(yeni)
+        if doviz_fiyat > 0:
+            satir["birim_fiyat_doviz"] = str(doviz_fiyat.quantize(Decimal("0.0001")))
+            satir["birim_satis_fiyati"] = str(_tl_fiyat(doviz_fiyat, satir))
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:

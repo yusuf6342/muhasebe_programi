@@ -1099,10 +1099,14 @@ class SatisSiparisiKarti(tk.Toplevel):
                 parent=self,
             )
             return "break"
+        from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
+
+        satir_editorlerini_kapat(self)
         if messagebox.askyesno("Satırı sil", f"«{veri.get('urun_adi')}» satırı silinsin mi?", parent=self):
             self.satirlar.pop(idx)
             self.satir_temizle()
             self.satir_listesini_yenile()
+            satir_silme_sonrasi_temizle(self, self.satir_tablosu)
         return "break"
 
     # --------------------------------------------------------------- kayıt

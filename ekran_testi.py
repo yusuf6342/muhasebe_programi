@@ -15,7 +15,7 @@ import tkinter as tk
 import traceback
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 ANA_MENULER = (
     "giris",
@@ -265,6 +265,8 @@ def calistir(rapor_yolu: str | Path, bootstrap, *, kayit_dene: bool = False) -> 
         if ilk_cari is not None:
             _dene("Cari kart (mevcut kayıt)", lambda: CariDialog(app, CariService.getir(ilk_cari)))
 
+        _dene("Müşteri ekstresi: TL / USD karşılığı", lambda: _ekstre_denetimi(app, "rapor_musteri_ekstresi"))
+        _dene("Tedarikçi ekstresi: TL / USD karşılığı", lambda: _ekstre_denetimi(app, "rapor_tedarikci_ekstresi"))
         _satin_alma_menuleri(app, _dene)
         if kayit_dene:
             if db.DB_DIR_KAYNAGI != "MUHASEBE_DB_DIR":
@@ -315,6 +317,33 @@ def _alt_widgetlar(kok):
         w = yigin.pop()
         yield w
         yigin.extend(w.winfo_children())
+
+
+def _ekstre_denetimi(app, metod: str):
+    """Müşteri/tedarikçi ekstresi: ilk cari ile TL ve USD karşılığı görünümlerini getirir."""
+    from cari_usd_rapor_ui import GORUNUM_TL, GORUNUM_USD
+
+    getattr(app, metod)()
+    app.update()
+    degerler = list(app.ekstre_musteri.cget("values") or ())
+    if not degerler:
+        return None
+    app.ekstre_musteri.set(degerler[0])
+    dugme = next(
+        w for w in _alt_widgetlar(app.icerik)
+        if isinstance(w, ttk.Button) and str(w.cget("text")) == "Raporu Getir / Uygula"
+    )
+    app.ekstre_gorunum.set(GORUNUM_TL)
+    dugme.invoke()
+    app.update()
+    app.ekstre_gorunum.set(GORUNUM_USD)
+    dugme.invoke()
+    app.update()
+    if app._ekstre_usd is None or not app._ekstre_usd.winfo_ismapped():
+        raise RuntimeError("USD karşılığı görünümü açılmadı")
+    if not app._ekstre_usd.tablo.get_children():
+        raise RuntimeError("USD karşılığı tablosu boş (toplam satırı bile yok)")
+    return None
 
 
 def _hub_karti(app, baslik: str):

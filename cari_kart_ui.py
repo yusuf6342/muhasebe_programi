@@ -1306,6 +1306,9 @@ class CariDialog(tk.Toplevel):
         tk_buton(filtre, "Excel", self._hareketleri_excel_aktar, rol="excel").pack(
             side="left", padx=(8, 0)
         )
+        tk_buton(filtre, "TL / USD Karşılığı", self._usd_karsilik_raporu_ac, rol="ikincil").pack(
+            side="left", padx=(8, 0)
+        )
         self.hareket_tur_filtre.bind("<<ComboboxSelected>>", lambda _e: self._hareketleri_goster())
         self.hareket_arama.bind("<Return>", lambda _e: self._hareketleri_goster())
         self.hareket_tarih_bas.bind("<Return>", lambda _e: self._hareketleri_goster())
@@ -2060,6 +2063,15 @@ class CariDialog(tk.Toplevel):
         metin = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", metin)
         metin = re.sub(r"\s+", "_", metin).strip("._")
         return (metin[:50] or varsayilan)
+
+    def _usd_karsilik_raporu_ac(self):
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showinfo("USD karşılık", "Önce cari kaydını seçin veya kaydedin.", parent=self)
+            return
+        from cari_usd_rapor_ui import usd_rapor_penceresi
+
+        baslik = f"{getattr(self.cari, 'cari_kodu', '')} - {getattr(self.cari, 'unvan', '')}"
+        usd_rapor_penceresi(self, int(self.cari.id), baslik)
 
     def _hareketleri_excel_aktar(self):
         if not self.cari:

@@ -424,7 +424,12 @@ class SatisIadeFaturasiService:
                     "Birim fiyat",
                     Decimal("0"),
                 )
-                if pb != "TRY" and birim_fiyat_doviz > 0:
+                if pb != "TRY" and veri.get("tl_esas") and kur > 0:
+                    # Ekran TL birim fiyatla hesaplar; döviz fiyatı bilgi amaçlı TL'den türetilir
+                    birim_fiyat = decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0"))
+                    birim_fiyat_doviz = (birim_fiyat / kur).quantize(Decimal("0.0001"))
+                    doviz_ara += miktar * birim_fiyat_doviz
+                elif pb != "TRY" and birim_fiyat_doviz > 0:
                     from database.doviz_service import DovizService
 
                     birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))

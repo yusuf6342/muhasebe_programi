@@ -177,7 +177,11 @@ class SatisFaturasiService:
         miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
         bf_doviz = decimal(veri.get("birim_fiyat_doviz", veri.get("birim_fiyat", 0)), "Birim fiyat", Decimal("0"))
         bf_tl = decimal(veri.get("birim_fiyat", veri.get("birim_satis_fiyati", 0)), "TL birim fiyat", Decimal("0"))
-        if pb != "TRY" and bf_doviz > 0:
+        tl_esas = bool(veri.get("tl_esas"))
+        if pb != "TRY" and tl_esas and kur > 0:
+            # Ekran TL birim fiyatla hesaplar; döviz fiyatı bilgi amaçlı TL'den türetilir
+            bf_doviz = (bf_tl / kur).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        elif pb != "TRY" and bf_doviz > 0:
             bf_tl = DovizService.dovizden_tle(bf_doviz, kur, Decimal("0.0001"))
         _, _, net = SatisFaturasiService._satir_net(
             miktar,

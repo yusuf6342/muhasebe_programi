@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -170,6 +170,37 @@ class CariIslem(Base):
     cari: Mapped["Cari"] = relationship("Cari", foreign_keys=[cari_id])
 
 
+class CariUsdKarsilik(Base):
+    """TL cari hareketin işlem tarihindeki USD karşılığı (yalnız raporlama).
+
+    TL borç/alacak, evrak ve kapatma bu kayıttan etkilenmez. Kur yoksa durum EKSIK
+    olur; asla bugünün kuru veya 1 varsayılmaz.
+    """
+
+    __tablename__ = "cari_usd_karsiliklari"
+    __table_args__ = (
+        UniqueConstraint("kaynak", "kaynak_id", name="uq_cari_usd_kaynak"),
+        Index("ix_cari_usd_cari_tarih", "cari_id", "islem_tarihi"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kaynak: Mapped[str] = mapped_column(String(20), nullable=False)
+    kaynak_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    cari_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    islem_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    tl_borc: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_alacak: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    usd_kur: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    kur_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    kur_turu: Mapped[str] = mapped_column(String(20), nullable=False, default="forex_selling")
+    kur_kaynagi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    usd_borc: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    usd_alacak: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    durum: Mapped[str] = mapped_column(String(10), nullable=False, default="EKSIK")
+    guncelleme: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
 class CariKapatma(Base):
     """Açık kalem tahsisi: bir kaynak evrakın (tahsilat/ödeme/iade/avans) hedef açık kalemi kapatması.
 
@@ -203,3 +234,7 @@ class CariKapatma(Base):
     iptal_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
     iptal_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
     iptal_islem_kimligi: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+# Cari hareket kaydedilirken USD karşılığını yazan oturum dinleyicisi
+from database import cari_usd_karsilik_service as _cari_usd_karsilik_service  # noqa: E402,F401

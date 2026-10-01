@@ -288,6 +288,12 @@ def firma_arama_indekslerini_hazirla() -> None:
                 conn.execute(text(sql))
     except Exception:
         pass
+    try:
+        from database.cari_usd_karsilik_service import tablo_hazirla
+
+        tablo_hazirla(engine)
+    except Exception:
+        pass
 
 
 def firma_db_ac(company_id: int, db_path: str | Path) -> None:

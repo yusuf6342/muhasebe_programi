@@ -325,6 +325,58 @@ class HucreAlani:
     deger: Callable[[int], str] | None = None
 
 
+def satir_editorlerini_kapat(dialog, *, uygula: bool = True) -> None:
+    """Satır silme öncesi: açık hücre/ürün editörlerini kapatır ve tablo seçimini temizler.
+
+    Editör satır indeksini tutar; silmeden sonra açık kalırsa kaymış indeksle başka satıra yazar
+    ve tablo üstünde eski değerle görünür kalır. uygula=True iken bekleyen geçerli değer önce yazılır.
+    """
+    hucre = getattr(dialog, "_hucre", None)
+    if hucre is not None and getattr(hucre, "editor", None) is not None:
+        if uygula:
+            try:
+                hucre.bekleyeni_uygula()
+            except Exception:
+                pass
+        hucre.kapat()
+    if getattr(dialog, "_satir_hucre_editor", None) is not None:
+        from fatura_satir_hucre_edit import _editor_kapat, acik_editoru_uygula
+
+        if uygula:
+            try:
+                acik_editoru_uygula(dialog)
+            except Exception:
+                pass
+        _editor_kapat(dialog)
+    giris = getattr(dialog, "_satir_ici_giris", None)
+    if giris is not None:
+        giris.kapat()
+
+
+def tablo_secimini_temizle(tablo) -> None:
+    try:
+        secim = tablo.selection()
+        if secim:
+            tablo.selection_remove(*secim)
+        tablo.focus("")
+    except tk.TclError:
+        pass
+
+
+def silme_sonrasi_odakla(dialog) -> None:
+    """Silmeden sonra sonraki ürün için barkod / ürün arama alanına dön."""
+    giris = getattr(dialog, "_satir_ici_giris", None)
+    if giris is not None:
+        giris.odakla()
+
+
+def satir_silme_sonrasi_temizle(dialog, tablo) -> None:
+    """Satırlar silinip tablo yenilendikten sonra: editör, seçim ve odak sıfırlanır."""
+    satir_editorlerini_kapat(dialog, uygula=False)
+    tablo_secimini_temizle(tablo)
+    silme_sonrasi_odakla(dialog)
+
+
 class SatirHucreDuzenleyici:
     """Satır hücrelerini yerinde düzenler; Enter/Tab sırayla ilerler, son alanda giriş satırına geçer."""
 

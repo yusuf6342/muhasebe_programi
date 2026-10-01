@@ -47,8 +47,11 @@ def fatura_mesaj_paneli_kur(dialog) -> None:
         pass
 
     _session_key_al(dialog)
-    dialog._mesaj_paneli_acik = True
+    # Varsayılan: tek satırlık durum çubuğu; mesaj gelince ya da tıklanınca açılır
+    dialog._mesaj_paneli_acik = False
     dialog._mesaj_paneli_satirlar: dict[int, dict[str, Any]] = {}
+    dialog._mesaj_yerel_sayi = 0
+    dialog._mesaj_son_metin = ""
 
     # Satır tablosunun parent'ına alt bant
     tablo = getattr(dialog, "satir_tablosu", None)
@@ -78,7 +81,7 @@ def fatura_mesaj_paneli_kur(dialog) -> None:
                         w.grid_configure(row=r + 1)
                     except tk.TclError:
                         pass
-            dis.grid(row=row, column=col, columnspan=colspan, sticky="ew", pady=(4, 0))
+            dis.grid(row=row, column=col, columnspan=colspan, sticky="ew", pady=(2, 0))
         except tk.TclError:
             dis.pack(fill="x", pady=(4, 0))
     else:
@@ -101,8 +104,19 @@ def fatura_mesaj_paneli_kur(dialog) -> None:
         anchor="w",
         cursor="hand2",
     )
-    dialog._mesaj_baslik_lbl.pack(side="left", pady=2)
+    dialog._mesaj_baslik_lbl.pack(side="left", pady=1)
     dialog._mesaj_baslik_lbl.bind("<Button-1>", lambda _e: _panel_daralt_ac(dialog))
+    dialog._mesaj_son_lbl = tk.Label(
+        baslik,
+        text="",
+        bg=COLOR_NAVY,
+        fg="#E5E7EB",
+        font=("Segoe UI", 8),
+        anchor="w",
+        cursor="hand2",
+    )
+    dialog._mesaj_son_lbl.pack(side="left", fill="x", expand=True, padx=(8, 0))
+    dialog._mesaj_son_lbl.bind("<Button-1>", lambda _e: _panel_daralt_ac(dialog))
 
     tk.Button(
         baslik,
@@ -130,10 +144,9 @@ def fatura_mesaj_paneli_kur(dialog) -> None:
     ).pack(side="right", padx=2)
 
     ic = tk.Frame(dis, bg=COLOR_BG)
-    ic.pack(fill="both", expand=True)
     dialog._mesaj_panel_ic = ic
 
-    canvas = tk.Canvas(ic, bg=COLOR_BG, highlightthickness=0, height=96)
+    canvas = tk.Canvas(ic, bg=COLOR_BG, highlightthickness=0, height=72)
     scroll = ttk.Scrollbar(ic, orient="vertical", command=canvas.yview)
     liste = tk.Frame(canvas, bg=COLOR_BG)
     liste.bind(
@@ -147,37 +160,52 @@ def fatura_mesaj_paneli_kur(dialog) -> None:
     dialog._mesaj_liste = liste
     dialog._mesaj_canvas = canvas
     dialog._mesaj_paneli_hazir = True
+    _baslik_guncelle(dialog)
 
     # Açık mesajları yükle (fatura id veya session)
     dialog.after(80, lambda: mesajlari_yeniden_yukle(dialog))
 
 
-def _panel_daralt_ac(dialog) -> None:
+def _panel_ac_kapa(dialog, acik: bool) -> None:
     ic = getattr(dialog, "_mesaj_panel_ic", None)
     if ic is None:
         return
-    acik = getattr(dialog, "_mesaj_paneli_acik", True)
-    if acik:
-        ic.pack_forget()
-        dialog._mesaj_paneli_acik = False
-    else:
-        ic.pack(fill="both", expand=True)
-        dialog._mesaj_paneli_acik = True
+    try:
+        if acik:
+            ic.pack(fill="both", expand=True)
+        else:
+            ic.pack_forget()
+    except tk.TclError:
+        return
+    dialog._mesaj_paneli_acik = acik
     _baslik_guncelle(dialog)
+
+
+def _panel_daralt_ac(dialog) -> None:
+    _panel_ac_kapa(dialog, not getattr(dialog, "_mesaj_paneli_acik", False))
+
+
+def _mesaj_sayisi(dialog) -> int:
+    return len(getattr(dialog, "_mesaj_paneli_satirlar", {}) or {}) + int(
+        getattr(dialog, "_mesaj_yerel_sayi", 0) or 0
+    )
 
 
 def _baslik_guncelle(dialog) -> None:
     lbl = getattr(dialog, "_mesaj_baslik_lbl", None)
     if lbl is None:
         return
-    n = len(getattr(dialog, "_mesaj_paneli_satirlar", {}) or {})
-    metin = f"  Mesajlar {n}" if n else "  Mesajlar"
-    if not getattr(dialog, "_mesaj_paneli_acik", True):
-        metin += " ▸"
-    else:
-        metin += " ▾"
+    n = _mesaj_sayisi(dialog)
+    metin = f"  Mesajlar ({n})" if n else "  Mesajlar"
+    metin += " ▾" if getattr(dialog, "_mesaj_paneli_acik", False) else " ▸"
+    son = getattr(dialog, "_mesaj_son_lbl", None)
     try:
-        lbl.configure(text=metin)
+        lbl.configure(text=metin, fg=COLOR_GOLD if n else "#E5E7EB")
+        if son is not None:
+            if n:
+                son.configure(text=(getattr(dialog, "_mesaj_son_metin", "") or "")[:160])
+            else:
+                son.configure(text="Açık mesaj yok")
     except tk.TclError:
         pass
 
@@ -195,6 +223,7 @@ def mesajlari_yeniden_yukle(dialog) -> None:
     except Exception:
         kayitlar = []
     dialog._mesaj_paneli_satirlar = {}
+    dialog._mesaj_yerel_sayi = 0
     liste = getattr(dialog, "_mesaj_liste", None)
     if liste is not None:
         for w in list(liste.winfo_children()):
@@ -204,7 +233,9 @@ def mesajlari_yeniden_yukle(dialog) -> None:
                 pass
     for k in kayitlar:
         _panel_satir_ekle(dialog, k, odak_koru=True)
-    _baslik_guncelle(dialog)
+    if kayitlar:
+        dialog._mesaj_son_metin = kayitlar[0].get("message_text") or ""
+    _panel_ac_kapa(dialog, _mesaj_sayisi(dialog) > 0)
 
 
 def panel_mesaj_ekle(dialog, kayit: dict[str, Any] | None, *, teknik_uyari: str | None = None) -> None:
@@ -221,9 +252,12 @@ def panel_mesaj_ekle(dialog, kayit: dict[str, Any] | None, *, teknik_uyari: str 
             _satir_guncelle(dialog, kayit)
         else:
             _panel_satir_ekle(dialog, kayit, odak_koru=True)
+        dialog._mesaj_son_metin = kayit.get("message_text") or ""
     elif teknik_uyari:
         _yerel_teknik(dialog, teknik_uyari)
-    _baslik_guncelle(dialog)
+        dialog._mesaj_son_metin = teknik_uyari
+    # Yeni mesaj ya da hata görünür olsun
+    _panel_ac_kapa(dialog, True)
     # Odak asla mesaj paneline kaçmasın
     try:
         from fatura_barkod_ui import _barkod_odak
@@ -239,6 +273,7 @@ def _yerel_teknik(dialog, metin: str) -> None:
         return
     fr = tk.Frame(liste, bg="#FEF3C7", padx=6, pady=4)
     fr.pack(fill="x", padx=4, pady=2, side="top")
+    dialog._mesaj_yerel_sayi = int(getattr(dialog, "_mesaj_yerel_sayi", 0) or 0) + 1
     tk.Label(
         fr,
         text=metin,
@@ -375,7 +410,10 @@ def _tek_kapat(dialog, mesaj_id: int) -> None:
             bilgi["frame"].destroy()
         except tk.TclError:
             pass
-    _baslik_guncelle(dialog)
+    if _mesaj_sayisi(dialog) == 0:
+        _panel_ac_kapa(dialog, False)
+    else:
+        _baslik_guncelle(dialog)
     try:
         from fatura_barkod_ui import _barkod_odak
 
@@ -388,6 +426,15 @@ def _tumunu_kapat(dialog) -> None:
     ids = list((getattr(dialog, "_mesaj_paneli_satirlar", None) or {}).keys())
     for mid in ids:
         _tek_kapat(dialog, mid)
+    liste = getattr(dialog, "_mesaj_liste", None)
+    if liste is not None:
+        for w in list(liste.winfo_children()):
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+    dialog._mesaj_yerel_sayi = 0
+    _panel_ac_kapa(dialog, False)
 
 
 def fatura_kaydinda_mesajlari_bagla(dialog, fatura) -> None:
