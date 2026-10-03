@@ -118,11 +118,14 @@ class IlkParolaKopyalamaTest(unittest.TestCase):
     def test_giris_ekraninda_parola_kopyalanir_ve_alana_yazilir(self):
         import auth_ui
 
-        with mock.patch.object(auth_ui, "test_kurulumu_ilk_parola", return_value=self.PAROLA):
+        with mock.patch.object(auth_ui, "ilk_kurulum_parolasi", return_value=self.PAROLA):
             dlg = auth_ui.GirisDialog(self.root)
         try:
+            self.assertEqual(dlg.sifre.get(), self.PAROLA)
+            self.assertEqual(dlg.kullanici.get(), "admin")
             self.assertEqual(dlg.ilk_parola_alani.get(), self.PAROLA)
             self.assertEqual(str(dlg.ilk_parola_alani.cget("state")), "readonly")
+            dlg.sifre.delete(0, "end")
             dlg._ilk_parolayi_kopyala()
             self.assertEqual(self.root.clipboard_get(), self.PAROLA)
             dlg._ilk_parolayi_yaz()
@@ -131,13 +134,14 @@ class IlkParolaKopyalamaTest(unittest.TestCase):
             dlg.grab_release()
             dlg.destroy()
 
-    def test_test_kurulumu_disinda_parola_alani_yok(self):
+    def test_ilk_parola_yokken_alan_yok_otomatik_doldurma_yok(self):
         import auth_ui
 
-        with mock.patch.object(auth_ui, "test_kurulumu_ilk_parola", return_value=""):
+        with mock.patch.object(auth_ui, "ilk_kurulum_parolasi", return_value=""):
             dlg = auth_ui.GirisDialog(self.root)
         try:
             self.assertFalse(hasattr(dlg, "ilk_parola_alani"))
+            self.assertEqual(dlg.sifre.get(), "")
         finally:
             dlg.grab_release()
             dlg.destroy()
@@ -152,6 +156,125 @@ class IlkParolaKopyalamaTest(unittest.TestCase):
         finally:
             dlg.grab_release()
             dlg.destroy()
+
+
+class IlkKurulumParolasiTest(unittest.TestCase):
+    """Gerçek ilk kurulum (sistem_baslat) parolası: göster/doldur yalnız zorunlu değişiklik sürerken."""
+
+    def setUp(self):
+        import auth_ui
+        from database.session_manager import oturum
+
+        self._tmp = tempfile.TemporaryDirectory()
+        d = Path(self._tmp.name)
+        self.dosya = d / "ILK_YONETICI_SIFRE.txt"
+        sistem_baslat(d / "system.db", d / "muhasebe.db", sifre_dosyasi=self.dosya)
+        self.engine = create_engine(f"sqlite:///{d / 'system.db'}")
+        Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+        @contextmanager
+        def get_system_session():
+            s = Session()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        self.oturum_ac = get_system_session
+        self._yamalar = [mock.patch.object(auth_ui, "get_system_session", get_system_session),
+                         mock.patch.object(db, "DB_DIR", d)]
+        for y in self._yamalar:
+            y.start()
+        self.parola = next(s.split(":", 1)[1].strip() for s in self.dosya.read_text(encoding="utf-8").splitlines()
+                           if s.startswith("Parola:"))
+        oturum.clear()
+
+    def tearDown(self):
+        from database.session_manager import oturum
+
+        for y in self._yamalar:
+            y.stop()
+        oturum.clear()
+        self.engine.dispose()
+        self._tmp.cleanup()
+
+    def _giris(self, parola):
+        from database.system.auth_service import AuthService
+
+        with self.oturum_ac() as s:
+            return AuthService.giris(s, "admin", parola).id
+
+    def test_ilk_giriste_parola_doner_ve_zorunlu_degisiklik_aktif(self):
+        import auth_ui
+        from database.session_manager import oturum
+
+        self.assertEqual(auth_ui.ilk_kurulum_parolasi(), self.parola)
+        self._giris(self.parola)
+        self.assertTrue(oturum.sifre_degistirmeli)
+        self.assertFalse(auth_ui.ilk_parola_dosyasini_temizle())
+        self.assertTrue(self.dosya.exists())
+
+    def test_degistirdikten_sonra_doldurma_yok_eski_parola_gecersiz_dosya_silinir(self):
+        import auth_ui
+        from database.system.auth_service import AuthService
+
+        uid = self._giris(self.parola)
+        with self.oturum_ac() as s:
+            AuthService.sifre_degistir(s, uid, self.parola, "Yeni-Parola-2026")
+        self.assertEqual(auth_ui.ilk_kurulum_parolasi(), "")
+        with self.assertRaises(ValueError):
+            self._giris(self.parola)
+        self.assertTrue(auth_ui.ilk_parola_dosyasini_temizle())
+        self.assertFalse(self.dosya.exists())
+        self._giris("Yeni-Parola-2026")
+
+    def test_yonetici_sifresi_sifirlaninca_eski_dosya_parolasi_gosterilmez(self):
+        import auth_ui
+        from database.system.models import User
+        from database.system.password import hash_parola
+
+        with self.oturum_ac() as s:
+            admin = s.scalar(select(User).where(User.kullanici_adi == "admin"))
+            admin.parola_hash = hash_parola("Sifirlanan-99")
+            admin.sifre_degistirmeli = True
+        self.assertEqual(auth_ui.ilk_kurulum_parolasi(), "")
+        self.assertFalse(auth_ui.ilk_parola_dosyasini_temizle())
+
+    def test_giris_ekrani_yalniz_ilk_kurulumda_otomatik_doldurur(self):
+        import tkinter as tk
+
+        import auth_ui
+        from database.system.auth_service import AuthService
+
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk yok: {exc}")
+        root.withdraw()
+        gorsel = mock.patch("branding.get_brand_image", return_value=None)
+        gorsel.start()
+        self.addCleanup(gorsel.stop)
+        try:
+            dlg = auth_ui.GirisDialog(root)
+            self.assertEqual(dlg.sifre.get(), self.parola)
+            self.assertEqual(dlg.ilk_parola_alani.get(), self.parola)
+            dlg.grab_release()
+            dlg.destroy()
+
+            uid = self._giris(self.parola)
+            with self.oturum_ac() as s:
+                AuthService.sifre_degistir(s, uid, self.parola, "Yeni-Parola-2026")
+            dlg = auth_ui.GirisDialog(root)
+            self.assertEqual(dlg.sifre.get(), "")
+            self.assertFalse(hasattr(dlg, "ilk_parola_alani"))
+            dlg.grab_release()
+            dlg.destroy()
+        finally:
+            root.destroy()
 
 
 class TestKurulumuBayraklariTest(unittest.TestCase):

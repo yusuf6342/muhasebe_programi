@@ -22,6 +22,7 @@ EKRAN_SATIS = "satis_faturasi_satirlari"
 EKRAN_SATIS_IADE = "satis_iade_faturasi_satirlari"
 EKRAN_ALIS = "alis_faturasi_satirlari"
 EKRAN_TALEP = "satin_alma_talep_satirlari"
+EKRAN_STOK_UYARI = "stok_uyari_ihtiyac_listesi"
 
 _SATIS_KOLONLARI: tuple[tuple[str, str, int, int, int, bool, bool], ...] = (
     ("sec", "☐", 36, 32, 48, True, True),
@@ -35,11 +36,11 @@ _SATIS_KOLONLARI: tuple[tuple[str, str, int, int, int, bool, bool], ...] = (
     ("para_birimi", "PB", 50, 40, 80, True, False),
     ("kur", "Kur", 70, 50, 120, True, False),
     ("iskonto", "İskonto %", 160, 100, 280, True, False),
-    ("iskonto_tutar", "İskonto Tutarı", 110, 90, 200, True, False),
+    ("iskonto_tutar", "İskonto Tutarı (TL)", 110, 90, 200, True, False),
     ("kdv", "KDV %", 80, 72, 120, True, False),
-    ("kdv_tutar", "KDV Tutarı", 90, 70, 180, True, False),
-    ("net_birim", "Net Birim Fiyat", 110, 90, 200, True, False),
-    ("toplam", "Net Tutar", 110, 90, 220, True, False),
+    ("kdv_tutar", "KDV Tutarı (TL)", 90, 70, 180, True, False),
+    ("net_birim", "Net Birim Fiyat (TL)", 120, 90, 200, True, False),
+    ("toplam", "Net Tutar (TL)", 110, 90, 220, True, False),
     ("aciklama", "Açıklama", 140, 120, 400, True, False),
 )
 
@@ -89,13 +90,60 @@ FATURA_SATIR_KOLON_TANIM: dict[str, tuple[tuple[str, str, int, int, int, bool, b
         ("kaynak", "Fiyat Kaynağı", 105, 70, 200, True, False),
         ("tutar", "Tahmini Tutar", 95, 70, 170, True, False),
     ),
+    EKRAN_STOK_UYARI: (
+        ("oncelik", "Öncelik", 150, 60, 260, True, False),
+        ("kod", "Stok Kodu", 95, 70, 200, True, False),
+        ("ad", "Ürün Adı", 220, 140, 500, True, True),
+        ("marka", "Marka", 90, 50, 200, False, False),
+        ("grup", "Grup", 110, 50, 260, False, False),
+        ("depo", "Depo", 100, 60, 200, True, False),
+        ("birim", "Temel Birim", 70, 45, 120, True, False),
+        ("fiziksel", "Fiziksel", 75, 55, 130, True, False),
+        ("rezerve", "Rezerve", 65, 50, 120, False, False),
+        ("satilabilir", "Satılabilir", 80, 55, 130, True, False),
+        ("beklenen", "Beklenen Alım", 90, 55, 140, True, False),
+        ("minimum", "Minimum", 70, 50, 120, True, False),
+        ("hedef", "Hedef", 70, 50, 120, True, False),
+        ("neden", "Neden", 120, 80, 240, True, False),
+        ("oneri", "Önerilen Alım", 130, 90, 240, True, False),
+        ("oneri_temel", "Öneri (temel)", 90, 60, 150, False, False),
+        ("durum", "Durum", 150, 90, 280, True, False),
+        ("takip", "Takip", 75, 50, 120, False, False),
+        ("tedarikci", "Tedarikçi", 160, 90, 320, True, False),
+        ("ted_kaynak", "Tedarikçi Kaynağı", 110, 70, 200, False, False),
+        ("son_alis_tarih", "Son Alış (tüm geçmiş)", 120, 70, 160, True, False),
+        ("son_alis_fiyat", "Son Alış Net Fiyat", 150, 70, 220, True, False),
+        ("son_alis_ted", "Son Alış Tedarikçisi", 150, 80, 300, False, False),
+        ("son_satis_tarih", "Son Satış (tüm geçmiş)", 120, 70, 160, True, False),
+        ("son_satis_fiyat", "Son Satış Net Fiyat", 150, 70, 220, False, False),
+        ("son_satis_musteri", "Son Satış Müşterisi", 150, 80, 300, False, False),
+        ("donem_son_alis", "Dönemdeki Son Alış", 120, 70, 160, False, False),
+        ("donem_son_satis", "Dönemdeki Son Satış", 120, 70, 160, False, False),
+        ("donem_alis", "Dönem Alış", 85, 55, 140, False, False),
+        ("donem_alis_iade", "Dönem Alış İade", 95, 55, 150, False, False),
+        ("donem_satis", "Dönem Satış", 85, 55, 140, True, False),
+        ("donem_satis_iade", "Dönem Satış İade", 100, 55, 150, False, False),
+        ("donem_net_satis", "Dönem Net Satış", 100, 55, 150, False, False),
+        ("musteri_talebi", "Bekleyen Müşteri Sip.", 110, 60, 160, True, False),
+        ("diger_depo", "Diğer Depolar", 90, 55, 140, True, False),
+        ("tahmini_fiyat", "Tahmini B.Fiyat", 100, 70, 170, False, False),
+        ("tahmini_bedel", "Tahmini Bedel", 110, 70, 180, True, False),
+        ("pb", "Döviz", 50, 40, 80, True, False),
+        ("ilk_olusma", "İlk Oluşma", 120, 80, 170, False, False),
+        ("son_degerlendirme", "Son Değerlendirme", 120, 80, 170, False, False),
+        ("ayar_kaynak", "Ayar Kaynağı", 140, 80, 280, False, False),
+    ),
 }
 
 _SAG_HIZA = frozenset(
     {"fiyat", "toplam", "miktar", "iskonto_tutar", "kdv_tutar", "kur", "net_birim",
-     "stok", "diger", "bekleyen", "tutar", "siparis", "teslim", "iade", "iptal", "kalan"}
+     "stok", "diger", "bekleyen", "tutar", "siparis", "teslim", "iade", "iptal", "kalan",
+     "fiziksel", "rezerve", "satilabilir", "beklenen", "minimum", "hedef", "oneri_temel",
+     "son_alis_fiyat", "son_satis_fiyat", "donem_alis", "donem_alis_iade", "donem_satis", "donem_satis_iade",
+     "donem_net_satis", "musteri_talebi", "diger_depo", "tahmini_fiyat", "tahmini_bedel"}
 )
-_ORTA_HIZA = frozenset({"sec", "sira", "birim", "para_birimi", "kdv", "pb", "termin", "ihtiyac"})
+_ORTA_HIZA = frozenset({"sec", "sira", "birim", "para_birimi", "kdv", "pb", "termin", "ihtiyac",
+                        "son_alis_tarih", "son_satis_tarih", "donem_son_alis", "donem_son_satis"})
 
 
 def _ayar_kimlik() -> tuple[str, str]:

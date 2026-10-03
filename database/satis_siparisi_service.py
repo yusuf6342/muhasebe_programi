@@ -553,7 +553,17 @@ class SatisSiparisiService:
         elif kur <= 0:
             raise ValueError(f"{para_birimi} siparişte kur sıfırdan büyük olmalıdır.")
         with get_session() as session:
+            from database.stok_service import StokService
+
             yeni = False
+            eski = session.get(SatisSiparisi, siparis_id) if siparis_id else None
+            taslak_kalir = not veriler.get("onayla") and (eski is None or (eski.durum or "") == "TASLAK")
+            birim_sorunu = StokService.belge_birim_sorunu(
+                session, satir_verileri, "Satış siparişi",
+                mevcut=list(eski.satirlar) if eski is not None and (eski.durum or "") != "TASLAK" else None,
+                eylem="onaylanamaz" if taslak_kalir else "kaydedilemedi")
+            if birim_sorunu is not None and not taslak_kalir:
+                raise birim_sorunu
             if siparis_id:
                 siparis = session.get(SatisSiparisi, siparis_id)
                 if siparis is None:
@@ -667,7 +677,9 @@ class SatisSiparisiService:
                 kayit_id=str(sid),
                 belge_no=sno,
             )
-        return SatisSiparisiService.getir(sid) or siparis
+        sonuc = SatisSiparisiService.getir(sid) or siparis
+        sonuc.birim_uyarisi = str(birim_sorunu) if birim_sorunu is not None else None
+        return sonuc
 
     @staticmethod
     def iptal_et(siparis_id: int, sebep: str | None = None) -> None:
@@ -820,6 +832,12 @@ class SatisSiparisiService:
                 return
             if not siparis.satirlar:
                 raise ValueError("Satırı olmayan sipariş onaylanamaz.")
+            from database.stok_service import StokService
+
+            birim_sorunu = StokService.belge_birim_sorunu(session, list(siparis.satirlar), "Satış siparişi",
+                                                          eylem="onaylanamaz")
+            if birim_sorunu is not None:
+                raise birim_sorunu
             siparis.durum = "AÇIK"
             stamp_approve(siparis)
             sno = siparis.siparis_no

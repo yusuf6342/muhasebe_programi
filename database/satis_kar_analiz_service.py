@@ -396,7 +396,19 @@ class SatisKarAnalizService:
             maliyet_uzeri = None
             durum = "maliyeti_belirsiz"
         else:
-            toplam_maliyet = _q2(abs(_d(satir.miktar)) * birim_maliyet * isaret)
+            # Birim maliyet temel birim başına; belge birimi katsayısıyla temel miktara çevrilir
+            carpan = getattr(satir, "birim_carpani", None)
+            if carpan in (None, "") or _d(carpan) <= 0:
+                from database.stok_service import StokService
+
+                carpan = (
+                    StokService.birim_carpani(
+                        stok, getattr(satir, "birim", None), getattr(stok, "birim", None) or "Adet"
+                    )
+                    if stok is not None
+                    else Decimal("1")
+                )
+            toplam_maliyet = _q2(abs(_d(satir.miktar)) * _d(carpan) * birim_maliyet * isaret)
             brut_kar = _q2(net - toplam_maliyet)
             kar_marji = _oran(brut_kar, net) if net != 0 else None
             maliyet_uzeri = _oran(brut_kar, toplam_maliyet) if toplam_maliyet != 0 else None

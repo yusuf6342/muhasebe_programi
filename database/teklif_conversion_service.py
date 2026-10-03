@@ -101,6 +101,13 @@ class QuoteConversionService:
             )
         if not satirlar:
             raise ValueError("Siparişe aktarılacak satır yok.")
+        from database.stok_service import StokService
+
+        with get_session() as session:
+            birim_sorunu = StokService.belge_birim_sorunu(session, satirlar, "Satış teklifi",
+                                                          eylem="siparişe aktarılamaz")
+        if birim_sorunu is not None:
+            raise birim_sorunu
 
         manuel_var = any(x.get("is_manual_item") for x in satirlar)
         if manuel_var:

@@ -57,6 +57,8 @@ class SatisIadeFaturasiSatiri(Base):
     onceki_alis_fiyati: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     onceki_fatura_no: Mapped[str | None] = mapped_column(String(30), nullable=True)
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # Belge birimi → temel birim katsayısı (kayıt anında; kart sonradan değişse de eski belge değişmez)
+    birim_carpani: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     lot_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     # Kayıtlı satış bulunamadan devam kararı (satır kaynaksız olduğu açıkça işaretlenir)

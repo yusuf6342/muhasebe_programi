@@ -44,6 +44,16 @@ TEKLIF_DURUMLARI = (
     "İPTAL",
 )
 
+# Tanımsız birimli satır bu durumlara geçemez; diğer durumlarda uyarıyla kaydedilir.
+BIRIM_KONTROLLU_DURUMLAR = frozenset({
+    "İÇ ONAYLI",
+    "MÜŞTERİYE GÖNDERİLDİ",
+    "GÖRÜŞÜLÜYOR",
+    "KABUL EDİLDİ",
+    "KISMEN KABUL",
+    "SİPARİŞE DÖNÜŞTÜ",
+})
+
 RED_NEDENLERI = (
     "Fiyat",
     "Termin",
@@ -463,7 +473,18 @@ class QuoteService:
 
         QuoteService.schema_hazirla()
         with get_session() as session:
+            from database.stok_service import StokService
+
             yeni = False
+            eski = session.get(SatisTeklifi, int(teklif_id)) if teklif_id else None
+            hedef_durum = veriler.get("durum") or (eski.durum if eski is not None else "TASLAK")
+            taslak_kalir = hedef_durum not in BIRIM_KONTROLLU_DURUMLAR
+            birim_sorunu = StokService.belge_birim_sorunu(
+                session, satir_verileri, "Satış teklifi",
+                mevcut=list(eski.satirlar) if eski is not None and eski.durum in BIRIM_KONTROLLU_DURUMLAR else None,
+                eylem="onaylanamaz" if taslak_kalir else "kaydedilemedi")
+            if birim_sorunu is not None and not taslak_kalir:
+                raise birim_sorunu
             if teklif_id:
                 teklif = session.get(SatisTeklifi, int(teklif_id))
                 if not teklif:
@@ -609,7 +630,10 @@ class QuoteService:
             kayit_id=str(tid),
             belge_no=tno,
         )
-        return QuoteService.getir(tid)
+        sonuc = QuoteService.getir(tid)
+        if sonuc is not None:
+            sonuc.birim_uyarisi = str(birim_sorunu) if birim_sorunu is not None else None
+        return sonuc
 
     @staticmethod
     def _durum_gecis_kontrol(eski: str, yeni: str) -> None:
@@ -635,6 +659,13 @@ class QuoteService:
             if not teklif:
                 raise ValueError("Teklif bulunamadı.")
             QuoteService._durum_gecis_kontrol(teklif.durum, yeni_durum)
+            if yeni_durum in BIRIM_KONTROLLU_DURUMLAR and teklif.durum not in BIRIM_KONTROLLU_DURUMLAR:
+                from database.stok_service import StokService
+
+                birim_sorunu = StokService.belge_birim_sorunu(
+                    session, list(teklif.satirlar), "Satış teklifi", eylem=f"'{yeni_durum}' durumuna alınamaz")
+                if birim_sorunu is not None:
+                    raise birim_sorunu
             eski = teklif.durum
             teklif.durum = yeni_durum
             if yeni_durum == "İÇ ONAYLI":

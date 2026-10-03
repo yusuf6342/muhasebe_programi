@@ -307,7 +307,7 @@ def kasadan_bankaya_yatirilan_sayfasi_goster(app):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "kasa", "banka", "tutar", "aciklama"),
+        columns=("tarih", "belge", "kasa", "banka", "tutar", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -317,6 +317,7 @@ def kasadan_bankaya_yatirilan_sayfasi_goster(app):
         ("kasa", "Kasa", 150),
         ("banka", "Banka hesabı", 220),
         ("tutar", "Tutar", 110),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 260),
     ):
         tablo.heading(k, text=b)
@@ -327,7 +328,9 @@ def kasadan_bankaya_yatirilan_sayfasi_goster(app):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _kby_guncelle_fis(app, tablo))
 
-    for kayit in FinansService.kasadan_bankaya_yatan_listele():
+    kayitlar = FinansService.kasadan_bankaya_yatan_listele()
+    muhasebe = _muhasebe_durumlari("kasa_banka_virman", kayitlar)
+    for kayit in kayitlar:
         tablo.insert(
             "",
             "end",
@@ -338,9 +341,17 @@ def kasadan_bankaya_yatirilan_sayfasi_goster(app):
                 kayit["kasa"],
                 kayit["banka_hesap"],
                 _para(kayit["tutar"]),
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
+
+
+def _muhasebe_durumlari(evrak: str, kayitlar) -> dict[str, str]:
+    """Liste satırları (belge_no anahtarlı) için muhasebe durumları; tek toplu sorgu."""
+    from muhasebe_durum_ui import toplu_durum_belge
+
+    return toplu_durum_belge(evrak, [k.get("belge_no") for k in kayitlar])
 
 
 def _kby_yeni_fis(app):
@@ -369,6 +380,37 @@ def _combobox_id_sec(cb, id_map: dict, hedef_id):
             cb.set(etiket)
             return True
     return False
+
+
+def _muhasebe_fisi_belge_no(parent, evrak: str, belge_no: str | None):
+    try:
+        from muhasebe_durum_ui import belge_no_kaynagi, fisi_ac
+
+        kaynak_id = belge_no_kaynagi(evrak, belge_no)
+    except Exception as hata:
+        messagebox.showerror("Muhasebe fişi", str(hata), parent=parent)
+        return
+    if not kaynak_id:
+        messagebox.showinfo("Muhasebe fişi", f"{belge_no or 'Belge'} için muhasebe kaydı bulunamadı.", parent=parent)
+        return
+    fisi_ac(parent, evrak, kaynak_id)
+
+
+def _muhasebe_dugmesi_ekle(pencere, butonlar, evrak: str, belge_no: str | None):
+    """Kayıtlı fişte başlığa muhasebe durumunu ekler ve 'Muhasebe Fişi' düğmesi koyar."""
+    if not belge_no:
+        return
+    ttk.Button(
+        butonlar, text="Muhasebe Fişi", command=lambda: _muhasebe_fisi_belge_no(pencere, evrak, belge_no)
+    ).pack(side="right", padx=(8, 0))
+    try:
+        from muhasebe_durum_ui import baslik_guncelle, belge_no_kaynagi
+
+        kaynak_id = belge_no_kaynagi(evrak, belge_no)
+        if kaynak_id:
+            baslik_guncelle(pencere, pencere.title(), evrak, kaynak_id)
+    except Exception:
+        pass
 
 
 class KasadanBankayaYatirDialog(tk.Toplevel):
@@ -503,6 +545,7 @@ class KasadanBankayaYatirDialog(tk.Toplevel):
             text="Güncelle" if self.belge_no else "Kaydet",
             command=self.kaydet,
         ).pack(side="right")
+        _muhasebe_dugmesi_ekle(self, butonlar, "kasa_banka_virman", self.belge_no)
 
         self._hesaplari_doldur()
         self._kasa_bilgi()
@@ -667,7 +710,7 @@ def bankadan_cekilen_sayfasi_goster(app):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "banka", "kasa", "tutar", "aciklama"),
+        columns=("tarih", "belge", "banka", "kasa", "tutar", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -677,6 +720,7 @@ def bankadan_cekilen_sayfasi_goster(app):
         ("banka", "Banka hesabı", 220),
         ("kasa", "Kasa", 150),
         ("tutar", "Tutar", 110),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 260),
     ):
         tablo.heading(k, text=b)
@@ -687,7 +731,9 @@ def bankadan_cekilen_sayfasi_goster(app):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _bnc_guncelle_fis(app, tablo))
 
-    for kayit in FinansService.bankadan_nakit_cekilen_listele():
+    kayitlar = FinansService.bankadan_nakit_cekilen_listele()
+    muhasebe = _muhasebe_durumlari("kasa_banka_virman", kayitlar)
+    for kayit in kayitlar:
         tablo.insert(
             "",
             "end",
@@ -698,6 +744,7 @@ def bankadan_cekilen_sayfasi_goster(app):
                 kayit["banka_hesap"],
                 kayit["kasa"],
                 _para(kayit["tutar"]),
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
@@ -842,6 +889,7 @@ class BankadanCekilenDialog(tk.Toplevel):
             text="Güncelle" if self.belge_no else "Kaydet",
             command=self.kaydet,
         ).pack(side="right")
+        _muhasebe_dugmesi_ekle(self, butonlar, "kasa_banka_virman", self.belge_no)
 
         self._hesaplari_doldur()
         self._kasa_bilgi()
@@ -1024,7 +1072,7 @@ def _havale_sayfasi_goster(app, baslik, aciklama, tur, liste_fn, cari_kolon):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "cari", "banka", "tutar", "aciklama"),
+        columns=("tarih", "belge", "cari", "banka", "tutar", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -1034,6 +1082,7 @@ def _havale_sayfasi_goster(app, baslik, aciklama, tur, liste_fn, cari_kolon):
         ("cari", cari_kolon, 220),
         ("banka", "Banka hesabı", 200),
         ("tutar", "Tutar", 110),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 240),
     ):
         tablo.heading(k, text=b)
@@ -1044,7 +1093,9 @@ def _havale_sayfasi_goster(app, baslik, aciklama, tur, liste_fn, cari_kolon):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _guncelle())
 
-    for kayit in liste_fn():
+    kayitlar = liste_fn()
+    muhasebe = _muhasebe_durumlari("banka_havale", kayitlar)
+    for kayit in kayitlar:
         tablo.insert(
             "",
             "end",
@@ -1055,6 +1106,7 @@ def _havale_sayfasi_goster(app, baslik, aciklama, tur, liste_fn, cari_kolon):
                 kayit["cari"],
                 kayit["banka_hesap"],
                 _para(kayit["tutar"]),
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
@@ -1178,6 +1230,7 @@ class HavaleFisDialog(tk.Toplevel):
             text="Güncelle" if self.belge_no else "Kaydet",
             command=self.kaydet,
         ).pack(side="right")
+        _muhasebe_dugmesi_ekle(self, butonlar, "banka_havale", self.belge_no)
 
         self._hesaplari_doldur()
         self._mevcutu_yukle()
@@ -1340,7 +1393,7 @@ def bankalar_arasi_virman_sayfasi_goster(app):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "tur", "cikis", "giris", "tutar", "aciklama"),
+        columns=("tarih", "belge", "tur", "cikis", "giris", "tutar", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -1351,6 +1404,7 @@ def bankalar_arasi_virman_sayfasi_goster(app):
         ("cikis", "Çıkış hesabı", 200),
         ("giris", "Giriş hesabı", 200),
         ("tutar", "Tutar", 100),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 220),
     ):
         tablo.heading(k, text=b)
@@ -1361,7 +1415,9 @@ def bankalar_arasi_virman_sayfasi_goster(app):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _guncelle())
 
-    for kayit in FinansService.bankalar_arasi_virman_listele():
+    kayitlar = FinansService.bankalar_arasi_virman_listele()
+    muhasebe = _muhasebe_durumlari("kasa_banka_virman", kayitlar)
+    for kayit in kayitlar:
         tablo.insert(
             "",
             "end",
@@ -1373,6 +1429,7 @@ def bankalar_arasi_virman_sayfasi_goster(app):
                 kayit["cikis_hesap"],
                 kayit["giris_hesap"],
                 _para(kayit["tutar"]),
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
@@ -1502,6 +1559,7 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
             text="Güncelle" if self.belge_no else "Kaydet",
             command=self.kaydet,
         ).pack(side="right")
+        _muhasebe_dugmesi_ekle(self, butonlar, "kasa_banka_virman", self.belge_no)
 
         self._bankalari_doldur()
         self._mevcutu_yukle()
@@ -1707,7 +1765,7 @@ def kredi_karti_odeme_sayfasi_goster(app):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "cari", "banka", "kart", "cekim", "tutar", "aciklama"),
+        columns=("tarih", "belge", "cari", "banka", "kart", "cekim", "tutar", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -1719,6 +1777,7 @@ def kredi_karti_odeme_sayfasi_goster(app):
         ("kart", "Kart", 130),
         ("cekim", "Çekim", 100),
         ("tutar", "Tutar", 100),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 180),
     ):
         tablo.heading(k, text=b)
@@ -1729,7 +1788,9 @@ def kredi_karti_odeme_sayfasi_goster(app):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _guncelle())
 
-    for kayit in FinansService.kredi_karti_odemeleri():
+    kayitlar = FinansService.kredi_karti_odemeleri()
+    muhasebe = _muhasebe_durumlari("kart_odeme", kayitlar)
+    for kayit in kayitlar:
         cekim = kayit["cekim_turu"]
         if kayit["taksit_sayisi"] > 1:
             cekim = f"{cekim} ({kayit['taksit_sayisi']})"
@@ -1745,6 +1806,7 @@ def kredi_karti_odeme_sayfasi_goster(app):
                 kayit["kart"],
                 cekim,
                 _para(kayit["tutar"]),
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
@@ -2123,7 +2185,8 @@ def kredi_karti_pos_tahsilat_sayfasi_goster(app):
     cerceve.pack(fill="both", expand=True)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("tarih", "belge", "cari", "banka", "cekim", "brut", "komisyon", "net", "durum", "aciklama"),
+        columns=("tarih", "belge", "cari", "banka", "cekim", "brut", "komisyon", "net", "durum", "muhasebe",
+                 "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -2137,6 +2200,7 @@ def kredi_karti_pos_tahsilat_sayfasi_goster(app):
         ("komisyon", "Komisyon", 90),
         ("net", "Net", 95),
         ("durum", "Durum", 80),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 160),
     ):
         tablo.heading(k, text=b)
@@ -2147,7 +2211,9 @@ def kredi_karti_pos_tahsilat_sayfasi_goster(app):
     kaydir.pack(side="right", fill="y")
     tablo.bind("<Double-1>", lambda _e: _guncelle())
 
-    for kayit in FinansService.pos_tahsilat_listele():
+    kayitlar = FinansService.pos_tahsilat_listele()
+    muhasebe = _muhasebe_durumlari("pos_tahsilat", kayitlar)
+    for kayit in kayitlar:
         tablo.insert(
             "",
             "end",
@@ -2162,6 +2228,7 @@ def kredi_karti_pos_tahsilat_sayfasi_goster(app):
                 _para(kayit["komisyon"]),
                 _para(kayit["net"]),
                 kayit["durum"],
+                muhasebe.get(kayit["belge_no"], ""),
                 kayit["aciklama"],
             ),
         )
@@ -2604,8 +2671,12 @@ class HesapDialog(tk.Toplevel):
         else:
             self.girdiler["acilis_bakiyesi"].insert(0, "0")
 
+        from finans_muhasebe_hesap_ui import KasaMuhasebeHesabiAlani
+
+        self.muhasebe_alani = KasaMuhasebeHesabiAlani(self, len(alanlar), hesap)
+
         butonlar = ttk.Frame(self)
-        butonlar.grid(row=len(alanlar), column=0, columnspan=2, padx=12, pady=12, sticky="e")
+        butonlar.grid(row=len(alanlar) + 2, column=0, columnspan=2, padx=12, pady=12, sticky="e")
         ttk.Button(butonlar, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(butonlar, text="Kaydet", command=self.kaydet).pack(side="right")
 
@@ -2618,6 +2689,12 @@ class HesapDialog(tk.Toplevel):
             self.result = FinansService.hesap_kaydet(veri)
         except ValueError as hata:
             messagebox.showerror("Kayıt", str(hata), parent=self)
+            return
+        try:
+            self.muhasebe_alani.kaydet(self.result.id)
+        except Exception as hata:
+            messagebox.showerror("Muhasebe Hesabı", f"Kasa kaydedildi, muhasebe hesabı kaydedilemedi:\n{hata}",
+                                 parent=self)
             return
         self.destroy()
 
@@ -5216,10 +5293,22 @@ class BankaAnaKartDialog(tk.Toplevel):
                 width=28,
                 command=lambda k=kod, e=etiket: self._islem_ac(k, e),
             ).grid(row=i // 3, column=i % 3, padx=6, pady=6, sticky="ew")
+        n = len(BANKA_ALT_HESAP_TURLERI)
+        ttk.Button(islem, text="Muhasebe Hesapları", width=28, command=self._muhasebe_hesaplari).grid(
+            row=n // 3, column=n % 3, padx=6, pady=6, sticky="ew")
         for c in range(3):
             islem.columnconfigure(c, weight=1)
 
         self.bakiyeleri_yenile()
+
+    def _muhasebe_hesaplari(self):
+        if not self.kart:
+            messagebox.showinfo("Kayıt", "Muhasebe hesapları için önce banka kartını kaydedin.", parent=self)
+            return
+        from finans_muhasebe_hesap_ui import KartMuhasebeHesaplariDialog
+
+        KartMuhasebeHesaplariDialog(self, banka_karti_id=int(self.kart.id),
+                                    baslik=f"Muhasebe Hesapları — {self.kart.banka_adi}")
 
     def _banka_adi_listesini_yenile(self):
         degerler = FinansService.banka_adi_listesi()

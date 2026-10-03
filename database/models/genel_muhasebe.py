@@ -11,6 +11,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -71,6 +72,21 @@ ESLEME_ANAHTARLARI = (
     ("kredi_ara_hesap", "Kredi ara hesabı"),
     ("kur_farki_geliri", "Kur farkı gelirleri"),
     ("kur_farki_gideri", "Kur farkı giderleri"),
+    ("alis_iade_maliyet_farki_olumlu", "Alış iadesi olumlu maliyet farkı (iade bedeli > FIFO stok maliyeti)"),
+    ("alis_iade_maliyet_farki_olumsuz", "Alış iadesi olumsuz maliyet farkı (iade bedeli < FIFO stok maliyeti)"),
+    # Finans işlem ayarları (Ayarlar → Muhasebeleştirme Ayarları → Finans İşlem Ayarları)
+    ("kmh_hesabi", "KMH (kredili mevduat) hesabı"),
+    ("pos_valor_alacagi", "POS valör alacağı (bankadan alınacak kart tahsilatı)"),
+    ("pos_komisyon_gideri", "POS komisyon gideri"),
+    ("sirket_kart_borcu", "Şirket kredi kartı borcu"),
+    ("cek_portfoy", "Alınan çekler — portföyde"),
+    ("cek_tahsilde", "Alınan çekler — tahsile verilen"),
+    ("cek_teminatta", "Alınan çekler — teminata verilen"),
+    ("senet_portfoy", "Alacak senetleri — portföyde"),
+    ("senet_tahsilde", "Alacak senetleri — tahsile verilen"),
+    ("senet_teminatta", "Alacak senetleri — teminata verilen"),
+    ("verilen_cekler", "Verilen çekler ve ödeme emirleri"),
+    ("borc_senetleri", "Borç senetleri"),
 )
 
 
@@ -197,6 +213,117 @@ class MuhasebeHesapEsleme(Base):
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+YONTEM_OTOMATIK = "otomatik"
+YONTEM_SONRADAN = "sonradan"
+YONTEM_VARSAYILAN = "varsayilan"
+FIRMA_GENELI = "*"
+
+BELGE_BEKLIYOR = "Bekliyor"
+BELGE_MUHASEBELESTIRILDI = "Muhasebeleştirildi"
+BELGE_HATALI = "Hatalı"
+BELGE_INCELEME = "İnceleme gerekiyor"
+BELGE_IPTAL = "İptal edildi"
+BELGE_MUHASEBE_DISI = "Muhasebe dışı"
+BELGE_DURUMLARI = (
+    BELGE_BEKLIYOR,
+    BELGE_HATALI,
+    BELGE_INCELEME,
+    BELGE_MUHASEBELESTIRILDI,
+    BELGE_IPTAL,
+    BELGE_MUHASEBE_DISI,
+)
+# Sonradan muhasebeleştirilebilecek durumlar
+BELGE_ISLENEBILIR = (BELGE_BEKLIYOR, BELGE_HATALI, BELGE_INCELEME)
+
+
+class MuhasebelestirmeAyari(Base):
+    """Firma ve evrak türü bazında muhasebeleştirme yöntemi.
+
+    ``evrak_turu == "*"`` satırı firma geneli: genel muhasebe kullanımı ve varsayılan yöntem.
+    Diğer satırlar evrak türüne özel yöntem (``varsayilan`` = firma genelini kullan).
+    """
+
+    __tablename__ = "muhasebe_muhasebelestirme_ayarlari"
+    __table_args__ = (
+        UniqueConstraint("firma_id", "evrak_turu", name="uq_mhl_ayar_evrak"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    firma_id: Mapped[int] = mapped_column(ForeignKey("firmalar.id"), nullable=False, index=True)
+    evrak_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    gm_kullan: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    yontem: Mapped[str] = mapped_column(String(20), nullable=False)
+    kaynak: Mapped[str] = mapped_column(String(20), default="kullanici", nullable=False)
+    aciklama: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    guncelleyen_kullanici_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guncelleyen_kullanici_adi: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    guncelleme_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+
+
+class MuhasebeFinansAyari(Base):
+    """Firma bazlı finans işlem muhasebe seçenekleri (çek/senet aşamaları, banka kredisi fiş zamanı vb.).
+
+    Hesaplar ``MuhasebeHesapEsleme``'de tutulur; burada yalnız seçenek değerleri vardır. Satır yoksa
+    seçenek tanımsızdır ve ilgili evrak "İnceleme gerekiyor" kalır (varsayılan tahmin edilmez).
+    """
+
+    __tablename__ = "muhasebe_finans_ayarlari"
+    __table_args__ = (UniqueConstraint("firma_id", "anahtar", name="uq_mh_finans_ayar"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    firma_id: Mapped[int] = mapped_column(ForeignKey("firmalar.id"), nullable=False, index=True)
+    anahtar: Mapped[str] = mapped_column(String(60), nullable=False)
+    deger: Mapped[str] = mapped_column(String(60), nullable=False)
+    guncelleyen_kullanici_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guncelleyen_kullanici_adi: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    guncelleme_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+
+
+class MuhasebeBelgeDurumu(Base):
+    """Kaynak evrakın muhasebeleştirme kimliği ve durumu (firma + evrak türü + kalıcı evrak id).
+
+    Evrak numarası/açıklama yalnız görüntüleme içindir; eşleştirme için kullanılmaz.
+    """
+
+    __tablename__ = "muhasebe_belge_durumlari"
+    __table_args__ = (
+        UniqueConstraint("firma_id", "evrak_turu", "kaynak_id", name="uq_mhl_belge"),
+        Index("ix_mhl_belge_durum_tarih", "firma_id", "durum", "belge_tarihi"),
+        Index("ix_mhl_belge_fis", "fis_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    firma_id: Mapped[int] = mapped_column(ForeignKey("firmalar.id"), nullable=False)
+    evrak_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    kaynak_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    durum: Mapped[str] = mapped_column(String(30), nullable=False)
+    fis_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("muhasebe_fisleri.id"), nullable=True
+    )
+    belge_no: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    belge_tarihi: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    cari_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cari_adi: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"), nullable=False)
+    para_birimi: Mapped[str] = mapped_column(String(10), default="TRY", nullable=False)
+    aciklama: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    yontem: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    deneme_sayisi: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    guncelleme_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    guncelleyen_kullanici_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guncelleyen_kullanici_adi: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+
+
 class MuhasebeIslemGecmisi(Base):
     __tablename__ = "muhasebe_islem_gecmisi"
 
@@ -209,3 +336,48 @@ class MuhasebeIslemGecmisi(Base):
     kullanici_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     kullanici_adi: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     tarih: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+KUR_FARKI_HESAPLANDI = "HESAPLANDI"
+KUR_FARKI_INCELEME = "INCELEME"
+KUR_FARKI_IPTAL = "IPTAL"
+
+
+class KurFarkiKaydi(Base):
+    """Dövizli borç/alacak kapatmasında gerçekleşen kur farkı (kaynak belge + kapatma bağlantısıyla).
+
+    Bir kapatma (``kapatma_turu`` + ``kapatma_id``) için en çok bir etkin (iptal olmayan) kayıt bulunur;
+    iptal edilen kayıt silinmez. ``kur_farki`` işaretlidir: + kur farkı geliri, − kur farkı gideri.
+    Kur veya kaynak bilgisi eksikse durum ``INCELEME`` olur ve fark hesaplanmaz (tahmin edilmez).
+    """
+
+    __tablename__ = "muhasebe_kur_farki_kayitlari"
+    __table_args__ = (
+        Index("ix_mh_kf_kapatma", "kapatma_turu", "kapatma_id", "durum"),
+        Index("ix_mh_kf_kaynak", "kaynak_evrak", "kaynak_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    firma_id: Mapped[int] = mapped_column(ForeignKey("firmalar.id"), nullable=False, index=True)
+    yon: Mapped[str] = mapped_column(String(10), nullable=False)  # SATIS (alacak) | ALIS (borç)
+    cari_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    kaynak_evrak: Mapped[str] = mapped_column(String(40), nullable=False)
+    kaynak_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    kaynak_belge_no: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    kapatma_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    kapatma_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    kapatma_belge_no: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    tarih: Mapped[date] = mapped_column(Date, nullable=False)
+    para_birimi: Mapped[str] = mapped_column(String(10), nullable=False)
+    doviz_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"), nullable=False)
+    kaynak_kur: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
+    odeme_kuru: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
+    kaynak_tl: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"), nullable=False)
+    odeme_tl: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"), nullable=False)
+    kur_farki: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"), nullable=False)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default=KUR_FARKI_HESAPLANDI)
+    aciklama: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    olusturma: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    olusturan: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    iptal_zamani: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    iptal_nedeni: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)

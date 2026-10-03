@@ -157,6 +157,9 @@ class CompanyMgmtService:
                     )
             StokService.varsayilanlari_hazirla()
             FinansService.varsayilanlari_hazirla()
+            from database.muhasebelestirme_service import MuhasebelestirmeService
+
+            MuhasebelestirmeService.schema_hazirla(yeni_firma=True)
         finally:
             if onceki_id is not None and onceki_yol is not None:
                 firma_db_ac(onceki_id, onceki_yol)

@@ -17,7 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from database.database import Base, _aktif_engine_bagla, company_db, get_session
@@ -129,6 +129,11 @@ class MasrafDagitimTest(unittest.TestCase):
         from database.masraf_dagitim_service import MasrafDagitimService
 
         MasrafDagitimService._hazir_motor = None
+        # Masraf dağıtımı onayı hesap eşleştirmesi olmadan yapılamaz
+        MasrafDagitimTest._gm_kur(self)
+        from database.muhasebelestirme_service import MuhasebelestirmeService
+
+        MuhasebelestirmeService.schema_hazirla()  # uygulama açılışındaki gibi (yedekli) ilk geçiş
 
     def tearDown(self):
         self._sp_patch.stop()
@@ -201,14 +206,29 @@ class MasrafDagitimTest(unittest.TestCase):
             "ticari_mallar": ("153.01.0001", "Ticari Mallar", "Aktif"),
             "satilan_mal_maliyeti": ("621.01.0001", "SMM", "Gider"),
             "giderler": ("770.01.0001", "Genel Yönetim Giderleri", "Gider"),
+            # Kaynak belgenin kendi gider kaydı (hizmet faturası / gider fişi) için
+            "tedarikciler": ("320.01.0001", "Satıcılar", "Pasif"),
+            "indirilecek_kdv": ("191.01.0001", "İndirilecek KDV", "Aktif"),
+            "kasa": ("100.01.0001", "Kasa", "Aktif"),
+            "banka": ("102.01.0001", "Bankalar", "Aktif"),
+            # Satış faturası fişi için (iptal testleri)
+            "musteriler": ("120.01.0001", "Alıcılar", "Aktif"),
+            "yurtici_satislar": ("600.01.0001", "Yurtiçi Satışlar", "Gelir"),
+            "hesaplanan_kdv": ("391.01.0001", "Hesaplanan KDV", "Pasif"),
         }
         with get_session() as s:
             for anahtar, (kod, ad, tur) in hesaplar.items():
-                h = HesapPlani(firma_id=self.firma_id, hesap_kodu=kod, hesap_adi=ad, hesap_seviyesi=3,
-                               hesap_turu=tur, borc_toplam=0, alacak_toplam=0, aktif=True)
-                s.add(h)
-                s.flush()
-                if anahtar not in eksik:
+                h = s.scalar(select(HesapPlani).where(HesapPlani.hesap_kodu == kod))
+                if h is None:
+                    h = HesapPlani(firma_id=self.firma_id, hesap_kodu=kod, hesap_adi=ad, hesap_seviyesi=3,
+                                   hesap_turu=tur, borc_toplam=0, alacak_toplam=0, aktif=True)
+                    s.add(h)
+                    s.flush()
+                e = s.scalar(select(MuhasebeHesapEsleme).where(MuhasebeHesapEsleme.anahtar == anahtar))
+                if anahtar in eksik:
+                    if e is not None:
+                        s.delete(e)
+                elif e is None:
                     s.add(MuhasebeHesapEsleme(firma_id=self.firma_id, anahtar=anahtar, aciklama=ad,
                                               hesap_id=h.id, aktif=True))
 
@@ -313,11 +333,19 @@ class MasrafDagitimTest(unittest.TestCase):
         _f, alis_satir = self._alis()
         kaynak_id, ks = self._gider("1000")
         d1 = MasrafDagitimService.taslak_kaydet(self._veri(kaynak_id, ks, [alis_satir], tutar="600"))
-        MasrafDagitimService.onayla(d1)
+        s1 = MasrafDagitimService.onayla(d1)
         d2 = MasrafDagitimService.taslak_kaydet(self._veri(kaynak_id, ks, [alis_satir], tutar="400"))
         sonuc = MasrafDagitimService.onayla(d2)
-        self.assertIsNone(sonuc["fis_id"])  # GM kullanılmıyor → uyarı ile onay
-        self.assertTrue(any("muhasebe" in u.lower() for u in sonuc["uyarilar"]))
+        # Her kısmi dağıtım kendi fişini yazar; kaynak faturanın GM kaydı yalnız ilk onayda bir kez oluşur
+        self.assertIsNotNone(s1["fis_id"])
+        self.assertIsNotNone(sonuc["fis_id"])
+        self.assertNotEqual(s1["fis_id"], sonuc["fis_id"])
+        from database.models.genel_muhasebe import MuhasebeFisi
+
+        with get_session() as s:
+            kaynak_fisleri = s.scalar(select(func.count()).select_from(MuhasebeFisi).where(
+                MuhasebeFisi.kaynak_turu == "hizmet_faturasi", MuhasebeFisi.kaynak_id == kaynak_id))
+        self.assertEqual(kaynak_fisleri, 1)
         self.assertEqual(Decimal(str(self._lot().birim_maliyet)), Decimal("110"))
         with self.assertRaises(ValueError) as ctx:
             MasrafDagitimService.onizle(self._veri(kaynak_id, ks, [alis_satir], tutar="1"))
@@ -437,7 +465,7 @@ class MasrafDagitimTest(unittest.TestCase):
             {"cikis_depo": "ANA DEPO", "giris_depo": "YEDEK DEPO", "fis_tarihi": date(2026, 6, 3)},
             [{"urun_kodu": "U001", "urun_adi": "Test Ürün", "miktar": Decimal("30"), "birim_fiyat": Decimal("100")}],
         )
-        AlisIadeFaturasiService.kaydet(
+        AlisIadeFaturasiService.kaydet_ve_onayla(
             {"iade_tarihi": date(2026, 6, 4), "cari_id": self.tedarikci_id, "depo": "ANA DEPO"},
             [{"urun_kodu": "U001", "urun_adi": "Test Ürün", "miktar": Decimal("10"), "birim_fiyat": Decimal("100"),
               "kdv_orani": Decimal("20"), "kaynak_fatura_satiri_id": alis_satir}],

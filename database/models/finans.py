@@ -198,6 +198,10 @@ class FinansHesabi(Base):
         ForeignKey("banka_kartlari.id"), nullable=True, index=True
     )
     alt_hesap_turu: Mapped[str | None] = mapped_column(String(30), nullable=True)  # MEVDUAT|KMH|...
+    # Kartın muhasebe karşılığı (muhasebe_hesap_plani.id); boşsa firma eşleştirmesi (kasa / banka / KMH...)
+    muhasebe_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Yalnız POS alt hesabı: komisyon gideri hesabı; boşsa firma eşleştirmesi (pos_komisyon_gideri)
+    muhasebe_komisyon_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     banka_karti: Mapped["BankaKarti | None"] = relationship("BankaKarti", back_populates="alt_hesaplar")
     hareketler: Mapped[list["FinansHareketi"]] = relationship(
         "FinansHareketi", back_populates="hesap", cascade="all, delete-orphan"
@@ -667,4 +671,23 @@ class SatisFaturaMakbuzBagi(Base):
     fatura_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     fatura_no: Mapped[str] = mapped_column(String(30), nullable=False)
     fatura_kapanan: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class FinansEvrakKimligi(Base):
+    """Kendi tablosu olmayan finans evraklarının kalıcı kimliği (muhasebeleştirme kaynağı).
+
+    Cari tahsilat/ödeme, havale, kasa-banka virmanı ve cari virman hareket satırlarıyla tutulur;
+    düzenlemede satırlar silinip aynı belge numarasıyla yeniden yazılır. Evrak türü + belge no
+    benzersizdir; muhasebe fişi ve durum kaydı bu id'ye bağlanır (açıklama/tutar eşleştirmesi yok).
+    ``cari_islem_id``: cari kartından yapılan tahsilat/ödemenin cari hareketi (kaynak kimliği).
+    """
+
+    __tablename__ = "finans_evrak_kimlikleri"
+    __table_args__ = (UniqueConstraint("evrak_turu", "belge_no", name="uq_finans_evrak_kimligi"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    evrak_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    cari_islem_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+    kaynak: Mapped[str] = mapped_column(String(20), nullable=False, default="evrak")  # evrak|gecmis
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

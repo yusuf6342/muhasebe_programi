@@ -8,7 +8,7 @@ from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any
 
-from fatura_satir_birim_service import birim_satis_fiyati, temel_miktar
+from fatura_satir_birim_service import birim_satis_fiyati_tl, temel_miktar
 from fatura_satir_hucre_edit import hucre_duzenle
 
 
@@ -304,7 +304,14 @@ def fiyati_yenile(dialog) -> None:
         satir = dialog.satirlar[idx]
         kod = (satir.get("urun_kodu") or "").strip()
         birim = (satir.get("birim") or "Adet").strip()
-        fiyat = birim_satis_fiyati(kod, birim, musteri=musteri)
+        pb = (satir.get("satir_para_birimi") or satir.get("para_birimi") or "TRY").upper()
+        kurlar = None
+        if pb not in ("TRY", "TL"):
+            try:
+                kurlar = {pb: Decimal(str(satir.get("kur") or 0).replace(",", "."))}
+            except Exception:
+                kurlar = None
+        fiyat = birim_satis_fiyati_tl(kod, birim, musteri=musteri, kurlar=kurlar)
         if fiyat is None:
             continue
         satir["birim_satis_fiyati"] = str(fiyat)

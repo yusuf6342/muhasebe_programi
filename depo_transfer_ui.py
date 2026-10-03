@@ -101,10 +101,10 @@ class DepoTransferFisiDialog(tk.Toplevel):
         self.birim = ttk.Combobox(form, values=("Adet", "Kg", "Metre", "Koli", "Paket"), width=8)
         self.birim.set("Adet")
         self.miktar = ttk.Entry(form, width=10)
-        self.birim_fiyat = ttk.Entry(form, width=12)
+        self.birim_fiyat = ttk.Entry(form, width=12, state="readonly")
         self.tutar = ttk.Entry(form, width=12, state="readonly")
         self.miktar.insert(0, "1")
-        self.birim_fiyat.insert(0, "0")
+        self._fiyat_yaz("0")
         alanlar = (
             ("Kod", self.urun_kodu),
             ("Ürün Adı", self.urun_adi),
@@ -123,7 +123,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
         ttk.Button(butonlar, text="Satır Sil", command=self.satir_sil).pack(side="left", padx=2)
         ttk.Label(
             form,
-            text="Birim fiyat: çıkış deposundaki maliyet (manuel değiştirilebilir)",
+            text="Birim fiyat bilgi amaçlıdır (çıkış deposu ağırlıklı ortalaması). Kayıtta maliyet, çıkan FIFO lotlarından aynen taşınır.",
             foreground="#666666",
         ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
@@ -214,7 +214,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
         self.tutar.insert(0, f"{t:f}".rstrip("0").rstrip(".") or "0")
         self.tutar.configure(state="readonly")
 
-    def _cikis_depo_degisti(self, _e=None):
+    def _fiyat_yaz(self, metin):
         kod = self.urun_kodu.get().strip()
         if kod:
             self._fiyat_doldur(kod)
@@ -224,8 +224,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
         maliyetler = StokService.maliyetler(kod, depo) if depo else {}
         # Çıkış deposundaki fiyat: ağırlıklı ortalama, yoksa FIFO
         fiyat = maliyetler.get("agirlikli") or maliyetler.get("fifo") or Decimal("0")
-        self.birim_fiyat.delete(0, "end")
-        self.birim_fiyat.insert(0, f"{fiyat:f}".rstrip("0").rstrip(".") or "0")
+        self._fiyat_yaz(f"{fiyat:f}".rstrip("0").rstrip(".") or "0")
         self._tutar_guncelle()
 
     def stok_sec(self):
@@ -272,11 +271,11 @@ class DepoTransferFisiDialog(tk.Toplevel):
         self._listeyi_yenile()
 
     def _form_temizle(self):
-        for w in (self.urun_kodu, self.urun_adi, self.miktar, self.birim_fiyat):
+        for w in (self.urun_kodu, self.urun_adi, self.miktar):
             w.delete(0, "end")
         self.birim.set("Adet")
         self.miktar.insert(0, "1")
-        self.birim_fiyat.insert(0, "0")
+        self._fiyat_yaz("0")
         self._tutar_guncelle()
 
     def satir_sil(self):
@@ -303,8 +302,7 @@ class DepoTransferFisiDialog(tk.Toplevel):
         self.birim.set(s.get("birim") or "Adet")
         self.miktar.delete(0, "end")
         self.miktar.insert(0, str(s["miktar"]))
-        self.birim_fiyat.delete(0, "end")
-        self.birim_fiyat.insert(0, str(s["birim_fiyat"]))
+        self._fiyat_yaz(str(s["birim_fiyat"]))
         self._tutar_guncelle()
 
     def _listeyi_yenile(self):

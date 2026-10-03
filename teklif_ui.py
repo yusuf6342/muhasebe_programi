@@ -7,6 +7,7 @@ import tkinter as tk
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from tkinter import messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 from typing import Any, Callable
 
 from database.access import maliyet_izinli, yetki_var
@@ -4572,9 +4573,15 @@ class TeklifDialog(tk.Toplevel):
             self.result = True
             self._doldur()
             self._buton_durumlari()
-            messagebox.showinfo("Kaydedildi", "Teklif kaydedildi.\nStok/cari hareketi oluşmadı.", parent=self)
+            birim_uyarisi = getattr(self.teklif, "birim_uyarisi", None)
+            if birim_uyarisi:
+                messagebox.showwarning(
+                    "Tanımsız birim", "Teklif uyarıyla kaydedildi; onay, müşteriye gönderme, kabul ve siparişe "
+                    f"aktarım bu birimler tanımlanana kadar engellenecek.\n\n{birim_uyarisi}", parent=self)
+            else:
+                messagebox.showinfo("Kaydedildi", "Teklif kaydedildi.\nStok/cari hareketi oluşmadı.", parent=self)
         except ValueError as hata:
-            messagebox.showerror("Teklif", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Teklif", str(hata), parent=self)
         except Exception as hata:
             messagebox.showerror("Teklif", str(hata), parent=self)
 
@@ -4629,7 +4636,7 @@ class TeklifDialog(tk.Toplevel):
             self._buton_durumlari()
             self.result = True
         except ValueError as hata:
-            messagebox.showerror("Durum", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Durum", str(hata), parent=self)
 
     def _reddet(self):
         if not self.teklif:
@@ -4808,7 +4815,7 @@ class TeklifDialog(tk.Toplevel):
             self._buton_durumlari()
             self.result = True
         except ValueError as hata:
-            messagebox.showerror("Sipariş", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Sipariş", str(hata), parent=self)
 
     def _uzat(self):
         if not self.teklif:

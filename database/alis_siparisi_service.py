@@ -17,7 +17,9 @@ from database.models.alis_siparisi import (
 )
 from database.satis_siparisi_service import decimal
 
-SIPARIS_DURUMLARI = ("AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL")
+SIPARIS_DURUMLARI = ("TASLAK", "AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL")
+# Taslak sipariş beklenen alıma girmez; irsaliye/faturaya çevrilmeden önce kesinleştirilir.
+DURUM_TASLAK = "TASLAK"
 ODEME_SEKILLERI = ("NAKİT / KASA", "GİDEN HAVALE", "KREDİ KARTI")
 
 
@@ -31,7 +33,7 @@ class AlisSiparisiService:
             .options(selectinload(AlisSiparisi.satirlar))
             .where(AlisSiparisi.id == siparis_id)
         )
-        if siparis is None or siparis.durum == "İPTAL":
+        if siparis is None or siparis.durum in ("İPTAL", DURUM_TASLAK):
             return
         if not siparis.satirlar:
             siparis.durum = "AÇIK"
@@ -109,6 +111,16 @@ class AlisSiparisiService:
 
             SatinAlmaTalepService.schema_hazirla()
         with get_session() as session:
+            from database.stok_service import StokService
+
+            eski = session.get(AlisSiparisi, siparis_id) if siparis_id else None
+            taslak_kalir = (eski.durum == DURUM_TASLAK) if eski is not None else veriler.get("durum") == DURUM_TASLAK
+            birim_sorunu = StokService.belge_birim_sorunu(
+                session, satir_verileri, "Alış siparişi",
+                mevcut=list(eski.satirlar) if eski is not None and eski.durum != DURUM_TASLAK else None,
+                eylem="onaylanamaz" if taslak_kalir else "kaydedilemedi")
+            if birim_sorunu is not None and not taslak_kalir:
+                raise birim_sorunu
             if siparis_id:
                 siparis = session.get(AlisSiparisi, siparis_id)
                 if siparis is None:
@@ -126,10 +138,12 @@ class AlisSiparisiService:
                 ozel_no = (veriler.get("siparis_no") or "").strip()
                 siparis = AlisSiparisi(
                     siparis_no=ozel_no or AlisSiparisiService.siparis_no(),
-                    durum="AÇIK",
+                    durum=DURUM_TASLAK if veriler.get("durum") == DURUM_TASLAK else "AÇIK",
                     row_version=1,
                 )
                 session.add(siparis)
+            if "teslim_depo" in veriler:
+                siparis.teslim_depo = (veriler.get("teslim_depo") or "").strip() or None
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
             siparis.cari_id = int(veriler["cari_id"])
@@ -180,7 +194,31 @@ class AlisSiparisiService:
             from database.satin_alma_talep_service import SatinAlmaTalepService
 
             SatinAlmaTalepService.siparis_baglarini_yaz(session, siparis, satir_verileri)
+            siparis.birim_uyarisi = str(birim_sorunu) if birim_sorunu is not None else None
             return siparis
+
+    @staticmethod
+    def kesinlestir(siparis_id: int) -> None:
+        """Taslak siparişi kesinleştirir (AÇIK); ancak bundan sonra beklenen alıma girer."""
+        yazma_zorunlu("alis_siparis_duzenleme", "alis_duzenleme", "onay")
+        with get_session() as session:
+            siparis = session.get(AlisSiparisi, siparis_id)
+            if siparis is None:
+                raise ValueError("Sipariş bulunamadı.")
+            if siparis.durum != DURUM_TASLAK:
+                return
+            if not siparis.satirlar:
+                raise ValueError("Satırı olmayan sipariş kesinleştirilemez.")
+            from database.stok_service import StokService
+
+            birim_sorunu = StokService.belge_birim_sorunu(session, list(siparis.satirlar), "Alış siparişi",
+                                                          eylem="onaylanamaz")
+            if birim_sorunu is not None:
+                raise birim_sorunu
+            siparis.durum = "AÇIK"
+            siparis.row_version = int(siparis.row_version or 1) + 1
+            session.flush()
+            AlisSiparisiService.durumu_guncelle(session, siparis.id)
 
     @staticmethod
     def iptal_et(siparis_id: int) -> None:

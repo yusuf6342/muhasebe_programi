@@ -11,6 +11,7 @@ import tkinter as tk
 from datetime import date
 from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 from typing import Any
 
 from database.satis_siparisi_service import (
@@ -685,6 +686,13 @@ class SatisSiparisiKarti(tk.Toplevel):
             return Decimal("0")
         return kur
 
+    def _belge_kurlari(self) -> dict[str, Decimal]:
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb in ("TRY", "TL"):
+            return {}
+        kur = self._kur_degeri()
+        return {pb: kur} if kur > 0 else {}
+
     def _tl_fiyati_belge_parasina(self, fiyat):
         if fiyat in (None, ""):
             return None
@@ -726,9 +734,11 @@ class SatisSiparisiKarti(tk.Toplevel):
         """Cari fiyat kuralları (belge para birimine çevrilmiş); bulunamazsa varsayılan."""
         fiyat = None
         try:
-            from fatura_satir_birim_service import birim_satis_fiyati
+            from fatura_satir_birim_service import birim_satis_fiyati_tl
 
-            fiyat = birim_satis_fiyati(kod, birim or "Adet", musteri=self.cari, varsayilan=None)
+            fiyat = birim_satis_fiyati_tl(
+                kod, birim or "Adet", musteri=self.cari, kurlar=self._belge_kurlari()
+            )
         except Exception:
             fiyat = None
         if fiyat in (None, ""):
@@ -1198,7 +1208,7 @@ class SatisSiparisiKarti(tk.Toplevel):
         try:
             kayit = SatisSiparisiService.kaydet(veriler, satirlar, None, getattr(self.siparis, "id", None))
         except ValueError as hata:
-            messagebox.showerror("Sipariş kaydedilemedi", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Sipariş kaydedilemedi", str(hata), parent=self)
             self._kilit_uygula()
             return False
         except Exception as hata:  # noqa: BLE001
@@ -1215,7 +1225,12 @@ class SatisSiparisiKarti(tk.Toplevel):
         finally:
             self._kaydediliyor = False
         self.result = True
+        birim_uyarisi = getattr(kayit, "birim_uyarisi", None)
         self._kayit_yukle(SatisSiparisiService.getir(kayit.id) or kayit)
+        if birim_uyarisi:
+            messagebox.showwarning(
+                "Tanımsız birim", "Sipariş TASLAK olarak kaydedildi; onay ve aktarım bu birimler tanımlanana "
+                f"kadar engellenecek.\n\n{birim_uyarisi}", parent=self)
         if not sessiz:
             ek = "Sipariş onaylandı; irsaliye ve faturaya aktarılabilir." if onayla else "Durum: " + self._durum()
             messagebox.showinfo("Kaydedildi", f"{self.siparis.siparis_no} kaydedildi.\n{ek}\nStok veya cari hareketi oluşturulmadı.", parent=self)
@@ -1226,7 +1241,7 @@ class SatisSiparisiKarti(tk.Toplevel):
             try:
                 SatisSiparisiService.onayla(self.siparis.id)
             except ValueError as hata:
-                messagebox.showerror("Onay", str(hata), parent=self)
+                birim_hatasi_goster(self, hata) or messagebox.showerror("Onay", str(hata), parent=self)
                 return False
             self.result = True
             self._yenile()
@@ -1400,7 +1415,7 @@ class SatisSiparisiKarti(tk.Toplevel):
             try:
                 SatisSiparisiService.onayla(sp.id)
             except ValueError as hata:
-                messagebox.showerror(islem, str(hata), parent=self)
+                birim_hatasi_goster(self, hata) or messagebox.showerror(islem, str(hata), parent=self)
                 return None
             self.result = True
             self._yenile()

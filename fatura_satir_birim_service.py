@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any
 
-from database.stok_service import StokService
+from database.stok_service import StokService, birim_anahtari
 
 
 def miktar_metnini_coz(metin: str) -> Decimal:
@@ -61,7 +61,7 @@ def stok_aktif_birimleri(urun_kodu: str) -> list[str]:
         ad = (getattr(b, "birim_adi", None) or "").strip()
         if not ad:
             continue
-        if ad.casefold() == ana.casefold():
+        if birim_anahtari(ad) == birim_anahtari(ana):
             continue
         if ad not in sonuc:
             sonuc.append(ad)
@@ -107,7 +107,11 @@ def _stok_yukle(urun_kodu: str):
                     )
                 )
             fiyatlar = [
-                SimpleNamespace(fiyat_adi=f.fiyat_adi, tutar=f.tutar)
+                SimpleNamespace(
+                    fiyat_adi=f.fiyat_adi,
+                    tutar=f.tutar,
+                    para_birimi=getattr(f, "para_birimi", None) or "TL",
+                )
                 for f in (stok.fiyatlar or [])
             ]
             return SimpleNamespace(
@@ -130,6 +134,70 @@ def musteri_fiyat_adi(musteri) -> str | None:
         )
     except Exception:
         return None
+
+
+def para_birimi_normalle(pb) -> str:
+    kod = (str(pb or "").strip() or "TRY").upper()
+    return "TRY" if kod in ("TL", "TRY", "YTL") else kod
+
+
+def satis_fiyati_para_birimi(urun_kodu: str, *, musteri=None) -> str:
+    """Stok kartı satış fiyatının para birimi (birim_satis_fiyati ile aynı liste seçimi)."""
+    stok = _stok_yukle(urun_kodu)
+    if stok is None:
+        return "TRY"
+    from database.stok_service import ESKI_FIYAT_ESLEME
+
+    hedef = (musteri_fiyat_adi(musteri) or "SATIŞ FİYATI 1").strip().upper()
+    hedef = ESKI_FIYAT_ESLEME.get(hedef, hedef).upper()
+    fiyatlar = list(getattr(stok, "fiyatlar", None) or [])
+    for aday in (hedef, "SATIŞ FİYATI 1"):
+        for f in fiyatlar:
+            if (f.fiyat_adi or "").strip().upper() == aday:
+                return para_birimi_normalle(getattr(f, "para_birimi", None))
+    for f in fiyatlar:
+        if (f.fiyat_adi or "").strip().upper().startswith("SATIŞ FİYATI"):
+            return para_birimi_normalle(getattr(f, "para_birimi", None))
+    return "TRY"
+
+
+def fiyat_cevir(
+    tutar,
+    kaynak_pb: str,
+    hedef_pb: str,
+    *,
+    kurlar: dict[str, Decimal] | None = None,
+    tarih=None,
+) -> Decimal:
+    """Tutarı kaynak para biriminden hedefe TL üzerinden bir kez çevirir.
+
+    ``kurlar`` belgede bilinen kurlar (ör. fatura başlık kuru); olmayan kur
+    işlem tarihindeki kayıtlı kurdan okunur. Kur yoksa ValueError.
+    """
+    from datetime import date
+
+    kaynak = para_birimi_normalle(kaynak_pb)
+    hedef = para_birimi_normalle(hedef_pb)
+    deger = Decimal(str(tutar or 0))
+    if kaynak == hedef or deger == 0:
+        return deger
+    bilinen = {para_birimi_normalle(k): Decimal(str(v)) for k, v in (kurlar or {}).items()}
+
+    def _kur(pb: str) -> Decimal:
+        if pb == "TRY":
+            return Decimal("1")
+        kur = bilinen.get(pb)
+        if kur is not None and kur > 0:
+            return kur
+        from database.doviz_service import DovizService
+
+        kur = Decimal(str(DovizService.kur_degeri(tarih or date.today(), pb)))
+        if kur <= 0:
+            raise ValueError(f"{pb} kuru bulunamadı.")
+        return kur
+
+    tl = deger * _kur(kaynak)
+    return (tl / _kur(hedef)).quantize(Decimal("0.0001"))
 
 
 def birim_satis_fiyati(
@@ -162,6 +230,31 @@ def birim_satis_fiyati(
     if carpan == 1:
         return Decimal(str(temel)) if temel is not None else varsayilan
     return (Decimal(str(temel)) * carpan).quantize(Decimal("0.0001"))
+
+
+def birim_satis_fiyati_tl(
+    urun_kodu: str,
+    birim: str,
+    *,
+    musteri=None,
+    varsayilan: Decimal | None = None,
+    kurlar: dict[str, Decimal] | None = None,
+    tarih=None,
+) -> Decimal | None:
+    """``birim_satis_fiyati`` sonucunu kartın para biriminden TL'ye çevirir; kur yoksa None."""
+    fiyat = birim_satis_fiyati(urun_kodu, birim, musteri=musteri, varsayilan=None)
+    if fiyat is None:
+        return varsayilan
+    try:
+        return fiyat_cevir(
+            fiyat,
+            satis_fiyati_para_birimi(urun_kodu, musteri=musteri),
+            "TRY",
+            kurlar=kurlar,
+            tarih=tarih,
+        )
+    except ValueError:
+        return None
 
 
 def fiyat_birim_donustur(
@@ -220,7 +313,7 @@ def birim_degistir(
     kod = (satir.get("urun_kodu") or "").strip()
     eski_birim = (satir.get("birim") or "Adet").strip() or "Adet"
     yeni_birim = (yeni_birim or "").strip() or eski_birim
-    if yeni_birim.casefold() == eski_birim.casefold():
+    if birim_anahtari(yeni_birim) == birim_anahtari(eski_birim):
         return dict(satir)
 
     try:
@@ -251,6 +344,24 @@ def birim_degistir(
     else:
         # Önce birime özel fiyat; yoksa dönüştürülmüş fiyat
         yeni_fiyat = birim_satis_fiyati(kod, yeni_birim, musteri=musteri)
+        if yeni_fiyat is not None:
+            # Satır birim fiyatı TL esaslıdır; kart fiyatı dövizliyse satır kuruyla çevrilir
+            satir_pb = para_birimi_normalle(satir.get("satir_para_birimi") or satir.get("para_birimi"))
+            kurlar = {}
+            if satir_pb != "TRY":
+                try:
+                    kurlar[satir_pb] = Decimal(str(satir.get("kur") or 0).replace(",", "."))
+                except (InvalidOperation, ValueError):
+                    pass
+            try:
+                yeni_fiyat = fiyat_cevir(
+                    yeni_fiyat,
+                    satis_fiyati_para_birimi(kod, musteri=musteri),
+                    "TRY",
+                    kurlar=kurlar,
+                )
+            except ValueError:
+                yeni_fiyat = None
         if yeni_fiyat is None:
             yeni_fiyat = fiyat_birim_donustur(eski_fiyat, eski_birim, yeni_birim, kod)
         sonuc["birim_satis_fiyati"] = str(yeni_fiyat)

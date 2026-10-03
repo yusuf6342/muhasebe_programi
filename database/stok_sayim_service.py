@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -15,15 +15,98 @@ from database.models.stok import Depo, StokHareketi, StokKarti, StokLotu
 from database.models.stok_sayim import StokSayimFisi, StokSayimSatiri
 from database.satis_siparisi_service import decimal
 
+MALIYET_FIFO_SON_LOT = "FIFO son lot"
+MALIYET_SON_ALIS = "Son geçerli alış"
+MALIYET_KULLANICI = "Kullanıcı"
+MALIYET_KAYNAKLARI = (MALIYET_FIFO_SON_LOT, MALIYET_SON_ALIS, MALIYET_KULLANICI)
+
 
 class StokSayimService:
     @staticmethod
     def schema_hazirla() -> None:
         import database.models.stok_sayim  # noqa: F401
+        from database.modul_sema import eksik_kolonlari_ekle
 
         if company_db.engine is None:
             return
         Base.metadata.create_all(company_db.engine)
+        eksik_kolonlari_ekle(
+            company_db.engine,
+            "stok_sayim_satirlari",
+            {"birim_maliyet": "NUMERIC(18, 4)", "maliyet_kaynagi": "VARCHAR(30)"},
+        )
+
+    @staticmethod
+    def _maliyet_onerisi(session, stok_id: int, depo_id: int | None) -> dict[str, Any] | None:
+        """Sayım fazlası için geçerli birim maliyet önerisi (temel birim başına).
+
+        Sıra: depodaki (yoksa tüm depolardaki) en son girişli maliyetli lot → son maliyetli
+        FATURA GİRİŞ hareketi. Sayım lotları (tedarikçi=SAYIM) kaynak sayılmaz. Bulunamazsa None.
+        """
+        sifirdan_buyuk = StokLotu.birim_maliyet > 0
+        sayim_degil = func.coalesce(StokLotu.tedarikci, "") != "SAYIM"
+        kosullar: list[tuple] = [(StokLotu.depo_id == int(depo_id),)] if depo_id else []
+        kosullar.append(())
+        for depo_kosulu in kosullar:
+            lot = session.scalar(
+                select(StokLotu)
+                .where(StokLotu.stok_id == int(stok_id), sifirdan_buyuk, sayim_degil, *depo_kosulu)
+                .order_by(StokLotu.giris_tarihi.desc(), StokLotu.id.desc())
+                .limit(1)
+            )
+            if lot is not None:
+                return {
+                    "birim_maliyet": Decimal(str(lot.birim_maliyet)),
+                    "kaynak": MALIYET_FIFO_SON_LOT,
+                    "aciklama": f"Lot {lot.lot_no or lot.id} ({lot.giris_tarihi:%d.%m.%Y})",
+                }
+        hareket = session.scalar(
+            select(StokHareketi)
+            .where(
+                StokHareketi.stok_id == int(stok_id),
+                StokHareketi.hareket_turu == "FATURA GİRİŞ",
+                StokHareketi.birim_maliyet > 0,
+            )
+            .order_by(StokHareketi.tarih.desc(), StokHareketi.id.desc())
+            .limit(1)
+        )
+        if hareket is not None:
+            return {
+                "birim_maliyet": Decimal(str(hareket.birim_maliyet)),
+                "kaynak": MALIYET_SON_ALIS,
+                "aciklama": f"{hareket.belge_no or ''} ({hareket.tarih:%d.%m.%Y})".strip(),
+            }
+        return None
+
+    @staticmethod
+    def maliyet_onerisi(stok_id: int, depo_id: int | None) -> dict[str, Any] | None:
+        with get_session() as session:
+            return StokSayimService._maliyet_onerisi(session, stok_id, depo_id)
+
+    @staticmethod
+    def _fazla_maliyeti(session, veri: dict[str, Any], stok: StokKarti, depo_id: int) -> tuple[Decimal, str]:
+        """Sayım fazlası satırının maliyeti; 0 / belirsiz maliyetle giriş yapılmaz."""
+        girilen = veri.get("birim_maliyet")
+        oneri = StokSayimService._maliyet_onerisi(session, stok.id, depo_id)
+        if girilen not in (None, ""):
+            maliyet = decimal(girilen, f"{stok.stok_kodu} birim maliyet", Decimal("0"))
+            if maliyet <= 0:
+                raise ValueError(
+                    f"{stok.stok_kodu} — {stok.stok_adi}: sayım fazlası 0 maliyetle stoğa alınamaz; "
+                    "geçerli bir birim maliyet girin."
+                )
+            kaynak = (veri.get("maliyet_kaynagi") or "").strip()
+            if kaynak not in MALIYET_KAYNAKLARI or (
+                kaynak != MALIYET_KULLANICI and (oneri is None or oneri["birim_maliyet"] != maliyet)
+            ):
+                kaynak = MALIYET_KULLANICI
+            return maliyet, kaynak
+        if oneri is None:
+            raise ValueError(
+                f"{stok.stok_kodu} — {stok.stok_adi}: sayım fazlası için geçerli maliyet bulunamadı "
+                "(lot / alış yok). Sayım ekranında birim maliyeti girin."
+            )
+        return oneri["birim_maliyet"], oneri["kaynak"]
 
     @staticmethod
     def fis_no() -> str:
@@ -102,16 +185,49 @@ class StokSayimService:
             return sonuc
 
     @staticmethod
+    def _referans_sistem_miktari(session, stok_id: int, depo_id: int, sayim_zamani: datetime | None) -> Decimal:
+        """Depodaki güncel lot bakiyesi; referans zamandan sonra oluşan hareketler geri alınmış hâli."""
+        from database.stok_service import CIKIS_HAREKETLERI, GIRIS_HAREKETLERI
+
+        mevcut = Decimal(str(session.scalar(
+            select(func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).where(
+                StokLotu.stok_id == stok_id, StokLotu.depo_id == depo_id
+            )
+        ) or 0))
+        if sayim_zamani is None:
+            return mevcut
+        sonraki = session.execute(
+            select(StokHareketi.hareket_turu, StokHareketi.miktar).where(
+                StokHareketi.stok_id == stok_id,
+                StokHareketi.depo_id == depo_id,
+                StokHareketi.olusturma_tarihi > sayim_zamani,
+            )
+        ).all()
+        for tur, miktar in sonraki:
+            m = Decimal(str(miktar or 0))
+            if tur in GIRIS_HAREKETLERI:
+                mevcut -= m
+            elif tur in CIKIS_HAREKETLERI:
+                mevcut += m
+        return mevcut
+
+    @staticmethod
     def kaydet_ve_onayla(
         depo_id: int,
         fis_tarihi: date,
         satirlar: list[dict[str, Any]],
         aciklama: str | None = None,
         sube_id: int | None = None,
+        sayim_zamani: datetime | None = None,
     ) -> int:
         """
         Sayım satırlarını kaydeder ve farkları tek transaction içinde stoğa yansıtır.
         Pozitif fark → SAYIM GİRİŞ, negatif → SAYIM ÇIKIŞ (FIFO).
+
+        Referans zaman: ``sayim_zamani`` (sayılan miktarın geçerli olduğu an; verilmezse kayıt anı).
+        Sistem miktarı ekrandan alınmaz; kayıt anında depodaki lot bakiyesinden, referans zamandan
+        sonra oluşturulmuş hareketler geri alınarak yeniden okunur. Fark = sayılan − referans
+        sistem miktarı; referanstan sonraki hareketler stokta kalır (aynı satış iki kez düşülmez).
         """
         yazma_zorunlu("stok_duzenleme", "yeni_kayit")
         StokSayimService.schema_hazirla()
@@ -138,19 +254,35 @@ class StokSayimService:
             session.flush()
 
             fark_var = False
+            satir_maliyetleri: list[tuple[Decimal | None, str | None]] = []
             for veri in satirlar:
-                sistem = decimal(veri.get("sistem_miktar", 0), "Sistem", Decimal("0"))
+                ekran = decimal(veri.get("sistem_miktar", 0), "Sistem", Decimal("0"))
                 sayilan = decimal(veri["sayilan_miktar"], "Sayılan", Decimal("0"))
+                sistem = StokSayimService._referans_sistem_miktari(
+                    session, int(veri["stok_id"]), depo.id, sayim_zamani
+                )
                 fark = sayilan - sistem
                 if fark != 0:
                     fark_var = True
+                neden = veri.get("fark_nedeni")
+                if ekran != sistem:
+                    not_ = f"Ekranda {ekran.normalize():f} görünüyordu; sayım anı sistem miktarı {sistem.normalize():f}."
+                    neden = f"{neden} — {not_}" if neden else not_
+                maliyet = kaynak = None
+                if fark > 0:
+                    stok = session.get(StokKarti, int(veri["stok_id"]))
+                    if not stok:
+                        raise ValueError("Stok kartı bulunamadı.")
+                    maliyet, kaynak = StokSayimService._fazla_maliyeti(session, veri, stok, depo.id)
                 fis.satirlar.append(
                     StokSayimSatiri(
                         stok_id=int(veri["stok_id"]),
                         sistem_miktar=sistem,
                         sayilan_miktar=sayilan,
                         fark=fark,
-                        fark_nedeni=veri.get("fark_nedeni"),
+                        fark_nedeni=(neden or None) and str(neden)[:200],
+                        birim_maliyet=maliyet,
+                        maliyet_kaynagi=kaynak,
                     )
                 )
             session.flush()
@@ -171,7 +303,7 @@ class StokSayimService:
                         tedarikci="SAYIM",
                         giris_tarihi=fis_tarihi,
                         kalan_miktar=satir.fark,
-                        birim_maliyet=Decimal("0"),
+                        birim_maliyet=satir.birim_maliyet,
                     )
                     session.add(lot)
                     session.flush()
@@ -185,7 +317,7 @@ class StokSayimService:
                             depo_id=depo.id,
                             lot_id=lot.id,
                             miktar=satir.fark,
-                            birim_maliyet=Decimal("0"),
+                            birim_maliyet=satir.birim_maliyet,
                         )
                     )
                 else:

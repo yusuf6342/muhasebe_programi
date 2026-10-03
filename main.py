@@ -68,6 +68,7 @@ from database.models.kk_cekimi import KkCekimi
 from database.models.cek_senet import CekSenetEvrak, CekSenetHareket
 from database.models.deleted_record import DeletedRecordLog  # noqa: F401
 from database.models.doviz import DovizKuru
+from database.models.stok_uyari import StokIhtiyac, StokUyariAyari  # noqa: F401
 from database.models.genel_muhasebe import (
     HesapPlani,
     MuhasebeFisi,
@@ -130,6 +131,33 @@ def baslatma_adimlari(progress) -> None:
             sistem_bilgi.get("ilk_parola_dosyasi"),
         )
 
+    progress(20, "Veritabanı güncellemesi denetleniyor...")
+    from database.gecis_guvenligi import guvenli_gecis, sema_eksikleri
+    from database.muhasebelestirme_service import MuhasebelestirmeService
+
+    db_yolu = MuhasebelestirmeService._db_yolu()
+    eksikler = sema_eksikleri(db.engine, Base.metadata)
+    gerekli = bool(eksikler) or MuhasebelestirmeService.gecis_gerekli_mi()
+    if gerekli:
+        print("Açılış geçişi gerekli:", ", ".join(eksikler[:10]) or "muhasebeleştirme ayarları")
+        progress(22, "Güncelleme öncesi veritabanı yedeği alınıyor...")
+    _, yedek = guvenli_gecis(
+        db_yolu,
+        lambda: _sema_adimlari(progress),
+        gerekli=gerekli,
+        etiket="acilis_gecisi",
+        baglantilari_kapat=MuhasebelestirmeService._baglantilari_kapat,
+    )
+    if yedek:
+        print("Açılış geçişi öncesi doğrulanmış yedek:", yedek.yol)
+
+    progress(90, "Arayüz hazırlanıyor...")
+    print("Tablolar başarıyla oluşturuldu!")
+    print(f"Veritabanı: {db.engine.url}")
+
+
+def _sema_adimlari(progress) -> None:
+    """Firma veritabanı şema/geçiş adımları (yedek güvencesi ``baslatma_adimlari``nda)."""
     progress(25, "Veritabanı tabloları oluşturuluyor...")
     print("Veritabanı tabloları oluşturuluyor...")
     Base.metadata.create_all(db.engine)
@@ -158,6 +186,9 @@ def baslatma_adimlari(progress) -> None:
         MuhasebeService.schema_hazirla()
     except Exception as e:
         print("Genel muhasebe şema uyarısı:", e)
+    from database.muhasebelestirme_service import MuhasebelestirmeService
+
+    MuhasebelestirmeService.schema_hazirla()
 
     progress(80, "Çek/senet ve denetim hazırlanıyor...")
     try:
@@ -194,10 +225,6 @@ def baslatma_adimlari(progress) -> None:
         BankaKrediService.schema_hazirla()
     except Exception as e:
         print("Banka kredileri şema uyarısı:", e)
-
-    progress(90, "Arayüz hazırlanıyor...")
-    print("Tablolar başarıyla oluşturuldu!")
-    print(f"Veritabanı: {db.engine.url}")
 
 
 def main():
@@ -254,18 +281,29 @@ def main():
         if not devam:
             return
 
-    try:
-        app = MuhasebeApp(startup_bootstrap=baslatma_adimlari)
-    except Exception as exc:
-        traceback.print_exc()
+    from database.gecis_guvenligi import GecisHatasi, GecisYedekHatasi
+
+    while True:
         try:
-            messagebox.showerror(
-                APP_NAME,
-                f"Program başlatılırken bir hata oluştu:\n\n{exc}",
-            )
-        except Exception:
-            print("Başlatma hatası:", exc)
-        return
+            app = MuhasebeApp(startup_bootstrap=baslatma_adimlari)
+            break
+        except (GecisYedekHatasi, GecisHatasi) as exc:
+            traceback.print_exc()
+            if isinstance(exc, GecisHatasi) and not exc.geri_yuklendi:
+                messagebox.showerror(APP_NAME, str(exc))
+                return
+            if not messagebox.askretrycancel(APP_NAME, str(exc), icon="error"):
+                return
+        except Exception as exc:
+            traceback.print_exc()
+            try:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"Program başlatılırken bir hata oluştu:\n\n{exc}",
+                )
+            except Exception:
+                print("Başlatma hatası:", exc)
+            return
 
     if not getattr(app, "_cin_basarili", False):
         return

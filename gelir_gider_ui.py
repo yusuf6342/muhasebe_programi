@@ -215,7 +215,7 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str, geri_fn=None):
     cerceve.pack(fill="both", expand=True, pady=10)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("no", "tarih", "cari", "toplam", "odeme", "durum"),
+        columns=("no", "tarih", "cari", "toplam", "odeme", "durum", "muhasebe"),
         show="headings",
         selectmode="browse",
     )
@@ -231,6 +231,7 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str, geri_fn=None):
         ("toplam", "Genel Toplam", 110),
         ("odeme", odeme_baslik, 110),
         ("durum", "Durum", 80),
+        ("muhasebe", "Muhasebe", 130),
     ):
         tablo.heading(k, text=b)
         tablo.column(k, width=w, anchor="w")
@@ -240,9 +241,13 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str, geri_fn=None):
     kaydir.pack(side="right", fill="y")
 
     def listeyi_yenile():
+        from muhasebe_durum_ui import toplu_durum
+
         for item in tablo.get_children():
             tablo.delete(item)
-        for kayit in HizmetFaturasiService.listele(fatura_turu):
+        kayitlar = HizmetFaturasiService.listele(fatura_turu)
+        muhasebe = toplu_durum("hizmet_faturasi", [k["fatura"].id for k in kayitlar])
+        for kayit in kayitlar:
             f = kayit["fatura"]
             cari_ad = f"{f.cari.cari_kodu} - {f.cari.unvan}" if f.cari else "—"
             tablo.insert(
@@ -256,6 +261,7 @@ def hizmet_faturalari_sayfasi(app, fatura_turu: str, geri_fn=None):
                     _para(kayit["genel_toplam"]),
                     _para(f.odeme_tutari),
                     f.durum,
+                    muhasebe.get(f.id, ""),
                 ),
             )
 

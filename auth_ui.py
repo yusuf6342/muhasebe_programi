@@ -160,6 +160,10 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         AuditDeleteService.schema_hazirla()
     except Exception:
         pass
+    from database.muhasebelestirme_service import MuhasebelestirmeService
+
+    # Yedek alınamazsa/geçiş yarıda kalırsa firma açılmaz; hata kullanıcıya gösterilir, seçim yinelenebilir
+    MuhasebelestirmeService.schema_hazirla()
     with get_system_session() as session:
         _ayar_yaz(session, "son_firma_id", str(firma.id))
         AuthService.audit(
@@ -171,24 +175,63 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         )
 
 
-def test_kurulumu_ilk_parola() -> str:
-    """Yalnız test kurulumunda ve yönetici ilk parolasını henüz değiştirmemişken ilk parola."""
+def _ilk_parola_dosyasi() -> Path:
     from database import database as db
 
-    if not db.TEST_KURULUMU:
+    return db.DB_DIR / "ILK_YONETICI_SIFRE.txt"
+
+
+def _dosyadaki_ilk_parola() -> str:
+    try:
+        for satir in _ilk_parola_dosyasi().read_text(encoding="utf-8").splitlines():
+            if satir.startswith("Parola:"):
+                return satir.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def ilk_kurulum_parolasi() -> str:
+    """İlk kurulumda üretilen yönetici parolası; yalnız şifre değiştirme zorunluluğu sürerken
+    ve dosyadaki parola yöneticinin hâlâ geçerli parolasıyken döner (aksi halde boş)."""
+    from database.system.password import parola_dogrula
+
+    parola = _dosyadaki_ilk_parola()
+    if not parola:
         return ""
-    dosya = db.DB_DIR / "ILK_YONETICI_SIFRE.txt"
     try:
         with get_system_session() as session:
             admin = session.scalar(select(User).where(User.kullanici_adi == "admin"))
-            if admin is None or not admin.sifre_degistirmeli:
+            if (admin is None or not admin.aktif or not admin.sifre_degistirmeli
+                    or not parola_dogrula(parola, admin.parola_hash)):
                 return ""
-        for satir in dosya.read_text(encoding="utf-8").splitlines():
-            if satir.startswith("Parola:"):
-                return satir.split(":", 1)[1].strip()
     except Exception:
         return ""
-    return ""
+    return parola
+
+
+def ilk_parola_dosyasini_temizle() -> bool:
+    """Dosyadaki parola artık geçerli değilse (değiştirildiyse) düz metin dosyayı siler."""
+    dosya = _ilk_parola_dosyasi()
+    if not dosya.is_file() or not _dosyadaki_ilk_parola() or ilk_kurulum_parolasi():
+        return False
+    try:
+        with get_system_session() as session:
+            admin = session.scalar(select(User).where(User.kullanici_adi == "admin"))
+            if admin is None or admin.sifre_degistirmeli:
+                return False
+        dosya.unlink()
+        return True
+    except Exception:
+        _log.warning("İlk yönetici parola dosyası silinemedi: %s", dosya)
+        return False
+
+
+def test_kurulumu_ilk_parola() -> str:
+    """Yalnız test kurulumunda ilk parola (giriş ipucu metni için)."""
+    from database import database as db
+
+    return ilk_kurulum_parolasi() if db.TEST_KURULUMU else ""
 
 
 def test_kurulumu_giris_ipucu() -> str:
@@ -273,9 +316,12 @@ class GirisDialog(tk.Toplevel):
 
         self.hata = ttk.Label(alt, text="", foreground="#c62828", anchor="center")
         self.hata.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self._ilk_parola = test_kurulumu_ilk_parola()
+        self._ilk_parola = ilk_kurulum_parolasi()
         if self._ilk_parola:
             self._ilk_parola_alani_kur(cerceve)
+            self.kullanici.delete(0, "end")
+            self.kullanici.insert(0, "admin")
+            self._ilk_parolayi_yaz()
 
         butonlar = ttk.Frame(alt)
         butonlar.grid(row=1, column=0)
@@ -321,8 +367,8 @@ class GirisDialog(tk.Toplevel):
         self.sifre.configure(show="" if self._sifre_gorunur.get() else "*")
 
     def _ilk_parola_alani_kur(self, cerceve) -> None:
-        """Test kurulumu ilk girişi: parola seçilebilir alanda, Kopyala / alana yaz düğmeleriyle."""
-        kutu = ttk.LabelFrame(cerceve, text="Test kurulumu — ilk giriş", padding=(10, 6))
+        """İlk kurulum girişi: parola seçilebilir alanda, Kopyala / alana yaz düğmeleriyle."""
+        kutu = ttk.LabelFrame(cerceve, text="İlk kurulum — yönetici girişi", padding=(10, 6))
         kutu.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         kutu.columnconfigure(1, weight=1)
         ttk.Label(kutu, text="Kullanıcı adı: admin", foreground="#1565C0").grid(
@@ -1108,14 +1154,17 @@ def oturum_akisi_calistir(parent: tk.Tk) -> bool:
         if not giris.result:
             return False
 
-        if oturum.sifre_degistirmeli:
+        if not oturum.sifre_degistirmeli:
+            ilk_parola_dosyasini_temizle()
+        else:
             sifre = SifreDegistirDialog(
-                parent, zorunlu=True, mevcut_sifre=test_kurulumu_ilk_parola()
+                parent, zorunlu=True, mevcut_sifre=ilk_kurulum_parolasi()
             )
             parent.wait_window(sifre)
             if not sifre.result:
                 AuthService.cikis()
                 continue
+            ilk_parola_dosyasini_temizle()
 
         with get_system_session() as session:
             user = session.scalar(

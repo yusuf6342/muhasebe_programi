@@ -6,6 +6,7 @@ import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal
 from tkinter import messagebox, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 from typing import Callable
 
 from satis_tema import (
@@ -35,7 +36,8 @@ SATIN_ALMA_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("SATIN ALMA SİPARİŞLERİ", "Sipariş, termin ve kısmi teslim takibi", "siparis"),
     ("ALIŞ İRSALİYELERİ", "Mal kabul ve faturalanmamış irsaliyeler", "irsaliye"),
     ("ALIŞ FATURALARI", "Borç, stok, maliyet, KDV ve ödeme", "fatura"),
-    ("ALIŞ İADELERİ", "Kaynak belgeye bağlı iade faturaları", "iade"),
+    ("ALIŞ İADE FATURASI", "Yeni boş tedarikçiye iade belgesi", "iade_yeni"),
+    ("ALIŞ İADE FATURALARI LİSTESİ", "Kayıtlı iadeleri filtrele, aç, iptal et", "iade"),
     ("MASRAF DAĞITIMI", "Nakliye ve diğer giderleri maliyete dağıt", "masraf"),
     ("TEDARİKÇİ FİYAT LİSTELERİ", "Güncel alış fiyatı ve iskonto koşulları", "fiyat"),
     ("RAPORLAR VE KONTROL", "Teslimat, borç, maliyet ve performans", "rapor"),
@@ -241,6 +243,7 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "siparis": app.alis_siparisleri_goster,
         "irsaliye": app.alis_irsaliyeleri_goster,
         "fatura": app.alis_faturalari_goster,
+        "iade_yeni": app.alis_iade_faturasi_ac,
         "iade": app.alis_iade_faturalari_goster,
         "masraf": lambda: masraf_dagitimi_goster(app),
         "fiyat": lambda: tedarikci_fiyat_listeleri_goster(app),
@@ -579,6 +582,23 @@ def eski_fatura_masraflari_goster(app) -> None:
     yontem = ttk.Combobox(form, values=YONTEMLER, state="readonly", width=14)
     yontem.set("TUTAR")
     yontem.grid(row=1, column=1, padx=4, pady=4)
+    tk.Label(form, text="Kaynak belge", bg=ACIK_BG).grid(row=3, column=0, sticky="w")
+    kaynak = ttk.Combobox(form, state="readonly", width=44)
+    kaynak.grid(row=3, column=1, columnspan=3, padx=4, sticky="we")
+    kaynak_secenek: dict[str, tuple[str | None, int | None]] = {}
+
+    def kaynaklari_yenile():
+        kaynak_secenek.clear()
+        kaynak_secenek["(seçilmedi — mükerrerlik yalnız benzerlikle denetlenir)"] = (None, None)
+        try:
+            belgeler = AlisMasrafService.kaynak_belgeler()
+        except Exception:
+            belgeler = []
+        for b in belgeler:
+            etiket = f"{b['tur_etiket']} {b['no']} — {b['cari'] or ''} — {_para(b['genel_toplam'])}"
+            kaynak_secenek[etiket] = (b["tur"], int(b["id"]))
+        kaynak.configure(values=list(kaynak_secenek))
+        kaynak.current(0)
 
     def faturalari_yenile():
         for i in fatura_tablo.get_children():
@@ -622,17 +642,30 @@ def eski_fatura_masraflari_goster(app) -> None:
         if not sec:
             messagebox.showinfo("Seçim", "Fatura seçin.", parent=app)
             return
-        try:
-            AlisMasrafService.kaydet_ve_dagit(
-                int(sec[0]),
-                tur.get(),
-                tutar.get(),
-                yontem=yontem.get(),
-                maliyete_dahil=True,
-            )
-        except ValueError as e:
-            messagebox.showerror("Masraf", str(e), parent=app)
-            return
+        k_tur, k_id = kaynak_secenek.get(kaynak.get(), (None, None))
+        onay = False
+        while True:
+            try:
+                AlisMasrafService.kaydet_ve_dagit(
+                    int(sec[0]),
+                    tur.get(),
+                    tutar.get(),
+                    yontem=yontem.get(),
+                    maliyete_dahil=True,
+                    kaynak_turu=k_tur,
+                    kaynak_id=k_id,
+                    inceleme_onaylandi=onay,
+                )
+                break
+            except ValueError as e:
+                if not onay and str(e).startswith("İnceleme gerekli") and messagebox.askyesno(
+                    "İnceleme gerekli", f"{e}\n\nBu masrafın FARKLI olduğunu doğruladınız mı?", parent=app
+                ):
+                    onay = True
+                    continue
+                if not str(e).startswith("İnceleme gerekli"):
+                    messagebox.showerror("Masraf", str(e), parent=app)
+                return
         tutar.delete(0, "end")
         faturalari_yenile()
         fatura_tablo.selection_set(sec[0])
@@ -654,6 +687,7 @@ def eski_fatura_masraflari_goster(app) -> None:
     tk_buton(form, "Masraf Sil", sil, rol="iptal").grid(row=2, column=0, columnspan=2, pady=6, sticky="w")
     fatura_tablo.bind("<<TreeviewSelect>>", masraflari_yenile)
     faturalari_yenile()
+    kaynaklari_yenile()
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: eski_fatura_masraflari_goster(app))
 
@@ -1091,8 +1125,13 @@ class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
                 self.satirlar,
             )
         except Exception as e:
-            messagebox.showerror("Kaydedilemedi", str(e), parent=self)
+            birim_hatasi_goster(self, e) or messagebox.showerror("Kaydedilemedi", str(e), parent=self)
             return
+        birim_uyarisi = getattr(self.TedarikciTeklifService, "son_birim_uyarisi", None)
+        if birim_uyarisi:
+            messagebox.showwarning(
+                "Tanımsız birim", "Teklif TASLAK olarak kaydedildi; siparişe aktarım bu birimler tanımlanana "
+                f"kadar engellenecek.\n\n{birim_uyarisi}", parent=self)
         self.destroy()
 
 
@@ -1174,7 +1213,7 @@ class TeklifKarsilastirmaDialog(tk.Toplevel):
                 self.svc.satir_sec(self.teklif_id, sec)
                 idler = self.svc.secilenleri_siparise_aktar(self.teklif_id)
             except ValueError as e:
-                messagebox.showerror("Aktarım", str(e), parent=self)
+                birim_hatasi_goster(self, e) or messagebox.showerror("Aktarım", str(e), parent=self)
                 return
             messagebox.showinfo(
                 "Sipariş",

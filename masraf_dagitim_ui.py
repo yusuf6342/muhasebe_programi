@@ -45,6 +45,25 @@ def _sayi(v) -> str:
     return metin.replace(".", ",")
 
 
+TABLO_STILI = "MasrafDagitim.Treeview"
+
+
+def tablo_stili(tablo: ttk.Treeview) -> None:
+    """Kolon başlıkları her temada okunur kalsın: Vista başlık zeminini boyamaz, bu yüzden beyaz yazı kullanılmaz."""
+    from tkinter import font as tkfont
+
+    treeview_stil(tablo)
+    stil = ttk.Style(tablo)
+    govde, baslik = font(9, root=tablo), font(10, "bold", tablo)
+    satir_y = tkfont.Font(root=tablo, font=govde).metrics("linespace") + 10
+    stil.configure(TABLO_STILI, font=govde, rowheight=max(24, satir_y), fieldbackground=BEYAZ, background=BEYAZ,
+                   foreground=LACIVERT)
+    stil.configure(f"{TABLO_STILI}.Heading", font=baslik, background=SARI, foreground=LACIVERT, relief="raised")
+    stil.map(f"{TABLO_STILI}.Heading", background=[("active", SARI)], foreground=[("active", LACIVERT)])
+    stil.map(TABLO_STILI, background=[("selected", LACIVERT)], foreground=[("selected", BEYAZ)])
+    tablo.configure(style=TABLO_STILI, show="headings")
+
+
 def _durum_etiketi(durum: str) -> str:
     return {"TASLAK": "Taslak", "ONAYLANDI": "Onaylandı", "İPTAL EDİLDİ": "İptal Edildi"}.get(durum, durum or "")
 
@@ -115,6 +134,15 @@ def masraf_dagitimi_goster(app) -> None:
     tablo.pack(side="left", fill="both", expand=True)
     ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview).pack(side="right", fill="y")
 
+    kaynaklar: dict[str, tuple[str, int, str]] = {}
+
+    def kaynak_ac():
+        sec = tablo.selection()
+        if not sec or sec[0] not in kaynaklar:
+            messagebox.showinfo("Seçim", "Dağıtım seçin.", parent=app)
+            return
+        kaynak_belge_ac(app, *kaynaklar[sec[0]])
+
     def yenile():
         try:
             b1, b2 = _tarih_oku(bas.get()), _tarih_oku(bit.get())
@@ -131,7 +159,9 @@ def masraf_dagitimi_goster(app) -> None:
             messagebox.showerror("Masraf Dağıtımı", str(e), parent=app)
             return
         tablo.delete(*tablo.get_children())
+        kaynaklar.clear()
         for i, r in enumerate(kayitlar):
+            kaynaklar[str(r["id"])] = (r["kaynak_turu_kod"], r["kaynak_id"], r["kaynak_no"])
             tablo.insert(
                 "", "end", iid=str(r["id"]), tags=("tek" if i % 2 == 0 else "cift",),
                 values=(r["dagitim_no"], _tarih(r["tarih"]), r["kaynak_turu"], r["kaynak_no"], _para(r["tutar"]),
@@ -168,6 +198,7 @@ def masraf_dagitimi_goster(app) -> None:
     alt.pack(fill="x", padx=16, pady=10)
     tk_buton(alt, "Yeni", lambda: ac(None), rol="yeni").pack(side="left")
     tk_buton(alt, "Aç", secili_ac, rol="duzenle").pack(side="left", padx=6)
+    tk_buton(alt, "Kaynak Belgeyi Aç", kaynak_ac, rol="ara").pack(side="left", padx=6)
     tk_buton(alt, "Eski Fatura Masrafları", eski, rol="geri").pack(side="left", padx=6)
     tk_buton(alt, "Listele", yenile, rol="ara").pack(side="right")
     tablo.bind("<Double-1>", secili_ac)
@@ -180,11 +211,93 @@ def masraf_dagitimi_goster(app) -> None:
         app.nav_sayfa_isaretle(lambda: masraf_dagitimi_goster(app))
 
 
+# --------------------------------------------------------- pencere yardımcıları
+def _grab_al(pencere) -> None:
+    try:
+        pencere.grab_set()
+    except tk.TclError:
+        pass
+
+
+def _modal_bekle(parent, pencere) -> None:
+    """Alt pencereyi bekler; üst pencerelerden birinde grab varsa kapanınca geri verir.
+
+    Grab'lı bir kartın (ör. alış faturası) üstünde açılan grab'sız pencere tıklanamaz;
+    bu yüzden alt pencere grab alır ve kapanınca önceki sahibine iade edilir.
+    """
+    if pencere is None:
+        return
+    try:
+        onceki = parent.grab_current()
+    except (tk.TclError, KeyError):
+        onceki = None
+    try:
+        if pencere.winfo_exists():
+            if onceki is not None:
+                _grab_al(pencere)
+            parent.wait_window(pencere)
+    finally:
+        try:
+            if onceki is not None and onceki.winfo_exists():
+                onceki.grab_set()
+        except tk.TclError:
+            pass
+
+
+def alis_faturasi_ac(parent, fatura_id: int):
+    from alis_ui import AlisFaturasiDialog
+    from database.alis_faturasi_service import AlisFaturasiService
+
+    fatura = AlisFaturasiService.getir(int(fatura_id))
+    if not fatura:
+        messagebox.showerror("Alış faturası", "Alış faturası bulunamadı.", parent=parent)
+        return None
+    pencere = AlisFaturasiDialog(parent, fatura=fatura)
+    _modal_bekle(parent, pencere)
+    return pencere
+
+
+def kaynak_belge_ac(parent, kaynak_turu: str, kaynak_id: int, belge_no: str | None = None):
+    from database.masraf_dagitim_service import KAYNAK_GIDER_FISI
+
+    if kaynak_turu == KAYNAK_GIDER_FISI:
+        from belge_onizleme_ui import gider_fisi_onizle
+
+        if not belge_no:
+            from database.finans_service import FinansService
+
+            fis = FinansService.gider_fisi_getir(int(kaynak_id))
+            belge_no = fis.belge_no if fis else ""
+        try:
+            onceki = parent.grab_current()
+        except (tk.TclError, KeyError):
+            onceki = None
+        try:
+            if not belge_no or not gider_fisi_onizle(parent, belge_no):
+                messagebox.showerror("Gider fişi", "Gider fişi bulunamadı.", parent=parent)
+        finally:
+            if onceki is not None and onceki.winfo_exists():
+                _grab_al(onceki)
+        return None
+    from hizmet_fatura_ui import HizmetFaturaDialog
+
+    pencere = HizmetFaturaDialog(parent, fatura_id=int(kaynak_id))
+    _modal_bekle(parent, pencere)
+    return pencere
+
+
+def dagitim_ac(parent, dagitim_id: int | None = None, kaynak: tuple[str, int] | None = None):
+    pencere = MasrafDagitimDialog(parent, dagitim_id=dagitim_id, kaynak=kaynak)
+    _modal_bekle(parent, pencere)
+    return pencere
+
+
 # --------------------------------------------------------- seçim pencereleri
 class _SecimDialog(tk.Toplevel):
     """Arama kutulu tablo; çoklu seçimde işaretli satır id'lerini döndürür."""
 
-    def __init__(self, parent, baslik, kolonlar, yukle, *, coklu=False, genislik=980):
+    def __init__(self, parent, baslik, kolonlar, yukle, *, coklu=False, genislik=980, ek_butonlar=(),
+                 hepsini_sec=False, aciklama: str | None = None):
         super().__init__(parent)
         self.title(baslik)
         self.configure(bg=ACIK_BG)
@@ -192,12 +305,21 @@ class _SecimDialog(tk.Toplevel):
         self.geometry(f"{genislik}x520")
         self.result = None
         self._yukle = yukle
+        self._hepsini_sec = hepsini_sec
+        self._arama_is = None
         ust = tk.Frame(self, bg=ACIK_BG)
         ust.pack(fill="x", padx=10, pady=8)
         tk.Label(ust, text="Ara:", bg=ACIK_BG, fg=LACIVERT).pack(side="left")
         self.arama = ttk.Entry(ust, width=40)
         self.arama.pack(side="left", padx=6)
-        self.arama.bind("<KeyRelease>", lambda _e: self._doldur())
+        self.arama.bind("<KeyRelease>", lambda _e: self._arama_planla())
+        self.adet_lbl = tk.Label(ust, text="", bg=ACIK_BG, fg=IKINCIL)
+        self.adet_lbl.pack(side="left", padx=8)
+        for metin, komut in ek_butonlar:
+            tk_buton(ust, metin, lambda k=komut: k(self), rol="geri").pack(side="right", padx=4)
+        if aciklama:
+            tk.Label(self, text=aciklama, bg=ACIK_BG, fg=IKINCIL, justify="left", anchor="w",
+                     wraplength=genislik - 40).pack(fill="x", padx=10)
         cerceve = ttk.Frame(self)
         cerceve.pack(fill="both", expand=True, padx=10)
         self.tablo = ttk.Treeview(
@@ -215,19 +337,34 @@ class _SecimDialog(tk.Toplevel):
         tk_buton(alt, "Seç", self._sec, rol="kaydet").pack(side="right")
         tk_buton(alt, "Vazgeç", self.destroy, rol="geri").pack(side="right", padx=6)
         self.tablo.bind("<Double-1>", lambda _e: self._sec())
+        self.tablo.bind("<Return>", lambda _e: self._sec())
         self._doldur()
         self.arama.focus_set()
 
+    def _arama_planla(self):
+        if self._arama_is is not None:
+            self.after_cancel(self._arama_is)
+        self._arama_is = self.after(300, self._doldur)
+
     def _doldur(self):
+        self._arama_is = None
         self.tablo.delete(*self.tablo.get_children())
-        for i, (iid, degerler) in enumerate(self._yukle(self.arama.get())):
+        try:
+            kayitlar = list(self._yukle(self.arama.get()))
+        except (ValueError, PermissionError) as e:
+            messagebox.showerror(self.title(), str(e), parent=self)
+            kayitlar = []
+        for i, (iid, degerler) in enumerate(kayitlar):
             self.tablo.insert("", "end", iid=str(iid), values=degerler, tags=("tek" if i % 2 == 0 else "cift",))
+        self.adet_lbl.configure(text=f"{len(kayitlar)} kayıt")
+        if self._hepsini_sec and kayitlar:
+            self.tablo.selection_set(self.tablo.get_children())
 
     def _sec(self):
         sec = self.tablo.selection()
         if not sec:
             return
-        self.result = [int(x) for x in sec]
+        self.result = [int(x) if x.isdigit() else x for x in sec]
         self.destroy()
 
 
@@ -251,7 +388,7 @@ class MasrafDagitimDialog(tk.Toplevel):
         ("yeni", "Yeni Birim Maliyet", 110, "e"),
     )
 
-    def __init__(self, parent, dagitim_id: int | None = None):
+    def __init__(self, parent, dagitim_id: int | None = None, kaynak: tuple[str, int] | None = None):
         super().__init__(parent)
         from database.access import yetki_var
         from database.masraf_dagitim_service import YONTEM_ETIKETLERI, YONTEMLER
@@ -259,11 +396,14 @@ class MasrafDagitimDialog(tk.Toplevel):
         self.title("Masraf Dağıtımı")
         self.configure(bg=ACIK_BG)
         self.transient(parent.winfo_toplevel())
-        self.geometry("1320x800")
+        ekran_g, ekran_y = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(1320, max(800, ekran_g - 40))}x{min(800, max(560, ekran_y - 100))}+10+10")
+        self.minsize(800, 520)
         self.dagitim_id = dagitim_id
         self.row_version: int | None = None
         self.durum = "TASLAK"
         self.kaynak: dict | None = None
+        self.kaynak_turu = "HIZMET_FATURASI"
         self.secili_kaynak: set[int] = set()
         self.hedefler: list[dict] = []
         self.onizleme: dict | None = None
@@ -277,8 +417,8 @@ class MasrafDagitimDialog(tk.Toplevel):
         # --- başlık
         bant = tk.Frame(self, bg=LACIVERT)
         bant.pack(fill="x")
-        tk.Label(bant, text="MASRAF DAĞITIMI", bg=LACIVERT, fg=SARI, font=font(18, "bold", self)).pack(
-            side="left", padx=16, pady=10
+        tk.Label(bant, text="MASRAF DAĞITIMI", bg=LACIVERT, fg=SARI, font=font(14, "bold", self)).pack(
+            side="left", padx=16, pady=4
         )
         self.durum_lbl = tk.Label(bant, text="", bg=LACIVERT, fg=BEYAZ, font=font(12, "bold", self))
         self.durum_lbl.pack(side="right", padx=16)
@@ -303,20 +443,59 @@ class MasrafDagitimDialog(tk.Toplevel):
         self.aciklama = ttk.Entry(ust, width=90)
         self.aciklama.grid(row=1, column=1, columnspan=7, sticky="we", padx=4, pady=4)
 
+        # --- özet + düğmeler: tablolardan önce alta yerleşir ki küçük pencerede / ölçekte kırpılmasın
+        alt = tk.Frame(self, bg=ACIK_BG)
+        alt.pack(side="bottom", fill="x", padx=12, pady=(0, 10))
+        self.alt_cubuk = alt
+        self._alt_satir1 = tk.Frame(alt, bg=ACIK_BG)
+        self._alt_satir1.pack(fill="x")
+        self._alt_satir2 = tk.Frame(alt, bg=ACIK_BG)
+        self.onizle_btn = tk_buton(alt, "Dağıtımı Hesapla", self.onizle, rol="ara")
+        self.taslak_btn = tk_buton(alt, "Taslağı Kaydet", self.taslak_kaydet, rol="duzenle")
+        self.onay_btn = tk_buton(alt, "Onayla ve Uygula", self.onayla, rol="kaydet")
+        self.kapat_btn = tk_buton(alt, "Kapat", self.kapat, rol="geri")
+        self.geri_btn = tk_buton(alt, "Geri Al", self.geri_al, rol="iptal")
+        self.iptal_btn = tk_buton(alt, "Taslağı İptal Et", self.taslak_iptal, rol="iptal")
+        self.gecmis_btn = tk_buton(alt, "Geçmiş", self._gecmis_goster, rol="geri")
+        for b in (self.onizle_btn, self.taslak_btn, self.onay_btn, self.kapat_btn, self.geri_btn, self.iptal_btn,
+                  self.gecmis_btn):
+            b.configure(pady=4)
+        self.kapat_btn.pack(in_=self._alt_satir1, side="right")
+        for b in (self.onizle_btn, self.taslak_btn, self.onay_btn):
+            b.pack(in_=self._alt_satir1, side="left", padx=(0, 6))
+        self._alt_tek_satir: bool | None = None
+        alt.bind("<Configure>", self._alt_yerlesim)
+        self._alt_yerlesim()
+        self.ozet_lbl = tk.Label(self, text="", bg=BEYAZ, fg=LACIVERT, justify="left", anchor="w",
+                                 font=font(9, root=self), highlightthickness=1, highlightbackground=CIZGI)
+        self.ozet_lbl.pack(side="bottom", fill="x", padx=12, pady=(0, 6), ipady=2)
+        self.ozet_lbl.bind("<Configure>", lambda e: self.ozet_lbl.configure(wraplength=max(200, e.width - 16)))
+
+        # --- orta alan: yer daraldığında iki tablo da (grid ağırlığıyla) orantılı küçülür, biri kaybolmaz
+        orta = tk.Frame(self, bg=ACIK_BG)
+        orta.pack(fill="both", expand=True, padx=12)
+        orta.columnconfigure(0, weight=1)
+        orta.rowconfigure(0, weight=1)
+        orta.rowconfigure(1, weight=3)
+
         # --- kaynak
-        kutu1 = tk.LabelFrame(self, text=" 1) Kaynak gider belgesi ", bg=ACIK_BG, fg=LACIVERT,
-                              font=font(10, "bold", self))
-        kutu1.pack(fill="x", padx=12, pady=6)
+        kutu1 = tk.LabelFrame(orta, text=" 1) Kaynak masraf belgesi (nakliye gider fişi / hizmet faturası) ",
+                              bg=ACIK_BG, fg=LACIVERT, font=font(10, "bold", self))
+        kutu1.grid(row=0, column=0, sticky="nsew", pady=(6, 3))
         ks = tk.Frame(kutu1, bg=ACIK_BG)
         ks.pack(fill="x", padx=6, pady=4)
         self.kaynak_btn = tk_buton(ks, "Kaynak Belge Seç…", self._kaynak_sec_dialog, rol="ara")
         self.kaynak_btn.pack(side="left")
+        tk_buton(ks, "Kaynak Belgeyi Aç", self.kaynak_belgeyi_ac, rol="geri").pack(side="left", padx=6)
         self.kaynak_lbl = tk.Label(ks, text="Kaynak seçilmedi.", bg=ACIK_BG, fg=IKINCIL, font=font(10, root=self))
         self.kaynak_lbl.pack(side="left", padx=10)
+        self.kural_lbl = tk.Label(kutu1, text="", bg=ACIK_BG, fg=IKINCIL, font=font(9, root=self), anchor="w",
+                                  justify="left")
+        self.kural_lbl.pack(fill="x", padx=8)
         self.kaynak_tablo = ttk.Treeview(
-            kutu1, columns=("sec", "kod", "ad", "tutar", "dagitilan", "kalan", "uygun"), show="headings", height=4
+            kutu1, columns=("sec", "kod", "ad", "tutar", "dagitilan", "kalan", "uygun"), show="headings", height=3
         )
-        treeview_stil(self.kaynak_tablo)
+        tablo_stili(self.kaynak_tablo)
         for k, b, w, a in (
             ("sec", "Seç", 50, "center"), ("kod", "Kod", 110, "w"), ("ad", "Gider Satırı", 300, "w"),
             ("tutar", "KDV Hariç Tutar", 120, "e"), ("dagitilan", "Önceki Dağıtım", 120, "e"),
@@ -324,52 +503,49 @@ class MasrafDagitimDialog(tk.Toplevel):
         ):
             self.kaynak_tablo.heading(k, text=b)
             self.kaynak_tablo.column(k, width=w, anchor=a)
-        self.kaynak_tablo.pack(fill="x", padx=6, pady=(0, 6))
+        self.kaynak_tablo.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.kaynak_tablo.bind("<Button-1>", self._kaynak_tikla)
 
         # --- hedefler
-        kutu2 = tk.LabelFrame(self, text=" 2) Masrafın yükleneceği alış satırları ", bg=ACIK_BG, fg=LACIVERT,
+        kutu2 = tk.LabelFrame(orta, text=" 2) Masrafın yükleneceği alış satırları ", bg=ACIK_BG, fg=LACIVERT,
                               font=font(10, "bold", self))
-        kutu2.pack(fill="both", expand=True, padx=12, pady=6)
+        kutu2.grid(row=1, column=0, sticky="nsew", pady=(3, 6))
         hs = tk.Frame(kutu2, bg=ACIK_BG)
         hs.pack(fill="x", padx=6, pady=4)
+        self.fatura_btn = tk_buton(hs, "Alış Faturası Seç…", self._alis_faturasi_sec_dialog, rol="ara")
+        self.fatura_btn.pack(side="left")
         self.hedef_btn = tk_buton(hs, "Alış Satırı Ekle…", self._hedef_sec_dialog, rol="ara")
-        self.hedef_btn.pack(side="left")
+        self.hedef_btn.pack(side="left", padx=6)
         self.hedef_sil_btn = tk_buton(hs, "Satırı Çıkar", self._hedef_cikar, rol="iptal")
-        self.hedef_sil_btn.pack(side="left", padx=6)
+        self.hedef_sil_btn.pack(side="left")
+        tk_buton(hs, "Alış Faturasını Aç", self.alis_faturasini_ac, rol="geri").pack(side="left", padx=6)
         tk.Label(hs, text="Ağırlık/hacim/elle yönteminde değeri girmek için 'Ölçü / Elle' hücresine çift tıklayın.",
                  bg=ACIK_BG, fg=IKINCIL).pack(side="left", padx=10)
         cerceve = ttk.Frame(kutu2)
         cerceve.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.hedef_tablo = ttk.Treeview(
-            cerceve, columns=[k for k, *_ in self.HEDEF_KOLONLARI], show="headings", selectmode="browse"
+            cerceve, columns=[k for k, *_ in self.HEDEF_KOLONLARI], show="headings", selectmode="browse", height=4
         )
-        treeview_stil(self.hedef_tablo)
+        tablo_stili(self.hedef_tablo)
         for k, b, w, a in self.HEDEF_KOLONLARI:
             self.hedef_tablo.heading(k, text=b)
             self.hedef_tablo.column(k, width=w, anchor=a)
+        dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.hedef_tablo.yview)
+        yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=self.hedef_tablo.xview)
+        self.hedef_tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
+        yatay.pack(side="bottom", fill="x")
+        dikey.pack(side="right", fill="y")
         self.hedef_tablo.pack(side="left", fill="both", expand=True)
-        ttk.Scrollbar(cerceve, orient="vertical", command=self.hedef_tablo.yview).pack(side="right", fill="y")
         self.hedef_tablo.bind("<Double-1>", self._olcu_duzenle)
-
-        # --- özet + düğmeler
-        self.ozet_lbl = tk.Label(self, text="", bg=BEYAZ, fg=LACIVERT, justify="left", anchor="w",
-                                 font=font(10, root=self), highlightthickness=1, highlightbackground=CIZGI)
-        self.ozet_lbl.pack(fill="x", padx=12, pady=(0, 6), ipady=6)
-        alt = tk.Frame(self, bg=ACIK_BG)
-        alt.pack(fill="x", padx=12, pady=(0, 10))
-        self.onizle_btn = tk_buton(alt, "Önizle", self.onizle, rol="ara")
-        self.onizle_btn.pack(side="left")
-        self.taslak_btn = tk_buton(alt, "Taslak Kaydet", self.taslak_kaydet, rol="duzenle")
-        self.taslak_btn.pack(side="left", padx=6)
-        self.onay_btn = tk_buton(alt, "Onayla ve Uygula", self.onayla, rol="kaydet")
-        self.onay_btn.pack(side="left", padx=6)
-        self.geri_btn = tk_buton(alt, "Geri Al", self.geri_al, rol="iptal")
-        self.geri_btn.pack(side="left", padx=6)
-        self.iptal_btn = tk_buton(alt, "Taslağı İptal Et", self.taslak_iptal, rol="iptal")
-        self.iptal_btn.pack(side="left", padx=6)
-        tk_buton(alt, "Geçmiş", self._gecmis_goster, rol="geri").pack(side="left", padx=6)
-        tk_buton(alt, "Kapat", self.kapat, rol="geri").pack(side="right")
+        for cubuk in (ks, hs):
+            for w in cubuk.winfo_children():
+                if isinstance(w, tk.Button):
+                    w.configure(font=font(10, "bold", self), padx=10, pady=3)
+        # Yer daraldığında alış tablosu en az başlık + 2 satır, kaynak tablosu başlık + 1 satır gösterir
+        self.update_idletasks()
+        satir_y = int(ttk.Style(self).lookup(TABLO_STILI, "rowheight") or 24)
+        orta.rowconfigure(0, minsize=ks.winfo_reqheight() + self.kural_lbl.winfo_reqheight() + 2 * satir_y + 40)
+        orta.rowconfigure(1, minsize=hs.winfo_reqheight() + yatay.winfo_reqheight() + 3 * satir_y + 34)
 
         for w in (self.tarih, self.tutar, self.aciklama):
             w.bind("<KeyRelease>", lambda _e: self._degisiklik())
@@ -378,7 +554,28 @@ class MasrafDagitimDialog(tk.Toplevel):
 
         if dagitim_id:
             self._yukle(dagitim_id)
+        elif kaynak:
+            self.kaynak_ayarla(int(kaynak[1]), tur=kaynak[0])
         self._durum_uygula()
+
+    def _alt_yerlesim(self, _e=None):
+        """İkincil düğmeler genişlik yetiyorsa ana satıra, yetmiyorsa ikinci satıra akar (hiçbiri kırpılmaz)."""
+        ikincil = (self.geri_btn, self.iptal_btn, self.gecmis_btn)
+        gerekli = sum(b.winfo_reqwidth() + 6 for b in (self.onizle_btn, self.taslak_btn, self.onay_btn, *ikincil))
+        gerekli += self.kapat_btn.winfo_reqwidth() + 12
+        tek = self.alt_cubuk.winfo_width() >= gerekli
+        if tek == self._alt_tek_satir:
+            return
+        self._alt_tek_satir = tek
+        for b in ikincil:
+            b.pack_forget()
+        hedef = self._alt_satir1 if tek else self._alt_satir2
+        for b in ikincil:
+            b.pack(in_=hedef, side="left", padx=(0, 6))
+        if tek:
+            self._alt_satir2.pack_forget()
+        else:
+            self._alt_satir2.pack(fill="x", pady=(4, 0))
 
     # -------------------------------------------------------------- durum
     def _salt_okunur(self) -> bool:
@@ -390,22 +587,33 @@ class MasrafDagitimDialog(tk.Toplevel):
         for w in (self.tarih, self.tutar, self.aciklama):
             w.configure(state=durum_str)
         self.yontem.configure(state="disabled" if salt else "readonly")
-        for b in (self.kaynak_btn, self.hedef_btn, self.hedef_sil_btn, self.onizle_btn, self.taslak_btn):
+        for b in (self.kaynak_btn, self.fatura_btn, self.hedef_btn, self.hedef_sil_btn, self.onizle_btn,
+                  self.taslak_btn):
             b.configure(state=durum_str)
         self.onay_btn.configure(state="normal" if self.durum == "TASLAK" and self._yetki_onay else "disabled")
         self.geri_btn.configure(state="normal" if self.durum == "ONAYLANDI" and self._yetki_geri else "disabled")
         self.iptal_btn.configure(
             state="normal" if self.durum == "TASLAK" and self.dagitim_id and self._yetki_taslak else "disabled"
         )
-        self.durum_lbl.configure(text=_durum_etiketi(self.durum).upper())
+        metin = _durum_etiketi(self.durum).upper()
+        if self.durum == "ONAYLANDI":
+            metin += "  —  SALT OKUNUR (değişiklik için Geri Al, ardından yeniden dağıtın)"
+        elif self.durum != "TASLAK":
+            metin += "  —  SALT OKUNUR"
+        elif not self._yetki_taslak:
+            metin += "  —  SALT OKUNUR (düzenleme yetkiniz yok)"
+        self.durum_lbl.configure(text=metin)
 
     def _degisiklik(self):
         if self._yukleniyor:
             return
         self._degisti = True
+        if self.durum == "TASLAK":
+            for h in self.hedefler:
+                h["_sonuc"] = None
         if self.onizleme is not None:
             self.onizleme = None
-            self.ozet_lbl.configure(text="Değişiklik yapıldı; önizleme geçersiz. Yeniden 'Önizle'ye basın.",
+            self.ozet_lbl.configure(text="Değişiklik yapıldı; önizleme geçersiz. Yeniden 'Dağıtımı Hesapla'ya basın.",
                                     fg=LACIVERT)
         self._hedefleri_ciz()
 
@@ -427,20 +635,35 @@ class MasrafDagitimDialog(tk.Toplevel):
             self.tutar.insert(0, _sayi(d["tutar"]))
             self.aciklama.delete(0, "end")
             self.aciklama.insert(0, d.get("aciklama") or "")
-            self._kaynak_yukle(int(d["kaynak_id"]), secili=set(d["kaynak_satir_idler"]), tutar_ayarla=False)
+            try:
+                self._kaynak_yukle(int(d["kaynak_id"]), tur=d["kaynak_turu"], secili=set(d["kaynak_satir_idler"]),
+                                   tutar_ayarla=False)
+            except ValueError:
+                self.kaynak_turu = d["kaynak_turu"]
+                self.kaynak = {"id": int(d["kaynak_id"]), "tur": d["kaynak_turu"], "no": d["kaynak_no"],
+                               "satirlar": []}
+                self.secili_kaynak = set(d["kaynak_satir_idler"])
+                self.kaynak_lbl.configure(text=f"{d['kaynak_no']} — kaynak belge bulunamadı (silinmiş).", fg="#B83B3B")
+                self._kaynak_ciz()
             self.hedefler = [
                 {
-                    "satir_id": s["alis_fatura_satiri_id"], "fatura_no": s["alis_fatura_no"], "urun_kodu": s["urun_kodu"],
+                    "satir_id": s["alis_fatura_satiri_id"], "fatura_id": s["alis_fatura_id"],
+                    "fatura_no": s["alis_fatura_no"], "urun_kodu": s["urun_kodu"],
                     "urun_adi": s["urun_adi"], "depo": s["depo"], "birim": s["birim"], "ana_miktar": s["ana_miktar"],
                     "alis_tutari": s["alis_tutari"], "birim_maliyet": s["eski_birim_maliyet"],
                     "olcu": s["olcu"], "elle_tutar": s["elle_tutar"],
-                    "_sonuc": s if d["durum"] != "TASLAK" else None,
+                    "_sonuc": s,
                 }
                 for s in d["satirlar"]
             ]
             self._hedefleri_ciz()
             if d["durum"] != "TASLAK":
                 self.ozet_lbl.configure(text=self._ozet_metni(d, d.get("geri_alma_nedeni")))
+            else:
+                self.ozet_lbl.configure(
+                    text="Kayıtlı taslak (maliyet değişmedi) — " + self._ozet_metni(d),
+                    fg=LACIVERT,
+                )
         finally:
             self._yukleniyor = False
         self._degisti = False
@@ -450,6 +673,12 @@ class MasrafDagitimDialog(tk.Toplevel):
             f"Dağıtılan: {_para(d.get('tutar'))} TL   |   Stoka: {_para(d.get('stok_payi'))} TL   |   "
             f"SMM'ye: {_para(d.get('smm_payi'))} TL   |   İade edilen kısım (giderde kalır): {_para(d.get('iade_payi'))} TL"
         )
+        if d.get("kaynak_toplam") is not None:
+            metin += (
+                f"\nKaynak belge toplamı: {_para(d['kaynak_toplam'])} TL   |   Daha önce dağıtılan: "
+                f"{_para(d['kaynak_onceki'])} TL   |   Bu dağıtım: {_para(d.get('tutar'))} TL   |   "
+                f"Dağıtım sonrası kalan: {_para(d['kaynak_kalan_sonra'])} TL"
+            )
         if d.get("onaylayan"):
             metin += f"\nOnaylayan: {d['onaylayan']} ({_tarih(d.get('onay_tarihi'))})"
         if d.get("fis_id"):
@@ -464,47 +693,86 @@ class MasrafDagitimDialog(tk.Toplevel):
     def _kaynak_sec_dialog(self):
         from database.masraf_dagitim_service import MasrafDagitimService
 
-        belgeler: dict[int, dict] = {}
+        belgeler: dict[str, dict] = {}
 
         def yukle(arama):
             belgeler.clear()
             for b in MasrafDagitimService.kaynak_belgeler(arama):
-                belgeler[b["id"]] = b
-                yield b["id"], (b["tur_etiket"], b["no"], _tarih(b["tarih"]), b["cari"], b["para_birimi"],
+                anahtar = f"{b['tur']}:{b['id']}"
+                belgeler[anahtar] = b
+                yield anahtar, (b["tur_etiket"], b["no"], _tarih(b["tarih"]), b["cari"], b["aciklama"],
+                                b["para_birimi"], _para(b["genel_toplam"]), _para(b["toplam"]),
                                 _para(b["uygun_tutar"]), _para(b["onceki_dagitim"]), _para(b["kalan"]))
 
         dlg = _SecimDialog(
-            self, "Kaynak gider belgesi seç",
-            (("tur", "Belge Türü", 180, "w"), ("no", "Belge No", 120, "w"), ("tarih", "Tarih", 85, "center"),
-             ("cari", "Cari", 200, "w"), ("pb", "Döviz", 50, "center"), ("uygun", "Uygun Tutar", 100, "e"),
-             ("onceki", "Önceki Dağıtım", 100, "e"), ("kalan", "Kalan", 100, "e")),
-            lambda a: list(yukle(a)),
+            self, "Kaynak masraf belgesi seç (nakliye gider fişi / hizmet alış faturası)",
+            (("tur", "Belge Türü", 160, "w"), ("no", "Belge No", 115, "w"), ("tarih", "Tarih", 85, "center"),
+             ("cari", "Cari / Kasa-Banka", 170, "w"), ("aciklama", "Açıklama", 170, "w"), ("pb", "Döviz", 45, "center"),
+             ("genel", "Belge Tutarı", 95, "e"), ("toplam", "Dağıtılabilir", 95, "e"),
+             ("uygun", "Maliyete Uygun", 95, "e"), ("onceki", "Önceki Dağıtım", 95, "e"), ("kalan", "Kalan", 90, "e")),
+            lambda a: list(yukle(a)), genislik=1320,
+            ek_butonlar=(("Listede Görünmeyenler…", self._gorunmeyenleri_goster),),
+            aciklama="Belge no, tarih (gg.aa.yyyy), cari / kasa adı, hizmet adı veya tutarla arayın. "
+                     "Belge Tutarı KDV dahil, Dağıtılabilir KDV hariç tutardır (gider fişinde KDV ayrı kaydedilmez). "
+                     "Nakliyecinin ürün tedarikçisinden farklı olması bağlantıyı engellemez.",
         )
-        self.wait_window(dlg)
+        _modal_bekle(self, dlg)
         if dlg.result:
-            self.kaynak_ayarla(dlg.result[0])
+            tur, kid = str(dlg.result[0]).split(":")
+            self.kaynak_ayarla(int(kid), tur=tur)
 
-    def kaynak_ayarla(self, kaynak_id: int):
-        self._kaynak_yukle(int(kaynak_id), secili=None, tutar_ayarla=True)
-        self._degisiklik()
-
-    def _kaynak_yukle(self, kaynak_id: int, *, secili: set[int] | None, tutar_ayarla: bool):
+    def _gorunmeyenleri_goster(self, secim_penceresi):
         from database.masraf_dagitim_service import MasrafDagitimService
 
-        self.kaynak = MasrafDagitimService.kaynak_detay(kaynak_id, self.dagitim_id)
+        kayitlar = MasrafDagitimService.kaynak_gorunmeyenler(secim_penceresi.arama.get())
+        satirlar = [f"{k['tur_etiket']}  {k['no']}  {_tarih(k['tarih'])}  {k['cari']}  {_para(k['tutar'])} TL\n"
+                    f"    → {k['neden']}" for k in kayitlar[:40]]
+        if len(kayitlar) > 40:
+            satirlar.append(f"… ve {len(kayitlar) - 40} kayıt daha (aramayı daraltın).")
+        satirlar.append(
+            "\nNot: Yalnızca açık firmanın evrakları listelenir. Ürün alış faturasının içine satır olarak "
+            "yazılan nakliye veya alış faturasına eklenmiş eski usul masraflar (Eski Fatura Masrafları) "
+            "burada kaynak belge olarak çıkmaz."
+        )
+        messagebox.showinfo("Listede görünmeyen masraf evrakları", "\n".join(satirlar), parent=secim_penceresi)
+
+    def kaynak_ayarla(self, kaynak_id: int, tur: str = "HIZMET_FATURASI"):
+        self._kaynak_yukle(int(kaynak_id), tur=tur, secili=None, tutar_ayarla=True)
+        self._degisiklik()
+
+    def _kaynak_yukle(self, kaynak_id: int, *, tur: str = "HIZMET_FATURASI", secili: set[int] | None,
+                      tutar_ayarla: bool):
+        from database.masraf_dagitim_service import KAYNAK_GIDER_FISI, MasrafDagitimService
+
+        self.kaynak = MasrafDagitimService.kaynak_detay(kaynak_id, self.dagitim_id, tur=tur)
+        self.kaynak_turu = self.kaynak["tur"]
         if secili is None:
-            secili = {s["id"] for s in self.kaynak["satirlar"] if s["uygun"] and s["kalan"] > 0}
+            gider_fisi = self.kaynak_turu == KAYNAK_GIDER_FISI
+            secili = {s["id"] for s in self.kaynak["satirlar"] if (s["uygun"] or gider_fisi) and s["kalan"] > 0}
         self.secili_kaynak = set(secili)
         k = self.kaynak
         self.kaynak_lbl.configure(
-            text=f"{k['no']}  |  {_tarih(k['tarih'])}  |  {k['cari']}  |  {k['para_birimi']}"
+            text=f"{k['tur_etiket']}  |  {k['no']}  |  {_tarih(k['tarih'])}  |  {k['cari']}  |  {k['para_birimi']}"
             + (f" (kur {_sayi(k['kur'])})" if k["para_birimi"] != "TRY" else "")
-            + "  |  Tutarlar KDV hariç TL",
+            + f"  |  Toplam {_para(k['toplam'])}  Dağıtılan {_para(k['dagitilan'])}  Kalan {_para(k['kalan'])} TL",
             fg=LACIVERT,
         )
+        self.kural_lbl.configure(text=k.get("kural") or "")
         self._kaynak_ciz()
         if tutar_ayarla:
             self._tutari_secimden_ayarla()
+
+    def kaynak_belgeyi_ac(self):
+        if not self.kaynak:
+            messagebox.showinfo("Kaynak belge", "Önce kaynak masraf belgesini seçin.", parent=self)
+            return
+        kaynak_belge_ac(self, self.kaynak_turu, self.kaynak["id"], self.kaynak.get("no"))
+        if self.durum == "TASLAK" and self.kaynak.get("satirlar"):
+            try:
+                self._kaynak_yukle(self.kaynak["id"], tur=self.kaynak_turu, secili=self.secili_kaynak,
+                                   tutar_ayarla=False)
+            except ValueError:
+                pass
 
     def _kaynak_ciz(self):
         self.kaynak_tablo.delete(*self.kaynak_tablo.get_children())
@@ -549,7 +817,27 @@ class MasrafDagitimDialog(tk.Toplevel):
         self._degisiklik()
 
     # ------------------------------------------------------------ hedefler
-    def _hedef_sec_dialog(self):
+    def _alis_faturasi_sec_dialog(self):
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        def yukle(arama):
+            for f in MasrafDagitimService.hedef_faturalar(arama):
+                yield f["fatura_id"], (f["fatura_no"], f["tedarikci_fatura_no"], _tarih(f["tarih"]), f["tedarikci"],
+                                       f["depo"], f["satir_sayisi"], _para(f["matrah"]), _para(f["dagitilan"]))
+
+        dlg = _SecimDialog(
+            self, "Masrafın bağlanacağı ürün alış faturasını seç",
+            (("no", "Alış Faturası", 120, "w"), ("tno", "Tedarikçi Fat. No", 120, "w"), ("tarih", "Tarih", 85, "center"),
+             ("ted", "Tedarikçi", 220, "w"), ("depo", "Depo", 100, "w"), ("satir", "Satır", 50, "center"),
+             ("matrah", "KDV Hariç Tutar", 110, "e"), ("dagitilan", "Önceki Masraf", 100, "e")),
+            lambda a: list(yukle(a)), genislik=1000,
+            aciklama="Fatura no, tedarikçi, tarih veya ürünle arayın. Tedarikçinin nakliyeciden farklı olması sorun değildir.",
+        )
+        _modal_bekle(self, dlg)
+        if dlg.result:
+            self._hedef_sec_dialog(fatura_id=int(dlg.result[0]))
+
+    def _hedef_sec_dialog(self, fatura_id: int | None = None):
         from database.masraf_dagitim_service import MasrafDagitimService
 
         adaylar: dict[int, dict] = {}
@@ -557,25 +845,37 @@ class MasrafDagitimDialog(tk.Toplevel):
         def yukle(arama):
             adaylar.clear()
             mevcut = {h["satir_id"] for h in self.hedefler}
-            for h in MasrafDagitimService.hedef_satirlar(arama):
+            for h in MasrafDagitimService.hedef_satirlar(arama, fatura_id=fatura_id):
                 if h["satir_id"] in mevcut:
                     continue
                 adaylar[h["satir_id"]] = h
                 yield h["satir_id"], (h["fatura_no"], _tarih(h["tarih"]), h["tedarikci"], h["urun_kodu"],
                                       h["urun_adi"], h["depo"], h["birim"], _sayi(h["ana_miktar"]),
-                                      _para(h["alis_tutari"]), _sayi(h["birim_maliyet"]), _sayi(h["kalan"]))
+                                      _para(h["alis_tutari"]), _sayi(h["birim_maliyet"]), _sayi(h["kalan"]),
+                                      _para(h["dagitilan"]))
 
         dlg = _SecimDialog(
             self, "Masraf yüklenecek alış satırlarını seç (Ctrl/Shift ile çoklu)",
             (("fatura", "Alış Faturası", 110, "w"), ("tarih", "Tarih", 85, "center"),
              ("ted", "Tedarikçi", 150, "w"), ("kod", "Stok Kodu", 90, "w"), ("ad", "Stok Adı", 180, "w"),
              ("depo", "Depo", 90, "w"), ("birim", "Birim", 60, "center"), ("miktar", "Ana Mik.", 70, "e"),
-             ("alis", "Alış Tutarı", 95, "e"), ("maliyet", "Birim Maliyet", 90, "e"), ("kalan", "Stokta", 70, "e")),
-            lambda a: list(yukle(a)), coklu=True, genislik=1200,
+             ("alis", "Alış Tutarı", 95, "e"), ("maliyet", "Birim Maliyet", 90, "e"), ("kalan", "Stokta", 70, "e"),
+             ("onceki", "Önceki Masraf", 90, "e")),
+            lambda a: list(yukle(a)), coklu=True, genislik=1290, hepsini_sec=fatura_id is not None,
         )
-        self.wait_window(dlg)
+        _modal_bekle(self, dlg)
         if dlg.result:
             self.hedef_ekle([adaylar[i] for i in dlg.result if i in adaylar])
+
+    def alis_faturasini_ac(self):
+        sec = self.hedef_tablo.selection()
+        h = next((x for x in self.hedefler if str(x["satir_id"]) == (sec[0] if sec else "")), None)
+        if h is None and self.hedefler:
+            h = self.hedefler[0]
+        if h is None or not h.get("fatura_id"):
+            messagebox.showinfo("Alış faturası", "Önce bir alış satırı seçin.", parent=self)
+            return
+        alis_faturasi_ac(self, int(h["fatura_id"]))
 
     def hedef_ekle(self, satirlar: list[dict]):
         mevcut = {h["satir_id"] for h in self.hedefler}
@@ -648,6 +948,7 @@ class MasrafDagitimDialog(tk.Toplevel):
             raise ValueError("Önce kaynak gider belgesini seçin.")
         return {
             "dagitim_tarihi": _tarih_oku(self.tarih.get()) or date.today(),
+            "kaynak_turu": self.kaynak_turu,
             "kaynak_id": self.kaynak["id"],
             "kaynak_satir_idler": sorted(self.secili_kaynak),
             "tutar": self.tutar.get(),
@@ -684,8 +985,19 @@ class MasrafDagitimDialog(tk.Toplevel):
 
         if self.onizleme is None and not self.onizle():
             return False
+        veri = self._veri()
+        inceleme = self.onizleme.get("mukerrer_inceleme") or []
+        if inceleme:
+            if not messagebox.askyesno(
+                "İnceleme gerekli",
+                "Aynı alış satırında kaynak belgesi olmayan eski masraf kaydı var:\n- " + "\n- ".join(inceleme)
+                + "\n\nBu masrafın o kayıttan FARKLI olduğunu doğruladınız mı?",
+                parent=self,
+            ):
+                return False
+            veri["mukerrer_inceleme_onay"] = True
         try:
-            self.dagitim_id = MasrafDagitimService.taslak_kaydet(self._veri(), self.dagitim_id, self.row_version)
+            self.dagitim_id = MasrafDagitimService.taslak_kaydet(veri, self.dagitim_id, self.row_version)
         except (ValueError, PermissionError) as e:
             messagebox.showerror("Taslak", str(e), parent=self)
             return False
@@ -793,20 +1105,152 @@ class MasrafDagitimDialog(tk.Toplevel):
         self.destroy()
 
 
-def bagli_dagitimlar_goster(parent, *, alis_fatura_id: int | None = None, kaynak_id: int | None = None) -> None:
-    """Alış faturası / gider belgesi kartından bağlı masraf dağıtımlarını gösterir."""
-    from database.masraf_dagitim_service import MasrafDagitimService
+class BagliMasraflarDialog(tk.Toplevel):
+    """İki yönlü erişim: alış faturasından bağlı masraflar / masraf belgesinden bağlı alış faturaları."""
 
-    if alis_fatura_id:
-        kayitlar = MasrafDagitimService.fatura_baglantilari(alis_fatura_id)
-        satirlar = [f"{k['dagitim_no']}  {_tarih(k['tarih'])}  {k['kaynak_no']}  pay {_para(k['pay'])} TL  "
-                    f"({_durum_etiketi(k['durum'])})" for k in kayitlar]
-        baslik = "Bu alış faturasına dağıtılan masraflar"
-    else:
-        bilgi = MasrafDagitimService.kaynak_baglantilari(int(kaynak_id or 0))
-        satirlar = [f"{k['dagitim_no']}  {_tarih(k['tarih'])}  {_para(k['tutar'])} TL  ({_durum_etiketi(k['durum'])})"
-                    for k in bilgi["dagitimlar"]]
-        if bilgi.get("kalan") is not None:
-            satirlar.append(f"\nDağıtılan: {_para(bilgi['dagitilan'])} TL   Kalan: {_para(bilgi['kalan'])} TL")
-        baslik = "Bu gider belgesinden yapılan masraf dağıtımları"
-    messagebox.showinfo(baslik, "\n".join(satirlar) or "Bağlı masraf dağıtımı yok.", parent=parent)
+    def __init__(self, parent, *, alis_fatura_id: int | None = None, kaynak_id: int | None = None,
+                 kaynak_turu: str = "HIZMET_FATURASI"):
+        super().__init__(parent)
+        self.configure(bg=ACIK_BG)
+        self.transient(parent.winfo_toplevel())
+        self.geometry("1080x460")
+        self.alis_fatura_id = int(alis_fatura_id) if alis_fatura_id else None
+        self.kaynak_id = int(kaynak_id) if kaynak_id else None
+        self.kaynak_turu = kaynak_turu
+        self._satirlar: dict[str, dict] = {}
+        if self.alis_fatura_id:
+            self.title("Bağlı Masraflar")
+            baslik = "BU ALIŞ FATURASINA BAĞLI MASRAFLAR"
+            kolonlar = (("no", "Dağıtım No", 100, "w"), ("tarih", "Tarih", 85, "center"),
+                        ("tur", "Masraf Belgesi Türü", 170, "w"), ("kaynak", "Masraf Belgesi", 130, "w"),
+                        ("cari", "Nakliyeci / Kasa", 180, "w"), ("urun", "Ürün Satırları", 200, "w"),
+                        ("pay", "Bu Faturaya Pay", 110, "e"), ("durum", "Durum", 90, "center"))
+        else:
+            self.title("Bağlı Alış Faturaları")
+            baslik = "BU MASRAF BELGESİNE BAĞLI ALIŞ FATURALARI"
+            kolonlar = (("no", "Dağıtım No", 100, "w"), ("tarih", "Tarih", 85, "center"),
+                        ("fatura", "Alış Faturası", 130, "w"), ("ftarih", "Fatura Tarihi", 90, "center"),
+                        ("ted", "Tedarikçi", 220, "w"), ("pay", "Pay", 110, "e"),
+                        ("yontem", "Yöntem", 140, "w"), ("durum", "Durum", 90, "center"))
+        bant = tk.Frame(self, bg=LACIVERT)
+        bant.pack(fill="x")
+        tk.Label(bant, text=baslik, bg=LACIVERT, fg=SARI, font=font(13, "bold", self)).pack(side="left", padx=12, pady=8)
+        cerceve = ttk.Frame(self)
+        cerceve.pack(fill="both", expand=True, padx=10, pady=8)
+        self.tablo = ttk.Treeview(cerceve, columns=[k for k, *_ in kolonlar], show="headings", selectmode="browse")
+        treeview_stil(self.tablo)
+        for k, b, w, a in kolonlar:
+            self.tablo.heading(k, text=b)
+            self.tablo.column(k, width=w, anchor=a)
+        self.tablo.pack(side="left", fill="both", expand=True)
+        ttk.Scrollbar(cerceve, orient="vertical", command=self.tablo.yview).pack(side="right", fill="y")
+        self.ozet_lbl = tk.Label(self, text="", bg=ACIK_BG, fg=LACIVERT, anchor="w", justify="left",
+                                 font=font(10, root=self))
+        self.ozet_lbl.pack(fill="x", padx=12)
+        alt = tk.Frame(self, bg=ACIK_BG)
+        alt.pack(fill="x", padx=10, pady=8)
+        tk_buton(alt, "Masraf Dağıtımını Aç", self.dagitimi_ac, rol="duzenle").pack(side="left")
+        if self.alis_fatura_id:
+            tk_buton(alt, "Masraf Belgesini Aç", self.kaynak_ac, rol="ara").pack(side="left", padx=6)
+            self.tablo.bind("<Double-1>", lambda _e: self.kaynak_ac())
+        else:
+            tk_buton(alt, "Alış Faturasını Aç", self.fatura_ac, rol="ara").pack(side="left", padx=6)
+            tk_buton(alt, "Yeni Dağıtım (Alış Faturasına Bağla)", self.yeni_dagitim, rol="yeni").pack(side="left")
+            self.tablo.bind("<Double-1>", lambda _e: self.fatura_ac())
+        tk_buton(alt, "Kapat", self.destroy, rol="geri").pack(side="right")
+        self.yenile()
+
+    def yenile(self):
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        self.tablo.delete(*self.tablo.get_children())
+        self._satirlar.clear()
+        if self.alis_fatura_id:
+            kayitlar = MasrafDagitimService.fatura_baglantilari(self.alis_fatura_id, iptaller=True)
+            for i, k in enumerate(kayitlar):
+                iid = str(k["id"])
+                self._satirlar[iid] = {"dagitim_id": k["id"], "kaynak_turu": k["kaynak_turu"],
+                                       "kaynak_id": k["kaynak_id"], "kaynak_no": k["kaynak_no"]}
+                urunler = ", ".join(
+                    f"{s['urun_kodu']}: {_sayi(s['eski_birim_maliyet'])} + pay {_para(s['pay'])} → "
+                    f"{_sayi(s['yeni_birim_maliyet'])}" for s in k["satirlar"])
+                self.tablo.insert("", "end", iid=iid, tags=("tek" if i % 2 == 0 else "cift",), values=(
+                    k["dagitim_no"], _tarih(k["tarih"]), k["kaynak_turu_etiket"], k["kaynak_no"], k["kaynak_cari"],
+                    urunler, _para(k["pay"]), _durum_etiketi(k["durum"])))
+            onayli = sum((k["pay"] for k in kayitlar if k["durum"] == "ONAYLANDI"), Decimal("0"))
+            metin = (f"Onaylı dağıtımlarla bu faturanın maliyetine eklenen masraf: {_para(onayli)} TL. "
+                     "Faturadaki tedarikçi alış fiyatı değişmez; ek masraf yalnız stok maliyet katmanına işlenir."
+                     if kayitlar else "Bu alış faturasına bağlı masraf dağıtımı yok.")
+            if any(k["durum"] == "ONAYLANDI" for k in kayitlar):
+                metin += ("\nBu fatura onaylı dağıtıma bağlı olduğu için düzenlenemez / iptal edilemez; "
+                          "önce ilgili dağıtımı Geri Al ile çözün.")
+            self.ozet_lbl.configure(text=metin)
+            return
+        bilgi = MasrafDagitimService.kaynak_baglantilari(int(self.kaynak_id or 0), self.kaynak_turu)
+        sira = 0
+        for d in bilgi["dagitimlar"]:
+            for f in d["alis_faturalari"] or [{"fatura_id": None, "fatura_no": "", "tarih": None, "tedarikci": "",
+                                               "pay": d["tutar"]}]:
+                iid = f"{d['id']}:{f['fatura_id'] or 0}"
+                self._satirlar[iid] = {"dagitim_id": d["id"], "fatura_id": f["fatura_id"]}
+                self.tablo.insert("", "end", iid=iid, tags=("tek" if sira % 2 == 0 else "cift",), values=(
+                    d["dagitim_no"], _tarih(d["tarih"]), f["fatura_no"], _tarih(f["tarih"]), f["tedarikci"],
+                    _para(f["pay"]), d["yontem"], _durum_etiketi(d["durum"])))
+                sira += 1
+        k = bilgi.get("kaynak") or {}
+        metin = (f"{k.get('tur_etiket', '')} {k.get('no', '')}   |   Dağıtılabilir toplam: {_para(bilgi.get('toplam'))} TL"
+                 f"   |   Dağıtılan (onaylı): {_para(bilgi['dagitilan'])} TL   |   Kalan: {_para(bilgi['kalan'])} TL")
+        if any(d["durum"] == "ONAYLANDI" for d in bilgi["dagitimlar"]):
+            metin += ("\nBu belge onaylı dağıtıma bağlı olduğu için düzenlenemez / iptal edilemez; "
+                      "önce ilgili dağıtımı Geri Al ile çözün.")
+        self.ozet_lbl.configure(text=metin)
+
+    def _secili(self) -> dict | None:
+        sec = self.tablo.selection()
+        if not sec:
+            kalemler = self.tablo.get_children()
+            if len(kalemler) == 1:
+                sec = kalemler
+        if not sec:
+            messagebox.showinfo("Seçim", "Listeden bir satır seçin.", parent=self)
+            return None
+        return self._satirlar.get(sec[0])
+
+    def dagitimi_ac(self):
+        s = self._secili()
+        if s:
+            dagitim_ac(self, s["dagitim_id"])
+            self.yenile()
+
+    def kaynak_ac(self):
+        s = self._secili()
+        if s:
+            kaynak_belge_ac(self, s["kaynak_turu"], s["kaynak_id"], s.get("kaynak_no"))
+
+    def fatura_ac(self):
+        s = self._secili()
+        if s and s.get("fatura_id"):
+            alis_faturasi_ac(self, s["fatura_id"])
+
+    def yeni_dagitim(self):
+        from database.access import yetki_var
+
+        if not yetki_var("alis_masraf_duzenleme", "alis_masraf_onay"):
+            messagebox.showwarning("Masraf Dağıtımı — yetki", "Yeni masraf dağıtımı oluşturma yetkiniz yok.",
+                                   parent=self)
+            return
+        dagitim_ac(self, None, kaynak=(self.kaynak_turu, int(self.kaynak_id)))
+        self.yenile()
+
+
+def bagli_dagitimlar_goster(parent, *, alis_fatura_id: int | None = None, kaynak_id: int | None = None,
+                            kaynak_turu: str = "HIZMET_FATURASI"):
+    """Alış faturası / masraf belgesi kartından bağlı belgeleri gösterir; ilgili evrak tek tıkla açılır."""
+    try:
+        pencere = BagliMasraflarDialog(parent, alis_fatura_id=alis_fatura_id, kaynak_id=kaynak_id,
+                                       kaynak_turu=kaynak_turu)
+    except (ValueError, PermissionError) as e:
+        messagebox.showerror("Bağlı masraflar", str(e), parent=parent)
+        return None
+    _modal_bekle(parent, pencere)
+    return pencere

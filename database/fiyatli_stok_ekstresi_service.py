@@ -120,6 +120,7 @@ _ETIKET = {
     "PAKET ÇIKIŞ": "Paket",
     "İRSALİYE ÇIKIŞ": "İrsaliye",
     "İRSALİYE İADE GİRİŞ": "İrsaliye İade",
+    "ALIŞ İADE ÇIKIŞ": "Alış İadesi",
 }
 
 
@@ -210,6 +211,8 @@ class FiyatliStokEkstreService:
             if tur == "FATURA ÇIKIŞ":
                 nos_sf.add(bn)
                 nos_ai.add(bn)
+            elif tur == "ALIŞ İADE ÇIKIŞ":
+                nos_ai.add(bn)
             elif tur == "FATURA GİRİŞ":
                 nos_af.add(bn)
             elif tur == "İADE GİRİŞ":
@@ -290,8 +293,9 @@ class FiyatliStokEkstreService:
                 select(AlisIadeFaturasi).where(AlisIadeFaturasi.iade_no.in_(nos_ai))
             ).all():
                 cid, kod, ad = _cari_bilgi(f.cari_id)
-                key = ("FATURA ÇIKIŞ", f.iade_no)
-                if key not in sonuc:
+                for key in (("ALIŞ İADE ÇIKIŞ", f.iade_no), ("FATURA ÇIKIŞ", f.iade_no)):
+                    if key in sonuc:
+                        continue
                     sonuc[key] = {
                         "belge_turu": "Alış İadesi",
                         "belge_id": int(f.id),
@@ -627,6 +631,7 @@ class FiyatliStokEkstreService:
                         fiyat_kaynak = f"Belge satırı net (KDV hariç) · {bn}"
                     elif bn and satir_orm is None and tur in (
                         "FATURA ÇIKIŞ",
+                        "ALIŞ İADE ÇIKIŞ",
                         "İRSALİYE ÇIKIŞ",
                     ):
                         fiyat_yok = True
@@ -650,7 +655,7 @@ class FiyatliStokEkstreService:
                             cikis_mf = (fifo_cost / cikan).quantize(Decimal("0.0001"))
                         elif maliyet > 0 and uncovered == 0:
                             cikis_mf = maliyet
-                        elif maliyet == 0 and tur in ("FATURA ÇIKIŞ", "İRSALİYE ÇIKIŞ") and not uyari:
+                        elif maliyet == 0 and tur in ("FATURA ÇIKIŞ", "ALIŞ İADE ÇIKIŞ", "İRSALİYE ÇIKIŞ") and not uyari:
                             uyari = (
                                 "FIFO/maliyet verisi eksik; satış fiyatı maliyet olarak kullanılmadı."
                             )

@@ -156,7 +156,7 @@ def _tek_aktar(client, liste_satir: dict[str, Any], tur: str, sonuc: ImportSonuc
         stok_yetersizligi_kapat(
             satir_verileri, fatura_no=belge_no, tarih=tarih, depo=depo, sonuc=sonuc
         )
-        AlisIadeFaturasiService.kaydet(
+        AlisIadeFaturasiService.kaydet_ve_onayla(
             {
                 "iade_no": belge_no,
                 "iade_tarihi": tarih,
@@ -166,6 +166,7 @@ def _tek_aktar(client, liste_satir: dict[str, Any], tur: str, sonuc: ImportSonuc
                 "iade_odeme_tutari": 0,
             },
             satir_verileri,
+            kaynaksiz_gerekce="Dış sistemden içe aktarılan alış iadesi (kaynak alış bağlantısı yok)",
         )
     elif hedef == "satis_iade":
         SatisIadeFaturasiService.kaydet(

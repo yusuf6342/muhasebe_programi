@@ -592,6 +592,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="iptal")
         self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF / Word", self.yazdir, rol="yazdir")
         self.btn_yeni = tk_buton(self._dugme_kutusu, "Yeni Makbuz", self._yeni_pencere, rol="yeni")
+        self.btn_muhasebe = tk_buton(self._dugme_kutusu, "Muhasebe Fişi", self._muhasebe_fisi, rol="geri")
         self.btn_kapat = tk_buton(self._dugme_kutusu, "Kapat", self.kapat, rol="geri")
 
         # Kaydırılabilir gövde
@@ -1160,6 +1161,24 @@ class KasaMakbuzDialog(tk.Toplevel):
     def _duzenlenebilir(self) -> bool:
         return self.mod in ("yeni", "duzenle")
 
+    def _muhasebe_evraki(self) -> str:
+        return "cari_virman_makbuzu" if self.virman else "kasa_makbuzu"
+
+    def _muhasebe_eki(self) -> str:
+        if not self.makbuz_id:
+            return ""
+        try:
+            from muhasebe_durum_ui import durum_metni
+
+            return durum_metni(self._muhasebe_evraki(), self.makbuz_id)
+        except Exception:
+            return ""
+
+    def _muhasebe_fisi(self):
+        from muhasebe_durum_ui import fisi_ac
+
+        fisi_ac(self, self._muhasebe_evraki(), self.makbuz_id)
+
     def _mod_uygula(self):
         tur = "CARİ VİRMAN" if self.virman else ("TAHSİLAT" if self.tahsilat else "ÖDEME")
         no = (self.makbuz_no_var.get() or "").strip()
@@ -1184,7 +1203,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.title(f"Yeni {pencere}")
         else:
             ek = no or (self.makbuz.belge_no if self.makbuz is not None else "")
-            self.title(f"{pencere} — {ek}" + (" (İptal)" if iptal else ""))
+            self.title(f"{pencere} — {ek}" + (" (İptal)" if iptal else "") + self._muhasebe_eki())
 
         acik = self._duzenlenebilir()
         durum = "normal" if acik else "disabled"
@@ -1226,6 +1245,8 @@ class KasaMakbuzDialog(tk.Toplevel):
             if not iptal and not self._kilit_nedeni and yazabilir:
                 gorunen += [self.btn_duzenle, self.btn_iptal]
             gorunen += [self.btn_yazdir, self.btn_yeni]
+            if self.makbuz_id:
+                gorunen.append(self.btn_muhasebe)
         gorunen.append(self.btn_kapat)
         for b in gorunen:
             b.pack(side="left", padx=4)
@@ -2176,7 +2197,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
 
     cerceve = ttk.Frame(govde)
     cerceve.pack(fill="both", expand=True)
-    sutunlar = ("makbuz_no", "belge", "tarih", "cari", "odeme", "hesap", "tutar", "durum", "aciklama")
+    sutunlar = ("makbuz_no", "belge", "tarih", "cari", "odeme", "hesap", "tutar", "durum", "muhasebe", "aciklama")
     tablo = ttk.Treeview(cerceve, columns=sutunlar, show="headings", selectmode="extended")
     _tablo_stili(tablo)
     tablo.tag_configure("iptal", foreground=UYARI)
@@ -2189,6 +2210,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
         ("hesap", "Hesap", 150, "w"),
         ("tutar", "Tutar", 110, "e"),
         ("durum", "Durum", 70, "w"),
+        ("muhasebe", "Muhasebe", 130, "w"),
         ("aciklama", "Açıklama", 200, "w"),
     ):
         tablo.heading(k, text=b)
@@ -2244,9 +2266,17 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
                 makbuzlar += ekler
                 makbuzlar.sort(key=lambda m: (m.tarih, (m.makbuz_no or "").upper(), m.belge_no), reverse=True)
                 makbuzlar = makbuzlar[:500]
-            return makbuzlar
+            from muhasebe_durum_ui import toplu_durum
 
-        def bitti(makbuzlar):
+            makbuz_d = toplu_durum("kasa_makbuzu", [m.id for m in makbuzlar
+                                                    if not getattr(m, "virman", False)
+                                                    and not getattr(m, "kk_cekimi", False)])
+            virman_d = toplu_durum("cari_virman_makbuzu", [m.id for m in makbuzlar if getattr(m, "virman", False)])
+            muhasebe = {**{str(k): v for k, v in makbuz_d.items()}, **{f"V{k}": v for k, v in virman_d.items()}}
+            return makbuzlar, muhasebe
+
+        def bitti(sonuc):
+            makbuzlar, muhasebe = sonuc
             if token != durum["token"] or not tablo.winfo_exists():
                 return
             secili = tablo.selection()
@@ -2294,6 +2324,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
                         hesap_yazi,
                         _para(m.tutar),
                         "İPTAL" if iptal else "Açık",
+                        muhasebe.get(iid, ""),
                         (m.aciklama or "")[:80],
                     ),
                 )
@@ -2433,6 +2464,20 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
             return
         yenile()
 
+    def muhasebe_fisi():
+        iid = _secili()
+        if not iid:
+            return
+        if iid.startswith("K"):
+            messagebox.showinfo("Muhasebe fişi", "Kredi kartı ile ödeme fişinin muhasebe fişi bu ekrandan açılmaz.", parent=app)
+            return
+        from muhasebe_durum_ui import fisi_ac
+
+        if iid.startswith("V"):
+            fisi_ac(app, "cari_virman_makbuzu", int(iid[1:]))
+        else:
+            fisi_ac(app, "kasa_makbuzu", int(iid))
+
     if makbuz_turu in (None, "TAHSILAT"):
         tk_buton(butonlar, "Yeni Tahsilat Makbuzu", lambda: yeni("TAHSILAT"), rol="yeni").pack(side="left", padx=(0, 6))
         tk_buton(butonlar, "Yeni Cari Virman", lambda: yeni("TAHSILAT", "VIRMAN"), rol="yeni").pack(
@@ -2446,6 +2491,7 @@ def kasa_makbuzlari_sayfasi(app, makbuz_turu=None, geri_fn=None):
     tk_buton(butonlar, "Görüntüle", goruntule, rol="duzenle").pack(side="left", padx=6)
     tk_buton(butonlar, "Yazdır / PDF / Word", yazdir, rol="yazdir").pack(side="left", padx=6)
     tk_buton(butonlar, "İptal Et", iptal, rol="iptal").pack(side="left", padx=6)
+    tk_buton(butonlar, "Muhasebe Fişi", muhasebe_fisi, rol="geri").pack(side="left", padx=6)
     tk_buton(butonlar, "Yenile", yenile, rol="geri").pack(side="left", padx=6)
     tablo.bind("<Double-1>", goruntule)
     tablo.bind("<Return>", goruntule)

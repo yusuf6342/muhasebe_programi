@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from database.access import AccessError, yazma_zorunlu, yetki_zorunlu
@@ -33,6 +34,67 @@ from database.session_manager import oturum
 
 SIFIR = Decimal("0.00")
 IKI = Decimal("0.01")
+
+
+@contextmanager
+def oturum_kullan(session=None):
+    """Verilen oturumu (aynı transaction) kullanır; yoksa yeni firma oturumu açar."""
+    if session is not None:
+        yield session
+        return
+    with get_session() as yeni:
+        yield yeni
+
+
+def kapali_donem_mi(session, tarih: date) -> bool:
+    from sqlalchemy.exc import OperationalError
+
+    from database.models.donem import Donem
+
+    try:
+        return bool(
+            session.scalar(
+                select(func.count()).select_from(Donem).where(
+                    Donem.kapali.is_(True),
+                    Donem.baslangic_tarihi <= tarih,
+                    Donem.bitis_tarihi >= tarih,
+                )
+            )
+        )
+    except OperationalError:
+        return False
+
+
+def kapali_donem_zorunlu_degil(session, tarih: date, ne: str = "Muhasebe fişi") -> None:
+    if kapali_donem_mi(session, tarih):
+        raise AccessError(
+            f"{ne} tarihi {tarih:%d.%m.%Y} kapalı (kilitli) bir döneme düşüyor. "
+            "Tarih değiştirilmedi; dönemi açın veya işlemi açık bir döneme ait evrakla yapın."
+        )
+
+
+def fis_yaprak_hesap_zorunlu(session, hesap: HesapPlani) -> None:
+    """Fiş satırı yalnız yaprak hesaba yazılır: altında hesap olan veya üst hesabıyla kodu uyuşmayan
+    hesap reddedilir. Geçmiş fişlerin ters kaydı bu yoldan geçmez (iptal satırları kopyalar)."""
+    alt_kod = session.scalar(
+        select(HesapPlani.hesap_kodu).where(
+            HesapPlani.firma_id == hesap.firma_id,
+            HesapPlani.id != hesap.id,
+            (HesapPlani.ust_hesap_id == hesap.id) | HesapPlani.hesap_kodu.like(f"{hesap.hesap_kodu}.%"),
+        ).limit(1)
+    )
+    if alt_kod is not None:
+        raise ValueError(
+            f"Bu hesaba fiş yazılamaz: {hesap.hesap_kodu}\n\n"
+            f"Hesabın altında alt hesap var ({alt_kod}); fiş alt hesaba yazılır."
+        )
+    if hesap.ust_hesap_id:
+        ust_kod = session.scalar(select(HesapPlani.hesap_kodu).where(HesapPlani.id == hesap.ust_hesap_id))
+        if ust_kod and not hesap.hesap_kodu.startswith(f"{ust_kod}."):
+            raise ValueError(
+                f"Bu hesaba fiş yazılamaz: {hesap.hesap_kodu}\n\n"
+                f"Üst hesabı ({ust_kod}) ile kodu uyumsuz; hesap planını düzeltin."
+            )
 
 
 def decimal(tutar) -> Decimal:
@@ -386,6 +448,81 @@ class HesapPlanService:
                 session, kayit_turu="hesap", kayit_id=h.id, islem="pasif"
             )
 
+    @staticmethod
+    def bakiyeleri_yeniden_hesapla(
+        hesap_kodlari: list[str] | None = None, *, kuru: bool = True
+    ) -> list[dict]:
+        """Saklı borç/alacak toplamlarını fiş satırlarından (``defterde_kalan_fis``) yeniden hesaplar.
+
+        Fişlere dokunmaz. Yalnız farklı olan hesapları döndürür; ``kuru=False`` ise
+        yalnız bu hesapları düzeltir ve her biri için işlem geçmişine kayıt yazar.
+        """
+        if kuru:
+            yetki_zorunlu("muhasebe_goruntuleme", "goruntuleme")
+        else:
+            yazma_zorunlu("muhasebe_fis_duzenleme", "duzenleme")
+        with get_session() as session:
+            firma_id = MuhasebeService.yerel_firma_id(session)
+            q = select(HesapPlani).where(HesapPlani.firma_id == firma_id)
+            if hesap_kodlari is not None:
+                kodlar = {str(k).strip() for k in hesap_kodlari if str(k).strip()}
+                if not kodlar:
+                    raise ValueError("Hesap kodu verilmedi.")
+                q = q.where(HesapPlani.hesap_kodu.in_(kodlar))
+            hesaplar = session.scalars(q.order_by(HesapPlani.hesap_kodu)).all()
+            if hesap_kodlari is not None:
+                eksik = kodlar - {h.hesap_kodu for h in hesaplar}
+                if eksik:
+                    raise ValueError(f"Hesap bulunamadı: {', '.join(sorted(eksik))}")
+            toplamlar = {
+                hid: (decimal(b), decimal(a))
+                for hid, b, a in session.execute(
+                    select(
+                        MuhasebeFisiSatiri.hesap_id,
+                        func.coalesce(func.sum(MuhasebeFisiSatiri.borc), 0),
+                        func.coalesce(func.sum(MuhasebeFisiSatiri.alacak), 0),
+                    )
+                    .join(MuhasebeFisi, MuhasebeFisi.id == MuhasebeFisiSatiri.fis_id)
+                    .where(MuhasebeFisi.firma_id == firma_id, defterde_kalan_fis())
+                    .group_by(MuhasebeFisiSatiri.hesap_id)
+                )
+            }
+            farklar = []
+            for h in hesaplar:
+                eski_b, eski_a = decimal(h.borc_toplam), decimal(h.alacak_toplam)
+                yeni_b, yeni_a = toplamlar.get(h.id, (SIFIR, SIFIR))
+                if (eski_b, eski_a) == (yeni_b, yeni_a):
+                    continue
+                farklar.append(
+                    {
+                        "hesap_id": h.id,
+                        "hesap_kodu": h.hesap_kodu,
+                        "hesap_adi": h.hesap_adi,
+                        "eski_borc": eski_b,
+                        "eski_alacak": eski_a,
+                        "eski_bakiye": eski_b - eski_a,
+                        "yeni_borc": yeni_b,
+                        "yeni_alacak": yeni_a,
+                        "yeni_bakiye": yeni_b - yeni_a,
+                    }
+                )
+                if kuru:
+                    continue
+                h.borc_toplam = yeni_b
+                h.alacak_toplam = yeni_a
+                h.guncelleme_tarihi = datetime.now()
+                MuhasebeService._gecmis(
+                    session,
+                    kayit_turu="hesap",
+                    kayit_id=h.id,
+                    islem="bakiye_yeniden_hesapla",
+                    detay=(
+                        f"{h.hesap_kodu}: borç {eski_b}→{yeni_b}, alacak {eski_a}→{yeni_a} "
+                        "(fiş satırlarından; kesinleşmiş + ters kaydı kesilmiş iptal)"
+                    ),
+                )
+            return farklar
+
 
 class MuhasebeFisService:
     @staticmethod
@@ -485,7 +622,10 @@ class MuhasebeFisService:
             }
 
     @staticmethod
-    def kaydet(veriler: dict, fis_id: int | None = None, *, otomatik: bool = False) -> int:
+    def kaydet(
+        veriler: dict, fis_id: int | None = None, *, otomatik: bool = False, session=None
+    ) -> int:
+        """``session`` verilirse fiş o transaction içinde yazılır (evrakla birlikte commit/rollback)."""
         durum = (veriler.get("durum") or "Taslak").strip()
         if durum not in FIS_DURUMLARI:
             raise ValueError("Geçersiz fiş durumu.")
@@ -547,10 +687,12 @@ class MuhasebeFisService:
                 "Fiş kesinleştirilemez."
             )
 
-        with get_session() as session:
+        with oturum_kullan(session) as session:
             firma_id = MuhasebeService.yerel_firma_id(session)
             from database.sube_service import SubeService
 
+            if durum == "Kesinleşmiş":
+                kapali_donem_zorunlu_degil(session, fis_tarihi)
             sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
             mali_yil = int(veriler.get("mali_yil") or fis_tarihi.year)
 
@@ -609,6 +751,7 @@ class MuhasebeFisService:
                 if not hesap.aktif:
                     raise ValueError(f"Pasif hesap kullanılamaz: {hesap.hesap_kodu}")
                 fis_alt_hesap_zorunlu(hesap.hesap_kodu)
+                fis_yaprak_hesap_zorunlu(session, hesap)
                 session.add(
                     MuhasebeFisiSatiri(
                         fis_id=fis.id,
@@ -657,8 +800,13 @@ class MuhasebeFisService:
             hesap.guncelleme_tarihi = datetime.now()
 
     @staticmethod
-    def iptal(fis_id: int, neden: str = "", *, otomatik: bool = False) -> int | None:
-        """Kesinleşmiş fişi iptal eder; tercihen ters kayıt oluşturur. Ters fiş id döner."""
+    def iptal(
+        fis_id: int, neden: str = "", *, otomatik: bool = False, session=None
+    ) -> int | None:
+        """Kesinleşmiş fişi iptal eder; tercihen ters kayıt oluşturur. Ters fiş id döner.
+
+        ``session`` verilirse ters kayıt kaynak evrakın iptaliyle aynı transaction'da yazılır.
+        """
         if not otomatik:
             yazma_zorunlu("muhasebe_fis_iptal", "iptal")
         else:
@@ -666,7 +814,7 @@ class MuhasebeFisService:
 
             aktif_firma_zorunlu()
         ters_id: int | None = None
-        with get_session() as session:
+        with oturum_kullan(session) as session:
             fis = session.scalar(
                 select(MuhasebeFisi)
                 .options(selectinload(MuhasebeFisi.satirlar))
@@ -676,6 +824,15 @@ class MuhasebeFisService:
                 raise ValueError("Fiş bulunamadı.")
             if fis.durum == "İptal":
                 raise ValueError("Fiş zaten iptal.")
+            asil_no = session.scalar(
+                select(MuhasebeFisi.fis_no).where(MuhasebeFisi.ters_fis_id == fis.id)
+            )
+            if asil_no is not None:
+                raise ValueError(
+                    f"Bu fiş {asil_no} fişinin ters kaydıdır ve iptal edilemez. "
+                    "Ters kaydı geri almak asıl belgenin etkisini yeniden doğurur; "
+                    "gerekirse kaynak belgeyi yeniden oluşturun."
+                )
             if fis.durum == "Taslak":
                 fis.durum = "İptal"
                 fis.iptal_nedeni = neden or "Taslak iptal"
@@ -685,8 +842,20 @@ class MuhasebeFisService:
                     session, kayit_turu="fis", kayit_id=fis.id, islem="iptal", detay=neden
                 )
             else:
-                # Kesinleşmiş → ters fiş
-                MuhasebeFisService._bakiye_uygula(session, fis.id, yon=-1)
+                # Kesinleşmiş → ters fiş. Asıl fiş defterde kalır (bkz. defterde_kalan_fis);
+                # tutarı yalnız ters fiş bir kez geri çevirir.
+                if fis.ters_fis_id:
+                    raise ValueError("Fişin ters kaydı zaten var.")
+                kapali_donem_zorunlu_degil(session, date.today(), "Ters kayıt")
+                kilit = session.execute(
+                    update(MuhasebeFisi)
+                    .where(MuhasebeFisi.id == fis.id, MuhasebeFisi.durum == "Kesinleşmiş",
+                           MuhasebeFisi.ters_fis_id.is_(None))
+                    .values(durum="İptal")
+                    .execution_options(synchronize_session=False)
+                )
+                if kilit.rowcount != 1:
+                    raise ValueError("Fiş zaten iptal.")
                 eski_kaynak = f"{fis.kaynak_turu or ''}:{fis.kaynak_id or ''}"
                 fis.durum = "İptal"
                 fis.iptal_nedeni = (neden or "İptal") + (f" [{eski_kaynak}]" if eski_kaynak != ":" else "")
@@ -749,6 +918,18 @@ class MuhasebeFisService:
         return ters_id
 
 
+def defterde_kalan_fis():
+    """Bakiyeye işleyen fişler: kesinleşmiş fişler + ters kaydı kesilerek iptal edilmiş asıl fişler.
+
+    İptal edilen kesinleşmiş fiş ve ters fişi birlikte sayılır (net sıfır); hesap planındaki
+    borç/alacak toplamları da aynı kuralla güncellenir.
+    """
+    return or_(
+        MuhasebeFisi.durum == "Kesinleşmiş",
+        (MuhasebeFisi.durum == "İptal") & MuhasebeFisi.ters_fis_id.is_not(None),
+    )
+
+
 class MuhasebeRaporService:
     @staticmethod
     def mizan(baslangic: date, bitis: date) -> dict:
@@ -771,7 +952,7 @@ class MuhasebeRaporService:
                 .join(MuhasebeFisi, MuhasebeFisi.id == MuhasebeFisiSatiri.fis_id)
                 .where(
                     MuhasebeFisi.firma_id == firma_id,
-                    MuhasebeFisi.durum == "Kesinleşmiş",
+                    defterde_kalan_fis(),
                     MuhasebeFisi.fis_tarihi >= baslangic,
                     MuhasebeFisi.fis_tarihi <= bitis,
                 )
@@ -788,7 +969,7 @@ class MuhasebeRaporService:
                 .join(MuhasebeFisi, MuhasebeFisi.id == MuhasebeFisiSatiri.fis_id)
                 .where(
                     MuhasebeFisi.firma_id == firma_id,
-                    MuhasebeFisi.durum == "Kesinleşmiş",
+                    defterde_kalan_fis(),
                     MuhasebeFisi.fis_tarihi < baslangic,
                 )
                 .group_by(MuhasebeFisiSatiri.hesap_id)

@@ -218,6 +218,10 @@ class HizmetFaturasiService:
                     AcikKalemService.belge_kalemlerini_sil(
                         session, fatura.fatura_no, fatura.cari_id, neden=f"Hizmet faturası düzeltme {fatura.fatura_no}"
                     )
+                MasrafDagitimService.bagli_taslaklari_iptal(
+                    session, kaynak_id=int(fatura.id),
+                    neden=f"Kaynak hizmet faturası {fatura.fatura_no} düzenlendi; satırları yeniden oluşturuldu.",
+                )
                 fatura.satirlar.clear()
             else:
                 fatura = HizmetFaturasi(
@@ -366,10 +370,9 @@ class HizmetFaturasiService:
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi.") from hata
             fid = fatura.id
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
-
-        muhasebe_hook("hizmet_faturasi_fisi", fid, yeniden=True)
+            muhasebe_hook("hizmet_faturasi_fisi", fid, yeniden=True, session=session)
         return HizmetFaturasiService.getir(fid)
 
     @staticmethod
@@ -395,11 +398,16 @@ class HizmetFaturasiService:
             AcikKalemService.belge_kalemlerini_sil(
                 session, fatura.fatura_no, fatura.cari_id, neden=f"Hizmet faturası iptal {fatura.fatura_no}"
             )
+            MasrafDagitimService.bagli_taslaklari_iptal(
+                session, kaynak_id=int(fatura.id), neden=f"Kaynak hizmet faturası {fatura.fatura_no} iptal edildi."
+            )
             fatura.durum = "İPTAL"
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
+            muhasebe_hook("iptal_kaynak", "hizmet_faturasi", int(fatura_id), "Hizmet fatura iptal",
+                          session=session)
 
-        muhasebe_hook("iptal_kaynak", "hizmet_faturasi", int(fatura_id), "Hizmet fatura iptal")
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
         from database.deleted_record_service import ENTITY_HIZMET_FATURA, safe_log_cancel
 
         safe_log_cancel(ENTITY_HIZMET_FATURA, fatura_id, note="Hizmet faturası iptal")

@@ -10,6 +10,7 @@ import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 from typing import Any
 
 from database.satis_irsaliyesi_service import (
@@ -730,9 +731,9 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
 
     def _cari_fiyati(self, kod: str, birim: str, varsayilan=None):
         try:
-            from fatura_satir_birim_service import birim_satis_fiyati
+            from fatura_satir_birim_service import birim_satis_fiyati_tl
 
-            fiyat = birim_satis_fiyati(kod, birim or "Adet", musteri=self.cari, varsayilan=None)
+            fiyat = birim_satis_fiyati_tl(kod, birim or "Adet", musteri=self.cari)
         except Exception:
             fiyat = None
         if fiyat in (None, ""):
@@ -1161,7 +1162,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         try:
             kayit = SatisIrsaliyesiService.kaydet(veriler, satirlar, getattr(self.irsaliye, "id", None))
         except ValueError as hata:
-            messagebox.showerror("İrsaliye kaydedilemedi", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("İrsaliye kaydedilemedi", str(hata), parent=self)
             return False
         except Exception as hata:  # noqa: BLE001
             messagebox.showerror("İrsaliye kaydedilemedi", f"Beklenmeyen hata; kayıt yapılmadı.\n{hata}", parent=self)

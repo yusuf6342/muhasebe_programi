@@ -2137,6 +2137,10 @@ class StokKartiDialog(tk.Toplevel):
                     ms = Decimal(str(self.stok.minimum_stok or 0))
                     if ms != 0:
                         widget.insert(0, f"{ms:f}".rstrip("0").rstrip("."))
+                if self.stok and getattr(self.stok, "id", None):
+                    stok_tk_buton(form, "Uyarı…", self._stok_uyari_ayari_ac, rol="yeni").grid(
+                        row=satir, column=sutun + 2, padx=(0, 6), pady=(0, 4)
+                    )
             elif alan == "birim":
                 degerler = self._ana_birim_secenekleri()
                 widget = ttk.Combobox(form, values=degerler, width=20)
@@ -4006,6 +4010,23 @@ class StokKartiDialog(tk.Toplevel):
                     if (self.aciklama or "").strip()
                     else "Bu stok için henüz not girilmemiş. Yukarıdaki alana yazabilirsiniz."
                 )
+
+    def _stok_uyari_ayari_ac(self):
+        """Stok uyarısı ürün/depo ayarı (minimum, hedef, alım birimi, paket katı, tercih tedarikçi)."""
+        from stok_uyari_ui import AyarDialog
+
+        try:
+            from database.stok_uyari_service import StokUyariService
+            from database.database import get_session
+
+            with get_session() as session:
+                depo_id = StokUyariService._varsayilan_depo_id(session)
+            depo = StokService.depo_getir(depo_id) if depo_id else None
+            dlg = AyarDialog(self, int(self.stok.id), depo_id,
+                             f"{self.stok.stok_kodu} — {self.stok.stok_adi}", depo.ad if depo else None)
+            self.wait_window(dlg)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Stok uyarısı", str(exc), parent=self)
 
     def birimler_ac(self):
         ana_fiyatlar = {

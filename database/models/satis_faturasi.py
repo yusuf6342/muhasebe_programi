@@ -118,6 +118,8 @@ class SatisFaturasiSatiri(Base):
     iskonto_orani_3: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
     kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     fifo_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # Belge birimi → temel birim katsayısı (kayıt anında; kart sonradan değişse de eski belge değişmez)
+    birim_carpani: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     son_alis_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     ortalama_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     agirlikli_ortalama_birim_maliyeti: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)

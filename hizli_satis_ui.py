@@ -10,6 +10,7 @@ from __future__ import annotations
 import tkinter as tk
 from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 
 from database.access import AccessError, yetki_var
 from database.cari_service import CariService
@@ -1624,7 +1625,7 @@ class HizliSatisPencere(tk.Toplevel):
             self._odeme_butonlari_ac()
             return
         except ValueError as hata:
-            messagebox.showerror("Satış kaydı", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Satış kaydı", str(hata), parent=self)
             self._kayit_devam = False
             self._odeme_butonlari_ac()
             return

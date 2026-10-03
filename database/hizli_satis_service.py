@@ -503,6 +503,7 @@ class HizliSatisService:
             cari = session.get(Cari, int(veriler["cari_id"]))
             if not cari or getattr(cari, "is_deleted", False) or not getattr(cari, "aktif", True):
                 raise ValueError("Geçerli bir müşteri (cari) seçin.")
+            StokService.belge_birimlerini_dogrula(session, satir_verileri, "Hızlı satış")
 
             fatura_no = HizliSatisService._sonraki_fatura_no(session)
 
@@ -582,13 +583,15 @@ class HizliSatisService:
             # —— Onay (aynı session) ——
             for satir in fatura.satirlar:
                 try:
+                    carpan = SatisFaturasiService._satir_carpani_kesin(session, satir)
+                    satir.birim_carpani = carpan
                     stok_cikisi = StokService.fatura_cikisi(
                         session,
                         fatura.fatura_no,
                         tarih,
                         satir.urun_kodu.strip(),
                         fatura.depo,
-                        satir.miktar,
+                        (Decimal(str(satir.miktar)) * carpan).quantize(Decimal("0.000001")),
                         satir.lot_no or "",
                     )
                 except ValueError as hata:
@@ -641,6 +644,9 @@ class HizliSatisService:
                 raise ValueError("Fatura kaydedilemedi / onaylanamadı.") from hata
             fid = int(fatura.id)
             fno = fatura.fatura_no
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("satis_faturasi_fisi", fid, session=session)
 
         audit_document(
             "HIZLI_SATIS_TAMAMLA",
@@ -648,9 +654,6 @@ class HizliSatisService:
             kayit_id=str(fid),
             belge_no=fno,
         )
-        from database.muhasebe_entegrasyon import muhasebe_hook
-
-        muhasebe_hook("satis_faturasi_fisi", fid)
         return fid
 
     # —— Aşama 6: beklet / geri çağır (stok hareketi yok) ——

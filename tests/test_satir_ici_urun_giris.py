@@ -234,6 +234,7 @@ class AlisKartSatirGirisiTest(_GirisTemel):
         d.destroy()
 
     def test_alis_iade_kaynak_satiri_kilitli_miktar_duzenlenir(self):
+        """Alış iadesi ayrı ekranda: satır düzenleme diyaloğu; kaynak bağlantısı korunur."""
         from alis_ui import AlisIadeFaturasiDialog
 
         d = AlisIadeFaturasiDialog(self.root)
@@ -243,12 +244,20 @@ class AlisKartSatirGirisiTest(_GirisTemel):
             "miktar": Decimal("5"), "birim": "Adet", "birim_fiyat": Decimal("1"),
             "iskonto_orani": 0, "kdv_orani": 20,
         })
-        d._satirlari_yenile()
-        d.alis_hucre_uygula(0, "miktar", "2")
+        d._satirlari_ciz()
+
+        class _Duzenle:
+            def __init__(self, *_a, **_k):
+                self.result = {"miktar": Decimal("2"), "birim": "Adet", "birim_fiyat": Decimal("1"),
+                               "iskonto_orani": Decimal("0"), "iskonto_orani_2": Decimal("0"),
+                               "iskonto_orani_3": Decimal("0"), "kdv_orani": Decimal("20")}
+
+        d.tablo.selection_set("0")
+        with patch("alis_iade_ui.SatirDuzenleDialog", _Duzenle), patch.object(d, "wait_window"), \
+                patch("alis_iade_ui.messagebox"):
+            d.satir_duzenle()
         self.assertEqual(d.satirlar[0]["miktar"], Decimal("2"))
-        with self.assertRaises(ValueError):
-            d.alis_hucre_uygula(0, "birim", "Paket")
-        self.assertEqual(d.satir_tablosu.get_children()[-1], YENI_SATIR_IID)
+        self.assertEqual(d.satirlar[0]["kaynak_fatura_satiri_id"], 4)
         d.destroy()
 
 
@@ -306,7 +315,7 @@ class EvrakUrunAramaAlanlariTest(_GirisTemel):
 
     def _kartlar(self):
         import app
-        from alis_ui import AlisFaturasiDialog, AlisIadeFaturasiDialog, AlisIrsaliyesiDialog, AlisSiparisiDialog
+        from alis_ui import AlisFaturasiDialog, AlisIrsaliyesiDialog, AlisSiparisiDialog
         from satin_alma_ui import SatinAlmaTalepDialog
         from satis_irsaliyesi_ui import SatisIrsaliyesiDialog
         from satis_siparisi_ui import SatisSiparisiKarti
@@ -316,7 +325,6 @@ class EvrakUrunAramaAlanlariTest(_GirisTemel):
             ("Satış faturası", lambda: app.SatisFaturasiDialog(self.root, cari=self._cari()), "barkod"),
             ("Satıştan iade", lambda: app.SatisIadeFaturasiDialog(self.root, cari=self._cari()), "barkod"),
             ("Alış faturası", lambda: AlisFaturasiDialog(self.root), "barkod"),
-            ("Alış iade", lambda: AlisIadeFaturasiDialog(self.root), "kod"),
             ("Alış siparişi", lambda: AlisSiparisiDialog(self.root), "kod"),
             ("Alış irsaliyesi", lambda: AlisIrsaliyesiDialog(self.root), "kod"),
             ("Satış irsaliyesi", lambda: SatisIrsaliyesiDialog(self.root), "kod"),

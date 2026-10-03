@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 
 from database.cari_service import CariService
 from database.firma_service import FirmaService
@@ -4179,6 +4180,10 @@ class SatisSiparisiDialog(tk.Toplevel):
                 SatisSiparisiService.getir(sid) if sid else kayit
             ) or kayit
             self.result = True
+            if getattr(kayit, "birim_uyarisi", None):
+                messagebox.showwarning(
+                    "Tanımsız birim", "Sipariş TASLAK olarak kaydedildi; onay ve aktarım bu birimler tanımlanana "
+                    f"kadar engellenecek.\n\n{kayit.birim_uyarisi}", parent=self)
             try:
                 if "siparis_no" in self.girdiler and self.siparis:
                     self.girdiler["siparis_no"].configure(state="normal")
@@ -4894,6 +4899,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         except Exception:
             pass
         self._fatura_hazirlaniyor_gizle()
+        self._fatura_yukleniyor = False
+        self._fatura_form_kirli = False
 
     def _siparis_kalanlarini_hazirla(self):
         """Sipariş → fatura: kalan = miktar − faturalanan (FATURA_KAYNAK_KURALI; sevk zorunlu değil)."""
@@ -5280,7 +5287,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self._kayit_sonrasi_forma_yukle(yazdir_sor=False, bildirim=False)
             return True
         except ValueError as hata:
-            messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
             return False
 
     def bagli_listeden_fatura_ac(self, fatura_id: int, *, document_type: str):
@@ -5392,7 +5399,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 except Exception:
                     pass
                 self._onay_butonu_guncelle()
-            messagebox.showerror("Fatura onaylanamadı", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura onaylanamadı", str(hata), parent=self)
             return
         self._musteri_bakiyeleri = {}
         try:
@@ -5575,6 +5582,24 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 pass
         if refs.get("rozet"):
             ftema.rozet_guncelle(refs["rozet"], self._fatura_durum_rozet_metni())
+        self._muhasebe_basligi_guncelle()
+
+    def _muhasebe_belgesi(self):
+        return "satis_faturasi", self.fatura
+
+    def _muhasebe_basligi_guncelle(self):
+        evrak, belge = self._muhasebe_belgesi()
+        anahtar = (evrak, getattr(belge, "id", None), getattr(belge, "durum", None),
+                   getattr(belge, "onaylandi", None), getattr(belge, "row_version", None))
+        if getattr(self, "_muhasebe_baslik_anahtari", None) != anahtar:
+            from database.muhasebelestirme_service import MuhasebelestirmeService
+
+            self._muhasebe_baslik_anahtari = anahtar
+            self._muhasebe_baslik_eki = MuhasebelestirmeService.baslik_eki(evrak, anahtar[1])
+        try:
+            self.title(self.BELGE_PENCERE_BASLIGI + (self._muhasebe_baslik_eki or ""))
+        except tk.TclError:
+            pass
 
     def _onay_butonu_guncelle(self):
         onayli = bool(self.fatura and getattr(self.fatura, "onaylandi", False))
@@ -10618,15 +10643,18 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 etiketler = tuple(etiketler) + ("dagitima_kapali",)
             if sira in self._satir_isaretleri:
                 etiketler = tuple(etiketler) + ("isaretli",)
+            # Birim Fiyat satırın PB'sinde; tutar kolonları TL (başlıklarda belirtilir)
             fiyat_metin = para_goster(veri.get("birim_satis_fiyati") or 0)
             if pb != "TRY" and kur > 0:
                 try:
                     bf_doviz = Decimal(str(veri.get("birim_satis_fiyati") or 0)) / kur
                 except Exception:
                     bf_doviz = Decimal("0")
-                if bf_doviz > 0:
-                    doviz_metin = f"{float(bf_doviz):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    fiyat_metin = f"{fiyat_metin} ({doviz_metin} {pb})"
+                doviz_metin = f"{bf_doviz:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                fiyat_metin = f"{doviz_metin} {pb}"
+            kur_metin = "1" if pb == "TRY" else (
+                f"{kur:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            )
             if bool(veri.get("manuel_fiyat")):
                 fiyat_metin = f"✦ {fiyat_metin}"
             if bool(veri.get("dagitima_kapali")):
@@ -10647,7 +10675,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     veri.get("birim", ""),
                     fiyat_metin,
                     pb,
-                    f"{kur:f}".rstrip("0").rstrip(".") or "1",
+                    kur_metin,
                     isk_metin,
                     para_goster(indirim),
                     kdv_goster,
@@ -11700,7 +11728,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 )
                 self.fatura = self.result
             except ValueError as hata:
-                messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
+                birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
                 return
             self._kayit_sonrasi_forma_yukle(
                 yazdir_sor=False,
@@ -11764,7 +11792,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 except Exception:
                     pass
                 self._onay_butonu_guncelle()
-            messagebox.showerror("Fatura onaylanamadı", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura onaylanamadı", str(hata), parent=self)
             return
         self._musteri_bakiyeleri = {}
         try:
@@ -12209,6 +12237,9 @@ class SatisIadeFaturasiDialog(SatisFaturasiDialog):
         etiket = (getattr(self, "_fatura_toolbar", None) or {}).get("fatura_no")
         if etiket is not None and self.iade is None:
             etiket.configure(text="Yeni")
+
+    def _muhasebe_belgesi(self):
+        return "satis_iade", getattr(self, "iade", None)
 
     def _kaydet_buton_metnini_guncelle(self) -> None:
         btn = getattr(self, "_btn_kaydet", None)
@@ -12915,7 +12946,7 @@ class SatisIadeFaturasiDialog(SatisFaturasiDialog):
                 veriler, satirlar, self.iade.id if self.iade is not None else None
             )
         except ValueError as hata:
-            messagebox.showerror("İade kaydedilemedi", str(hata), parent=self)
+            birim_hatasi_goster(self, hata) or messagebox.showerror("İade kaydedilemedi", str(hata), parent=self)
             return False
         finally:
             self._kayit_isleniyor = False
@@ -15128,6 +15159,7 @@ class MuhasebeApp(tk.Tk):
         tk_buton(alt, "Yeni Virman Fişi", self.yeni_virman, rol="yeni").pack(side="left")
         tk_buton(alt, "Dosyadan Aktar", self.virman_dosyadan_aktar, rol="duzenle").pack(side="left", padx=8)
         tk_buton(alt, "İptal Et", self.virman_iptal, rol="iptal").pack(side="left", padx=8)
+        tk_buton(alt, "Muhasebe Fişi", self.virman_muhasebe_fisi, rol="duzenle").pack(side="left", padx=8)
         self.virman_listesini_yenile()
         self.nav_sayfa_isaretle(self.cari_virman_goster)
 
@@ -15179,6 +15211,23 @@ class MuhasebeApp(tk.Tk):
             messagebox.showerror("İptal edilemedi", str(hata), parent=self)
             return
         self.virman_listesini_yenile()
+
+    def virman_muhasebe_fisi(self):
+        secim = self.virman_tablosu.selection() if hasattr(self, "virman_tablosu") else ()
+        if not secim:
+            messagebox.showinfo("Virman seçimi", "Lütfen bir virman fişi seçin.", parent=self)
+            return
+        from muhasebe_durum_ui import belge_no_kaynagi, fisi_ac
+
+        try:
+            kaynak_id = belge_no_kaynagi("cari_virman", secim[0])
+        except Exception as hata:
+            messagebox.showerror("Muhasebe fişi", str(hata), parent=self)
+            return
+        if not kaynak_id:
+            messagebox.showinfo("Muhasebe fişi", f"{secim[0]} için muhasebe kaydı bulunamadı.", parent=self)
+            return
+        fisi_ac(self, "cari_virman", kaynak_id)
 
     def kk_cekimi_goster(self):
         self._icerigi_temizle()
@@ -17178,8 +17227,9 @@ class MuhasebeApp(tk.Tk):
         ttk.Label(self.icerik, text="SATIŞ İADE FATURALARI", style="Baslik.TLabel").pack(anchor="w")
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(14, 0))
-        kolonlar = ("no", "tarih", "musteri", "kaynak", "depo", "toplam", "durum")
-        basliklar = ("İade No", "İade Tarihi", "Müşteri", "Kaynak Fatura", "Depo", "Genel Toplam", "Durum")
+        kolonlar = ("no", "tarih", "musteri", "kaynak", "depo", "toplam", "durum", "muhasebe")
+        basliklar = ("İade No", "İade Tarihi", "Müşteri", "Kaynak Fatura", "Depo", "Genel Toplam", "Durum",
+                     "Muhasebe")
         self.iade_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
         for kolon, baslik in zip(kolonlar, basliklar):
             self.iade_tablosu.heading(kolon, text=baslik)
@@ -17198,14 +17248,18 @@ class MuhasebeApp(tk.Tk):
         self.iade_listesini_yenile()
 
     def iade_listesini_yenile(self):
+        from muhasebe_durum_ui import toplu_durum
+
         for item in self.iade_tablosu.get_children():
             self.iade_tablosu.delete(item)
-        for kayit in SatisIadeFaturasiService.listele():
+        kayitlar = SatisIadeFaturasiService.listele()
+        muhasebe = toplu_durum("satis_iade", [k["iade"].id for k in kayitlar])
+        for kayit in kayitlar:
             i = kayit["iade"]
             self.iade_tablosu.insert("", "end", iid=str(i.id), values=(
                 i.iade_no, tarih_goster(i.iade_tarihi), i.cari.unvan if i.cari else "",
                 i.kaynak_fatura.fatura_no if i.kaynak_fatura else "",
-                i.depo, para_goster(kayit["genel_toplam"]), i.durum,
+                i.depo, para_goster(kayit["genel_toplam"]), i.durum, muhasebe.get(i.id, ""),
             ))
 
     def _secili_iade_id(self):
@@ -18825,6 +18879,9 @@ class MuhasebeApp(tk.Tk):
             if siparis.durum == "İPTAL":
                 messagebox.showwarning("İrsaliye", "İptal edilmiş sipariş irsaliyeye çevrilemez.", parent=self)
                 return
+            if siparis.durum == "TASLAK":
+                messagebox.showwarning("İrsaliye", "Taslak siparişi önce «Kesinleştir» ile onaylayın.", parent=self)
+                return
             acik = any(s.miktar - s.irsaliyelenen_miktar > 0 for s in siparis.satirlar)
             if not acik:
                 messagebox.showinfo("İrsaliye", "Bu siparişte irsaliyelenecek açık miktar kalmadı.", parent=self)
@@ -18845,6 +18902,9 @@ class MuhasebeApp(tk.Tk):
             if siparis.durum == "İPTAL":
                 messagebox.showwarning("Fatura", "İptal edilmiş sipariş faturaya çevrilemez.", parent=self)
                 return
+            if siparis.durum == "TASLAK":
+                messagebox.showwarning("Fatura", "Taslak siparişi önce «Kesinleştir» ile onaylayın.", parent=self)
+                return
             acik = any(s.miktar - s.faturalanan_miktar > 0 for s in siparis.satirlar)
             if not acik:
                 messagebox.showinfo("Fatura", "Bu siparişte faturalanacak açık miktar kalmadı.", parent=self)
@@ -18857,9 +18917,31 @@ class MuhasebeApp(tk.Tk):
             if dialog.result:
                 yenile()
 
+        def kesinlestir():
+            secim = self.alis_siparis_tablosu.selection()
+            if not secim:
+                return
+            siparis = AlisSiparisiService.getir(int(secim[0]))
+            if not siparis or siparis.durum != "TASLAK":
+                messagebox.showinfo("Kesinleştir", "Yalnızca taslak sipariş kesinleştirilir.", parent=self)
+                return
+            if not messagebox.askyesno(
+                "Kesinleştir",
+                f"{siparis.siparis_no} kesinleştirilsin mi?\n"
+                "Kesinleşen sipariş stok uyarılarında beklenen alım olarak sayılır.",
+                parent=self,
+            ):
+                return
+            try:
+                AlisSiparisiService.kesinlestir(siparis.id)
+            except ValueError as hata:
+                birim_hatasi_goster(self, hata) or messagebox.showerror("Kesinleştir", str(hata), parent=self)
+            yenile()
+
         self.alis_siparis_ac = ac
         ttk.Button(alt, text="Yeni Sipariş", command=yeni).pack(side="left")
         ttk.Button(alt, text="Aç / Düzenle", command=ac).pack(side="left", padx=8)
+        ttk.Button(alt, text="Kesinleştir", command=kesinlestir).pack(side="left", padx=(0, 8))
         ttk.Button(alt, text="İrsaliyeye Çevir", command=irsaliyeye).pack(side="left")
         ttk.Button(alt, text="Faturaya Çevir", command=faturaya).pack(side="left", padx=8)
         ttk.Button(alt, text="İptal Et", command=iptal).pack(side="left")
@@ -19086,11 +19168,7 @@ class MuhasebeApp(tk.Tk):
             if fatura.durum == "İPTAL":
                 messagebox.showwarning("İade", "İptal faturalardan iade oluşturulamaz.", parent=self)
                 return
-            dialog = AlisIadeFaturasiDialog(self, kaynak_fatura=fatura)
-            self.wait_window(dialog)
-            if dialog.result:
-                messagebox.showinfo("İade", "Satın alma iade faturası kaydedildi.", parent=self)
-                self.alis_iade_faturalari_goster()
+            AlisIadeFaturasiDialog(self, kaynak_fatura=fatura)
 
         alt = ttk.Frame(self.icerik)
         alt.pack(fill="x", pady=10)
@@ -19112,67 +19190,17 @@ class MuhasebeApp(tk.Tk):
         )
         yenile()
 
+    def alis_iade_faturasi_ac(self, iade_id: int | None = None, kaynak_fatura=None):
+        """Menüden her tıklamada yeni boş alış iade taslağı; iade_id verilirse kayıtlı belge açılır."""
+        from alis_iade_ui import AlisIadeFaturasiPenceresi
+
+        return AlisIadeFaturasiPenceresi(self, iade_id=iade_id, kaynak_fatura=kaynak_fatura)
+
     def alis_iade_faturalari_goster(self):
-        from database.alis_iade_faturasi_service import AlisIadeFaturasiService
-        from alis_ui import AlisIadeFaturasiDialog
+        from alis_iade_ui import AlisIadeListesiCerceve
+
         self._icerigi_temizle()
-        ttk.Label(self.icerik, text="SATIN ALMA İADE FATURALARI", style="Baslik.TLabel").pack(anchor="w")
-        cerceve = ttk.Frame(self.icerik)
-        cerceve.pack(fill="both", expand=True, pady=(10, 0))
-        kolonlar = ("no", "tarih", "tedarikci", "genel", "durum")
-        self.alis_iade_tablosu = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
-        for kolon, baslik, w in (
-            ("no", "İade No", 150), ("tarih", "Tarih", 100), ("tedarikci", "Tedarikçi", 240),
-            ("genel", "Genel", 120), ("durum", "Durum", 100),
-        ):
-            self.alis_iade_tablosu.heading(kolon, text=baslik)
-            self.alis_iade_tablosu.column(kolon, width=w)
-        dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.alis_iade_tablosu.yview)
-        self.alis_iade_tablosu.configure(yscrollcommand=dikey.set)
-        self.alis_iade_tablosu.pack(side="left", fill="both", expand=True)
-        dikey.pack(side="right", fill="y")
-
-        def yenile():
-            for item in self.alis_iade_tablosu.get_children():
-                self.alis_iade_tablosu.delete(item)
-            for kayit in AlisIadeFaturasiService.listele():
-                i = kayit["iade"]
-                self.alis_iade_tablosu.insert("", "end", iid=str(i.id), values=(
-                    i.iade_no, tarih_goster(i.iade_tarihi),
-                    i.cari.unvan if i.cari else "",
-                    para_goster(kayit.get("genel_toplam", 0)), i.durum,
-                ))
-
-        alt = ttk.Frame(self.icerik)
-        alt.pack(fill="x", pady=10)
-
-        def yeni():
-            dialog = AlisIadeFaturasiDialog(self)
-            self.wait_window(dialog)
-            if dialog.result:
-                yenile()
-
-        def ac():
-            secim = self.alis_iade_tablosu.selection()
-            if not secim:
-                return
-            iade = AlisIadeFaturasiService.getir(int(secim[0]))
-            if iade:
-                dialog = AlisIadeFaturasiDialog(self, iade=iade)
-                self.wait_window(dialog)
-                if dialog.result:
-                    yenile()
-
-        def iptal():
-            secim = self.alis_iade_tablosu.selection()
-            if secim and messagebox.askyesno("İptal", "İade iptal edilsin mi?", parent=self):
-                try:
-                    AlisIadeFaturasiService.iptal_et(int(secim[0]))
-                except ValueError as hata:
-                    messagebox.showerror("İptal", str(hata), parent=self)
-                yenile()
-
-        ttk.Button(alt, text="Yeni İade", command=yeni).pack(side="left")
-        ttk.Button(alt, text="Aç / Düzenle", command=ac).pack(side="left", padx=8)
-        ttk.Button(alt, text="İptal Et", command=iptal).pack(side="left")
-        yenile()
+        ttk.Label(self.icerik, text="ALIŞ İADE FATURALARI LİSTESİ", style="Baslik.TLabel").pack(anchor="w")
+        self.alis_iade_listesi = AlisIadeListesiCerceve(self.icerik)
+        self.alis_iade_listesi.pack(fill="both", expand=True, pady=(10, 0))
+        self.alis_iade_tablosu = self.alis_iade_listesi.tablo

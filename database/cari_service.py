@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 import unicodedata
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -530,10 +530,11 @@ class CariService:
             FinansService.hareket_ekle(session, belge_no, tarih, tutar, "CARİ TAHSİLAT", hesap_adi, odeme_sekli)
             session.flush()
             iid = int(islem.id)
+            from database.finans_evrak_kimligi import EVRAK_CARI_TAHSILAT, kimlik_al
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
-
-        muhasebe_hook("cari_tahsilat_fisi", iid)
+            kimlik = kimlik_al(session, EVRAK_CARI_TAHSILAT, belge_no, cari_islem_id=iid)
+            muhasebe_hook("cari_tahsilat_fisi", kimlik, session=session)
         with get_session() as session:
             return session.get(CariIslem, iid)
 
@@ -581,12 +582,132 @@ class CariService:
             FinansService.hareket_ekle(session, belge_no, tarih, tutar, "CARİ ÖDEME", hesap_adi, odeme_sekli)
             session.flush()
             iid = int(islem.id)
+            from database.finans_evrak_kimligi import EVRAK_CARI_ODEME, kimlik_al
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
-
-        muhasebe_hook("cari_odeme_fisi", iid)
+            kimlik = kimlik_al(session, EVRAK_CARI_ODEME, belge_no, cari_islem_id=iid)
+            muhasebe_hook("cari_odeme_fisi", kimlik, session=session)
         with get_session() as session:
             return session.get(CariIslem, iid)
+
+    @staticmethod
+    def tahsilat_odeme_evraki(islem_id: int) -> dict | None:
+        """Cari hareket, cari kartından yapılmış bir tahsilat/ödeme evrakı mı (kalıcı kimlikle)."""
+        from database.finans_evrak_kimligi import EVRAK_CARI_ODEME, EVRAK_CARI_TAHSILAT, cari_islem_kimligi
+
+        with get_session() as session:
+            for evrak in (EVRAK_CARI_TAHSILAT, EVRAK_CARI_ODEME):
+                kimlik = cari_islem_kimligi(session, evrak, int(islem_id))
+                if kimlik is not None:
+                    return {"evrak_turu": evrak, "kaynak_id": int(kimlik.id), "belge_no": kimlik.belge_no}
+        return None
+
+    @staticmethod
+    def _eski_tahsilat_odeme_kimligi(session, islem: CariIslem):
+        """Kalıcı kimlik öncesi cari kartı tahsilat/ödemesi: yapı kesinse (THS/ODM, tek cari hareket,
+        aynı tutarda tek kasa/banka hareketi) kimlik oluşturulur; değilse None."""
+        from database.finans_evrak_kimligi import EVRAK_CARI_ODEME, EVRAK_CARI_TAHSILAT, kimlik_al, kimlik_getir
+        from database.models.finans import FinansHareketi
+
+        no = islem.belge_no or ""
+        tur = (islem.islem_turu or "")
+        if tur == "Tahsilat" and no.startswith("THS-"):
+            evrak, hareket_turu = EVRAK_CARI_TAHSILAT, "CARİ TAHSİLAT"
+        elif tur == "Ödeme" and no.startswith("ODM-"):
+            evrak, hareket_turu = EVRAK_CARI_ODEME, "CARİ ÖDEME"
+        else:
+            return None
+        if session.scalar(select(func.count()).select_from(CariIslem).where(CariIslem.belge_no == no)) != 1:
+            return None
+        hareketler = session.scalars(select(FinansHareketi).where(FinansHareketi.belge_no == no)).all()
+        tutar = Decimal(str(islem.alacak or 0)) + Decimal(str(islem.borc or 0))
+        if len(hareketler) != 1 or hareketler[0].hareket_turu != hareket_turu or \
+                Decimal(str(hareketler[0].tutar)) != tutar:
+            return None
+        return kimlik_getir(session, kimlik_al(session, evrak, no, cari_islem_id=islem.id, kaynak="gecmis"), evrak)
+
+    @staticmethod
+    def _eski_tahsilat_fisini_kapat(session, islem: CariIslem, neden: str) -> None:
+        """Eski sürümün cari hareket id'sine bağlı fişi (aynı belge numarasıyla) bir kez ters kayıtla kapatır."""
+        from database.models.genel_muhasebe import MuhasebeFisi
+        from database.muhasebe_entegrasyon import (
+            ESKI_KAYNAK_CARI_ODEME,
+            ESKI_KAYNAK_CARI_TAHSILAT,
+            MuhasebeEntegrasyonService,
+        )
+
+        kaynak = ESKI_KAYNAK_CARI_TAHSILAT if (islem.islem_turu or "") == "Tahsilat" else ESKI_KAYNAK_CARI_ODEME
+        bagli = session.scalar(select(MuhasebeFisi.id).where(
+            MuhasebeFisi.kaynak_turu == kaynak, MuhasebeFisi.kaynak_id == int(islem.id),
+            MuhasebeFisi.durum != "İptal", MuhasebeFisi.belge_no == islem.belge_no).limit(1))
+        if bagli is not None:  # id yeniden kullanılmış olabilir: belge numarası da aynı olmalı
+            MuhasebeEntegrasyonService.iptal_kaynak(kaynak, int(islem.id), f"İptal: {neden}", session=session)
+
+    @staticmethod
+    def tahsilat_odeme_iptal(islem_id: int, neden: str) -> None:
+        """Cari kartından yapılan tahsilat/ödemeyi bütün etkileriyle tek transaction'da iptal eder.
+
+        Kasa/banka hareketi silinir, kapattığı borçlar (tahsis kayıtlarıyla) yeniden açılır, cari
+        hareket kaldırılır; muhasebeleştirilmişse fiş bir kez ters kayıtla kapanır, değilse ters fiş
+        oluşmaz. İptal günlüğüne anlık görüntü yazılır. İkinci istek (çift tıklama / eş zamanlı)
+        kaydı bulamaz ve hiçbir etki üretmez.
+        """
+        from database.finans_evrak_kimligi import EVRAK_CARI_ODEME, EVRAK_CARI_TAHSILAT, cari_islem_kimligi
+        from database.muhasebe_entegrasyon import muhasebe_hook
+        from database.muhasebe_service import kapali_donem_zorunlu_degil
+        from database.models.finans import FinansHareketi
+
+        yazma_zorunlu("cari_duzenleme", "finans_duzenleme",
+                      mesaj="Tahsilat/ödeme iptali için cari veya finans düzenleme yetkisi gerekir.")
+        neden = (neden or "").strip()
+        if not neden:
+            raise ValueError("İptal nedeni yazın.")
+        from database.deleted_record_service import AuditDeleteService
+
+        AuditDeleteService.schema_hazirla()
+        with get_session() as session:
+            # Önce satırı yazma kilidiyle sahiplen: eş zamanlı ikinci iptal burada bekler, sonra boş döner
+            sahip = session.execute(
+                update(CariIslem).where(CariIslem.id == int(islem_id)).values(aciklama=CariIslem.aciklama)
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            islem = session.get(CariIslem, int(islem_id)) if sahip else None
+            if islem is None:
+                raise ValueError("Tahsilat/ödeme bulunamadı; zaten iptal edilmiş olabilir.")
+            kimlik = None
+            for evrak in (EVRAK_CARI_TAHSILAT, EVRAK_CARI_ODEME):
+                kimlik = cari_islem_kimligi(session, evrak, islem.id)
+                if kimlik is not None:
+                    break
+            if kimlik is None:
+                kimlik = CariService._eski_tahsilat_odeme_kimligi(session, islem)
+            if kimlik is None:
+                raise ValueError(
+                    "Bu hareket cari kartından yapılmış bir tahsilat/ödeme evrakı değil "
+                    "(makbuz, havale, fatura veya aktarım hareketi); kendi evrakından iptal edin."
+                )
+            kapali_donem_zorunlu_degil(session, islem.tarih, "Tahsilat/ödeme")
+            belge_no = islem.belge_no
+            CariService._eski_tahsilat_fisini_kapat(session, islem, neden)
+            tutar = Decimal(str(islem.alacak or 0)) + Decimal(str(islem.borc or 0))
+            hareketler = session.scalars(select(FinansHareketi).where(FinansHareketi.belge_no == belge_no)).all()
+            snap = {
+                "entity": {"belge_no": belge_no, "evrak_turu": kimlik.evrak_turu, "kimlik_id": kimlik.id,
+                           "cari_id": islem.cari_id, "tarih": str(islem.tarih), "borc": str(islem.borc),
+                           "alacak": str(islem.alacak), "hesap_adi": islem.hesap_adi},
+                "related": [{"type": "finans_hareketi", "id": h.id, "hesap_id": h.hesap_id,
+                             "tutar": str(h.tutar), "hareket_turu": h.hareket_turu} for h in hareketler],
+            }
+            muhasebe_hook(f"{kimlik.evrak_turu}_iptal", int(kimlik.id), f"İptal: {neden}", session=session)
+            kimlik.cari_islem_id = None  # cari hareket silinir; id SQLite'ta yeniden kullanılabilir
+            FinansService._havale_cari_geri_al(session, belge_no)
+            FinansService._finans_hareketlerini_sil(session, belge_no)
+            session.flush()
+            AuditDeleteService.log_cancel_snapshot(
+                "cari_tahsilat_odeme", belge_no, reason=neden,
+                note=f"{'Tahsilat' if kimlik.evrak_turu == EVRAK_CARI_TAHSILAT else 'Ödeme'} iptal",
+                snapshot=snap, record_code=belge_no, amount=tutar, module="cari", session=session,
+            )
 
     @staticmethod
     def acilis_fisi_ekle(
@@ -858,6 +979,10 @@ class CariService:
             session.add(kaynak_islem)
             session.add(hedef_islem)
             session.flush()
+            from database.finans_evrak_kimligi import EVRAK_CARI_VIRMAN, kimlik_al
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("cari_virman_fisi", kimlik_al(session, EVRAK_CARI_VIRMAN, belgeno), session=session)
             return kaynak_islem, hedef_islem
 
     @staticmethod
@@ -973,6 +1098,12 @@ class CariService:
         if not belge_no.startswith("VRM-"):
             raise ValueError("Geçersiz virman belge numarası.")
         with get_session() as session:
+            # Yazma kilidiyle sahiplen: eş zamanlı ikinci iptal bekler, sonra hareket bulamaz
+            session.execute(
+                update(CariIslem)
+                .where(CariIslem.belge_no == belge_no, CariIslem.islem_turu == "Cari Virman")
+                .values(aciklama=CariIslem.aciklama).execution_options(synchronize_session=False)
+            )
             islemler = session.scalars(
                 select(CariIslem).where(
                     CariIslem.belge_no == belge_no,
@@ -985,6 +1116,14 @@ class CariService:
             hedef_islem = next((i for i in islemler if i.borc > 0), None)
             if kaynak_islem is None or hedef_islem is None:
                 raise ValueError("Virman fişi eksik kayıtlı; iptal edilemez.")
+            from database.finans_evrak_kimligi import EVRAK_CARI_VIRMAN, kimlik_bul
+            from database.muhasebe_entegrasyon import muhasebe_hook
+            from database.muhasebe_service import kapali_donem_zorunlu_degil
+
+            kimlik = kimlik_bul(session, EVRAK_CARI_VIRMAN, belge_no)
+            if kimlik is not None:
+                kapali_donem_zorunlu_degil(session, kaynak_islem.tarih, "Cari virman")
+                muhasebe_hook("cari_virman_iptal", int(kimlik.id), f"Cari virman iptal {belge_no}", session=session)
             tutar = kaynak_islem.alacak
             hedef_hareket = session.scalar(
                 select(SatisHareketi).where(

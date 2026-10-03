@@ -248,7 +248,8 @@ class SatisIrsaliyesiService:
         if stok is None:
             return decimal(miktar, "Miktar", Decimal("0"))
         ana = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
-        return StokService.temel_miktara_cevir(miktar, (birim or ana).strip() or ana, stok, ana)
+        carpan = StokService.birim_carpani_kesin(stok, (birim or ana).strip() or ana)
+        return (decimal(miktar, "Miktar", Decimal("0")) * carpan).quantize(Decimal("0.000001"))
 
     @staticmethod
     def _bagli_fatura_satirlari(session, irsaliye, *, iptal_dahil: bool = False):
@@ -886,6 +887,9 @@ class SatisIrsaliyesiService:
             header_depo = getattr(irsaliye, "depo", None) or "ANA DEPO"
             kullanilan: set[int] = set()
             yeni_siparis_idleri: set[int] = set()
+            from database.stok_service import StokService
+
+            StokService.belge_birimlerini_dogrula(session, satir_verileri, "Satış irsaliyesi")
             for sira, veri in enumerate(satir_verileri, start=1):
                 miktar = decimal(veri["miktar"], "İrsaliye miktarı", Decimal("0.0001"))
                 birim = (veri.get("birim") or "Adet").strip() or "Adet"

@@ -83,12 +83,17 @@ class BelgeOnizlemeDialog(tk.Toplevel):
         *,
         dipnot: str | None = None,
         geometry: str = "520x420",
+        muhasebe: tuple[str, int | None] | None = None,
     ):
         super().__init__(parent)
         self.baslik = baslik
         self.alanlar = list(alanlar)
         self.dipnot = dipnot
         self.title(baslik)
+        if muhasebe and muhasebe[1]:
+            from muhasebe_durum_ui import baslik_guncelle
+
+            baslik_guncelle(self, baslik, *muhasebe)
         self.geometry(geometry)
         self.minsize(460, 360)
         self.transient(parent)
@@ -118,6 +123,10 @@ class BelgeOnizlemeDialog(tk.Toplevel):
         alt.pack(fill="x", side="bottom")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Yazdır", width=12, command=self.yazdir).pack(side="right", padx=(0, 8))
+        if muhasebe and muhasebe[1]:
+            from muhasebe_durum_ui import fis_dugmesi
+
+            fis_dugmesi(alt, muhasebe[0], lambda: muhasebe[1]).pack(side="right", padx=(0, 8))
 
     def yazdir(self):
         belgeyi_yazdir(self.baslik, self.alanlar, parent=self, dipnot=self.dipnot)
@@ -182,7 +191,7 @@ def gider_fisi_onizle(parent, belge_no: str) -> bool:
         ("Bağlı belge", fis.bagli_belge_no or "—"),
         ("Açıklama", fis.aciklama or "—"),
     ]
-    dialog = BelgeOnizlemeDialog(parent, "Gider Fişi", alanlar)
+    dialog = BelgeOnizlemeDialog(parent, "Gider Fişi", alanlar, muhasebe=("gider_fisi", fis.id))
     if dialog.winfo_exists():
         parent.wait_window(dialog)
     return True
@@ -231,7 +240,17 @@ def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
             ("Açıklama", islem.aciklama or "—"),
         ]
         baslik = islem.islem_turu or "Cari İşlem"
-    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar)
+    muhasebe = None
+    try:
+        from muhasebe_durum_ui import belge_no_kaynagi, cari_islem_kaynagi
+
+        if baslik == "Cari Virman":
+            muhasebe = ("cari_virman", belge_no_kaynagi("cari_virman", belge_no))
+        else:
+            muhasebe = cari_islem_kaynagi(kayitlar[0].id)
+    except Exception:
+        muhasebe = None
+    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar, muhasebe=muhasebe)
     if dialog.winfo_exists():
         parent.wait_window(dialog)
     return True

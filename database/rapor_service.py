@@ -277,7 +277,7 @@ class RaporService:
             alis_iade_nolari: set[str] = set()
             alis_iadeler = session.scalars(
                 select(AlisIadeFaturasi)
-                .where(AlisIadeFaturasi.cari_id == cari_id, AlisIadeFaturasi.durum != "İPTAL")
+                .where(AlisIadeFaturasi.cari_id == cari_id, AlisIadeFaturasi.durum.not_in(("İPTAL", "TASLAK")))
                 .options(selectinload(AlisIadeFaturasi.satirlar))
                 .order_by(AlisIadeFaturasi.iade_tarihi, AlisIadeFaturasi.id)
             ).all()
@@ -517,6 +517,14 @@ class RaporService:
             return {"lotlar": lot_nos, "tedarikciler": tedarikciler}
 
     @staticmethod
+    def _alis_iade_belge_nolari(session) -> set[str]:
+        """Alış iadesi çıkışları da FATURA ÇIKIŞ türüyle yazılır; satış sayılmaması için belge no kümesi."""
+        try:
+            return {n for n in session.scalars(select(AlisIadeFaturasi.iade_no)).all() if n}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    @staticmethod
     def _depo_adi(session, depo_id):
         depo = session.get(Depo, depo_id)
         return depo.ad if depo else ""
@@ -532,7 +540,9 @@ class RaporService:
         """
         Belirli tarihteki stok envanteri.
         Miktar: hareket bakiyesi (tarih ≤ seçilen gün).
-        Birim maliyet: seçilen yönteme göre (güncel lot / kart maliyetleri).
+        FIFO değer: o tarihte açık kalan FIFO katmanlarının miktar × maliyet toplamı
+        (``StokService.fifo_envanter_degerleri``; sonraki alış/masraf geçmişi değiştirmez).
+        Diğer yöntemler: miktar × güncel lot/kart birim maliyeti.
         """
         as_of = tarih or date.today()
         yontem = maliyet_yontemi if maliyet_yontemi in _MALIYET_ANAHTAR else "FIFO"
@@ -547,19 +557,8 @@ class RaporService:
                     select(StokKarti).where(StokKarti.aktif.is_(True)).order_by(StokKarti.stok_kodu)
                 ).all()
             )
-            hareketler = list(
-                session.scalars(
-                    select(StokHareketi).where(StokHareketi.tarih <= as_of)
-                ).all()
-            )
-
-            bakiye: dict[tuple[int, int], Decimal] = {}
-            for h in hareketler:
-                key = (h.stok_id, h.depo_id)
-                isaret = Decimal("1") if h.hareket_turu in GIRIS_HAREKETLERI else Decimal("-1")
-                if h.hareket_turu not in GIRIS_HAREKETLERI and h.hareket_turu not in CIKIS_HAREKETLERI:
-                    continue
-                bakiye[key] = bakiye.get(key, Decimal("0")) + isaret * (h.miktar or Decimal("0"))
+            fifo = StokService.fifo_envanter_degerleri(session, as_of if tarih else None)
+            bakiye: dict[tuple[int, int], Decimal] = {k: v["miktar"] for k, v in fifo.items()}
 
             satirlar = []
             toplam_miktar = Decimal("0")
@@ -578,9 +577,13 @@ class RaporService:
                         continue
                     if miktar == 0 and not sadece_pozitif:
                         continue
-                    maliyetler = StokService.maliyetler(stok.stok_kodu, ad)
-                    birim = Decimal(str(maliyetler.get(anahtar) or 0))
-                    tutar = miktar * birim
+                    if yontem == "FIFO":
+                        tutar = fifo[(stok.id, depo_id)]["deger"]
+                        birim = (tutar / miktar).quantize(Decimal("0.0001")) if miktar else Decimal("0")
+                    else:
+                        maliyetler = StokService.maliyetler(stok.stok_kodu, ad)
+                        birim = Decimal(str(maliyetler.get(anahtar) or 0))
+                        tutar = miktar * birim
                     toplam_miktar += miktar
                     toplam_tutar += tutar
                     satirlar.append({
@@ -640,6 +643,7 @@ class RaporService:
                     lot_tedarikci[(l.stok_id, turkce_normalize(l.lot_no or ""))] = turkce_normalize(l.tedarikci or "")
 
             satirlar = []
+            carpan_cache: dict = {}
             toplam_satis = toplam_maliyet = Decimal("0")
             for fatura in faturalar:
                 if baslangic and fatura.fatura_tarihi < baslangic:
@@ -678,7 +682,11 @@ class RaporService:
                         Decimal("1") - (satir.iskonto_orani or 0) / Decimal("100")
                     )
                     birim_maliyet = getattr(satir, alan, None) or satir.fifo_birim_maliyeti or Decimal("0")
-                    maliyet = satir.miktar * birim_maliyet
+                    # Satır maliyeti temel birim başınadır; belge birimi Koli vb. ise katsayıyla çarp
+                    ck = (satir.urun_kodu, (satir.birim or "").casefold(), getattr(satir, "birim_carpani", None))
+                    if ck not in carpan_cache:
+                        carpan_cache[ck] = StokService.satir_birim_carpani(session, satir)
+                    maliyet = satir.miktar * carpan_cache[ck] * birim_maliyet
                     kar = net - maliyet
                     marj = (kar / net * Decimal("100")) if net else Decimal("0")
                     toplam_satis += net
@@ -726,9 +734,12 @@ class RaporService:
                 ).all()
             )
             son_satis: dict[int, date] = {}
+            iade_nolari = RaporService._alis_iade_belge_nolari(session)
             for h in session.scalars(
                 select(StokHareketi).where(StokHareketi.hareket_turu == "FATURA ÇIKIŞ")
             ).all():
+                if h.belge_no in iade_nolari:
+                    continue
                 onceki = son_satis.get(h.stok_id)
                 if onceki is None or h.tarih > onceki:
                     son_satis[h.stok_id] = h.tarih
@@ -816,6 +827,7 @@ class RaporService:
         cogs_miktar: dict[str, Decimal] = {}
         with get_session() as session:
             stok_by_id = {s.id: s for s in session.scalars(select(StokKarti)).all()}
+            iade_nolari = RaporService._alis_iade_belge_nolari(session)
             for h in session.scalars(
                 select(StokHareketi).where(
                     StokHareketi.hareket_turu == "FATURA ÇIKIŞ",
@@ -823,6 +835,8 @@ class RaporService:
                     StokHareketi.tarih <= bitis,
                 )
             ).all():
+                if h.belge_no in iade_nolari:
+                    continue
                 stok = stok_by_id.get(h.stok_id)
                 if not stok:
                     continue
@@ -1242,7 +1256,7 @@ class RaporService:
 
             for iade in session.scalars(
                 select(AlisIadeFaturasi)
-                .where(AlisIadeFaturasi.durum != "İPTAL")
+                .where(AlisIadeFaturasi.durum.not_in(("İPTAL", "TASLAK")))
                 .options(selectinload(AlisIadeFaturasi.satirlar))
             ).all():
                 if iade.iade_tarihi < baslangic or iade.iade_tarihi > bitis:

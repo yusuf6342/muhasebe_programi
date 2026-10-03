@@ -296,6 +296,9 @@ class CariVirmanMakbuzService:
             kayit.aciklama = aciklama
             cls._cari_etkilerini_yaz(session, kayit, musteri, tedarikci)
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("cari_virman_makbuzu_fisi", int(kayit.id), yeniden=bool(virman_id), session=session)
             return int(kayit.id)
 
     @staticmethod
@@ -383,6 +386,18 @@ class CariVirmanMakbuzService:
                 raise ValueError("Cari virman makbuzu bulunamadı.")
             if kayit.durum == "IPTAL":
                 raise ValueError("Cari virman makbuzu zaten iptal.")
+            from sqlalchemy import update
+
+            # Eş zamanlı ikinci iptal: koşullu güncelleme yalnız birinde satır bulur
+            if not session.execute(
+                update(CariVirmanMakbuzu).where(CariVirmanMakbuzu.id == kayit.id, CariVirmanMakbuzu.durum != "IPTAL")
+                .values(durum="IPTAL").execution_options(synchronize_session=False)
+            ).rowcount:
+                raise ValueError("Cari virman makbuzu zaten iptal.")
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("cari_virman_makbuzu_iptal", int(kayit.id), f"Cari virman makbuzu iptal {kayit.belge_no}",
+                          session=session)
             cls._cari_etkilerini_geri_al(session, kayit)
             kayit.durum = "IPTAL"
             from database.odeme_sozu_service import OdemeSozuService

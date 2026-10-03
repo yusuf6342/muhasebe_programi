@@ -435,114 +435,6 @@ class BankaKrediService:
             biriken += pay
         return sonuc
 
-    @staticmethod
-    def _muhasebe_fis_olustur(session, odeme) -> int | None:
-        """Hesap eşleştirmeleri tamsa muhasebe fişi üretir; eksikse sessizce atlar."""
-        from database.models.genel_muhasebe import (
-            HesapPlani,
-            MuhasebeFisi,
-            MuhasebeFisiSatiri,
-            MuhasebeHesapEsleme,
-        )
-        from database.muhasebe_service import MuhasebeService
-
-        firma_id = MuhasebeService.yerel_firma_id(session)
-
-        def hesap(anahtar):
-            e = session.scalar(
-                select(MuhasebeHesapEsleme).where(
-                    MuhasebeHesapEsleme.firma_id == firma_id,
-                    MuhasebeHesapEsleme.anahtar == anahtar,
-                    MuhasebeHesapEsleme.aktif.is_(True),
-                )
-            )
-            if e is None or not e.hesap_id:
-                return None
-            h = session.get(HesapPlani, e.hesap_id)
-            if h is None or not h.aktif:
-                return None
-            return h
-
-        banka = hesap("banka")
-        krediler = (
-            hesap("kredi_kisa_vadeli")
-            or hesap("kredi_uzun_vadeli")
-            or hesap("krediler")
-            or hesap("banka_kredileri")
-        )
-        genel_gider = hesap("giderler") or hesap("kredi_diger_finansman")
-        if banka is None or krediler is None:
-            return None
-
-        anapara = BankaKrediService._d(odeme.anapara or 0, "Anapara")
-        toplam = BankaKrediService._d(odeme.toplam or 0, "Toplam")
-        bilesen_satirlar = (
-            ("faiz", "kredi_faiz_gideri", "Faiz gideri"),
-            ("bsmv", "kredi_bsmv_gideri", "BSMV"),
-            ("kkdf", "kredi_kkdf_gideri", "KKDF"),
-            ("komisyon", "kredi_komisyon_gideri", "Banka komisyonu"),
-            ("sigorta", "kredi_sigorta_gideri", "Sigorta"),
-            ("dosya_masrafi", "kredi_dosya_masrafi", "Dosya/işlem masrafı"),
-            ("diger_masraflar", "kredi_diger_finansman", "Diğer finansman"),
-            ("gecikme_faizi", "kredi_gecikme_faizi", "Gecikme faizi"),
-        )
-        satirlar = []
-        if anapara > 0:
-            satirlar.append((krediler, anapara, SIFIR, "Kredi anapara ödemesi"))
-        for alan, anahtar, etiket in bilesen_satirlar:
-            tutar = BankaKrediService._d(getattr(odeme, alan, 0) or 0, etiket)
-            if tutar <= 0:
-                continue
-            h = hesap(anahtar) or genel_gider
-            if h is None:
-                return None
-            satirlar.append((h, tutar, SIFIR, etiket))
-        satirlar.append((banka, SIFIR, toplam, "Banka çıkışı"))
-        borc_toplam = sum((b for _h, b, _a, _ in satirlar), SIFIR)
-        alacak_toplam = sum((a for _h, _b, a, _ in satirlar), SIFIR)
-        if borc_toplam != alacak_toplam or borc_toplam != toplam:
-            return None
-
-        mali_yil = odeme.odeme_tarihi.year
-        from database.muhasebe_service import MuhasebeFisService
-
-        fis = MuhasebeFisi(
-            firma_id=firma_id,
-            donem_id=oturum.period_id,
-            mali_yil=mali_yil,
-            fis_no=MuhasebeFisService._sonraki_fis_no(session, firma_id, mali_yil),
-            fis_tarihi=odeme.odeme_tarihi,
-            fis_turu="Mahsup",
-            aciklama=f"Kredi ödemesi {odeme.odeme_belge_no}",
-            belge_no=odeme.odeme_belge_no,
-            durum="Kesinleşmiş",
-            toplam_borc=toplam,
-            toplam_alacak=toplam,
-            kaynak_turu="banka_kredi_odeme",
-            kaynak_id=int(odeme.id),
-            olusturan_kullanici_id=oturum.user_id,
-        )
-        session.add(fis)
-        session.flush()
-        for sira, (h, borc, alacak, acik) in enumerate(satirlar, start=1):
-            session.add(
-                MuhasebeFisiSatiri(
-                    fis_id=fis.id,
-                    firma_id=firma_id,
-                    sira_no=sira,
-                    hesap_id=h.id,
-                    hesap_kodu=h.hesap_kodu,
-                    hesap_adi=h.hesap_adi,
-                    aciklama=acik,
-                    borc=borc,
-                    alacak=alacak,
-                    belge_tarihi=odeme.odeme_tarihi,
-                    belge_no=odeme.odeme_belge_no,
-                )
-            )
-        session.flush()
-        return int(fis.id)
-
     # --- Listeleme / özet ---
 
     @staticmethod
@@ -1686,13 +1578,8 @@ class BankaKrediService:
                     )
                 odeme.gider_belge_no = gider_belge
 
-            # 11) Muhasebe fişi — eşleştirme eksikse ödeme durmaz
-            try:
-                fis_id = BankaKrediService._muhasebe_fis_olustur(session, odeme)
-                if fis_id:
-                    odeme.muhasebe_fis_id = fis_id
-            except Exception as hata:  # pragma: no cover - entegrasyon opsiyonel
-                print(f"[Kredi ödeme] Muhasebe fişi oluşturulamadı: {hata}")
+            # 11) Muhasebe fişi burada yazılmaz: ödeme kaydı tamamlanınca muhasebe_hook (Finans İşlem
+            # Ayarları'ndaki vade ayrımı ve kalem hesaplarıyla) MuhasebeEntegrasyonService'ten üretir.
 
             # 12) Taksit güncelle
             if taksit is not None:
@@ -1734,6 +1621,9 @@ class BankaKrediService:
                         t.gider_belge_no = gider_belge
 
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("banka_kredi_odeme_fisi", int(odeme.id), session=session)
 
             # 13) Kalan taksit yoksa kredi kapanır
             kalan_acik = session.scalars(
@@ -2027,6 +1917,11 @@ class BankaKrediService:
             odeme.durum = "IPTAL"
             odeme.iptal_nedeni = gerekce[:500]
             odeme.iptal_odeme_id = ters.id
+            session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("banka_kredi_odeme_iptal", int(odeme.id), f"Kredi ödemesi iptal: {gerekce}",
+                          session=session)
 
             # Taksit durumunu kalan aktif ödemelere göre geri yükle
             if odeme.taksit_id:

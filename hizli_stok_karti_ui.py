@@ -521,7 +521,9 @@ class HizliStokKartiDialog(tk.Toplevel):
             kayit_id=str(getattr(stok, "id", "")),
             belge_no=stok.stok_kodu,
             yeni={
-                "kaynak": "Satış Faturası – Hızlı Stok Oluşturma",
+                "kaynak": getattr(
+                    self.fatura_dialog, "_hizli_stok_kaynak", "Satış Faturası – Hızlı Stok Oluşturma"
+                ),
                 "stok_kodu": stok.stok_kodu,
                 "stok_adi": stok.stok_adi,
             },

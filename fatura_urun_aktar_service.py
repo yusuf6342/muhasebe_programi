@@ -168,6 +168,60 @@ def fatura_pb_ve_kur(dialog) -> tuple[str, Decimal]:
     return pb, kur
 
 
+def _belge_tarihi(dialog):
+    from datetime import date, datetime
+
+    girdiler = getattr(dialog, "girdiler", None) or {}
+    for alan in ("siparis_tarihi", "fatura_tarihi", "iade_tarihi"):
+        w = girdiler.get(alan)
+        if w is None:
+            continue
+        try:
+            return datetime.strptime(w.get().strip(), "%d.%m.%Y").date()
+        except Exception:
+            continue
+    return date.today()
+
+
+def _kart_fiyatini_belge_pb_ye_cevir(dialog, kod, fiyat, belge_pb, belge_kur, musteri) -> Decimal:
+    """Stok kartı fiyatını (kendi para biriminde) belge başlık para birimine çevirir.
+
+    Sonuç, satır eklenirken ``doviz_satir_kaydet_oncesi`` tarafından başlık kuruyla
+    TL'ye çevrilir; böylece dönüşüm yalnızca bir kez yapılır.
+    """
+    from fatura_satir_birim_service import fiyat_cevir, satis_fiyati_para_birimi
+
+    fiyat = _d(fiyat)
+    try:
+        kart_pb = satis_fiyati_para_birimi(kod, musteri=musteri)
+    except Exception:
+        return fiyat
+    if kart_pb == belge_pb or fiyat == 0:
+        return fiyat
+    try:
+        return fiyat_cevir(
+            fiyat,
+            kart_pb,
+            belge_pb,
+            kurlar={belge_pb: belge_kur} if belge_pb != "TRY" else None,
+            tarih=_belge_tarihi(dialog),
+        )
+    except ValueError as hata:
+        try:
+            from tkinter import messagebox
+
+            messagebox.showwarning(
+                "Kur bulunamadı",
+                f"{kod} ürününün satış fiyatı {kart_pb} cinsinden ({fiyat}).\n"
+                f"{hata}\n\nSatır 0 fiyatla eklendi; birim fiyatı elle girin "
+                "veya Döviz Kurları ekranından kuru alın.",
+                parent=dialog,
+            )
+        except Exception:
+            pass
+        return Decimal("0")
+
+
 def stoktan_satir_sablonu(
     dialog,
     *,
@@ -209,10 +263,12 @@ def stoktan_satir_sablonu(
         except Exception:
             musteri = None
 
+    pb, kur = fatura_pb_ve_kur(dialog)
     if birim_fiyat is None:
         fiyat = birim_satis_fiyati(kod, ana_birim, musteri=musteri)
         if fiyat is None:
             fiyat = _musteri_fiyat(dialog, kod, Decimal("0"))
+        fiyat = _kart_fiyatini_belge_pb_ye_cevir(dialog, kod, fiyat, pb, kur, musteri)
     else:
         fiyat = _d(birim_fiyat)
 
@@ -231,7 +287,6 @@ def stoktan_satir_sablonu(
         iskonto1 = _d(getattr(stok, "iskonto_1", 0), Decimal("0"))
 
     miktar_ekle = miktar if miktar is not None else Decimal("1")
-    pb, kur = fatura_pb_ve_kur(dialog)
 
     sablon: dict[str, Any] = {
         "urun_kodu": kod,
@@ -352,6 +407,12 @@ def urunu_faturaya_aktar(
             dialog.satirlar.append(sablon)
             idx = len(dialog.satirlar) - 1
 
+    try:
+        from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
+
+        uzlasma_etkisini_kaldir(dialog)
+    except Exception:
+        pass
     dialog._fatura_satirlari_hazir = True
     dialog._duzenlenen_satir = None
     if toplu_ekleme_mi(dialog):

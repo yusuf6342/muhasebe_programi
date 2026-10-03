@@ -1401,21 +1401,32 @@ class SatirIciUrunGirisi:
         except Exception:
             return True
 
-    def yeni_stok_karti(self) -> None:
+    def yeni_stok_karti(self):
+        """Hızlı stok kartını açar; kaydedilen kartı döner (iptalde None).
+
+        ``yeni_stok_eklendi`` verilmişse ve kart satıra eklenmeden kaydedildiyse çağrılır.
+        """
         if self.kilitli():
-            return
+            return None
         if not self._stok_yetkisi():
             messagebox.showwarning("Yetki", "Stok kartı oluşturma yetkiniz yok.", parent=self.dialog)
-            return
+            return None
         metin = self._var.get().strip() if self.entry is not None else ""
         rol = self._rol
         from hizli_stok_karti_ui import hizli_stok_karti_ac
 
         self._popup_kapat()
         barkod = metin if rol == "barkod" else None
-        ad = metin if rol != "barkod" else None
-        hizli_stok_karti_ac(self.dialog, barkod=barkod, urun_adi=ad)
+        ad = metin if rol not in (None, "barkod") else None
+        satirlar = getattr(self.dialog, "satirlar", None)
+        onceki = len(satirlar) if satirlar is not None else None
+        stok = hizli_stok_karti_ac(self.dialog, barkod=barkod, urun_adi=ad)
         self.onbellegi_temizle()
+        if stok is not None and self.yeni_stok_eklendi is not None:
+            simdi = len(getattr(self.dialog, "satirlar", None) or [])
+            if onceki is None or simdi == onceki:
+                self.yeni_stok_eklendi(stok)
+        return stok
 
     def stoktan_ekle(self, stok, fiyat_hint: Any = None) -> int | None:
         """Hızlı stok kartından «faturaya ekle» — çalışılan giriş satırına yazar."""

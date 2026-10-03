@@ -4,7 +4,7 @@ import calendar
 import re
 import time
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 
@@ -782,6 +782,14 @@ class FinansService:
         return acik, None
 
     @staticmethod
+    def _muhasebe_evrak(session, evrak_turu: str, belge_no: str, fn: str, yeniden: bool) -> None:
+        """Hareket satırlarıyla tutulan evrakın kalıcı kimliğini alır; muhasebeleştirme olayını bildirir."""
+        from database.finans_evrak_kimligi import kimlik_al
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook(fn, kimlik_al(session, evrak_turu, belge_no), yeniden=yeniden, session=session)
+
+    @staticmethod
     def _finans_hareketlerini_sil(session, belge_no: str) -> int:
         hareketler = list(
             session.scalars(
@@ -1224,6 +1232,7 @@ Kasadan çıkış + banka hesabına (mevduat/KMH/KK/vadeli) giriş."""
                 )
             )
             session.flush()
+            FinansService._muhasebe_evrak(session, "kasa_banka_virman", belgeno, "kasa_banka_virman_fisi", bool(belge_no))
             return belgeno
 
     @staticmethod
@@ -1322,6 +1331,7 @@ Banka hesabına giriş; gönderen cari zorunlu (tahsilat)."""
                 session, cari_id, tarih, tutar, belgeno, banka.hesap_adi, acik
             )
             session.flush()
+            FinansService._muhasebe_evrak(session, "banka_havale", belgeno, "banka_havale_fisi", bool(belge_no))
             return belgeno
 
     @staticmethod
@@ -1391,6 +1401,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 session, cari_id, tarih, tutar, belgeno, banka.hesap_adi, acik
             )
             session.flush()
+            FinansService._muhasebe_evrak(session, "banka_havale", belgeno, "banka_havale_fisi", bool(belge_no))
             return belgeno
 
     @staticmethod
@@ -1529,6 +1540,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 )
             )
             session.flush()
+            FinansService._muhasebe_evrak(session, "kasa_banka_virman", belgeno, "kasa_banka_virman_fisi", bool(belge_no))
             return belgeno
 
     @staticmethod
@@ -1677,6 +1689,7 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                 )
             )
             session.flush()
+            FinansService._muhasebe_evrak(session, "kasa_banka_virman", belgeno, "kasa_banka_virman_fisi", bool(belge_no))
             return belgeno
 
     @staticmethod
@@ -1868,6 +1881,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                     raise ValueError("Güncellenecek POS tahsilat fişi bulunamadı.")
                 if (eski.durum or "") != "BEKLIYOR":
                     raise ValueError("Valöre aktarılmış POS tahsilatı güncellenemez.")
+                from database.muhasebe_entegrasyon import muhasebe_hook
+
+                muhasebe_hook("pos_tahsilat_iptal", int(eski.id), "POS tahsilatı güncellendi", session=session)
                 FinansService._havale_cari_geri_al(session, belge_no)
                 FinansService._finans_hareketlerini_sil(session, belge_no)
                 session.delete(eski)
@@ -1952,6 +1968,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             )
             session.add(kayit)
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("pos_tahsilat_fisi", int(kayit.id), session=session)
             return {
                 "belge_no": belgeno,
                 "brut": brut,
@@ -2109,6 +2128,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             kayit.durum = "AKTARILDI"
             kayit.aktarim_zamani = datetime.now()
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("pos_valor_aktarimi_fisi", int(kayit.id), session=session)
             return {"belge_no": belge, "net": net, "aktarildi": True}
 
     @staticmethod
@@ -2417,6 +2439,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                 # Taksitlerden biri ödendiyse engelle
                 if any((t.durum or "") == "ODENDI" for t in (eski.taksitler or [])):
                     raise ValueError("Ödenmiş taksiti olan fiş güncellenemez.")
+                from database.muhasebe_entegrasyon import muhasebe_hook
+
+                muhasebe_hook("kart_odeme_iptal", int(eski.id), "Kart ödemesi güncellendi", session=session)
                 FinansService._havale_cari_geri_al(session, belge_no)
                 FinansService._finans_hareketlerini_sil(session, belge_no)
                 session.delete(eski)
@@ -2512,6 +2537,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                     )
                 )
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("kart_odeme_fisi", int(odeme.id), session=session)
             return {
                 "belge_no": belgeno,
                 "tutar": brut,
@@ -2906,6 +2934,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                 )
             session.flush()
             kredi_id = kredi.id
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("banka_kredi_kullandirim_fisi", int(kredi_id), session=session)
 
         return FinansService.banka_kredi_getir(kredi_id)
 
@@ -3127,14 +3158,18 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             )
             session.flush()
             fis_id = fis.id
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
+            muhasebe_hook("gider_fisi_fisi", fis_id, session=session)
         return FinansService.gider_fisi_getir(fis_id)
 
     @staticmethod
     def gider_fisi_iptal(fisi_id):
         yazma_zorunlu("finans_duzenleme", "iptal")
+        from database.masraf_dagitim_service import KAYNAK_GIDER_FISI, MasrafDagitimService
         from database.models.hizmet import HizmetHareketi
 
+        MasrafDagitimService.kilit_kontrol(kaynak_id=int(fisi_id), kaynak_turu=KAYNAK_GIDER_FISI)
         with get_session() as session:
             fis = session.get(GiderFisi, int(fisi_id))
             if not fis:
@@ -3155,8 +3190,17 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     HizmetHareketi.hareket_turu == "GİDER FİŞİ",
                 )
             )
+            MasrafDagitimService.bagli_taslaklari_iptal(
+                session, kaynak_turu=KAYNAK_GIDER_FISI, kaynak_id=int(fis.id),
+                neden=f"Kaynak gider fişi {fis.belge_no} iptal edildi.",
+            )
             fis.durum = "IPTAL"
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("gider_fisi_iptal", int(fisi_id), f"Gider fişi iptal {fis.belge_no}",
+                          session=session)
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
 
     # --- Kasa tahsilat / ödeme makbuzu ---
 
@@ -3756,6 +3800,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 bag.fatura_kapanan = fatura_hedefi["uygulanan"]
 
             session.flush()
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("kasa_makbuzu_fisi", int(makbuz.id), yeniden=mevcut is not None, session=session)
             return makbuz.id
 
     # --- Satış faturasına bağlı tahsilat makbuzu ---
@@ -4285,6 +4332,15 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 raise ValueError("Makbuz bulunamadı.")
             if makbuz.durum == "IPTAL":
                 raise ValueError("Makbuz zaten iptal.")
+            # Eş zamanlı ikinci iptal: durum koşullu güncellenir, yalnız biri etki üretir
+            if not session.execute(
+                update(KasaMakbuzu).where(KasaMakbuzu.id == makbuz.id, KasaMakbuzu.durum != "IPTAL")
+                .values(durum="IPTAL").execution_options(synchronize_session=False)
+            ).rowcount:
+                raise ValueError("Makbuz zaten iptal.")
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("kasa_makbuzu_iptal", int(makbuz.id), f"Makbuz iptal {makbuz.belge_no}", session=session)
             FinansService._makbuz_etkilerini_geri_al(session, makbuz, iptal=True)
             makbuz.durum = "IPTAL"
             from database.odeme_sozu_service import OdemeSozuService

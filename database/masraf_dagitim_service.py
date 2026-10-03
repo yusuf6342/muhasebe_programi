@@ -1,8 +1,13 @@
 """Masraf dağıtımı: kayıtlı gider belgesini alış katmanlarının maliyetine aktarır.
 
+Kaynak belge: hizmet alış (gider) faturası veya kasa/banka gider fişi. Kaynak ve hedef
+belge türü + kimliği, kaynak satır ve alış faturası satır kimlikleriyle saklanır.
+
 Kurallar
 - Dağıtım yeni gider/cari/ödeme/KDV kaydı üretmez; yalnızca maliyet aktarımı ve
-  genel muhasebe düzeltme fişi yazar (gider → stok / SMM).
+  genel muhasebe düzeltme fişi yazar (gider → stok / SMM). Kaynak belgenin GM fişi
+  yoksa aynı onay transaction'ında bir kez oluşturulur.
+- Onay için gerekli hesap eşleştirmeleri zorunludur (GM kullanılmayan firmada da).
 - Hedef, alış faturası satırının oluşturduğu FIFO lotudur (irsaliye stok üretmez;
   aynı alışın irsaliye + faturası tek katmandır).
 - Pay tüm katmana yüklenir: stokta kalan kısım stok değerine, satılmış kısım SMM'ye,
@@ -34,7 +39,18 @@ from database.session_manager import oturum
 from database.turkce_normalize import turkce_normalize
 
 KAYNAK_HIZMET = "HIZMET_FATURASI"
-KAYNAK_ETIKETLERI = {KAYNAK_HIZMET: "Hizmet alış (gider) faturası"}
+KAYNAK_GIDER_FISI = "GIDER_FISI"
+KAYNAK_TURLERI = (KAYNAK_HIZMET, KAYNAK_GIDER_FISI)
+KAYNAK_ETIKETLERI = {
+    KAYNAK_HIZMET: "Hizmet alış (gider) faturası",
+    KAYNAK_GIDER_FISI: "Gider fişi (kasa/banka)",
+}
+KAYNAK_KURALLARI = {
+    KAYNAK_HIZMET: "Tutarlar KDV hariçtir; KDV indirilecek KDV'de kalır, maliyete eklenmez. "
+                   "Cari borç ve ödemeler faturada kalır, dağıtım yeni borç oluşturmaz.",
+    KAYNAK_GIDER_FISI: "Gider fişinde KDV ayrıca kaydedilmez; fiş tutarının tamamı gider olarak kayıtlıdır. "
+                       "Kasa/banka ödemesi fişte kalır, dağıtım yeni ödeme oluşturmaz.",
+}
 
 YONTEMLER = ("TUTAR", "MIKTAR", "AGIRLIK", "HACIM", "ELLE")
 YONTEM_ETIKETLERI = {
@@ -45,6 +61,8 @@ YONTEM_ETIKETLERI = {
     "ELLE": "Elle dağıtım",
 }
 
+GORUNTULEME_YETKILERI = ("alis_masraf_goruntuleme", "alis_masraf_duzenleme", "alis_masraf_onay", "alis_goruntuleme")
+
 DURUM_TASLAK = "TASLAK"
 DURUM_ONAYLANDI = "ONAYLANDI"
 DURUM_IPTAL = "İPTAL EDİLDİ"
@@ -52,6 +70,12 @@ DURUMLAR = (DURUM_TASLAK, DURUM_ONAYLANDI, DURUM_IPTAL)
 
 GM_KAYNAK = "masraf_dagitimi"
 GM_KAYNAK_GERI = "masraf_dagitimi_geri"
+# Kaynak belgenin kendi GM fişinin kaynak_turu (muhasebe_entegrasyon ile aynı)
+GM_KAYNAK_BELGE = {KAYNAK_HIZMET: "hizmet_faturasi", KAYNAK_GIDER_FISI: "gider_fisi"}
+ESLEME_YERI = (
+    "Genel Muhasebe > Hesap Eşleştirmeleri ekranından tamamlayın "
+    "(standart hesaplar için 'Tek Düzen / Eşleştirme' önerisi kullanılabilir)."
+)
 
 # Maliyete otomatik uygun (normalize edilmiş parça) / otomatik uygun olmayan
 UYGUN_ANAHTARLAR = ("nakl", "tasima", "yukleme", "bosaltma", "hamal", "navlun", "gumruk", "kargo")
@@ -106,11 +130,42 @@ def _kullanici() -> str:
     return oturum.ad_soyad or oturum.kullanici_adi or ""
 
 
+def _kaynak_turu(tur: str | None) -> str:
+    tur = (tur or KAYNAK_HIZMET).upper()
+    if tur not in KAYNAK_TURLERI:
+        raise ValueError("Geçersiz kaynak belge türü.")
+    return tur
+
+
+def _parcala(degerler, boyut: int = 500):
+    liste = list(degerler)
+    for i in range(0, len(liste), boyut):
+        yield liste[i:i + boyut]
+
+
+def _tarih_metni(t) -> str:
+    return t.strftime("%d.%m.%Y") if t else ""
+
+
 def satir_uygun_mu(kod: str | None, ad: str | None) -> bool:
     metin = turkce_normalize(f"{kod or ''} {ad or ''}")
     if any(k in metin for k in UYGUN_OLMAYAN_ANAHTARLAR):
         return False
     return any(k in metin for k in UYGUN_ANAHTARLAR)
+
+
+MASRAF_KATEGORILERI = {
+    "NAKLİYE": ("nakl", "tasima", "navlun", "kargo", "sevkiyat"),
+    "HAMALİYE": ("hamal", "yukleme", "bosaltma"),
+    "GÜMRÜK": ("gumruk",),
+    "SİGORTA": ("sigorta",),
+}
+
+
+def masraf_kategorileri(*metinler) -> set[str]:
+    """Eski fatura masrafı ile masraf dağıtımını karşılaştırmak için ortak masraf türleri."""
+    metin = turkce_normalize(" ".join(str(m or "") for m in metinler))
+    return {k for k, parcalar in MASRAF_KATEGORILERI.items() if any(p in metin for p in parcalar)}
 
 
 def _agirlik_sayisi(metin) -> Decimal | None:
@@ -169,6 +224,9 @@ class MasrafDagitimService:
                 tablo.create(e, checkfirst=True)
 
         surum_uygula(motor, "masraf_dagitimi", 1, _v1)
+        from database.alis_masraf_service import kaynak_kolonlarini_hazirla
+
+        kaynak_kolonlarini_hazirla(motor)
         MasrafDagitimService._hazir_motor = motor
 
     @staticmethod
@@ -185,12 +243,13 @@ class MasrafDagitimService:
 
     # ------------------------------------------------------------ kaynaklar
     @staticmethod
-    def _kaynak_dagitilan(session, kaynak_id: int, haric_dagitim_id: int | None = None) -> dict[int, Decimal]:
+    def _kaynak_dagitilan(session, kaynak_id: int, haric_dagitim_id: int | None = None,
+                          kaynak_turu: str = KAYNAK_HIZMET) -> dict[int, Decimal]:
         q = (
             select(MasrafDagitimKaynakSatiri.kaynak_satir_id, func.sum(MasrafDagitimKaynakSatiri.tutar))
             .join(MasrafDagitim, MasrafDagitim.id == MasrafDagitimKaynakSatiri.dagitim_id)
             .where(
-                MasrafDagitim.kaynak_turu == KAYNAK_HIZMET,
+                MasrafDagitim.kaynak_turu == kaynak_turu,
                 MasrafDagitim.kaynak_id == int(kaynak_id),
                 MasrafDagitim.durum == DURUM_ONAYLANDI,
             )
@@ -201,88 +260,210 @@ class MasrafDagitimService:
         return {int(k): _q2(v) for k, v in session.execute(q).all()}
 
     @staticmethod
-    def kaynak_belgeler(arama: str | None = None, *, tumu: bool = False) -> list[dict[str, Any]]:
-        """Seçilebilir gider belgeleri: iptal değil ve dağıtılabilir kalanı olan."""
-        from database.models.hizmet_faturasi import HizmetFaturasi
-
-        MasrafDagitimService.schema_hazirla()
-        n_ara = turkce_normalize((arama or "").strip())
-        sonuc = []
-        with get_session() as session:
-            faturalar = session.scalars(
-                select(HizmetFaturasi)
-                .options(selectinload(HizmetFaturasi.satirlar), selectinload(HizmetFaturasi.cari))
-                .where(HizmetFaturasi.fatura_turu == "GIDER", HizmetFaturasi.durum != "İPTAL")
-                .order_by(HizmetFaturasi.fatura_tarihi.desc(), HizmetFaturasi.id.desc())
-            ).all()
-            for f in faturalar:
-                cari = f.cari.unvan if f.cari else ""
-                if n_ara and n_ara not in turkce_normalize(f"{f.fatura_no} {cari}"):
-                    continue
-                dagitilan = MasrafDagitimService._kaynak_dagitilan(session, f.id)
-                uygun = sum((_q2(s.tl_tutar) for s in f.satirlar if satir_uygun_mu(s.hizmet_kodu, s.hizmet_adi)), SIFIR)
-                onceki = sum(dagitilan.values(), SIFIR)
-                kalan = sum((_q2(s.tl_tutar) - dagitilan.get(int(s.id), SIFIR) for s in f.satirlar), SIFIR)
-                if kalan <= 0 and not tumu:
-                    continue
-                sonuc.append(
-                    {
-                        "id": int(f.id),
-                        "tur": KAYNAK_HIZMET,
-                        "tur_etiket": KAYNAK_ETIKETLERI[KAYNAK_HIZMET],
-                        "no": f.fatura_no,
-                        "tarih": f.fatura_tarihi,
-                        "cari": cari,
-                        "cari_id": f.cari_id,
-                        "para_birimi": f.para_birimi or "TRY",
-                        "kur": _d(f.kur or 1),
-                        "matrah": _q2(f.tl_matrah),
-                        "uygun_tutar": uygun,
-                        "onceki_dagitim": onceki,
-                        "kalan": kalan,
-                    }
-                )
-        return sonuc
+    def _hizmet_faturasi_sozluk(f) -> dict[str, Any]:
+        return {
+            "id": int(f.id),
+            "tur": KAYNAK_HIZMET,
+            "no": f.fatura_no,
+            "tarih": f.fatura_tarihi,
+            "cari": f.cari.unvan if f.cari else "",
+            "cari_id": f.cari_id,
+            "hesap": "",
+            "aciklama": (f.aciklama or "").strip(),
+            "durum": f.durum,
+            "iptal": f.durum == "İPTAL",
+            "uygun_degil": None if (f.fatura_turu or "").upper() == "GIDER"
+            else "Hizmet satış (gelir) faturası; masraf kaynağı olamaz.",
+            "para_birimi": f.para_birimi or "TRY",
+            "kur": _d(f.kur or 1),
+            "matrah": _q2(f.tl_matrah),
+            "kdv": _q2(f.tl_kdv),
+            "genel_toplam": _q2(f.tl_genel_toplam),
+            "satirlar": [
+                {"id": int(s.id), "kod": s.hizmet_kodu, "ad": s.hizmet_adi, "tutar": _q2(s.tl_tutar),
+                 "kdv_orani": _d(s.kdv_orani)}
+                for s in sorted(f.satirlar, key=lambda x: int(x.id))
+            ],
+        }
 
     @staticmethod
-    def kaynak_detay(kaynak_id: int, haric_dagitim_id: int | None = None) -> dict[str, Any]:
-        from database.models.hizmet_faturasi import HizmetFaturasi
+    def _gider_fisi_sozluk(session, fis) -> dict[str, Any]:
+        from database.models.hizmet import HizmetKarti
 
-        MasrafDagitimService.schema_hazirla()
-        with get_session() as session:
+        hiz = session.get(HizmetKarti, int(fis.hizmet_id)) if fis.hizmet_id else None
+        hesap = fis.finans_hesap.hesap_adi if fis.finans_hesap is not None else ""
+        tutar = _q2(fis.tutar)
+        kod = hiz.hizmet_kodu if hiz else "GIDER-FISI"
+        ad = hiz.hizmet_adi if hiz else (fis.aciklama or "Gider fişi")
+        if fis.aciklama and fis.aciklama.strip() not in (ad, f"{kod} — {ad}"):
+            ad = f"{ad} — {fis.aciklama.strip()}"
+        tur_ok = (fis.gider_turu or "").upper() == "HIZMET"
+        return {
+            "id": int(fis.id),
+            "tur": KAYNAK_GIDER_FISI,
+            "no": fis.belge_no,
+            "tarih": fis.tarih,
+            "cari": f"Kasa/Banka: {hesap}" if hesap else "",
+            "cari_id": None,
+            "hesap": hesap,
+            "aciklama": (fis.aciklama or "").strip(),
+            "durum": fis.durum,
+            "iptal": (fis.durum or "").upper() in ("IPTAL", "İPTAL"),
+            "uygun_degil": None if tur_ok
+            else f"Kredi faiz/masraf gider fişi ({fis.gider_turu}); maliyete dağıtılamaz.",
+            "para_birimi": "TRY",
+            "kur": Decimal("1"),
+            "matrah": tutar,
+            "kdv": SIFIR,
+            "genel_toplam": tutar,
+            # Gider fişi tek kalemlidir; kaynak satır kimliği fişin kendi kimliğidir.
+            "satirlar": [{"id": int(fis.id), "kod": kod, "ad": ad, "tutar": tutar, "kdv_orani": SIFIR}],
+        }
+
+    @staticmethod
+    def _kaynak_oku(session, kaynak_turu: str, kaynak_id: int) -> dict[str, Any] | None:
+        tur = _kaynak_turu(kaynak_turu)
+        if tur == KAYNAK_HIZMET:
+            from database.models.hizmet_faturasi import HizmetFaturasi
+
             f = session.scalar(
                 select(HizmetFaturasi)
                 .options(selectinload(HizmetFaturasi.satirlar), selectinload(HizmetFaturasi.cari))
                 .where(HizmetFaturasi.id == int(kaynak_id))
             )
-            if f is None:
-                raise ValueError("Gider belgesi bulunamadı.")
-            dagitilan = MasrafDagitimService._kaynak_dagitilan(session, f.id, haric_dagitim_id)
-            satirlar = []
-            for s in sorted(f.satirlar, key=lambda x: int(x.id)):
-                tutar = _q2(s.tl_tutar)
-                d = dagitilan.get(int(s.id), SIFIR)
-                satirlar.append(
-                    {
-                        "id": int(s.id),
-                        "kod": s.hizmet_kodu,
-                        "ad": s.hizmet_adi,
-                        "tutar": tutar,
-                        "kdv_orani": _d(s.kdv_orani),
-                        "dagitilan": d,
-                        "kalan": tutar - d,
-                        "uygun": satir_uygun_mu(s.hizmet_kodu, s.hizmet_adi),
-                    }
+            return MasrafDagitimService._hizmet_faturasi_sozluk(f) if f is not None else None
+        from database.models.finans import GiderFisi
+
+        fis = session.scalar(
+            select(GiderFisi).options(selectinload(GiderFisi.finans_hesap)).where(GiderFisi.id == int(kaynak_id))
+        )
+        return MasrafDagitimService._gider_fisi_sozluk(session, fis) if fis is not None else None
+
+    @staticmethod
+    def _tum_kaynaklar(session, tur: str | None = None) -> list[dict[str, Any]]:
+        """İki kaynak türünün tüm kayıtları (filtresiz), tarihe göre yeniden eskiye."""
+        from database.models.finans import GiderFisi
+        from database.models.hizmet_faturasi import HizmetFaturasi
+
+        kayitlar: list[dict[str, Any]] = []
+        if tur in (None, KAYNAK_HIZMET):
+            for f in session.scalars(
+                select(HizmetFaturasi).options(selectinload(HizmetFaturasi.satirlar), selectinload(HizmetFaturasi.cari))
+            ).all():
+                kayitlar.append(MasrafDagitimService._hizmet_faturasi_sozluk(f))
+        if tur in (None, KAYNAK_GIDER_FISI):
+            try:
+                fisler = session.scalars(select(GiderFisi).options(selectinload(GiderFisi.finans_hesap))).all()
+            except OperationalError:
+                fisler = []
+            for fis in fisler:
+                kayitlar.append(MasrafDagitimService._gider_fisi_sozluk(session, fis))
+        kayitlar.sort(key=lambda k: (k["tarih"] or date.min, k["id"]), reverse=True)
+        return kayitlar
+
+    @staticmethod
+    def _kaynak_ozet(session, k: dict[str, Any]) -> dict[str, Any]:
+        dagitilan = MasrafDagitimService._kaynak_dagitilan(session, k["id"], kaynak_turu=k["tur"])
+        toplam = sum((s["tutar"] for s in k["satirlar"]), SIFIR)
+        onceki = sum(dagitilan.values(), SIFIR)
+        return {
+            "id": k["id"],
+            "tur": k["tur"],
+            "tur_etiket": KAYNAK_ETIKETLERI[k["tur"]],
+            "no": k["no"],
+            "tarih": k["tarih"],
+            "cari": k["cari"],
+            "cari_id": k["cari_id"],
+            "aciklama": k["aciklama"],
+            "durum": k["durum"],
+            "para_birimi": k["para_birimi"],
+            "kur": k["kur"],
+            "matrah": k["matrah"],
+            "genel_toplam": k["genel_toplam"],
+            "toplam": toplam,
+            "uygun_tutar": sum((s["tutar"] for s in k["satirlar"] if satir_uygun_mu(s["kod"], s["ad"])), SIFIR),
+            "onceki_dagitim": onceki,
+            "kalan": sum((s["tutar"] - dagitilan.get(s["id"], SIFIR) for s in k["satirlar"]), SIFIR),
+            "kural": KAYNAK_KURALLARI[k["tur"]],
+        }
+
+    @staticmethod
+    def _arama_uyar(n_ara: str, k: dict[str, Any]) -> bool:
+        if not n_ara:
+            return True
+        metin = " ".join(
+            [KAYNAK_ETIKETLERI[k["tur"]], k["no"] or "", k["cari"] or "", k["aciklama"], _tarih_metni(k["tarih"]),
+             f"{k['genel_toplam']:.2f}", f"{k['genel_toplam']:.2f}".replace(".", ",")]
+            + [f"{s['kod']} {s['ad']}" for s in k["satirlar"]]
+        )
+        return all(parca in turkce_normalize(metin) for parca in n_ara.split())
+
+    @staticmethod
+    def kaynak_belgeler(arama: str | None = None, *, tumu: bool = False, tur: str | None = None) -> list[dict[str, Any]]:
+        """Seçilebilir masraf belgeleri (hizmet gider faturası + gider fişi): iptal değil, kalanı olan."""
+        yetki_zorunlu(*GORUNTULEME_YETKILERI)
+        MasrafDagitimService.schema_hazirla()
+        n_ara = turkce_normalize((arama or "").strip())
+        sonuc = []
+        with get_session() as session:
+            for k in MasrafDagitimService._tum_kaynaklar(session, tur):
+                if k["iptal"] or k["uygun_degil"] or not MasrafDagitimService._arama_uyar(n_ara, k):
+                    continue
+                ozet = MasrafDagitimService._kaynak_ozet(session, k)
+                if ozet["kalan"] <= 0 and not tumu:
+                    continue
+                sonuc.append(ozet)
+        return sonuc
+
+    @staticmethod
+    def kaynak_gorunmeyenler(arama: str | None = None) -> list[dict[str, Any]]:
+        """Seçim listesinde çıkmayan masraf evrakları ve nedenleri (evrak türü / durum / kalan)."""
+        MasrafDagitimService.schema_hazirla()
+        n_ara = turkce_normalize((arama or "").strip())
+        sonuc = []
+        with get_session() as session:
+            for k in MasrafDagitimService._tum_kaynaklar(session):
+                if not MasrafDagitimService._arama_uyar(n_ara, k):
+                    continue
+                if k["uygun_degil"]:
+                    neden = k["uygun_degil"]
+                elif k["iptal"]:
+                    neden = "Belge iptal edilmiş."
+                else:
+                    ozet = MasrafDagitimService._kaynak_ozet(session, k)
+                    if ozet["kalan"] > 0:
+                        continue
+                    neden = "Tutarın tamamı daha önce onaylı dağıtımlarla maliyete aktarılmış."
+                sonuc.append(
+                    {"id": k["id"], "tur": k["tur"], "tur_etiket": KAYNAK_ETIKETLERI[k["tur"]], "no": k["no"],
+                     "tarih": k["tarih"], "cari": k["cari"], "tutar": k["genel_toplam"], "neden": neden}
                 )
+        return sonuc
+
+    @staticmethod
+    def kaynak_detay(kaynak_id: int, haric_dagitim_id: int | None = None, *,
+                     tur: str = KAYNAK_HIZMET) -> dict[str, Any]:
+        MasrafDagitimService.schema_hazirla()
+        tur = _kaynak_turu(tur)
+        with get_session() as session:
+            k = MasrafDagitimService._kaynak_oku(session, tur, kaynak_id)
+            if k is None:
+                raise ValueError("Gider belgesi bulunamadı.")
+            dagitilan = MasrafDagitimService._kaynak_dagitilan(session, k["id"], haric_dagitim_id, tur)
+            satirlar = []
+            for s in k["satirlar"]:
+                d = dagitilan.get(s["id"], SIFIR)
+                satirlar.append({**s, "dagitilan": d, "kalan": s["tutar"] - d, "uygun": satir_uygun_mu(s["kod"], s["ad"])})
             return {
-                "id": int(f.id),
-                "no": f.fatura_no,
-                "tarih": f.fatura_tarihi,
-                "cari": f.cari.unvan if f.cari else "",
-                "cari_id": f.cari_id,
-                "durum": f.durum,
-                "para_birimi": f.para_birimi or "TRY",
-                "kur": _d(f.kur or 1),
+                **{a: k[a] for a in ("id", "no", "tarih", "cari", "cari_id", "hesap", "aciklama", "durum",
+                                     "para_birimi", "kur", "matrah", "kdv", "genel_toplam")},
+                "tur": tur,
+                "tur_etiket": KAYNAK_ETIKETLERI[tur],
+                "kural": KAYNAK_KURALLARI[tur],
+                "iptal": k["iptal"],
+                "toplam": sum((s["tutar"] for s in satirlar), SIFIR),
+                "dagitilan": sum((s["dagitilan"] for s in satirlar), SIFIR),
+                "kalan": sum((s["kalan"] for s in satirlar), SIFIR),
                 "satirlar": satirlar,
             }
 
@@ -315,10 +496,52 @@ class MasrafDagitimService:
         return stok, lot, giris
 
     @staticmethod
-    def hedef_satirlar(arama: str | None = None, *, limit: int = 400) -> list[dict[str, Any]]:
-        """Masraf yüklenebilecek alış faturası satırları (iptal değil, FIFO lotu olan)."""
+    def _lotlar_toplu(session, ciftler: list) -> dict[int, tuple]:
+        """(satır, fatura) çiftleri için _lot_bul sonucunu az sorguyla üretir: satır id → (stok, lot, giriş)."""
+        from database.models.stok import Depo, StokHareketi, StokKarti, StokLotu
+
+        ciftler = [(s, f) for s, f in ciftler if s.lot_girisi]
+        if not ciftler:
+            return {}
+        stoklar: dict[str, Any] = {}
+        for parca in _parcala({s.urun_kodu for s, _f in ciftler}):
+            for k in session.scalars(select(StokKarti).where(StokKarti.stok_kodu.in_(parca))).all():
+                stoklar[k.stok_kodu] = k
+        depolar = {d.ad: int(d.id) for d in session.scalars(select(Depo)).all()}
+        lotlar: dict[tuple[int, str], list] = {}
+        for parca in _parcala({s.lot_girisi for s, _f in ciftler}):
+            for lot in session.scalars(select(StokLotu).where(StokLotu.lot_no.in_(parca)).order_by(StokLotu.id)).all():
+                lotlar.setdefault((int(lot.stok_id), lot.lot_no), []).append(lot)
+        secilen: dict[int, tuple] = {}
+        for s, f in ciftler:
+            stok = stoklar.get(s.urun_kodu)
+            if stok is None:
+                continue
+            adaylar = lotlar.get((int(stok.id), s.lot_girisi), [])
+            depo_id = depolar.get(f.depo or "ANA DEPO")
+            if depo_id is not None:
+                adaylar = [x for x in adaylar if int(x.depo_id) == depo_id]
+            secilen[int(s.id)] = (stok, adaylar[0] if adaylar else None, f)
+        girisler: dict[tuple[int, str], Any] = {}
+        lot_idler = {int(lot.id) for _st, lot, _f in secilen.values() if lot is not None}
+        for parca in _parcala(lot_idler):
+            for h in session.scalars(
+                select(StokHareketi)
+                .where(StokHareketi.lot_id.in_(parca), StokHareketi.hareket_turu == "FATURA GİRİŞ")
+                .order_by(StokHareketi.id)
+            ).all():
+                girisler.setdefault((int(h.lot_id), h.belge_no), h)
+        return {
+            sid: (stok, lot, girisler.get((int(lot.id), f.fatura_no)) if lot is not None else None)
+            for sid, (stok, lot, f) in secilen.items()
+        }
+
+    @staticmethod
+    def hedef_faturalar(arama: str | None = None, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Masraf bağlanabilecek ürün alış faturaları (iptal değil). Tedarikçi nakliyeciden farklı olabilir."""
         from database.models.alis_faturasi import AlisFaturasi
 
+        yetki_zorunlu(*GORUNTULEME_YETKILERI)
         MasrafDagitimService.schema_hazirla()
         n_ara = turkce_normalize((arama or "").strip())
         sonuc: list[dict[str, Any]] = []
@@ -332,35 +555,90 @@ class MasrafDagitimService:
             dagitilan = MasrafDagitimService._hedef_dagitilan(session)
             for f in faturalar:
                 ted = f.cari.unvan if f.cari else ""
-                for s in sorted(f.satirlar, key=lambda x: int(x.id)):
-                    if n_ara and n_ara not in turkce_normalize(
-                        f"{f.fatura_no} {ted} {s.urun_kodu} {s.urun_adi}"
-                    ):
-                        continue
-                    stok, lot, giris = MasrafDagitimService._lot_bul(session, s, f)
-                    if lot is None:
-                        continue
-                    sonuc.append(
-                        {
-                            "satir_id": int(s.id),
-                            "fatura_id": int(f.id),
-                            "fatura_no": f.fatura_no,
-                            "tarih": f.fatura_tarihi,
-                            "tedarikci": ted,
-                            "urun_kodu": s.urun_kodu,
-                            "urun_adi": s.urun_adi,
-                            "depo": f.depo or "",
-                            "birim": (stok.birim if stok else None) or s.birim,
-                            "ana_miktar": _d(giris.miktar if giris else s.miktar),
-                            "alis_tutari": _q2(s.tl_tutar),
-                            "birim_maliyet": _q4(lot.birim_maliyet),
-                            "kalan": _d(lot.kalan_miktar),
-                            "dagitilan": dagitilan.get(int(s.id), SIFIR),
-                            "agirlik": _agirlik_sayisi(getattr(stok, "agirlik", None)) if stok else None,
-                        }
+                if n_ara:
+                    metin = turkce_normalize(
+                        f"{f.fatura_no} {getattr(f, 'tedarikci_fatura_no', '') or ''} {ted} "
+                        f"{_tarih_metni(f.fatura_tarihi)} " + " ".join(f"{s.urun_kodu} {s.urun_adi}" for s in f.satirlar)
                     )
-                    if len(sonuc) >= limit:
-                        return sonuc
+                    if not all(p in metin for p in n_ara.split()):
+                        continue
+                sonuc.append(
+                    {
+                        "fatura_id": int(f.id),
+                        "fatura_no": f.fatura_no,
+                        "tedarikci_fatura_no": getattr(f, "tedarikci_fatura_no", None) or "",
+                        "tarih": f.fatura_tarihi,
+                        "tedarikci": ted,
+                        "depo": f.depo or "",
+                        "matrah": _q2(f.tl_matrah),
+                        "satir_sayisi": len(f.satirlar),
+                        "dagitilan": sum((dagitilan.get(int(s.id), SIFIR) for s in f.satirlar), SIFIR),
+                    }
+                )
+                if len(sonuc) >= limit:
+                    break
+        return sonuc
+
+    @staticmethod
+    def hedef_satirlar(arama: str | None = None, *, limit: int = 400,
+                       fatura_id: int | None = None) -> list[dict[str, Any]]:
+        """Masraf yüklenebilecek alış faturası satırları (iptal değil, FIFO lotu olan)."""
+        from database.models.alis_faturasi import AlisFaturasi
+
+        yetki_zorunlu(*GORUNTULEME_YETKILERI)
+        MasrafDagitimService.schema_hazirla()
+        n_ara = turkce_normalize((arama or "").strip())
+        sonuc: list[dict[str, Any]] = []
+        with get_session() as session:
+            q = (
+                select(AlisFaturasi)
+                .options(selectinload(AlisFaturasi.satirlar), selectinload(AlisFaturasi.cari))
+                .where(AlisFaturasi.durum != "İPTAL")
+                .order_by(AlisFaturasi.fatura_tarihi.desc(), AlisFaturasi.id.desc())
+            )
+            if fatura_id:
+                q = q.where(AlisFaturasi.id == int(fatura_id))
+            faturalar = session.scalars(q).all()
+            dagitilan = MasrafDagitimService._hedef_dagitilan(session)
+            adaylar = []
+            for f in faturalar:
+                ted = f.cari.unvan if f.cari else ""
+                for s in sorted(f.satirlar, key=lambda x: int(x.id)):
+                    if n_ara:
+                        metin = turkce_normalize(
+                            f"{f.fatura_no} {getattr(f, 'tedarikci_fatura_no', '') or ''} {ted} "
+                            f"{s.urun_kodu} {s.urun_adi} {_tarih_metni(f.fatura_tarihi)}"
+                        )
+                        if not all(p in metin for p in n_ara.split()):
+                            continue
+                    adaylar.append((s, f))
+            lotlar = MasrafDagitimService._lotlar_toplu(session, adaylar)
+            for s, f in adaylar:
+                ted = f.cari.unvan if f.cari else ""
+                stok, lot, giris = lotlar.get(int(s.id), (None, None, None))
+                if lot is None:
+                    continue
+                sonuc.append(
+                    {
+                        "satir_id": int(s.id),
+                        "fatura_id": int(f.id),
+                        "fatura_no": f.fatura_no,
+                        "tarih": f.fatura_tarihi,
+                        "tedarikci": ted,
+                        "urun_kodu": s.urun_kodu,
+                        "urun_adi": s.urun_adi,
+                        "depo": f.depo or "",
+                        "birim": (stok.birim if stok else None) or s.birim,
+                        "ana_miktar": _d(giris.miktar if giris else s.miktar),
+                        "alis_tutari": _q2(s.tl_tutar),
+                        "birim_maliyet": _q4(lot.birim_maliyet),
+                        "kalan": _d(lot.kalan_miktar),
+                        "dagitilan": dagitilan.get(int(s.id), SIFIR),
+                        "agirlik": _agirlik_sayisi(getattr(stok, "agirlik", None)) if stok else None,
+                    }
+                )
+                if len(sonuc) >= limit:
+                    break
         return sonuc
 
     @staticmethod
@@ -406,7 +684,7 @@ class MasrafDagitimService:
             select(StokHareketi).where(StokHareketi.lot_id == lot.id).order_by(StokHareketi.id)
         ).all()
         for h in hareketler:
-            if h.hareket_turu == "FATURA ÇIKIŞ" and h.belge_no in iade_nolari:
+            if h.hareket_turu == "ALIŞ İADE ÇIKIŞ" or (h.hareket_turu == "FATURA ÇIKIŞ" and h.belge_no in iade_nolari):
                 iade_eq += _d(h.miktar) * carpan
             elif h.hareket_turu == "TRANSFER ÇIKIŞ":
                 hedefler = session.scalars(
@@ -416,6 +694,15 @@ class MasrafDagitimService:
                         StokHareketi.hareket_turu == "TRANSFER GİRİŞ",
                     )
                 ).all()
+                # Lot korumalı transfer: hedef lot kaynakla aynı lot no (çakışmada "-n" ekli) ve miktarla açılır
+                eslesen = []
+                for x in hedefler:
+                    hedef_lot = session.get(StokLotu, int(x.lot_id)) if x.lot_id else None
+                    ad = (hedef_lot.lot_no if hedef_lot is not None else "") or ""
+                    if (ad == lot.lot_no or ad.startswith(f"{lot.lot_no}-")) and _d(x.miktar) == _d(h.miktar):
+                        eslesen.append(x)
+                if eslesen:
+                    hedefler = eslesen[:1]
                 toplam = sum((_d(x.miktar) for x in hedefler), SIFIR)
                 if not hedefler or toplam <= 0:
                     uyarilar.append(f"{h.belge_no} transferinin giriş hareketi bulunamadı; SMM sayıldı.")
@@ -450,27 +737,6 @@ class MasrafDagitimService:
             return False
 
     @staticmethod
-    def _gm_aktif(session, kaynak_id: int | None) -> bool:
-        from database.models.genel_muhasebe import MuhasebeFisi, MuhasebeHesapEsleme
-
-        try:
-            if session.scalar(
-                select(func.count()).select_from(MuhasebeHesapEsleme).where(MuhasebeHesapEsleme.hesap_id.is_not(None))
-            ):
-                return True
-            if kaynak_id and session.scalar(
-                select(func.count()).select_from(MuhasebeFisi).where(
-                    MuhasebeFisi.kaynak_turu == "hizmet_faturasi",
-                    MuhasebeFisi.kaynak_id == int(kaynak_id),
-                    MuhasebeFisi.durum != "İptal",
-                )
-            ):
-                return True
-        except OperationalError:
-            return False
-        return False
-
-    @staticmethod
     def _gm_hesap(session, anahtar: str):
         from database.models.genel_muhasebe import HesapPlani, MuhasebeHesapEsleme
         from database.muhasebe_service import MuhasebeService
@@ -491,12 +757,11 @@ class MasrafDagitimService:
         return h
 
     @staticmethod
-    def _gm_engelleri(session, kaynak_id: int, stok: Decimal, smm: Decimal) -> list[str]:
+    def _gm_engelleri(session, kaynak_id: int, stok: Decimal, smm: Decimal,
+                      kaynak_turu: str = KAYNAK_HIZMET) -> list[str]:
         from database.models.genel_muhasebe import ESLEME_ANAHTARLARI
         from database.tdhp_hesap_plani import fis_icin_alt_hesap_mi
 
-        if not MasrafDagitimService._gm_aktif(session, kaynak_id):
-            return []
         adlar = dict(ESLEME_ANAHTARLARI)
         gerekli = ["giderler"]
         if stok > 0:
@@ -507,7 +772,9 @@ class MasrafDagitimService:
         for anahtar in gerekli:
             h = MasrafDagitimService._gm_hesap(session, anahtar)
             if h is None:
-                engel.append(f"Hesap eşleştirmesi eksik: {adlar.get(anahtar, anahtar)} ({anahtar})")
+                engel.append(
+                    f"Hesap eşleştirmesi eksik: {adlar.get(anahtar, anahtar)} ({anahtar}) — {ESLEME_YERI}"
+                )
             elif not fis_icin_alt_hesap_mi(h.hesap_kodu):
                 engel.append(f"Eşleştirilen hesap alt hesap değil: {h.hesap_kodu} ({anahtar})")
         return engel
@@ -515,7 +782,6 @@ class MasrafDagitimService:
     @staticmethod
     def _hesapla(session, veri: dict[str, Any], haric_dagitim_id: int | None = None) -> dict[str, Any]:
         from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
-        from database.models.hizmet_faturasi import HizmetFaturasi
 
         tarih = veri.get("dagitim_tarihi") or date.today()
         if isinstance(tarih, datetime):
@@ -531,26 +797,23 @@ class MasrafDagitimService:
         if tutar <= 0:
             raise ValueError("Dağıtım tutarı sıfırdan büyük olmalıdır.")
 
-        kaynak = session.scalar(
-            select(HizmetFaturasi)
-            .options(selectinload(HizmetFaturasi.satirlar))
-            .where(HizmetFaturasi.id == int(veri.get("kaynak_id") or 0))
-        )
+        kaynak_turu = _kaynak_turu(veri.get("kaynak_turu"))
+        kaynak = MasrafDagitimService._kaynak_oku(session, kaynak_turu, int(veri.get("kaynak_id") or 0))
         if kaynak is None:
             raise ValueError("Kaynak gider belgesi bulunamadı.")
-        if (kaynak.fatura_turu or "").upper() != "GIDER":
-            raise ValueError("Kaynak belge gider (hizmet alış) faturası olmalıdır.")
-        if kaynak.durum == "İPTAL":
+        if kaynak["uygun_degil"]:
+            raise ValueError(kaynak["uygun_degil"])
+        if kaynak["iptal"]:
             raise ValueError("İptal edilmiş gider belgesi dağıtılamaz.")
         secili = [int(x) for x in (veri.get("kaynak_satir_idler") or [])]
-        kaynak_satirlari = {int(s.id): s for s in kaynak.satirlar}
+        kaynak_satirlari = {s["id"]: s for s in kaynak["satirlar"]}
         if not secili:
             raise ValueError("Dağıtılacak gider satırı seçin.")
         for sid in secili:
             if sid not in kaynak_satirlari:
                 raise ValueError("Seçilen gider satırı bu belgeye ait değil.")
-        dagitilan = MasrafDagitimService._kaynak_dagitilan(session, kaynak.id, haric_dagitim_id)
-        kalanlar = {sid: _q2(kaynak_satirlari[sid].tl_tutar) - dagitilan.get(sid, SIFIR) for sid in secili}
+        dagitilan = MasrafDagitimService._kaynak_dagitilan(session, kaynak["id"], haric_dagitim_id, kaynak_turu)
+        kalanlar = {sid: kaynak_satirlari[sid]["tutar"] - dagitilan.get(sid, SIFIR) for sid in secili}
         secili_kalan = sum(kalanlar.values(), SIFIR)
         if tutar > secili_kalan:
             raise ValueError(
@@ -566,7 +829,7 @@ class MasrafDagitimService:
             if pay <= 0:
                 continue
             s = kaynak_satirlari[sid]
-            kaynak_paylari.append({"kaynak_satir_id": sid, "aciklama": f"{s.hizmet_kodu} {s.hizmet_adi}", "tutar": pay})
+            kaynak_paylari.append({"kaynak_satir_id": sid, "aciklama": f"{s['kod']} {s['ad']}"[:250], "tutar": pay})
             acik -= pay
 
         hedefler = veri.get("hedefler") or []
@@ -674,10 +937,26 @@ class MasrafDagitimService:
             smm_top += s["smm_payi"]
             iade_top += s["iade_payi"]
 
-        engeller = MasrafDagitimService._gm_engelleri(session, kaynak.id, stok_top, smm_top)
+        engeller = MasrafDagitimService._gm_engelleri(session, kaynak["id"], stok_top, smm_top, kaynak_turu)
+        k_engel, k_uyari = MasrafDagitimService._kaynak_gm_kontrolu(session, kaynak)
+        engeller += k_engel
+        uyarilar += k_uyari
+        mukerrer, mukerrer_inceleme = MasrafDagitimService.eski_masraf_cakismalari(
+            session,
+            [s["alis_fatura_satiri_id"] for s in satirlar],
+            masraf_kategorileri(*[p["aciklama"] for p in kaynak_paylari]),
+            kaynak["no"],
+            kaynak_turu=kaynak_turu,
+            kaynak_id=kaynak["id"],
+        )
+        engeller += mukerrer
+        uyarilar += mukerrer_inceleme
+        kaynak_imza = [kaynak["id"], str(kaynak["durum"]), str(kaynak["matrah"])]
+        if kaynak_turu != KAYNAK_HIZMET:
+            kaynak_imza.insert(0, kaynak_turu)
         imza_verisi = {
             "tarih": tarih.isoformat(),
-            "kaynak": [int(kaynak.id), str(kaynak.durum), str(_q2(kaynak.tl_matrah))],
+            "kaynak": kaynak_imza,
             "kaynak_paylari": [[p["kaynak_satir_id"], str(p["tutar"]), str(kalanlar[p["kaynak_satir_id"]])] for p in kaynak_paylari],
             "tutar": str(tutar),
             "yontem": yontem,
@@ -689,14 +968,20 @@ class MasrafDagitimService:
             ],
         }
         imza = hashlib.sha256(json.dumps(imza_verisi, sort_keys=True).encode("utf-8")).hexdigest()
+        kaynak_toplam = sum((s["tutar"] for s in kaynak["satirlar"]), SIFIR)
+        kaynak_onceki = sum((dagitilan.get(s["id"], SIFIR) for s in kaynak["satirlar"]), SIFIR)
         return {
             "dagitim_tarihi": tarih,
-            "kaynak_id": int(kaynak.id),
-            "kaynak_no": kaynak.fatura_no,
-            "kaynak_cari_id": kaynak.cari_id,
-            "para_birimi": kaynak.para_birimi or "TRY",
-            "kur": _d(kaynak.kur or 1),
+            "kaynak_turu": kaynak_turu,
+            "kaynak_id": kaynak["id"],
+            "kaynak_no": kaynak["no"],
+            "kaynak_cari_id": kaynak["cari_id"],
+            "para_birimi": kaynak["para_birimi"],
+            "kur": kaynak["kur"],
             "kaynak_kalan": secili_kalan,
+            "kaynak_toplam": kaynak_toplam,
+            "kaynak_onceki": kaynak_onceki,
+            "kaynak_kalan_sonra": kaynak_toplam - kaynak_onceki - tutar,
             "kaynak_paylari": kaynak_paylari,
             "yontem": yontem,
             "tutar": tutar,
@@ -705,6 +990,8 @@ class MasrafDagitimService:
             "smm_payi": smm_top,
             "iade_payi": iade_top,
             "engeller": engeller,
+            "mukerrer": mukerrer,
+            "mukerrer_inceleme": mukerrer_inceleme,
             "uyarilar": sorted(set(uyarilar)),
             "imza": imza,
         }
@@ -751,6 +1038,17 @@ class MasrafDagitimService:
             try:
                 with get_session() as session:
                     sonuc = MasrafDagitimService._hesapla(session, veri, dagitim_id)
+                    if sonuc["mukerrer"]:
+                        raise ValueError(
+                            "Aynı masraf iki kez maliyete yüklenemez:\n- " + "\n- ".join(sonuc["mukerrer"])
+                            + "\nEski fatura masrafını kaldırın veya bu satırları dağıtımdan çıkarın."
+                        )
+                    if sonuc["mukerrer_inceleme"] and not veri.get("mukerrer_inceleme_onay"):
+                        raise ValueError(
+                            "İnceleme gerekli — eski masraf kaydının kaynak belgesi olmadığından "
+                            "mükerrerlik kesinleştirilemedi:\n- " + "\n- ".join(sonuc["mukerrer_inceleme"])
+                            + "\nFarklı masraf olduğunu doğruladıysanız onaylayarak kaydedin."
+                        )
                     if dagitim_id:
                         d = session.get(MasrafDagitim, int(dagitim_id))
                         if d is None:
@@ -774,7 +1072,7 @@ class MasrafDagitimService:
                         session.add(d)
                         islem = "TASLAK OLUŞTUR"
                     d.dagitim_tarihi = sonuc["dagitim_tarihi"]
-                    d.kaynak_turu = KAYNAK_HIZMET
+                    d.kaynak_turu = sonuc["kaynak_turu"]
                     d.kaynak_id = sonuc["kaynak_id"]
                     d.kaynak_no = sonuc["kaynak_no"]
                     d.kaynak_cari_id = sonuc["kaynak_cari_id"]
@@ -812,6 +1110,7 @@ class MasrafDagitimService:
     def _veri_dagitimdan(d: MasrafDagitim) -> dict[str, Any]:
         return {
             "dagitim_tarihi": d.dagitim_tarihi,
+            "kaynak_turu": d.kaynak_turu,
             "kaynak_id": d.kaynak_id,
             "kaynak_satir_idler": [k.kaynak_satir_id for k in d.kaynak_satirlari],
             "tutar": d.tutar,
@@ -901,6 +1200,15 @@ class MasrafDagitimService:
     @staticmethod
     def _gm_fisi_yaz(session, d: MasrafDagitim, kalemler: list[tuple[str, Decimal, Decimal, str]],
                      kaynak_turu: str, tarih: date, aciklama: str) -> int | None:
+        return MasrafDagitimService._fis_yaz(
+            session, kalemler, kaynak_turu=kaynak_turu, kaynak_id=int(d.id), belge_no=d.dagitim_no,
+            tarih=tarih, aciklama=aciklama,
+        )
+
+    @staticmethod
+    def _fis_yaz(session, kalemler: list[tuple[str, Decimal, Decimal, str]], *, kaynak_turu: str, kaynak_id: int,
+                 belge_no: str | None, tarih: date, aciklama: str, fis_turu: str = "Mahsup Fişi") -> int | None:
+        """Eşleştirme anahtarlarıyla kesinleşmiş fişi verilen transaction içinde yazar."""
         from database.models.genel_muhasebe import MuhasebeFisi, MuhasebeFisiSatiri
         from database.muhasebe_service import MuhasebeFisService, MuhasebeService
 
@@ -918,14 +1226,14 @@ class MasrafDagitimService:
             mali_yil=tarih.year,
             fis_no=MuhasebeFisService._sonraki_fis_no(session, firma_id, tarih.year),
             fis_tarihi=tarih,
-            fis_turu="Mahsup Fişi",
+            fis_turu=fis_turu,
             aciklama=aciklama,
-            belge_no=d.dagitim_no,
+            belge_no=belge_no,
             durum="Kesinleşmiş",
             toplam_borc=toplam_borc,
             toplam_alacak=toplam_alacak,
             kaynak_turu=kaynak_turu,
-            kaynak_id=int(d.id),
+            kaynak_id=int(kaynak_id),
             olusturan_kullanici_id=oturum.user_id,
         )
         session.add(fis)
@@ -938,7 +1246,7 @@ class MasrafDagitimService:
                 MuhasebeFisiSatiri(
                     fis_id=fis.id, firma_id=firma_id, sira_no=sira, hesap_id=h.id, hesap_kodu=h.hesap_kodu,
                     hesap_adi=h.hesap_adi, aciklama=ack, borc=borc, alacak=alacak, belge_tarihi=tarih,
-                    belge_no=d.dagitim_no,
+                    belge_no=belge_no,
                 )
             )
         session.flush()
@@ -984,22 +1292,21 @@ class MasrafDagitimService:
                 for k, v in MasrafDagitimService._satir_kolonlari(s).items():
                     setattr(kayit, k, v)
             d.stok_payi, d.smm_payi, d.iade_payi = sonuc["stok_payi"], sonuc["smm_payi"], sonuc["iade_payi"]
-            if MasrafDagitimService._gm_aktif(session, d.kaynak_id):
-                aktarilan = sonuc["stok_payi"] + sonuc["smm_payi"]
-                d.fis_id = MasrafDagitimService._gm_fisi_yaz(
-                    session,
-                    d,
-                    [
-                        ("ticari_mallar", sonuc["stok_payi"], SIFIR, f"Masraf dağıtımı stok payı {d.kaynak_no}"),
-                        ("satilan_mal_maliyeti", sonuc["smm_payi"], SIFIR, f"Masraf dağıtımı SMM payı {d.kaynak_no}"),
-                        ("giderler", SIFIR, aktarilan, f"Maliyete aktarılan gider {d.kaynak_no}"),
-                    ],
-                    GM_KAYNAK,
-                    d.dagitim_tarihi,
-                    f"Masraf dağıtımı {d.dagitim_no} ({d.kaynak_no})",
-                )
-            else:
-                uyarilar.append("Genel muhasebe kullanılmıyor (hesap eşleştirmesi yok); muhasebe fişi oluşturulmadı.")
+            if not MasrafDagitimService._kaynak_gm_fisi_yaz(session, d.kaynak_turu, d.kaynak_id):
+                raise ValueError(f"Onay engellendi:\n- Kaynak belge {d.kaynak_no} için muhasebe gider kaydı oluşturulamadı.")
+            aktarilan = sonuc["stok_payi"] + sonuc["smm_payi"]
+            d.fis_id = MasrafDagitimService._gm_fisi_yaz(
+                session,
+                d,
+                [
+                    ("ticari_mallar", sonuc["stok_payi"], SIFIR, f"Masraf dağıtımı stok payı {d.kaynak_no}"),
+                    ("satilan_mal_maliyeti", sonuc["smm_payi"], SIFIR, f"Masraf dağıtımı SMM payı {d.kaynak_no}"),
+                    ("giderler", SIFIR, aktarilan, f"Maliyete aktarılan gider {d.kaynak_no}"),
+                ],
+                GM_KAYNAK,
+                d.dagitim_tarihi,
+                f"Masraf dağıtımı {d.dagitim_no} ({d.kaynak_no})",
+            )
             d.durum = DURUM_ONAYLANDI
             d.onaylayan = _kullanici()
             d.onay_tarihi = datetime.now()
@@ -1128,6 +1435,7 @@ class MasrafDagitimService:
     ) -> list[dict[str, Any]]:
         yetki_zorunlu("alis_masraf_goruntuleme", "alis_masraf_duzenleme", "alis_masraf_onay", "alis_goruntuleme")
         MasrafDagitimService.schema_hazirla()
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
         n_kaynak = turkce_normalize((kaynak or "").strip())
         with get_session() as session:
             q = select(MasrafDagitim).options(selectinload(MasrafDagitim.satirlar)).order_by(
@@ -1152,6 +1460,8 @@ class MasrafDagitimService:
                         "tarih": d.dagitim_tarihi,
                         "kaynak_no": d.kaynak_no,
                         "kaynak_turu": KAYNAK_ETIKETLERI.get(d.kaynak_turu, d.kaynak_turu),
+                        "kaynak_turu_kod": d.kaynak_turu,
+                        "kaynak_id": int(d.kaynak_id),
                         "tutar": _q2(d.tutar),
                         "alis_sayisi": len({s.alis_fatura_id for s in d.satirlar}),
                         "yontem": YONTEM_ETIKETLERI.get(d.yontem, d.yontem),
@@ -1165,6 +1475,7 @@ class MasrafDagitimService:
     @staticmethod
     def getir(dagitim_id: int) -> dict[str, Any]:
         MasrafDagitimService.schema_hazirla()
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
         with get_session() as session:
             d = session.scalar(
                 select(MasrafDagitim)
@@ -1180,6 +1491,7 @@ class MasrafDagitimService:
             ).all()
             kolonlar = [c.name for c in MasrafDagitim.__table__.columns]
             sonuc = {k: getattr(d, k) for k in kolonlar}
+            sonuc["kaynak_turu_etiket"] = KAYNAK_ETIKETLERI.get(d.kaynak_turu, d.kaynak_turu)
             sonuc["kaynak_satir_idler"] = [k.kaynak_satir_id for k in d.kaynak_satirlari]
             sonuc["kaynak_satirlari"] = [
                 {"kaynak_satir_id": k.kaynak_satir_id, "aciklama": k.aciklama, "tutar": _q2(k.tutar)}
@@ -1193,53 +1505,155 @@ class MasrafDagitimService:
             return sonuc
 
     @staticmethod
-    def fatura_baglantilari(alis_fatura_id: int) -> list[dict[str, Any]]:
-        """Alış faturasına bağlı (iptal edilmemiş) dağıtımlar ve faturanın aldığı pay."""
-        if not MasrafDagitimService._tablo_var():
-            return []
-        with get_session() as session:
-            rows = session.execute(
-                select(MasrafDagitim, func.sum(MasrafDagitimSatiri.pay))
-                .join(MasrafDagitimSatiri, MasrafDagitimSatiri.dagitim_id == MasrafDagitim.id)
-                .where(MasrafDagitimSatiri.alis_fatura_id == int(alis_fatura_id), MasrafDagitim.durum != DURUM_IPTAL)
-                .group_by(MasrafDagitim.id)
-                .order_by(MasrafDagitim.id)
-            ).all()
-            return [
-                {
-                    "id": int(d.id), "dagitim_no": d.dagitim_no, "tarih": d.dagitim_tarihi, "kaynak_no": d.kaynak_no,
-                    "durum": d.durum, "pay": _q2(p), "tutar": _q2(d.tutar),
-                }
-                for d, p in rows
-            ]
+    def _taslak_kopukluk_nedeni(session, d: MasrafDagitim) -> str | None:
+        from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
+
+        try:
+            k = MasrafDagitimService._kaynak_oku(session, d.kaynak_turu, d.kaynak_id)
+        except ValueError:
+            return f"Kaynak belge türü tanınmıyor ({d.kaynak_turu})."
+        if k is None:
+            return f"Kaynak belge {d.kaynak_no} silinmiş."
+        if k["iptal"]:
+            return f"Kaynak belge {d.kaynak_no} iptal edildi."
+        mevcut = {s["id"] for s in k["satirlar"]}
+        if any(int(ks.kaynak_satir_id) not in mevcut for ks in d.kaynak_satirlari):
+            return f"Kaynak belge {d.kaynak_no} satırları değişti."
+        for s in d.satirlar:
+            satir = session.get(AlisFaturasiSatiri, int(s.alis_fatura_satiri_id))
+            if satir is None or int(satir.fatura_id) != int(s.alis_fatura_id):
+                return f"Alış faturası {s.alis_fatura_no} satırları değişti veya silindi."
+            fatura = session.get(AlisFaturasi, int(s.alis_fatura_id))
+            if fatura is None or fatura.durum == "İPTAL":
+                return f"Alış faturası {s.alis_fatura_no} iptal edildi."
+        return None
 
     @staticmethod
-    def kaynak_baglantilari(kaynak_id: int) -> dict[str, Any]:
-        """Gider belgesine bağlı dağıtımlar; dağıtılan ve kalan tutar."""
+    def sahipsiz_taslaklari_kapat() -> int:
+        """Kaynak / alış belgesi iptal edilmiş, silinmiş veya satırları değişmiş taslakları iptal eder.
+
+        Taslak stok ve muhasebeyi etkilemediği için yalnızca durum değişir; onaylı dağıtımlar
+        kilit_kontrol ile korunduğu için kopamaz.
+        """
         if not MasrafDagitimService._tablo_var():
-            return {"dagitimlar": [], "dagitilan": SIFIR, "kalan": None}
-        detay = MasrafDagitimService.kaynak_detay(kaynak_id)
+            return 0
+        adet = 0
+        with get_session() as session:
+            taslaklar = session.scalars(
+                select(MasrafDagitim)
+                .options(selectinload(MasrafDagitim.satirlar), selectinload(MasrafDagitim.kaynak_satirlari))
+                .where(MasrafDagitim.durum == DURUM_TASLAK)
+            ).all()
+            for d in taslaklar:
+                neden = MasrafDagitimService._taslak_kopukluk_nedeni(session, d)
+                if not neden:
+                    continue
+                d.durum = DURUM_IPTAL
+                d.row_version = int(d.row_version or 1) + 1
+                d.geri_alma_nedeni = f"Otomatik iptal: {neden}"[:300]
+                d.geri_alan = "Sistem"
+                d.geri_alma_tarihi = datetime.now()
+                MasrafDagitimService._gecmis(session, d.id, "OTOMATİK İPTAL", neden)
+                adet += 1
+        return adet
+
+    @staticmethod
+    def fatura_baglantilari(alis_fatura_id: int, *, iptaller: bool = False) -> list[dict[str, Any]]:
+        """Alış faturasına bağlı dağıtımlar: kaynak masraf belgesi ve faturanın satır bazında aldığı pay."""
+        if not MasrafDagitimService._tablo_var():
+            return []
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
+        with get_session() as session:
+            q = (
+                select(MasrafDagitim)
+                .options(selectinload(MasrafDagitim.satirlar))
+                .join(MasrafDagitimSatiri, MasrafDagitimSatiri.dagitim_id == MasrafDagitim.id)
+                .where(MasrafDagitimSatiri.alis_fatura_id == int(alis_fatura_id))
+                .distinct()
+                .order_by(MasrafDagitim.id)
+            )
+            if not iptaller:
+                q = q.where(MasrafDagitim.durum != DURUM_IPTAL)
+            sonuc = []
+            for d in session.scalars(q).all():
+                satirlar = [s for s in d.satirlar if int(s.alis_fatura_id) == int(alis_fatura_id)]
+                try:
+                    k = MasrafDagitimService._kaynak_oku(session, d.kaynak_turu, d.kaynak_id)
+                except ValueError:
+                    k = None
+                sonuc.append(
+                    {
+                        "id": int(d.id), "dagitim_no": d.dagitim_no, "tarih": d.dagitim_tarihi,
+                        "kaynak_turu": d.kaynak_turu,
+                        "kaynak_turu_etiket": KAYNAK_ETIKETLERI.get(d.kaynak_turu, d.kaynak_turu),
+                        "kaynak_id": int(d.kaynak_id), "kaynak_no": d.kaynak_no,
+                        "kaynak_cari": (k or {}).get("cari", ""),
+                        "durum": d.durum, "yontem": YONTEM_ETIKETLERI.get(d.yontem, d.yontem),
+                        "pay": _q2(sum((_d(s.pay) for s in satirlar), SIFIR)), "tutar": _q2(d.tutar),
+                        "satirlar": [
+                            {"satir_id": int(s.alis_fatura_satiri_id), "urun_kodu": s.urun_kodu, "urun_adi": s.urun_adi,
+                             "pay": _q2(s.pay), "eski_birim_maliyet": _q4(s.eski_birim_maliyet),
+                             "yeni_birim_maliyet": _q4(s.yeni_birim_maliyet)}
+                            for s in satirlar
+                        ],
+                    }
+                )
+            return sonuc
+
+    @staticmethod
+    def kaynak_baglantilari(kaynak_id: int, kaynak_turu: str = KAYNAK_HIZMET) -> dict[str, Any]:
+        """Masraf belgesine bağlı dağıtımlar ve alış faturaları; toplam, dağıtılan ve kalan tutar."""
+        from database.models.alis_faturasi import AlisFaturasi
+
+        kaynak_turu = _kaynak_turu(kaynak_turu)
+        if not MasrafDagitimService._tablo_var():
+            return {"dagitimlar": [], "alis_faturalari": [], "dagitilan": SIFIR, "kalan": None}
+        MasrafDagitimService.sahipsiz_taslaklari_kapat()
+        detay = MasrafDagitimService.kaynak_detay(kaynak_id, tur=kaynak_turu)
         with get_session() as session:
             kayitlar = session.scalars(
                 select(MasrafDagitim)
-                .where(MasrafDagitim.kaynak_turu == KAYNAK_HIZMET, MasrafDagitim.kaynak_id == int(kaynak_id))
+                .options(selectinload(MasrafDagitim.satirlar))
+                .where(MasrafDagitim.kaynak_turu == kaynak_turu, MasrafDagitim.kaynak_id == int(kaynak_id))
                 .order_by(MasrafDagitim.id)
             ).all()
-            dagitimlar = [
-                {"id": int(d.id), "dagitim_no": d.dagitim_no, "tarih": d.dagitim_tarihi, "durum": d.durum,
-                 "tutar": _q2(d.tutar)}
-                for d in kayitlar
-            ]
-        dagitilan = sum((s["dagitilan"] for s in detay["satirlar"]), SIFIR)
+            dagitimlar = []
+            faturalar: dict[int, dict[str, Any]] = {}
+            for d in kayitlar:
+                paylar: dict[int, Decimal] = {}
+                for s in d.satirlar:
+                    paylar[int(s.alis_fatura_id)] = paylar.get(int(s.alis_fatura_id), SIFIR) + _d(s.pay)
+                bagli = []
+                for fid, pay in paylar.items():
+                    if fid not in faturalar:
+                        f = session.get(AlisFaturasi, fid)
+                        faturalar[fid] = {
+                            "fatura_id": fid,
+                            "fatura_no": f.fatura_no if f else next(
+                                (s.alis_fatura_no for s in d.satirlar if int(s.alis_fatura_id) == fid), ""),
+                            "tarih": f.fatura_tarihi if f else None,
+                            "tedarikci": (f.cari.unvan if f is not None and f.cari else ""),
+                            "fatura_durum": f.durum if f else "SİLİNMİŞ",
+                        }
+                    bagli.append({**faturalar[fid], "pay": _q2(pay)})
+                dagitimlar.append(
+                    {"id": int(d.id), "dagitim_no": d.dagitim_no, "tarih": d.dagitim_tarihi, "durum": d.durum,
+                     "tutar": _q2(d.tutar), "yontem": YONTEM_ETIKETLERI.get(d.yontem, d.yontem),
+                     "alis_faturalari": bagli}
+                )
         return {
+            "kaynak": {a: detay[a] for a in ("id", "tur", "tur_etiket", "no", "tarih", "cari", "durum", "kural")},
             "dagitimlar": dagitimlar,
-            "dagitilan": dagitilan,
-            "kalan": sum((s["kalan"] for s in detay["satirlar"]), SIFIR),
+            "alis_faturalari": list(faturalar.values()),
+            "toplam": detay["toplam"],
+            "dagitilan": detay["dagitilan"],
+            "kalan": detay["kalan"],
             "uygun": sum((s["tutar"] for s in detay["satirlar"] if s["uygun"]), SIFIR),
         }
 
     @staticmethod
-    def kilit_kontrol(*, kaynak_id: int | None = None, alis_fatura_id: int | None = None) -> None:
+    def kilit_kontrol(*, kaynak_id: int | None = None, alis_fatura_id: int | None = None,
+                      kaynak_turu: str = KAYNAK_HIZMET) -> None:
         """Onaylı dağıtıma bağlı belge düzenlenemez / iptal edilemez."""
         if not MasrafDagitimService._tablo_var():
             return
@@ -1247,7 +1661,7 @@ class MasrafDagitimService:
             if kaynak_id:
                 nolar = session.scalars(
                     select(MasrafDagitim.dagitim_no).where(
-                        MasrafDagitim.kaynak_turu == KAYNAK_HIZMET,
+                        MasrafDagitim.kaynak_turu == _kaynak_turu(kaynak_turu),
                         MasrafDagitim.kaynak_id == int(kaynak_id),
                         MasrafDagitim.durum == DURUM_ONAYLANDI,
                     )
@@ -1267,6 +1681,282 @@ class MasrafDagitimService:
                 "Bu belge onaylı masraf dağıtımına bağlı (" + ", ".join(nolar) + "). "
                 "Değiştirmek veya iptal etmek için önce Masraf Dağıtımı ekranından dağıtımı geri alın."
             )
+
+    @staticmethod
+    def bagli_taslaklari_iptal(session, *, alis_fatura_id: int | None = None, kaynak_id: int | None = None,
+                               kaynak_turu: str = KAYNAK_HIZMET, neden: str) -> int:
+        """Belge iptal / düzenleme transaction'ı içinde bağlı taslakları geçersiz kılar (geçmiş korunur).
+
+        Onaylı dağıtımlar kilit_kontrol ile önceden engellendiği için burada yalnızca taslak değişir.
+        """
+        if not MasrafDagitimService._tablo_var():
+            return 0
+        q = select(MasrafDagitim).where(MasrafDagitim.durum == DURUM_TASLAK)
+        if alis_fatura_id:
+            q = q.where(
+                MasrafDagitim.id.in_(
+                    select(MasrafDagitimSatiri.dagitim_id).where(
+                        MasrafDagitimSatiri.alis_fatura_id == int(alis_fatura_id)
+                    )
+                )
+            )
+        elif kaynak_id:
+            q = q.where(
+                MasrafDagitim.kaynak_turu == _kaynak_turu(kaynak_turu),
+                MasrafDagitim.kaynak_id == int(kaynak_id),
+            )
+        else:
+            return 0
+        adet = 0
+        for d in session.scalars(q).all():
+            d.durum = DURUM_IPTAL
+            d.row_version = int(d.row_version or 1) + 1
+            d.geri_alma_nedeni = f"Otomatik iptal: {neden}"[:300]
+            d.geri_alan = _kullanici() or "Sistem"
+            d.geri_alma_tarihi = datetime.now()
+            MasrafDagitimService._gecmis(session, d.id, "OTOMATİK İPTAL", neden)
+            adet += 1
+        if adet:
+            session.flush()
+        return adet
+
+    # ------------------------------------------------- mükerrer maliyet kontrolü
+    @staticmethod
+    def _eslesme(eski_kaynak: tuple[str | None, int | None], yeni_kaynak: tuple[str | None, int | None],
+                 ortak: set[str], ayni_belge_no: str | None) -> tuple[str | None, str]:
+        """İki tarafın da kaynak kimliği varsa yalnız kimlik karşılaştırılır (``kesin``).
+
+        Biri eksikse tür/belge no benzerliği yalnız ``inceleme`` olarak işaretlenir; eşleştirme yapılmaz.
+        """
+        if all(eski_kaynak) and all(yeni_kaynak):
+            if (eski_kaynak[0], int(eski_kaynak[1])) == (yeni_kaynak[0], int(yeni_kaynak[1])):
+                return "kesin", f"aynı kaynak belge: {KAYNAK_ETIKETLERI.get(yeni_kaynak[0], yeni_kaynak[0])} #{yeni_kaynak[1]}"
+            return None, ""
+        if ayni_belge_no:
+            return "inceleme", f"belge no benzerliği ({ayni_belge_no})"
+        if ortak:
+            return "inceleme", f"masraf türü benzerliği ({'/'.join(sorted(ortak))})"
+        return None, ""
+
+    @staticmethod
+    def eski_masraf_cakismalari(session, hedef_satir_idler, kategoriler: set[str],
+                                kaynak_no: str | None = None, *, kaynak_turu: str | None = None,
+                                kaynak_id: int | None = None) -> tuple[list[str], list[str]]:
+        """Eski Fatura Masrafları ile aynı alış satırına aynı masrafın yüklenip yüklenmediği.
+
+        Dönüş: (kesin, inceleme_gerekli) mesaj listeleri.
+        """
+        from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
+        from database.models.alis_masraf import AlisMasraf, AlisMasrafDagitim
+
+        idler = sorted({int(x) for x in hedef_satir_idler if x})
+        if not idler:
+            return [], []
+        n_no = turkce_normalize(kaynak_no or "")
+        kesin: list[str] = []
+        inceleme: list[str] = []
+        try:
+            for parca in _parcala(idler):
+                kayitlar = session.execute(
+                    select(AlisMasraf, AlisMasrafDagitim.fatura_satiri_id, AlisFaturasi.fatura_no,
+                           AlisFaturasiSatiri.urun_kodu)
+                    .join(AlisMasrafDagitim, AlisMasrafDagitim.masraf_id == AlisMasraf.id)
+                    .join(AlisFaturasiSatiri, AlisFaturasiSatiri.id == AlisMasrafDagitim.fatura_satiri_id)
+                    .join(AlisFaturasi, AlisFaturasi.id == AlisMasraf.fatura_id)
+                    .where(
+                        AlisMasrafDagitim.fatura_satiri_id.in_(parca),
+                        AlisMasraf.maliyete_dahil.is_(True),
+                        AlisMasrafDagitim.tutar != 0,
+                    )
+                ).all()
+                for m, _sid, fatura_no, urun_kodu in kayitlar:
+                    ayni_belge = bool(n_no) and n_no in turkce_normalize(m.aciklama or "")
+                    durum, neden = MasrafDagitimService._eslesme(
+                        (m.kaynak_turu, m.kaynak_id), (kaynak_turu, kaynak_id),
+                        kategoriler & masraf_kategorileri(m.masraf_turu, m.aciklama),
+                        kaynak_no if ayni_belge else None,
+                    )
+                    if durum == "kesin":
+                        kesin.append(
+                            f"Mükerrer maliyet: {fatura_no} / {urun_kodu} satırına 'Eski Fatura Masrafları' ile "
+                            f"{m.masraf_turu} masrafı ({_q2(m.tutar):.2f} TL, kayıt #{m.id}) zaten yüklenmiş [{neden}]."
+                        )
+                    elif durum == "inceleme":
+                        inceleme.append(
+                            f"İnceleme gerekli: {fatura_no} / {urun_kodu} satırında 'Eski Fatura Masrafları' "
+                            f"{m.masraf_turu} kaydı ({_q2(m.tutar):.2f} TL, kayıt #{m.id}) kaynak belgesiz; "
+                            f"{neden}. Aynı masraf olup olmadığını kontrol edin."
+                        )
+        except OperationalError:
+            return [], []
+        return sorted(set(kesin)), sorted(set(inceleme))
+
+    @staticmethod
+    def yeni_dagitim_cakismalari(session, hedef_satir_idler, kategoriler: set[str],
+                                 metin: str | None = None, *, kaynak_turu: str | None = None,
+                                 kaynak_id: int | None = None) -> tuple[list[str], list[str]]:
+        """Masraf Dağıtımı (taslak/onaylı) ile aynı alış satırına aynı masrafın yüklenip yüklenmediği.
+
+        Dönüş: (kesin, inceleme_gerekli) mesaj listeleri.
+        """
+        if not MasrafDagitimService._tablo_var():
+            return [], []
+        idler = sorted({int(x) for x in hedef_satir_idler if x})
+        if not idler:
+            return [], []
+        n_metin = turkce_normalize(metin or "")
+        kesin: list[str] = []
+        inceleme: list[str] = []
+        for parca in _parcala(idler):
+            kayitlar = session.execute(
+                select(MasrafDagitim, MasrafDagitimSatiri.alis_fatura_no, MasrafDagitimSatiri.urun_kodu)
+                .join(MasrafDagitimSatiri, MasrafDagitimSatiri.dagitim_id == MasrafDagitim.id)
+                .where(
+                    MasrafDagitimSatiri.alis_fatura_satiri_id.in_(parca),
+                    MasrafDagitimSatiri.pay != 0,
+                    MasrafDagitim.durum.in_((DURUM_TASLAK, DURUM_ONAYLANDI)),
+                )
+            ).all()
+            for d, fatura_no, urun_kodu in kayitlar:
+                d_kat = masraf_kategorileri(*[k.aciklama for k in d.kaynak_satirlari])
+                ayni_belge = bool(n_metin) and bool(d.kaynak_no) and turkce_normalize(d.kaynak_no) in n_metin
+                durum, neden = MasrafDagitimService._eslesme(
+                    (kaynak_turu, kaynak_id), (_kaynak_turu(d.kaynak_turu), d.kaynak_id),
+                    kategoriler & d_kat, d.kaynak_no if ayni_belge else None,
+                )
+                if durum == "kesin":
+                    kesin.append(
+                        f"Mükerrer maliyet: {fatura_no} / {urun_kodu} satırına Masraf Dağıtımı {d.dagitim_no} "
+                        f"({d.durum.lower()}, kaynak {d.kaynak_no}) ile aynı masraf zaten yükleniyor [{neden}]."
+                    )
+                elif durum == "inceleme":
+                    inceleme.append(
+                        f"İnceleme gerekli: {fatura_no} / {urun_kodu} satırında Masraf Dağıtımı {d.dagitim_no} "
+                        f"({d.durum.lower()}, kaynak {d.kaynak_no}) var; eski masrafın kaynak belgesi yok, "
+                        f"{neden}. Aynı masraf olup olmadığını kontrol edin."
+                    )
+        return sorted(set(kesin)), sorted(set(inceleme))
+
+    @staticmethod
+    def mukerrer_masraf_raporu() -> list[dict[str, Any]]:
+        """Mevcut verideki eski masraf ↔ masraf dağıtımı çakışmaları (salt okunur, düzeltme yapmaz).
+
+        ``durum``: "kesin" (aynı kaynak belge kimliği) veya "inceleme gerekli" (kimliksiz benzerlik).
+        """
+        from database.models.alis_masraf import AlisMasraf, AlisMasrafDagitim
+
+        if not MasrafDagitimService._tablo_var():
+            return []
+        MasrafDagitimService.schema_hazirla()
+        rapor: list[dict[str, Any]] = []
+        with get_session() as session:
+            try:
+                masraflar = session.scalars(
+                    select(AlisMasraf).options(selectinload(AlisMasraf.dagitimlar)).where(
+                        AlisMasraf.maliyete_dahil.is_(True)
+                    )
+                ).all()
+            except OperationalError:
+                return []
+            for m in masraflar:
+                satirlar = [dg.fatura_satiri_id for dg in m.dagitimlar if _d(dg.tutar) != 0]
+                kesin, inceleme = MasrafDagitimService.yeni_dagitim_cakismalari(
+                    session, satirlar, masraf_kategorileri(m.masraf_turu, m.aciklama), m.aciklama,
+                    kaynak_turu=m.kaynak_turu, kaynak_id=m.kaynak_id,
+                )
+                for durum, mesajlar in (("kesin", kesin), ("inceleme gerekli", inceleme)):
+                    for mesaj in mesajlar:
+                        rapor.append({"eski_masraf_id": int(m.id), "alis_fatura_id": int(m.fatura_id),
+                                      "kaynak_turu": m.kaynak_turu, "kaynak_id": m.kaynak_id,
+                                      "durum": durum, "mesaj": mesaj})
+        return rapor
+
+    # ------------------------------------------------ kaynak belgenin GM kaydı
+    @staticmethod
+    def _kaynak_gm_fis_id(session, kaynak_turu: str, kaynak_id: int) -> int | None:
+        from database.models.genel_muhasebe import MuhasebeFisi
+
+        gm_tur = GM_KAYNAK_BELGE.get(kaynak_turu)
+        try:
+            return session.scalar(
+                select(MuhasebeFisi.id).where(
+                    MuhasebeFisi.kaynak_turu == gm_tur,
+                    MuhasebeFisi.kaynak_id == int(kaynak_id),
+                    MuhasebeFisi.durum != "İptal",
+                )
+            )
+        except OperationalError:
+            return None
+
+    @staticmethod
+    def _kaynak_gm_anahtarlari(session, kaynak: dict[str, Any]) -> list[str]:
+        if kaynak["tur"] == KAYNAK_GIDER_FISI:
+            from database.models.finans import FinansHesabi, GiderFisi
+
+            fis = session.get(GiderFisi, int(kaynak["id"]))
+            hesap = session.get(FinansHesabi, int(fis.finans_hesap_id)) if fis is not None and fis.finans_hesap_id else None
+            kasa_mi = hesap is not None and (hesap.hesap_turu or "").upper() == "KASA"
+            return ["giderler", "kasa" if kasa_mi else "banka"]
+        gerekli = ["giderler", "tedarikciler"]
+        if kaynak["kdv"] > 0:
+            gerekli.append("indirilecek_kdv")
+        return gerekli
+
+    @staticmethod
+    def _kaynak_gm_kontrolu(session, kaynak: dict[str, Any]) -> tuple[list[str], list[str]]:
+        """Kaynak belgenin kendi gider kaydı GM'de yoksa: eşleştirme eksikse engel, varsa onayda tamamlanır."""
+        if MasrafDagitimService._kaynak_gm_fis_id(session, kaynak["tur"], kaynak["id"]):
+            return [], []
+        from database.muhasebe_entegrasyon import MuhasebeEntegrasyonService
+
+        eksik = []
+        for a in MasrafDagitimService._kaynak_gm_anahtarlari(session, kaynak):
+            sorun = MuhasebeEntegrasyonService.esleme_sorunu(a, session=session)
+            if sorun:
+                eksik.append(sorun.replace(f" — {ESLEME_YERI}", ""))
+        if eksik:
+            return [
+                f"Kaynak belge {kaynak['no']} muhasebeye kayıtlı değil ve kaydı yazılamıyor: "
+                + "; ".join(eksik) + f" — {ESLEME_YERI}"
+            ], []
+        return [], [
+            f"Kaynak belge {kaynak['no']} muhasebeye kayıtlı değil (sonradan muhasebeleştirme bekliyor "
+            "olabilir). Masraf dağıtımı kaynağın gider kaydına bağlı olduğundan, onayda kaynak belge de "
+            "mevcut entegrasyonla muhasebeleştirilecek ve bekleyenler listesinden düşecek "
+            "(cari/kasa/KDV kaydı tekrar yazılmaz)."
+        ]
+
+    @staticmethod
+    def _kaynak_gm_fisi_yaz(session, kaynak_turu: str, kaynak_id: int) -> int | None:
+        """Kaynak belgenin GM fişi yoksa verilen transaction içinde yazar (idempotent).
+
+        Fişi tek üretim noktası olan muhasebe_entegrasyon yazar; cari, kasa, KDV operasyon
+        kayıtlarına dokunulmaz. Muhasebeleştirme durum kaydı aynı transaction'da güncellenir.
+        """
+        mevcut = MasrafDagitimService._kaynak_gm_fis_id(session, kaynak_turu, kaynak_id)
+        if mevcut:
+            return int(mevcut)
+        k = MasrafDagitimService._kaynak_oku(session, kaynak_turu, int(kaynak_id))
+        if k is None or k["iptal"]:
+            return None
+        from database.muhasebe_entegrasyon import MuhasebeEntegrasyonService
+        from database.muhasebelestirme_service import MuhasebelestirmeService
+
+        if k["tur"] == KAYNAK_GIDER_FISI:
+            fis_id = MuhasebeEntegrasyonService.gider_fisi_fisi(int(k["id"]), yeniden=False, session=session)
+        else:
+            fis_id = MuhasebeEntegrasyonService.hizmet_faturasi_fisi(int(k["id"]), yeniden=False, session=session)
+        if fis_id:
+            MuhasebelestirmeService.masraf_kaynagi_muhasebelesti(
+                session, GM_KAYNAK_BELGE[k["tur"]], int(k["id"]), int(fis_id))
+        return fis_id
+
+    @staticmethod
+    def kaynak_gm_fisi_tamamla(kaynak_turu: str, kaynak_id: int) -> int | None:
+        """Kaynak belgenin eksik GM fişini tek başına (idempotent) oluşturur."""
+        kaynak_turu = _kaynak_turu(kaynak_turu)
+        with get_session() as session:
+            return MasrafDagitimService._kaynak_gm_fisi_yaz(session, kaynak_turu, int(kaynak_id))
 
     @staticmethod
     def maliyete_aktarilan_toplam(baslangic: date, bitis: date) -> Decimal:

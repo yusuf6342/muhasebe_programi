@@ -85,6 +85,7 @@ def _tarih_metni(v) -> str:
 
 class SatinAlmaTalepService:
     _hazir_motor = None
+    son_birim_uyarisi: str | None = None
 
     # ------------------------------------------------------------------ şema
     @staticmethod
@@ -279,7 +280,7 @@ class SatinAlmaTalepService:
             .join(AlisIadeFaturasi, AlisIadeFaturasi.id == AlisIadeFaturasiSatiri.iade_id)
             .join(AlisFaturasiSatiri, AlisFaturasiSatiri.id == AlisIadeFaturasiSatiri.kaynak_fatura_satiri_id)
             .outerjoin(AlisIrsaliyesiSatiri, AlisIrsaliyesiSatiri.id == AlisFaturasiSatiri.irsaliye_satiri_id)
-            .where(AlisIadeFaturasi.durum != "İPTAL")
+            .where(AlisIadeFaturasi.durum.not_in(("İPTAL", "TASLAK")))
         ).all()
         for miktar, dogrudan, irsaliyeden in rows:
             ss_id = dogrudan or irsaliyeden
@@ -587,8 +588,13 @@ class SatinAlmaTalepService:
         beklenen_versiyon: int | None = None,
         tekrar_gerekcesi: str | None = None,
     ) -> int:
-        """``tekrar_gerekcesi``: aynı ürün için açık talep uyarısına rağmen devam edilirse geçmişe yazılır."""
+        """``tekrar_gerekcesi``: aynı ürün için açık talep uyarısına rağmen devam edilirse geçmişe yazılır.
+
+        Tanımsız birimli satırlar taslakta kalabilir (``son_birim_uyarisi``); onaya gönderme,
+        onay ve siparişe aktarım bu satırları reddeder.
+        """
         yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme", "yeni_kayit")
+        SatinAlmaTalepService.son_birim_uyarisi = None
         SatinAlmaTalepService.schema_hazirla()
         if not satir_verileri:
             raise ValueError("En az bir talep satırı girin.")
@@ -599,6 +605,10 @@ class SatinAlmaTalepService:
         for deneme in range(3):
             try:
                 with get_session() as session:
+                    from database.stok_service import StokService
+
+                    birim_sorunu = StokService.belge_birim_sorunu(
+                        session, satir_verileri, "Satın alma talebi", eylem="onaylanamaz")
                     if talep_id:
                         talep = session.get(SatinAlmaTalep, int(talep_id))
                         if talep is None:
@@ -643,6 +653,7 @@ class SatinAlmaTalepService:
                     if (tekrar_gerekcesi or "").strip():
                         SatinAlmaTalepService._gecmis(session, talep.id, "TEKRAR TALEP GEREKÇESİ", None, None,
                                                       tekrar_gerekcesi.strip()[:500])
+                    SatinAlmaTalepService.son_birim_uyarisi = str(birim_sorunu) if birim_sorunu else None
                     return int(talep.id)
             except IntegrityError:
                 if talep_id or deneme == 2:
@@ -676,6 +687,27 @@ class SatinAlmaTalepService:
 
     # ---------------------------------------------------------- onay akışı
     @staticmethod
+    def _birim_zorunlu(session, satirlar, eylem: str) -> None:
+        from database.stok_service import StokService
+
+        sorun = StokService.belge_birim_sorunu(session, list(satirlar), "Satın alma talebi", eylem=eylem)
+        if sorun is not None:
+            raise sorun
+
+    @staticmethod
+    def birim_uyarisi(talep_id: int) -> str | None:
+        """Taslak talepteki tanımsız birim satırları (yoksa None)."""
+        from database.stok_service import StokService
+
+        with get_session() as session:
+            t = session.get(SatinAlmaTalep, int(talep_id))
+            if t is None:
+                return None
+            sorun = StokService.belge_birim_sorunu(session, list(t.satirlar), "Satın alma talebi",
+                                                   eylem="onaylanamaz")
+            return str(sorun) if sorun is not None else None
+
+    @staticmethod
     def _durum_gecisi(talep_id: int, izinli: tuple[str, ...], yeni: str, islem: str, detay: str | None,
                       guncelle=None) -> None:
         with get_session() as session:
@@ -700,9 +732,10 @@ class SatinAlmaTalepService:
         yazma_zorunlu("alis_talep_duzenleme", "alis_duzenleme")
         SatinAlmaTalepService.schema_hazirla()
 
-        def _g(_s, t):
+        def _g(session, t):
             if not t.satirlar:
                 raise ValueError("Satırı olmayan talep onaya gönderilemez.")
+            SatinAlmaTalepService._birim_zorunlu(session, t.satirlar, "onaya gönderilemez")
             t.gonderen = _kullanici()
             t.gonderme_tarihi = datetime.now()
             t.geri_gonderme_nedeni = None
@@ -714,7 +747,8 @@ class SatinAlmaTalepService:
         yazma_zorunlu("alis_talep_onay")
         SatinAlmaTalepService.schema_hazirla()
 
-        def _g(_s, t):
+        def _g(session, t):
+            SatinAlmaTalepService._birim_zorunlu(session, t.satirlar, "onaylanamaz")
             if (
                 t.isteyen_kullanici_id
                 and oturum.user_id
@@ -1073,6 +1107,10 @@ class SatinAlmaTalepService:
                     "kdv_orani": Decimal(str(getattr(stok, "kdv_orani", 20) or 20)),
                     "talep_paylari": [{"talep_satiri_id": int(s.id), "miktar": miktar, "talep_no": t.talep_no}],
                 })
+            sorun = StokService.belge_birim_sorunu(session, satirlar, "Satın alma talebi",
+                                                   eylem="siparişe aktarılamaz")
+            if sorun is not None:
+                raise sorun
         return {"satirlar": satirlar, "onerilen_tedarikci_id": tedarikciler.pop() if len(tedarikciler) == 1 else None}
 
     @staticmethod

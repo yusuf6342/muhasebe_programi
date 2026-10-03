@@ -769,6 +769,16 @@ def cari_kart_schemasini_guncelle() -> None:
                         'ON "alis_faturalari" ("tedarikci_fatura_no")'
                     )
                 )
+        # Mevcut alış faturaları onaysız kalır (DEFAULT 0); hareketleri kayıtta oluşmuştur.
+        for alan, tip in (
+            ("onaylandi", "BOOLEAN DEFAULT 0 NOT NULL"),
+            ("onay_tarihi", "DATETIME"),
+        ):
+            if alan not in alis_f_sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'ALTER TABLE "alis_faturalari" ADD COLUMN "{alan}" {tip}')
+                    )
 
     # Mevcut satış faturaları zaten hareket üretmiş sayılır (DEFAULT 1).
     if inspect(engine).has_table("satis_faturalari"):
@@ -808,6 +818,89 @@ def cari_kart_schemasini_guncelle() -> None:
                         )
                     )
 
+    # Belge satırında kullanılan birim katsayısı (eski satırlar NULL kalır, değiştirilmez)
+    for satir_tablo in (
+        "alis_faturasi_satirlari",
+        "satis_faturasi_satirlari",
+        "alis_iade_faturasi_satirlari",
+        "satis_iade_faturasi_satirlari",
+    ):
+        if inspect(engine).has_table(satir_tablo):
+            sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(satir_tablo)}
+            if "birim_carpani" not in sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'ALTER TABLE "{satir_tablo}" ADD COLUMN "birim_carpani" NUMERIC(18, 6)')
+                    )
+
+    # Alış iadesi: taslak/onay/iptal izi, kaynak doğrulama ve maliyet alanları (eski satırlar NULL kalır)
+    alis_iade_kolonlari = {
+        "alis_iade_faturalari": {
+            "iade_nedeni": "VARCHAR(200)",
+            "mahsup_modu": "VARCHAR(20)",
+            "olusturan": "VARCHAR(120)",
+            "onaylayan": "VARCHAR(120)",
+            "onay_tarihi": "DATETIME",
+            "iptal_eden": "VARCHAR(120)",
+            "iptal_tarihi": "DATETIME",
+            "iptal_nedeni": "TEXT",
+            "row_version": "INTEGER DEFAULT 1",
+            "kdv_kur_yontemi": "VARCHAR(20)",
+            "kdv_tl_toplam": "NUMERIC(18, 2)",
+        },
+        "alis_iade_faturasi_satirlari": {
+            "barkod": "VARCHAR(50)",
+            "iskonto_orani_2": "NUMERIC(7, 2) DEFAULT 0 NOT NULL",
+            "iskonto_orani_3": "NUMERIC(7, 2) DEFAULT 0 NOT NULL",
+            "temel_miktar": "NUMERIC(18, 4)",
+            "kaynak_durumu": "VARCHAR(20)",
+            "kaynak_lot_id": "INTEGER REFERENCES stok_lotlari(id)",
+            "kaynak_gerekce": "TEXT",
+            "kaynak_onaylayan": "VARCHAR(120)",
+            "kaynak_onay_tarihi": "DATETIME",
+            "kaynak_onay_imza": "VARCHAR(200)",
+            "kaynak_birim_fiyat": "NUMERIC(18, 4)",
+            "kaynak_kur": "NUMERIC(18, 6)",
+            "kaynak_para_birimi": "VARCHAR(3)",
+            "kaynak_kur_tarihi": "DATE",
+            "iade_kuru": "NUMERIC(18, 6)",
+            "kur_farki_tl": "NUMERIC(18, 2)",
+            "stok_maliyet_toplam": "NUMERIC(18, 2)",
+            "kdv_kuru": "NUMERIC(18, 6)",
+            "kdv_tl": "NUMERIC(18, 2)",
+        },
+    }
+    for tablo, kolonlar in alis_iade_kolonlari.items():
+        if not inspect(engine).has_table(tablo):
+            continue
+        mevcut = {sutun["name"] for sutun in inspect(engine).get_columns(tablo)}
+        eksik = {a: t for a, t in kolonlar.items() if a not in mevcut}
+        if eksik:
+            with engine.begin() as connection:
+                for alan, tip in eksik.items():
+                    connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+    if inspect(engine).has_table("alis_iade_kaynak_dagilimlari") is False:
+        from database.models.alis_iade_faturasi import AlisIadeKaynakDagilimi
+
+        AlisIadeKaynakDagilimi.__table__.create(engine, checkfirst=True)
+    alis_iade_indeksleri = (
+        ("alis_iade_faturalari", "iade_tarihi"),
+        ("alis_iade_faturalari", "cari_id"),
+        ("alis_iade_faturasi_satirlari", "iade_id"),
+        ("alis_iade_faturasi_satirlari", "urun_kodu"),
+        ("alis_iade_faturasi_satirlari", "kaynak_fatura_satiri_id"),
+    )
+    for tablo, alan in alis_iade_indeksleri:
+        if inspect(engine).has_table(tablo):
+            with engine.begin() as connection:
+                connection.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_{tablo}_{alan}" ON "{tablo}" ("{alan}")'))
+
+    if inspect(engine).has_table("alis_siparisleri"):
+        sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns("alis_siparisleri")}
+        if "teslim_depo" not in sutunlar:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "teslim_depo" VARCHAR(100)'))
+
     finans_tablo = "finans_hesaplari"
     if inspect(engine).has_table(finans_tablo):
         finans_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(finans_tablo)}
@@ -818,6 +911,8 @@ def cari_kart_schemasini_guncelle() -> None:
             "aciklama": "VARCHAR(500)",
             "banka_karti_id": "INTEGER",
             "alt_hesap_turu": "VARCHAR(30)",
+            "muhasebe_hesap_id": "INTEGER",
+            "muhasebe_komisyon_hesap_id": "INTEGER",
         }
         with engine.begin() as connection:
             for alan, tip in finans_eklenecekler.items():

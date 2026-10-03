@@ -19,6 +19,8 @@ from database.satin_alma_talep_service import SatinAlmaTalepService
 
 
 class TedarikciTeklifService:
+    son_birim_uyarisi: str | None = None
+
     @staticmethod
     def schema_hazirla() -> None:
         SatinAlmaHubService.schema_hazirla()
@@ -133,6 +135,11 @@ class TedarikciTeklifService:
         if not satir_verileri:
             raise ValueError("En az bir teklif satırı girin.")
         with get_session() as session:
+            from database.stok_service import StokService
+
+            birim_sorunu = StokService.belge_birim_sorunu(session, satir_verileri, "Tedarikçi teklifi",
+                                                          eylem="siparişe aktarılamaz")
+            TedarikciTeklifService.son_birim_uyarisi = str(birim_sorunu) if birim_sorunu is not None else None
             if teklif_id:
                 teklif = session.get(TedarikciTeklif, int(teklif_id))
                 if teklif is None:
@@ -200,6 +207,13 @@ class TedarikciTeklifService:
         secilen = [s for s in (teklif.satirlar or []) if s.secildi]
         if not secilen:
             raise ValueError("Siparişe aktarılacak seçili satır yok.")
+        from database.stok_service import StokService
+
+        with get_session() as session:
+            birim_sorunu = StokService.belge_birim_sorunu(session, secilen, "Tedarikçi teklifi",
+                                                          eylem="siparişe aktarılamaz")
+        if birim_sorunu is not None:
+            raise birim_sorunu
 
         # Tedarikçiye göre grupla
         gruplar: dict[int, list] = {}

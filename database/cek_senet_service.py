@@ -310,6 +310,22 @@ class CekSenetService:
         return h
 
     @staticmethod
+    def _muhasebe(session, hareket: CekSenetHareket | None, **kw) -> None:
+        if hareket is None:
+            return
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("cek_senet_fisi", int(hareket.id), session=session, **kw)
+
+    @staticmethod
+    def _muhasebe_iptal(session, hareket_id: int | None, neden: str) -> None:
+        if not hareket_id:
+            return
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("cek_senet_iptal", int(hareket_id), neden, session=session)
+
+    @staticmethod
     def _evrak_yukle(session, evrak_id: int) -> CekSenetEvrak:
         from sqlalchemy.orm import selectinload
 
@@ -606,7 +622,7 @@ class CekSenetService:
             evrak.referans_belge_no = None
 
     @staticmethod
-    def _ciro_cari_geri_al(session, evrak: CekSenetEvrak) -> None:
+    def _ciro_cari_geri_al(session, evrak: CekSenetEvrak) -> int | None:
         from database.finans_service import FinansService
 
         import database.models.alis_faturasi  # noqa: F401
@@ -624,11 +640,12 @@ class CekSenetService:
             .order_by(CekSenetHareket.id.desc())
         ).first()
         if not ciro:
-            return
+            return None
         belge = CekSenetService._cari_islem_belge_no(session, ciro.cari_hareket_id)
         if belge:
             FinansService._havale_cari_geri_al(session, belge)
         ciro.cari_hareket_id = None
+        return ciro.id
 
     @staticmethod
     def _muhasebe_posta_engeli(session, evrak: CekSenetEvrak, *, islem: str) -> None:
@@ -849,6 +866,7 @@ class CekSenetService:
             )
             CekSenetService._kayit_cari_posta(session, evrak, hareket)
             session.flush()
+            CekSenetService._muhasebe(session, hareket)
             sonuc = CekSenetService._satir_dict(evrak)
             return sonuc
 
@@ -903,6 +921,8 @@ class CekSenetService:
                 evrak.portfoy_no = yeni_portfoy
 
             onceki = evrak.durum
+            muhasebe_once = (evrak.evrak_turu, evrak.islem_yonu, evrak.duzenleme_tarihi,
+                             int(evrak.cari_id or 0), _d(evrak.tl_tutari))
             # Tür/yön değişirse verilen/alınan durumunu hizala
             if veri["islem_yonu"] == ISLEM_YONU_ALINAN:
                 yeni_durum = DURUM_PORTFOYDE
@@ -966,6 +986,9 @@ class CekSenetService:
                 kullanici=veri["created_by"],
             )
             session.flush()
+            if muhasebe_once != (evrak.evrak_turu, evrak.islem_yonu, evrak.duzenleme_tarihi,
+                                 int(evrak.cari_id or 0), _d(evrak.tl_tutari)):
+                CekSenetService._muhasebe(session, kayit_h, yeniden=True)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1019,6 +1042,10 @@ class CekSenetService:
                 kullanici=kullanici,
             )
             session.flush()
+            for h in session.scalars(select(CekSenetHareket.id).where(
+                    CekSenetHareket.evrak_id == evrak.id,
+                    CekSenetHareket.islem_turu.in_(("KAYIT", "BANKAYA_TAHSILE", "BANKAYA_TEMINATA")))).all():
+                CekSenetService._muhasebe_iptal(session, h, f"Çek/senet iptal: {not_metin}")
             sonuc = CekSenetService._satir_dict(evrak)
         from database.deleted_record_service import ENTITY_CEK_SENET, safe_log_cancel
 
@@ -1074,7 +1101,7 @@ class CekSenetService:
             evrak.updated_at = datetime.now()
             evrak.updated_by = kullanici
             evrak.version = int(evrak.version or 1) + 1
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1086,6 +1113,7 @@ class CekSenetService:
                 ilgili_banka_kasa_id=hesap.id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1149,7 +1177,7 @@ class CekSenetService:
             acik = f"{not_metin} → {hedef.cari_kodu} {hedef.unvan}"
             if belge:
                 acik = f"[{belge}] {acik}"
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1162,6 +1190,7 @@ class CekSenetService:
                 cari_hareket_id=cari_id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1237,7 +1266,7 @@ class CekSenetService:
                 aciklama=f"{not_metin} | {ozet} | {hesap.hesap_adi}",
                 cikis=False,
             )
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1250,6 +1279,7 @@ class CekSenetService:
                 finans_hareket_id=fin_id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1326,7 +1356,7 @@ class CekSenetService:
                 aciklama=f"{not_metin} | {ozet} | {hesap.hesap_adi}",
                 cikis=True,
             )
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1339,6 +1369,7 @@ class CekSenetService:
                 finans_hareket_id=fin_id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1365,7 +1396,9 @@ class CekSenetService:
             ozet = CekSenetService._belge_ozeti(evrak.portfoy_no, evrak.evrak_no)
 
             # Ciro postu varsa hedef cariden geri al
-            CekSenetService._ciro_cari_geri_al(session, evrak)
+            ciro_id = CekSenetService._ciro_cari_geri_al(session, evrak)
+            session.flush()
+            CekSenetService._muhasebe_iptal(session, ciro_id, "Çek/senet iade: ciro geri alındı")
 
             cari_id = None
             belge = None
@@ -1390,7 +1423,7 @@ class CekSenetService:
             acik = not_metin
             if belge:
                 acik = f"[{belge}] {acik}"
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1402,6 +1435,7 @@ class CekSenetService:
                 cari_hareket_id=cari_id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1444,7 +1478,9 @@ class CekSenetService:
             kalan = _d(evrak.kalan_tutar)
             ozet = CekSenetService._belge_ozeti(evrak.portfoy_no, evrak.evrak_no)
 
-            CekSenetService._ciro_cari_geri_al(session, evrak)
+            ciro_id = CekSenetService._ciro_cari_geri_al(session, evrak)
+            session.flush()
+            CekSenetService._muhasebe_iptal(session, ciro_id, "Çek/senet karşılıksız: ciro geri alındı")
 
             cari_id = None
             belge = None
@@ -1469,7 +1505,7 @@ class CekSenetService:
             acik = not_metin
             if belge:
                 acik = f"[{belge}] {acik}"
-            CekSenetService._hareket_ekle(
+            h = CekSenetService._hareket_ekle(
                 session,
                 evrak,
                 onceki_durum=onceki,
@@ -1481,6 +1517,7 @@ class CekSenetService:
                 cari_hareket_id=cari_id,
             )
             session.flush()
+            CekSenetService._muhasebe(session, h)
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod

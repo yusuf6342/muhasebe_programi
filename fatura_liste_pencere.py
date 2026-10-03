@@ -170,7 +170,7 @@ class FaturaListePencere(tk.Toplevel):
         self.cari_ara = ttk.Entry(ust, width=18)
         self.cari_ara.pack(side="left")
         ttk.Label(ust, text="Durum:").pack(side="left", padx=(10, 2))
-        durumlar = ("", "TASLAK", "AÇIK", "İPTAL") if satis else ("", "AÇIK", "KAPALI", "İPTAL")
+        durumlar = ("", "TASLAK", "AÇIK", "İPTAL") if satis else ("", "ONAYSIZ", "ONAYLI", "İPTAL")
         self.durum = ttk.Combobox(ust, values=durumlar, width=10, state="readonly")
         self.durum.set("")
         self.durum.pack(side="left")
@@ -214,6 +214,7 @@ class FaturaListePencere(tk.Toplevel):
             "cari_ad",
             "vergi",
             "durum",
+            "muhasebe",
             "matrah",
             "kdv",
             "toplam",
@@ -231,6 +232,7 @@ class FaturaListePencere(tk.Toplevel):
             f"{cari_baslik} Ünvanı",
             "Vergi No",
             "Evrak Durumu",
+            "Muhasebe",
             "KDV Hariç",
             "KDV",
             "Toplam",
@@ -315,6 +317,12 @@ class FaturaListePencere(tk.Toplevel):
         except Exception as hata:
             messagebox.showerror("Liste", str(hata), parent=self)
             self._ham = []
+        from muhasebe_durum_ui import toplu_durum
+
+        evrak = "satis_faturasi" if self.document_type == DOC_SATIS else "alis_faturasi"
+        muhasebe = toplu_durum(evrak, [r.get("id") for r in self._ham])
+        for r in self._ham:
+            r["muhasebe_durumu"] = muhasebe.get(r.get("id"), "")
         self._sayfa = 0
         self._filtre_uygula()
 
@@ -427,6 +435,7 @@ class FaturaListePencere(tk.Toplevel):
             "cari_ad": "cari_ad",
             "vergi": "vergi_no",
             "durum": "durum",
+            "muhasebe": "muhasebe_durumu",
             "matrah": "matrah",
             "kdv": "kdv",
             "toplam": "genel_toplam",
@@ -458,6 +467,7 @@ class FaturaListePencere(tk.Toplevel):
                 r.get("cari_ad") or r.get("musteri") or "",
                 r.get("vergi_no") or "",
                 r.get("evrak_durumu") or r.get("durum") or "",
+                r.get("muhasebe_durumu") or "",
                 _para(r.get("matrah")),
                 _para(r.get("kdv")),
                 _para(r.get("genel_toplam")),

@@ -453,9 +453,24 @@ class SatisIadeFaturasiService:
                 fifo_maliyet, kaynak_satiri = SatisIadeFaturasiService._fifo_maliyet_coz(
                     session, veri, iade.depo
                 )
+                from sqlalchemy.orm import selectinload as _sil
+
+                from database.stok_service import StokService
+
+                kart = session.scalar(
+                    select(StokKarti)
+                    .where(StokKarti.stok_kodu == veri["urun_kodu"].strip())
+                    .options(_sil(StokKarti.birimler))
+                )
+                carpan = (
+                    StokService.birim_carpani_kesin(kart, veri.get("birim") or kart.birim or "Adet")
+                    if kart is not None
+                    else Decimal("1")
+                )
                 stok_sonuc = SatisIadeFaturasiService._iade_girisi(
                     session, iade.iade_no, tarih, veri["urun_kodu"].strip(), iade.depo,
-                    miktar, fifo_maliyet, veri.get("lot_no") or "", kaynak_satiri,
+                    (miktar * carpan).quantize(Decimal("0.0001")), fifo_maliyet,
+                    veri.get("lot_no") or "", kaynak_satiri,
                 )
                 iade.satirlar.append(SatisIadeFaturasiSatiri(
                     kaynak_fatura_satiri_id=veri.get("kaynak_fatura_satiri_id") or (
@@ -471,6 +486,7 @@ class SatisIadeFaturasiService:
                     onceki_alis_fiyati=decimal(onceki, "Önceki alış", Decimal("0")) if onceki not in (None, "") else None,
                     onceki_fatura_no=veri.get("onceki_fatura_no") or None,
                     fifo_birim_maliyeti=stok_sonuc["fifo_birim_maliyeti"],
+                    birim_carpani=carpan,
                     lot_no=stok_sonuc["lot_girisi"],
                     birim_fiyat_doviz=birim_fiyat_doviz,
                     kaynak_yok_onay=bool(veri.get("kaynak_yok_onay")) or None,
@@ -508,10 +524,9 @@ class SatisIadeFaturasiService:
             except IntegrityError as hata:
                 raise ValueError("İade faturası kaydedilemedi.") from hata
             iid = int(iade.id)
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
-
-        muhasebe_hook("satis_iade_fisi", iid, yeniden=True)
+            muhasebe_hook("satis_iade_fisi", iid, yeniden=True, session=session)
         return SatisIadeFaturasiService.getir(iid)
 
     @staticmethod
@@ -537,10 +552,10 @@ class SatisIadeFaturasiService:
             AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
                                                   neden=f"İade iptal {iade.iade_no}")
             iade.durum = "İPTAL"
+            from database.muhasebe_entegrasyon import muhasebe_hook
 
-        from database.muhasebe_entegrasyon import muhasebe_hook
+            muhasebe_hook("iptal_kaynak", "satis_iade", int(iade_id), "Satış iade iptal", session=session)
 
-        muhasebe_hook("iptal_kaynak", "satis_iade", int(iade_id), "Satış iade iptal")
         from database.deleted_record_service import ENTITY_SATIS_IADE, safe_log_cancel
 
         safe_log_cancel(ENTITY_SATIS_IADE, iade_id, note="Satış iade faturası iptal")

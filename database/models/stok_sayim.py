@@ -44,6 +44,8 @@ class StokSayimSatiri(Base):
     sayilan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     fark: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     fark_nedeni: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    birim_maliyet: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    maliyet_kaynagi: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     fis: Mapped["StokSayimFisi"] = relationship("StokSayimFisi", back_populates="satirlar")
     stok = relationship("StokKarti")

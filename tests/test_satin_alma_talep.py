@@ -398,7 +398,7 @@ class SatinAlmaTalepKabulTest(_TalepTemel):
         sip = self._siparis(S.siparis_satirlari_hazirla({sid: "10"})["satirlar"])
         _irs, fat = self._teslim_ve_fatura(sip, "10")
         fat_satir = AlisFaturasiService.getir(fat.id).satirlar[0]
-        iade = AlisIadeFaturasiService.kaydet(
+        iade = AlisIadeFaturasiService.kaydet_ve_onayla(
             {"iade_tarihi": BUGUN, "cari_id": self.cari_id, "kaynak_fatura_id": fat.id, "depo": "ANA DEPO"},
             [{"urun_kodu": "U001", "urun_adi": "Vida", "miktar": Decimal("2"), "birim": "Adet",
               "birim_fiyat": Decimal("2"), "kdv_orani": Decimal("20"), "kaynak_fatura_satiri_id": fat_satir.id}],

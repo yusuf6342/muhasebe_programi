@@ -134,10 +134,17 @@ class StokBirlestirDialog(tk.Toplevel):
             self._ozet_yaz(str(hata))
             return
         self._onizleme = o
+        birim_satiri = ""
+        if o.get("birim_katsayisi", 1) != 1:
+            birim_satiri = (
+                f"Birim dönüşümü: 1 {o['kaynak_birim']} = {o['birim_katsayisi'].normalize()} "
+                f"{o['hedef_birim']} (lot ve hareket miktarları dönüştürülür)\n"
+            )
         self._ozet_yaz(
             (
                 f"Kaynak: {o['kaynak_kod']} — {o['kaynak_ad']}\n"
                 f"Hedef:  {o['hedef_kod']} — {o['hedef_ad']}\n"
+                f"{birim_satiri}"
                 f"\n"
                 f"Kaynak toplam giriş: {_para(o['kaynak_toplam_giris'])}\n"
                 f"Kaynak toplam çıkış: {_para(o['kaynak_toplam_cikis'])}\n"
@@ -150,7 +157,8 @@ class StokBirlestirDialog(tk.Toplevel):
                 f"Etkilenecek belge satırı (snapshot korunur): {o['belge_satir_adet']}\n"
                 f"Etkilenecek depo: {o['depo_adet']}\n"
                 f"\n"
-                f"Onaylandığında hareket ve FIFO lotları hedef stock_id'ye taşınır;\n"
+                f"Onaylandığında hareketler ve FIFO lotları (giriş tarihi, maliyet, depo ve\n"
+                f"belge bağlarıyla) hedef karta taşınır;\n"
                 f"kaynak kart pasife alınır (silinmez)."
             )
         )
@@ -213,7 +221,8 @@ class StokBirlestirDialog(tk.Toplevel):
                 f"Aktarılan giriş: {_para(sonuc['aktarilan_giris'])}\n"
                 f"Aktarılan çıkış: {_para(sonuc['aktarilan_cikis'])}\n"
                 f"FIFO/lot: {sonuc['lot']} "
-                f"(taşınan {sonuc['lot_tasinan']}, birleşen {sonuc['lot_birlesen']})\n"
+                f"(taşınan {sonuc['lot_tasinan']}, lot no ayrıştırılan "
+                f"{sonuc.get('lot_no_ayristirilan', 0)})\n"
                 f"Hedef miktar: {_para(sonuc['hedef_miktar_once'])} → "
                 f"{_para(sonuc['hedef_miktar_sonra'])}\n"
                 f"Depo bakiyeleri:\n{depo_blok}\n"

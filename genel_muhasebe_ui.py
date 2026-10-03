@@ -84,6 +84,7 @@ def genel_muhasebe_menusu_goster(app):
         (
             ("HESAP PLANI", lambda: hesap_plani_goster(app)),
             ("MUHASEBE FİŞLERİ", lambda: fisler_goster(app)),
+            ("MUHASEBELEŞTİRİLECEK EVRAKLAR", lambda: _bekleyenler(app)),
             ("HESAP EŞLEŞTİRMELERİ", lambda: eslemeler_goster(app)),
             ("MİZAN", lambda: mizan_goster(app)),
             ("BİLANÇO", lambda: bilanco_goster(app)),
@@ -99,6 +100,14 @@ def genel_muhasebe_menusu_goster(app):
 
 def _geri(app):
     genel_muhasebe_menusu_goster(app)
+
+
+def _bekleyenler(app):
+    from muhasebelestirme_ui import muhasebelestirilecek_evraklar_goster
+
+    _menu_isaretle(app)
+    muhasebelestirilecek_evraklar_goster(app, lambda: _geri(app))
+    _menu_isaretle(app)
 
 
 # ---------- Hesap Eşleştirmeleri ----------
@@ -120,13 +129,14 @@ def eslemeler_goster(app):
     arac = ttk.Frame(app.icerik)
     arac.pack(fill="x", pady=(0, 8))
 
-    kolonlar = ("anahtar", "aciklama", "kod", "ad")
+    kolonlar = ("anahtar", "aciklama", "kod", "ad", "durum")
     tablo = ttk.Treeview(app.icerik, columns=kolonlar, show="headings", height=14)
     for k, t, w in (
         ("anahtar", "Anahtar", 140),
-        ("aciklama", "Açıklama", 260),
+        ("aciklama", "Açıklama", 240),
         ("kod", "Hesap Kodu", 100),
-        ("ad", "Hesap Adı", 220),
+        ("ad", "Hesap Adı", 200),
+        ("durum", "Fişe Uygunluk", 320),
     ):
         tablo.heading(k, text=t)
         tablo.column(k, width=w)
@@ -138,9 +148,19 @@ def eslemeler_goster(app):
         tablo.delete(*tablo.get_children())
         kayitlar.clear()
         try:
+            uygunluk = {r["anahtar"]: r for r in HesapEslemeService.uygunluk_raporu()}
             for e in HesapEslemeService.listele():
                 iid = e["anahtar"]
                 kayitlar[iid] = e
+                u = uygunluk.get(iid) or {}
+                if u.get("durum") == "uygun":
+                    durum = "Uygun"
+                elif u:
+                    durum = "Eksik" if u["durum"] == "eksik" else f"Uygun değil: {u['neden']}"
+                    if u.get("adaylar"):
+                        durum += f" (uygun: {', '.join(u['adaylar'][:3])})"
+                else:
+                    durum = "—"
                 tablo.insert(
                     "",
                     "end",
@@ -150,6 +170,7 @@ def eslemeler_goster(app):
                         e["aciklama"],
                         e["hesap_kodu"] or "—",
                         e["hesap_adi"] or "—",
+                        durum,
                     ),
                 )
         except Exception as hata:
@@ -158,14 +179,18 @@ def eslemeler_goster(app):
     def oneri():
         if not messagebox.askyesno(
             "Tek Düzen / Eşleştirme",
-            "Tek Düzen ana hesaplar yüklensin ve standart eşleştirmeler "
-            "(100, 102, 120, 153, 191, 320, 391, 600, 621, 770) bağlansın mı?",
+            "Tek Düzen ana hesaplar yüklensin ve boş eşleştirmeler, ana hesabın altında "
+            "fiş kaydı kabul eden tek bir alt hesap varsa ona bağlansın mı?\n\n"
+            "Ana/üst hesaplar bağlanmaz; birden çok uygun alt hesap varsa seçim size bırakılır. "
+            "Mevcut eşleştirmeler değiştirilmez.",
             parent=app,
         ):
             return
         try:
-            n = HesapEslemeService.oneri_hesaplari_olustur()
-            messagebox.showinfo("Tamam", f"İşlem tamam. Yeni eklenen ana hesap: {n}", parent=app)
+            rapor = HesapEslemeService.oneri_hesaplari_olustur()
+            messagebox.showinfo(
+                "Öneri sonucu", HesapEslemeService.oneri_raporu_metni(rapor), parent=app
+            )
             yenile()
         except Exception as hata:
             messagebox.showerror("Eşleştirme", str(hata), parent=app)
@@ -739,6 +764,18 @@ class FisDialog(tk.Toplevel):
         if not data:
             return
         self.fis_no.configure(text=data["fis_no"])
+        try:
+            from database.muhasebelestirme_service import MuhasebelestirmeService
+
+            kaynak = MuhasebelestirmeService.fis_kaynagi(self.fis_id)
+        except Exception:
+            kaynak = None
+        if kaynak:
+            durum = f" — muhasebeleştirme durumu: {kaynak['durum']}" if kaynak.get("durum") else ""
+            self.fis_no.configure(
+                text=f"{data['fis_no']}   |   Kaynak evrak: {kaynak['evrak_adi']} "
+                     f"{kaynak.get('belge_no') or '#' + str(kaynak['kaynak_id'])}{durum}"
+            )
         self.tarih.delete(0, "end")
         self.tarih.insert(0, data["fis_tarihi"].strftime("%d.%m.%Y"))
         self.tur.set(data["fis_turu"])

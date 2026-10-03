@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -25,6 +25,9 @@ class AlisMasraf(Base):
     )  # TUTAR | MIKTAR | MANUEL
     maliyete_dahil: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Masrafın gider belgesi (HIZMET_FATURASI | GIDER_FISI); eski kayıtlarda boş
+    kaynak_turu: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    kaynak_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     olusturma_tarihi: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
     )

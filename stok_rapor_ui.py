@@ -53,6 +53,93 @@ def _tablo(parent, kolonlar, basliklar, genislikler=None):
     return tablo
 
 
+TABLO_PARCA = 400
+
+
+def tabloyu_parcali_doldur(tablo, satirlar, degerler, parca=TABLO_PARCA, bitti=None):
+    """Treeview'i ``after`` ile parça parça doldurur; binlerce satırda arayüz kilitlenmez.
+
+    Aynı tabloya yeni doldurma başlarsa eskisi kendiliğinden durur.
+    """
+    jeton = object()
+    tablo._doldurma_jetonu = jeton
+    tablo.delete(*tablo.get_children())
+
+    def adim(i=0):
+        if getattr(tablo, "_doldurma_jetonu", None) is not jeton or not tablo.winfo_exists():
+            return
+        for s in satirlar[i:i + parca]:
+            tablo.insert("", "end", values=degerler(s))
+        if i + parca < len(satirlar):
+            tablo.after(1, lambda: adim(i + parca))
+        elif bitti is not None:
+            bitti()
+
+    adim()
+
+
+def arka_plan_rapor(app, ozet, buton, yukle, goster, baslik, yoklama_ms=40):
+    """Ağır rapor sorgusunu iş parçacığında çalıştırır; Tk güncellemesi ``after`` ile ana thread'de.
+
+    İş parçacığı Tk'ye hiç dokunmaz: sonucu bir kutuya bırakır, ana thread ``after`` ile yoklar.
+    Çalışırken "Yükleniyor…" gösterilir ve buton kilitlenir; sonradan başlatılan istek
+    eski sonucun ekrana yazılmasını engeller.
+    """
+    import threading
+
+    jeton = object()
+    ozet._rapor_jetonu = jeton
+    ozet.configure(text="Yükleniyor… (rapor arka planda hesaplanıyor)")
+    try:
+        buton.state(["disabled"])
+    except (tk.TclError, AttributeError):
+        pass
+
+    def _serbest():
+        try:
+            buton.state(["!disabled"])
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _ok(rapor):
+        if getattr(ozet, "_rapor_jetonu", None) is not jeton or not app.winfo_exists() \
+                or not ozet.winfo_exists():
+            return
+        _serbest()
+        goster(rapor)
+
+    def _err(exc):
+        if getattr(ozet, "_rapor_jetonu", None) is not jeton or not ozet.winfo_exists():
+            return
+        _serbest()
+        ozet.configure(text="Rapor alınamadı.")
+        messagebox.showerror(baslik, str(exc), parent=app)
+
+    kutu: dict = {}
+
+    def _calistir():
+        try:
+            kutu["sonuc"] = yukle()
+        except BaseException as exc:  # noqa: BLE001
+            kutu["hata"] = exc
+
+    def _yokla():
+        try:
+            if not ozet.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if not kutu:
+            ozet.after(yoklama_ms, _yokla)
+        elif "hata" in kutu:
+            _err(kutu["hata"])
+        else:
+            _ok(kutu["sonuc"])
+
+    threading.Thread(target=_calistir, daemon=True).start()
+    ozet.after(yoklama_ms, _yokla)
+
+
 def stok_raporlari_menusu_goster(app):
     """Geriye dönük alias — kurumsal rapor hub'ına yönlendirir."""
     from stoklar_ui import stoklar_raporlar_hub_goster
@@ -138,17 +225,10 @@ def rapor_envanter(app):
                     f"Toplam tutar: {_para(rapor['toplam_tutar'])}"
                 )
             )
-            for item in tablo.get_children():
-                tablo.delete(item)
-            for s in rapor["satirlar"]:
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
-                        s["stok_kodu"], s["stok_adi"], s["kart_turu"], s["depo"], s["birim"],
-                        s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
-                    ),
-                )
+            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
+                s["stok_kodu"], s["stok_adi"], s["kart_turu"], s["depo"], s["birim"],
+                s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
+            ))
 
         def _err(exc):
             if app.winfo_exists():
@@ -369,24 +449,23 @@ def rapor_satilmayan(app):
         except ValueError:
             messagebox.showerror("Gün", "Geçerli gün sayısı girin.", parent=app)
             return
-        rapor = RaporService.satilmayan_urunler(min_gun, stok.get().strip() or None)
-        ozet.configure(
-            text=f"Eşik: {rapor['min_gun']} gün  |  {len(rapor['satirlar'])} ürün  |  {_tarih(rapor['tarih'])}"
-        )
-        for item in tablo.get_children():
-            tablo.delete(item)
-        for s in rapor["satirlar"]:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["stok_kodu"], s["stok_adi"], s["birim"], s["mevcut"],
-                    "Hiç satılmadı" if s["hic_satilmadi"] else _tarih(s["son_satis"]),
-                    "—" if s["hic_satilmadi"] else s["gun"],
-                ),
-            )
+        stok_f = stok.get().strip() or None
 
-    ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=10)
+        def goster(rapor):
+            ozet.configure(
+                text=f"Eşik: {rapor['min_gun']} gün  |  {len(rapor['satirlar'])} ürün  |  {_tarih(rapor['tarih'])}"
+            )
+            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
+                s["stok_kodu"], s["stok_adi"], s["birim"], s["mevcut"],
+                "Hiç satılmadı" if s["hic_satilmadi"] else _tarih(s["son_satis"]),
+                "—" if s["hic_satilmadi"] else s["gun"],
+            ))
+
+        arka_plan_rapor(app, ozet, buton, lambda: RaporService.satilmayan_urunler(min_gun, stok_f),
+                        goster, "Satılmayan ürünler")
+
+    buton = ttk.Button(filtre, text="Raporu Getir", command=getir)
+    buton.pack(side="left", padx=10)
     getir()
 
 
@@ -442,33 +521,32 @@ def rapor_devir(app):
         try:
             b = _tarih_oku(baslangic, zorunlu=True)
             e = _tarih_oku(bitis, zorunlu=True)
-            rapor = RaporService.stok_devir_hizi(b, e, stok.get().strip() or None, maliyet.get())
         except ValueError as hata:
             messagebox.showerror("Rapor", str(hata), parent=app)
             return
-        ozet.configure(
-            text=(
-                f"{_tarih(rapor['baslangic'])} – {_tarih(rapor['bitis'])}  "
-                f"({rapor['gun_sayisi']} gün)  |  {rapor['maliyet_yontemi']}  |  "
-                f"{len(rapor['satirlar'])} stok"
-            )
-        )
-        for item in tablo.get_children():
-            tablo.delete(item)
-        for s in rapor["satirlar"]:
-            gun = f"{s['gun_stokta']:.1f}" if s["gun_stokta"] is not None else "—"
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["stok_kodu"], s["stok_adi"][:28],
-                    s["bas_miktar"], s["son_miktar"],
-                    _para(s["ort_deger"]), _para(s["cogs"]),
-                    f"{s['devir_hizi']:.2f}", gun,
-                ),
-            )
+        stok_f, yontem = stok.get().strip() or None, maliyet.get()
 
-    ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=10)
+        def goster(rapor):
+            ozet.configure(
+                text=(
+                    f"{_tarih(rapor['baslangic'])} – {_tarih(rapor['bitis'])}  "
+                    f"({rapor['gun_sayisi']} gün)  |  {rapor['maliyet_yontemi']}  |  "
+                    f"{len(rapor['satirlar'])} stok"
+                )
+            )
+            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
+                s["stok_kodu"], s["stok_adi"][:28],
+                s["bas_miktar"], s["son_miktar"],
+                _para(s["ort_deger"]), _para(s["cogs"]),
+                f"{s['devir_hizi']:.2f}",
+                f"{s['gun_stokta']:.1f}" if s["gun_stokta"] is not None else "—",
+            ))
+
+        arka_plan_rapor(app, ozet, buton, lambda: RaporService.stok_devir_hizi(b, e, stok_f, yontem),
+                        goster, "Stok devir hızı")
+
+    buton = ttk.Button(filtre, text="Raporu Getir", command=getir)
+    buton.pack(side="left", padx=10)
     getir()
 
 
@@ -534,7 +612,7 @@ def rapor_hareket(app):
         except ValueError:
             messagebox.showerror("Tarih", "Tarihleri gg.aa.yyyy girin.", parent=app)
             return
-        rapor = RaporService.stok_hareket_raporu(
+        parametreler = dict(
             baslangic=b,
             bitis=e,
             stok=stok.get().strip() or None,
@@ -543,19 +621,18 @@ def rapor_hareket(app):
             belge_no=belge.get().strip() or None,
             lot=lot.get().strip() or None,
         )
-        ozet.configure(text=f"{len(rapor['satirlar'])} hareket")
-        for item in tablo.get_children():
-            tablo.delete(item)
-        for s in rapor["satirlar"]:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    _tarih(s["tarih"]), s["hareket_turu"], s["belge_no"],
-                    s["stok_kodu"], s["stok_adi"][:22], s["depo"], s["lot_no"],
-                    s["yon"], s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
-                ),
-            )
 
-    ttk.Button(filtre2, text="Raporu Getir", command=getir).pack(side="left", padx=10)
+        def goster(rapor):
+            ozet.configure(text=f"{len(rapor['satirlar'])} hareket")
+            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
+                _tarih(s["tarih"]), s["hareket_turu"], s["belge_no"],
+                s["stok_kodu"], s["stok_adi"][:22], s["depo"], s["lot_no"],
+                s["yon"], s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
+            ))
+
+        arka_plan_rapor(app, ozet, buton, lambda: RaporService.stok_hareket_raporu(**parametreler),
+                        goster, "Stok hareket raporu")
+
+    buton = ttk.Button(filtre2, text="Raporu Getir", command=getir)
+    buton.pack(side="left", padx=10)
     getir()

@@ -7,6 +7,7 @@ import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from birim_hatasi_ui import birim_hatasi_goster
 
 import fatura_tema as ftema
 from satin_alma_ui import _SatinAlmaSatirGirisi, _liste_ust, _para, _tarih, pencere_ac
@@ -788,12 +789,17 @@ class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
             yeni_id = self.SatinAlmaTalepService.kaydet(veriler, self.satirlar, self.talep_id, self.row_version,
                                                         tekrar_gerekcesi=gerekce)
         except (ValueError, PermissionError) as e:
-            messagebox.showerror("Kaydedilemedi", str(e), parent=self)
+            birim_hatasi_goster(self, e) or messagebox.showerror("Kaydedilemedi", str(e), parent=self)
             return False
+        birim_uyarisi = getattr(self.SatinAlmaTalepService, "son_birim_uyarisi", None)
         if uyarilar:
             self._uyari_imzasi = tuple(uyarilar)
         self._yukle(yeni_id)
         self._durum_uygula()
+        if birim_uyarisi:
+            messagebox.showwarning(
+                "Tanımsız birim", "Talep TASLAK olarak kaydedildi; onaya gönderme, onay ve siparişe aktarım bu "
+                f"birimler tanımlanana kadar engellenecek.\n\n{birim_uyarisi}", parent=self)
         metin = f"{self.no.get()} kaydedildi ({datetime.now():%H:%M})."
         if uyarilar:
             metin += "  Aynı ürün için açık talepler: " + "; ".join(uyarilar[:4])
@@ -815,7 +821,7 @@ class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
         try:
             fn(self.talep_id, *args)
         except (ValueError, PermissionError) as e:
-            messagebox.showerror("Talep", str(e), parent=self)
+            birim_hatasi_goster(self, e) or messagebox.showerror("Talep", str(e), parent=self)
             return False
         self._yukle(self.talep_id)
         self._durum_uygula()
@@ -1307,7 +1313,7 @@ def siparis_ac(parent, miktarlar: dict[int, Decimal]):
     try:
         hazir = SatinAlmaTalepService.siparis_satirlari_hazirla(miktarlar)
     except (ValueError, PermissionError) as e:
-        messagebox.showerror("Sipariş Oluştur", str(e), parent=parent)
+        birim_hatasi_goster(parent, e) or messagebox.showerror("Sipariş Oluştur", str(e), parent=parent)
         return None
     cari = None
     if hazir["onerilen_tedarikci_id"]:

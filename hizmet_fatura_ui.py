@@ -236,9 +236,16 @@ class HizmetFaturaDialog(tk.Toplevel):
         )
         ttk.Button(ust_btn, text="İptal Et", command=self.iptal_et).pack(side="right", padx=4)
         if self.hizmet_turu == "GIDER":
-            ttk.Button(ust_btn, text="Masraf Dağıtımları", command=self._masraf_dagitimlari).pack(
+            ttk.Button(ust_btn, text="Bağlı Alış Faturaları", command=self._masraf_dagitimlari).pack(
                 side="right", padx=4
             )
+        if self.fatura:
+            from muhasebe_durum_ui import baslik_guncelle, fis_dugmesi
+
+            fis_dugmesi(ust_btn, "hizmet_faturasi", lambda: getattr(self.fatura, "id", None)).pack(
+                side="right", padx=4
+            )
+            baslik_guncelle(self, baslik, "hizmet_faturasi", self.fatura.id)
         ttk.Button(ust_btn, text="Kapat", command=self.destroy).pack(side="right", padx=4)
         self.bind("<F1>", lambda _e: self.kaydet())
 

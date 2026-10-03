@@ -22,6 +22,8 @@ class AlisSiparisi(Base):
     sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     durum: Mapped[str] = mapped_column(String(30), nullable=False, default="AÇIK")
+    # Boş = firmanın varsayılan deposu (stok uyarısı beklenen alım hesabı)
+    teslim_depo: Mapped[str | None] = mapped_column(String(100), nullable=True)
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 

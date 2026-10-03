@@ -27,10 +27,88 @@ MASRAF_TURLERI = (
 YONTEMLER = ("TUTAR", "MIKTAR", "MANUEL")
 
 
+def kaynak_kolonlarini_hazirla(motor) -> None:
+    """alis_masraflari.kaynak_turu / kaynak_id (boş bırakılabilir) — mevcut kayıtlara dokunmaz."""
+    from sqlalchemy import inspect, text
+
+    from database.modul_sema import surum_uygula
+
+    def _v1(e) -> None:
+        denetci = inspect(e)
+        if not denetci.has_table("alis_masraflari"):
+            return  # tablo modelden yeni kolonlarla oluşturulur
+        mevcut = {k["name"] for k in denetci.get_columns("alis_masraflari")}
+        with e.begin() as baglanti:
+            if "kaynak_turu" not in mevcut:
+                baglanti.execute(text("ALTER TABLE alis_masraflari ADD COLUMN kaynak_turu VARCHAR(30)"))
+            if "kaynak_id" not in mevcut:
+                baglanti.execute(text("ALTER TABLE alis_masraflari ADD COLUMN kaynak_id INTEGER"))
+
+    surum_uygula(motor, "alis_masraflari", 1, _v1)
+
+
 class AlisMasrafService:
+    _hazir_motor = None
+
     @staticmethod
     def schema_hazirla() -> None:
+        from database.database import company_db
+
         SatinAlmaHubService.schema_hazirla()
+        motor = company_db.engine
+        if motor is not None and AlisMasrafService._hazir_motor is not motor:
+            kaynak_kolonlarini_hazirla(motor)
+            AlisMasrafService._hazir_motor = motor
+
+    @staticmethod
+    def kaynak_belgeler(arama: str | None = None) -> list[dict[str, Any]]:
+        """Masrafın bağlanabileceği gider belgeleri (hizmet gider faturası / gider fişi)."""
+        from database.masraf_dagitim_service import MasrafDagitimService
+
+        return MasrafDagitimService.kaynak_belgeler(arama, tumu=True)
+
+    @staticmethod
+    def _kaynak_dogrula(session, kaynak_turu: str | None, kaynak_id) -> tuple[str | None, int | None]:
+        if not kaynak_turu and not kaynak_id:
+            return None, None
+        from database.masraf_dagitim_service import KAYNAK_TURLERI, MasrafDagitimService
+
+        if kaynak_turu not in KAYNAK_TURLERI or not kaynak_id:
+            raise ValueError("Kaynak belge türü ve numarası birlikte seçilmelidir.")
+        k = MasrafDagitimService._kaynak_oku(session, kaynak_turu, int(kaynak_id))
+        if k is None:
+            raise ValueError("Kaynak belge bulunamadı.")
+        if k["iptal"]:
+            raise ValueError(f"Kaynak belge {k['no']} iptal edilmiş.")
+        return kaynak_turu, int(kaynak_id)
+
+    @staticmethod
+    def _mukerrer(session, satir_idler, masraf_turu, aciklama, kaynak_turu, kaynak_id) -> tuple[list[str], list[str]]:
+        from database.masraf_dagitim_service import MasrafDagitimService, masraf_kategorileri
+
+        return MasrafDagitimService.yeni_dagitim_cakismalari(
+            session, satir_idler, masraf_kategorileri(masraf_turu, aciklama), aciklama,
+            kaynak_turu=kaynak_turu, kaynak_id=kaynak_id,
+        )
+
+    @staticmethod
+    def mukerrer_on_kontrol(fatura_id: int, masraf_turu: str, aciklama: str | None = None, *,
+                            kaynak_turu: str | None = None, kaynak_id: int | None = None) -> dict[str, list[str]]:
+        """Kaydetmeden önce: ``kesin`` (aynı kaynak belge) ve ``inceleme`` (kimliksiz benzerlik) listeleri."""
+        AlisMasrafService.schema_hazirla()
+        with get_session() as session:
+            fatura = session.scalar(
+                select(AlisFaturasi).options(selectinload(AlisFaturasi.satirlar))
+                .where(AlisFaturasi.id == int(fatura_id))
+            )
+            if fatura is None:
+                raise ValueError("Fatura bulunamadı.")
+            kaynak_turu, kaynak_id = AlisMasrafService._kaynak_dogrula(session, kaynak_turu, kaynak_id)
+            kesin, inceleme = AlisMasrafService._mukerrer(
+                session, [s.id for s in fatura.satirlar], (masraf_turu or "").strip().upper(), aciklama,
+                kaynak_turu, kaynak_id,
+            )
+            return {"kesin": kesin, "inceleme": inceleme}
 
     @staticmethod
     def fatura_liste_ozet() -> list[dict[str, Any]]:
@@ -85,6 +163,8 @@ class AlisMasrafService:
                     "dagitim_yontemi": m.dagitim_yontemi,
                     "maliyete_dahil": m.maliyete_dahil,
                     "aciklama": m.aciklama or "",
+                    "kaynak_turu": m.kaynak_turu,
+                    "kaynak_id": m.kaynak_id,
                     "dagitim_adet": len(m.dagitimlar or []),
                     "dagitim_toplam": sum(
                         (d.tutar for d in (m.dagitimlar or [])), Decimal("0")
@@ -102,7 +182,13 @@ class AlisMasrafService:
         maliyete_dahil: bool = True,
         aciklama: str | None = None,
         manuel_dagitim: dict[int, Decimal] | None = None,
+        *,
+        kaynak_turu: str | None = None,
+        kaynak_id: int | None = None,
+        inceleme_onaylandi: bool = False,
     ) -> int:
+        """``kaynak_*`` verilirse mükerrerlik kimlikle kesin kontrol edilir. Kimliksiz benzerlik
+        ("inceleme gerekli") yalnız ``inceleme_onaylandi=True`` ile kaydedilir."""
         yazma_zorunlu("alis_masraf_duzenleme", "alis_duzenleme", "yeni_kayit")
         AlisMasrafService.schema_hazirla()
         tutar_d = decimal(tutar, "Masraf tutarı", Decimal("0.01"))
@@ -121,6 +207,7 @@ class AlisMasrafService:
             satirlar = list(fatura.satirlar or [])
             if not satirlar:
                 raise ValueError("Faturada satır yok; masraf dağıtılamaz.")
+            kaynak_turu, kaynak_id = AlisMasrafService._kaynak_dogrula(session, kaynak_turu, kaynak_id)
 
             masraf = AlisMasraf(
                 fatura_id=fatura.id,
@@ -129,6 +216,8 @@ class AlisMasrafService:
                 dagitim_yontemi=yontem,
                 maliyete_dahil=bool(maliyete_dahil),
                 aciklama=aciklama,
+                kaynak_turu=kaynak_turu,
+                kaynak_id=kaynak_id,
             )
             session.add(masraf)
             session.flush()
@@ -185,6 +274,26 @@ class AlisMasrafService:
                 raise ValueError(
                     f"Dağıtım toplamı ({kontrol}) masraf tutarına ({tutar_d}) eşit değil."
                 )
+            if masraf.maliyete_dahil:
+                kesin, inceleme = AlisMasrafService._mukerrer(
+                    session,
+                    [d.fatura_satiri_id for d in masraf.dagitimlar if d.tutar],
+                    masraf.masraf_turu,
+                    masraf.aciklama,
+                    kaynak_turu,
+                    kaynak_id,
+                )
+                if kesin:
+                    raise ValueError(
+                        "Aynı masraf iki kez maliyete yüklenemez:\n- " + "\n- ".join(kesin)
+                        + "\nMasraf Dağıtımı kaydını geri alın/iptal edin veya masrafı 'maliyete dahil değil' kaydedin."
+                    )
+                if inceleme and not inceleme_onaylandi:
+                    raise ValueError(
+                        "İnceleme gerekli — kaynak belge seçilmediği için mükerrerlik kesinleştirilemedi:\n- "
+                        + "\n- ".join(inceleme)
+                        + "\nKaynak belgeyi seçin ya da farklı masraf olduğunu onaylayarak kaydedin."
+                    )
             if masraf.maliyete_dahil:
                 AlisMasrafService._fifo_lot_maliyetine_yansit(session, fatura, masraf, yon=1)
             return int(masraf.id)

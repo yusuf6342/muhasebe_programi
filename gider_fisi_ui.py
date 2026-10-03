@@ -233,7 +233,7 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
     cerceve.pack(fill="both", expand=True, pady=6)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("belge", "tarih", "hesap", "hizmet", "tutar", "durum", "aciklama"),
+        columns=("belge", "tarih", "hesap", "hizmet", "tutar", "durum", "muhasebe", "aciklama"),
         show="headings",
         selectmode="browse",
     )
@@ -244,6 +244,7 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
         ("hizmet", "Hizmet", 200),
         ("tutar", "Tutar", 100),
         ("durum", "Durum", 70),
+        ("muhasebe", "Muhasebe", 130),
         ("aciklama", "Açıklama", 200),
     ):
         tablo.heading(k, text=b)
@@ -254,9 +255,13 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
     kaydir.pack(side="right", fill="y")
 
     def yenile():
+        from muhasebe_durum_ui import toplu_durum
+
         for item in tablo.get_children():
             tablo.delete(item)
-        for f in FinansService.gider_fisi_listele():
+        fisler = FinansService.gider_fisi_listele()
+        muhasebe = toplu_durum("gider_fisi", [f.id for f in fisler])
+        for f in fisler:
             hiz = f.hizmet
             tablo.insert(
                 "",
@@ -269,6 +274,7 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
                     f"{hiz.hizmet_kodu} — {hiz.hizmet_adi}" if hiz else "—",
                     _para(f.tutar),
                     f.durum,
+                    muhasebe.get(f.id, ""),
                     (f.aciklama or "")[:80],
                 ),
             )
@@ -306,10 +312,33 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
 
         gider_fisi_onizle(app, belge_no)
 
+    def bagli_alislar():
+        secim = tablo.selection()
+        if not secim:
+            messagebox.showinfo("Seçim", "Bir fiş seçin.", parent=app)
+            return
+        from database.masraf_dagitim_service import KAYNAK_GIDER_FISI
+        from masraf_dagitim_ui import bagli_dagitimlar_goster
+
+        bagli_dagitimlar_goster(app, kaynak_id=int(secim[0]), kaynak_turu=KAYNAK_GIDER_FISI)
+
+    def muhasebe_fisi():
+        secim = tablo.selection()
+        if not secim:
+            messagebox.showinfo("Seçim", "Bir fiş seçin.", parent=app)
+            return
+        from muhasebe_durum_ui import fisi_ac
+
+        fisi_ac(app, "gider_fisi", int(secim[0]))
+
     butonlar = ttk.Frame(govde)
     butonlar.pack(fill="x", pady=6)
     ttk.Button(butonlar, text="Yeni Gider Fişi", command=lambda: yeni()).pack(side="left")
     ttk.Button(butonlar, text="Belgeyi Aç", command=ac).pack(side="left", padx=8)
+    ttk.Button(butonlar, text="Bağlı Alış Faturaları / Masraf Dağıt", command=bagli_alislar).pack(
+        side="left", padx=8
+    )
+    ttk.Button(butonlar, text="Muhasebe Fişi", command=muhasebe_fisi).pack(side="left", padx=8)
     ttk.Button(butonlar, text="İptal Et", command=iptal).pack(side="left", padx=8)
     ttk.Button(butonlar, text="Yenile", command=yenile).pack(side="left")
     tablo.bind("<Double-1>", ac)

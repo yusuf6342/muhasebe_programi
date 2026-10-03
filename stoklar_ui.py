@@ -25,6 +25,7 @@ from satis_tema import (
 
 STOKLAR_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("STOK KARTLARI / LİSTE", "Arama, filtre, bakiye ve stok kartı işlemleri", "liste"),
+    ("STOK UYARILARI / SİPARİŞ İHTİYACI", "Tükenen ve kritik ürünler, öneri ve taslak sipariş", "uyari"),
     ("STOK GRUBU YÖNETİMİ", "Ana / Tali / Alt grup ağacı ve toplu taşıma", "grup"),
     ("TOPLU GRUP EŞLEŞTİRME", "Çoklu stok seçimi, ön izleme ve güvenli atama", "toplu_grup"),
     ("STOK GİRİŞ", "Manuel stok giriş fişi", "giris"),
@@ -167,6 +168,7 @@ def _hub_komutlar(app) -> dict[str, Callable]:
 
     return {
         "liste": app.stok_kartlari_goster,
+        "uyari": lambda: __import__("stok_uyari_ui", fromlist=["stok_uyari_goster"]).stok_uyari_goster(app),
         "grup": lambda: __import__("stok_grup_ui", fromlist=["stok_grup_yonetimi_goster"]).stok_grup_yonetimi_goster(app),
         "toplu_grup": lambda: __import__(
             "stok_grup_toplu_ui", fromlist=["stok_grup_toplu_eslestirme_goster"]
@@ -211,9 +213,26 @@ def stoklar_hub_goster(app) -> None:
     except Exception:
         ozet = {}
     _ozet_serit(kok, ozet, app=app)
-    _kart_izgara(app, kok, STOKLAR_HUB_KARTLARI, _hub_komutlar(app), sutun=2)
+    _kart_izgara(app, kok, _hub_kartlari_sayili(), _hub_komutlar(app), sutun=2)
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: stoklar_hub_goster(app))
+
+
+def _hub_kartlari_sayili() -> tuple[tuple[str, str, str], ...]:
+    try:
+        from database.stok_uyari_service import StokUyariService
+
+        sayi = StokUyariService.aktif_sayisi()
+    except Exception:
+        return STOKLAR_HUB_KARTLARI
+    if not sayi.get("toplam"):
+        return STOKLAR_HUB_KARTLARI
+    ek = (f"Etkin ihtiyaç: {sayi['toplam']} (tükenen {sayi['tukenen']}, kritik {sayi['kritik']}, "
+          f"stok girişi yok {sayi.get('giris_yok', 0)})")
+    return tuple(
+        (f"{b} ({sayi['toplam']})", ek, a) if a == "uyari" else (b, ac, a)
+        for b, ac, a in STOKLAR_HUB_KARTLARI
+    )
 
 
 def stoklar_raporlar_hub_goster(app) -> None:
@@ -385,7 +404,7 @@ def stok_sayim_goster(app) -> None:
     cerceve.pack(fill="both", expand=True, padx=16, pady=8)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("kod", "ad", "sistem", "sayilan", "fark"),
+        columns=("kod", "ad", "sistem", "sayilan", "fark", "maliyet", "kaynak"),
         show="headings",
         selectmode="browse",
     )
@@ -396,6 +415,8 @@ def stok_sayim_goster(app) -> None:
         ("sistem", "Sistem", 90),
         ("sayilan", "Sayılan", 90),
         ("fark", "Fark", 90),
+        ("maliyet", "Fazla Birim Maliyet", 120),
+        ("kaynak", "Maliyet Kaynağı", 200),
     ):
         tablo.heading(k, text=b)
         tablo.column(k, width=w)
@@ -428,8 +449,51 @@ def stok_sayim_goster(app) -> None:
                     _para(r["sistem_miktar"]),
                     _para(r["sistem_miktar"]),
                     "0,00",
+                    "",
+                    "",
                 ),
             )
+
+    def fazla_maliyeti_sor(iid: str, veri: dict) -> bool:
+        """Sayım fazlasında maliyet + kaynağı belirler; iptalde False (sessiz 0 maliyet yok)."""
+        from database.satis_siparisi_service import decimal as sayi_coz
+        from database.stok_sayim_service import MALIYET_KULLANICI
+
+        depo = depo_map.get(depo_cb.get())
+        oneri = StokSayimService.maliyet_onerisi(veri["stok_id"], depo.id if depo else None)
+        if oneri:
+            bilgi = (f"Önerilen birim maliyet: {_para(oneri['birim_maliyet'])}\n"
+                     f"Kaynak: {oneri['kaynak']} — {oneri['aciklama']}\n\n"
+                     "Öneriyi kabul edin veya başka bir maliyet girin:")
+            ilk = f"{oneri['birim_maliyet']:f}"
+        else:
+            bilgi = ("Bu ürün için geçerli maliyet bulunamadı (lot / alış yok).\n"
+                     "Sayım fazlası için birim maliyet girmeniz zorunludur:")
+            ilk = ""
+        while True:
+            metin = simpledialog.askstring("Sayım Fazlası Maliyeti", bilgi, parent=app, initialvalue=ilk)
+            if metin is None:
+                return False
+            try:
+                maliyet = sayi_coz(metin, "Birim maliyet")
+            except ValueError as hata:
+                messagebox.showerror("Maliyet", str(hata), parent=app)
+                continue
+            if maliyet <= 0:
+                messagebox.showerror("Maliyet", "Sayım fazlası 0 maliyetle stoğa alınamaz.", parent=app)
+                continue
+            break
+        if oneri and maliyet == oneri["birim_maliyet"]:
+            kaynak, etiket = oneri["kaynak"], f"{oneri['kaynak']} — {oneri['aciklama']}"
+        else:
+            kaynak = etiket = MALIYET_KULLANICI
+        veri["birim_maliyet"] = maliyet
+        veri["maliyet_kaynagi"] = kaynak
+        vals = list(tablo.item(iid, "values"))
+        vals[5] = _para(maliyet)
+        vals[6] = etiket
+        tablo.item(iid, values=vals)
+        return True
 
     def sayilan_gir():
         sec = tablo.selection()
@@ -458,7 +522,13 @@ def stok_sayim_goster(app) -> None:
         vals = list(tablo.item(iid, "values"))
         vals[3] = _para(sayilan)
         vals[4] = _para(fark)
+        if fark <= 0:
+            veri.pop("birim_maliyet", None)
+            veri.pop("maliyet_kaynagi", None)
+            vals[5] = vals[6] = ""
         tablo.item(iid, values=vals)
+        if fark > 0:
+            fazla_maliyeti_sor(iid, veri)
 
     def onayla():
         depo = depo_map.get(depo_cb.get())
@@ -472,6 +542,15 @@ def stok_sayim_goster(app) -> None:
             return
         satirlar = list(satir_veri.values())
         farkli = [s for s in satirlar if s["sayilan_miktar"] != s["sistem_miktar"]]
+        for iid, s in satir_veri.items():
+            if s["sayilan_miktar"] > s["sistem_miktar"] and not s.get("birim_maliyet"):
+                tablo.selection_set(iid)
+                tablo.see(iid)
+                if not fazla_maliyeti_sor(iid, s):
+                    messagebox.showwarning(
+                        "Sayım", "Sayım fazlası satırlarında birim maliyet belirlenmeden onaylanamaz.", parent=app
+                    )
+                    return
         if not messagebox.askyesno(
             "Onay",
             f"{len(farkli)} satırda fark var. Sayım onaylanıp stok güncellensin mi?",

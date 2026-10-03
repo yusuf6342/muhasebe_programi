@@ -34,8 +34,8 @@ def main() -> int:
         sifre_degistirmeli=False,
     )
     MuhasebeService.schema_hazirla()
-    n = HesapEslemeService.oneri_hesaplari_olustur()
-    print("Önerilen hesap eklenen:", n)
+    rapor = HesapEslemeService.oneri_hesaplari_olustur()
+    print(HesapEslemeService.oneri_raporu_metni(rapor))
     eslemeler = HesapEslemeService.listele()
     eksik = [e["anahtar"] for e in eslemeler if not e["hesap_id"]]
     print("Eşleştirme sayısı:", len(eslemeler), "eksik:", eksik)

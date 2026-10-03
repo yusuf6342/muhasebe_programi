@@ -7,6 +7,9 @@ Kabul:
 4) Aynı stok / tekrar birleştirme reddedilir
 5) Belge snapshot (urun_kodu) değişmez
 6) Hard-delete yok (delete-orphan lot kaybı yok)
+7) Lot kimliği / maliyet / giriş tarihi korunur; aynı lot_no ortalanmaz; FIFO doğru lottan düşer
+8) Farklı birim: tanımlı katsayıyla dönüştürülür, tanımsızsa engellenir
+9) Hareket bakiyesi − lot toplamı farkı birleştirmeyle değişmez
 
 Çalıştırma: python tests/test_stok_birlestir.py
 """
@@ -295,6 +298,7 @@ class StokBirlestirTest(unittest.TestCase):
         self.assertEqual(sonuc["aktarilan_cikis"], Decimal("30"))
         self.assertEqual(sonuc["hareket"], 4)
         self.assertEqual(sonuc["kaynak_durum"], "pasif_soft_delete")
+        self.assertEqual(sonuc["mutabakat_farki_sonra"], Decimal("0"))
 
         with get_session() as s:
             kaynak = s.get(StokKarti, self.kaynak_id)
@@ -373,6 +377,110 @@ class StokBirlestirTest(unittest.TestCase):
         # İkinci çağrı miktarı bozmamalı
         ozet = StokService.stok_ozeti(self.hedef_id)
         self.assertEqual(ozet["kalan"], Decimal("150"))
+
+    # --- yardımcılar ---
+    def _mutabakat(self, stok_id):
+        with get_session() as s:
+            h = StokService._hareket_miktar_ozeti(s, stok_id)["net"]
+            l, _, _ = StokService._lot_kalan_ve_depolar(s, stok_id)
+        return h, l
+
+    def _kaynak_birim(self, birim):
+        with get_session() as s:
+            s.get(StokKarti, self.kaynak_id).birim = birim
+
+    def test_04_lot_kimligi_maliyet_ve_fifo_korunur(self):
+        # Hedefte kaynakla aynı depo + lot_no (K-L1) — eski kod maliyeti ortalayıp tek lota eziyordu
+        with get_session() as s:
+            s.add(StokLotu(stok_id=self.hedef_id, depo_id=self.depo1_id, lot_no="K-L1",
+                           giris_tarihi=date(2026, 3, 1), kalan_miktar=Decimal("5"),
+                           birim_maliyet=Decimal("50")))
+            s.add(StokHareketi(stok_id=self.hedef_id, depo_id=self.depo1_id, miktar=Decimal("5"),
+                               birim_maliyet=Decimal("50"), hareket_turu="GİRİŞ", belge_no="H-G2",
+                               tarih=date(2026, 3, 1)))
+        with get_session() as s:
+            once = {l.id: (l.giris_tarihi, l.depo_id, l.birim_maliyet, l.kalan_miktar, l.lot_no)
+                    for l in s.scalars(select(StokLotu).where(StokLotu.stok_id == self.kaynak_id))}
+
+        sonuc = StokService.stok_birlestir(self.kaynak_id, self.hedef_id)
+        self.assertEqual(sonuc["lot_tasinan"], 2)
+        self.assertEqual(sonuc["lot_no_ayristirilan"], 1)
+        self.assertEqual(sonuc["mutabakat_farki_sonra"], Decimal("0"))
+
+        with get_session() as s:
+            for lot_id, (tarih, depo, maliyet, kalan, lot_no) in once.items():
+                lot = s.get(StokLotu, lot_id)
+                self.assertEqual(lot.stok_id, self.hedef_id)
+                self.assertEqual((lot.giris_tarihi, lot.depo_id), (tarih, depo))
+                self.assertEqual(lot.birim_maliyet, maliyet)
+                self.assertEqual(lot.kalan_miktar, kalan)
+                if lot_no == "K-L1":
+                    self.assertEqual(lot.lot_no, f"K-L1-B{self.kaynak_id}")
+            hedef_kl1 = s.scalar(select(StokLotu).where(StokLotu.stok_id == self.hedef_id,
+                                                        StokLotu.lot_no == "K-L1"))
+            self.assertEqual((hedef_kl1.kalan_miktar, hedef_kl1.birim_maliyet), (Decimal("5"), Decimal("50")))
+        h, l = self._mutabakat(self.hedef_id)
+        self.assertEqual(h, l)
+
+        # FIFO: Merkez'de H-L1 (01.01, 100@10) → K-L1-B (01.02, 30@8) → K-L1 (01.03, 5@50)
+        with get_session() as s:
+            r = StokService.fatura_cikisi(s, "SAT-FIFO-1", date(2026, 4, 1), "H100", "Merkez", Decimal("110"))
+        self.assertAlmostEqual(float(r["fifo_birim_maliyeti"]), (100 * 10 + 10 * 8) / 110, places=4)
+        with get_session() as s:
+            kalan = {l.lot_no: l.kalan_miktar for l in s.scalars(
+                select(StokLotu).where(StokLotu.stok_id == self.hedef_id, StokLotu.depo_id == self.depo1_id))}
+        self.assertEqual(kalan["H-L1"], Decimal("0"))
+        self.assertEqual(kalan[f"K-L1-B{self.kaynak_id}"], Decimal("20"))
+        self.assertEqual(kalan["K-L1"], Decimal("5"))
+        h, l = self._mutabakat(self.hedef_id)
+        self.assertEqual(h, l)
+
+    def test_05_farkli_birim_donusumsuz_engellenir(self):
+        self._kaynak_birim("Koli")
+        with self.assertRaises(ValueError) as ctx:
+            StokService.stok_birlestir_onizleme(self.kaynak_id, self.hedef_id)
+        self.assertIn("Birimler farklı", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            StokService.stok_birlestir(self.kaynak_id, self.hedef_id)
+        with get_session() as s:
+            kaynak = s.get(StokKarti, self.kaynak_id)
+            self.assertTrue(kaynak.aktif)
+            self.assertFalse(kaynak.is_deleted)
+            self.assertEqual(len(list(s.scalars(select(StokLotu).where(StokLotu.stok_id == self.kaynak_id)))), 2)
+        self.assertEqual(self._mutabakat(self.hedef_id), (Decimal("100"), Decimal("100")))
+
+    def test_06_farkli_birim_tanimli_katsayiyla_donusturulur(self):
+        from database.models.stok import StokBirim
+
+        self._kaynak_birim("Koli")
+        with get_session() as s:
+            # Türkçe büyük harf varyantı: «KOLİ» = «Koli»
+            s.add(StokBirim(stok_id=self.hedef_id, birim_adi="KOLİ", carpan=Decimal("12")))
+        o = StokService.stok_birlestir_onizleme(self.kaynak_id, self.hedef_id)
+        self.assertEqual(o["birim_katsayisi"], Decimal("12"))
+        self.assertEqual(o["beklenen_hedef_miktar"], Decimal("700"))
+
+        sonuc = StokService.stok_birlestir(self.kaynak_id, self.hedef_id)
+        self.assertEqual(sonuc["hedef_miktar_sonra"], Decimal("700"))
+        self.assertEqual(sonuc["mutabakat_farki_sonra"], Decimal("0"))
+        with get_session() as s:
+            lot = s.scalar(select(StokLotu).where(StokLotu.lot_no == "K-L1"))
+            self.assertEqual(lot.kalan_miktar, Decimal("360"))
+            self.assertAlmostEqual(float(lot.birim_maliyet), 8 / 12, places=4)
+            k_g1 = s.scalar(select(StokHareketi).where(StokHareketi.belge_no == "K-G1"))
+            self.assertEqual(k_g1.miktar, Decimal("600"))
+        self.assertEqual(self._mutabakat(self.hedef_id), (Decimal("700"), Decimal("700")))
+
+    def test_07_onceden_kayip_lot_gizlenmez(self):
+        # Kaynakta lot kaybı (hareket 50, lot 30) birleştirmede sessizce kapanmaz/büyümez
+        with get_session() as s:
+            s.delete(s.scalar(select(StokLotu).where(StokLotu.lot_no == "K-L2")))
+        o = StokService.stok_birlestir_onizleme(self.kaynak_id, self.hedef_id)
+        self.assertEqual(o["kaynak_mutabakat_farki"], Decimal("20"))
+        sonuc = StokService.stok_birlestir(self.kaynak_id, self.hedef_id)
+        self.assertEqual(sonuc["mutabakat_farki_sonra"], Decimal("20"))
+        h, l = self._mutabakat(self.hedef_id)
+        self.assertEqual(h - l, Decimal("20"))
 
 
 if __name__ == "__main__":

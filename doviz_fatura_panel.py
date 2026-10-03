@@ -78,7 +78,7 @@ def doviz_paneli_kur(kart, ust_cerceve: ttk.LabelFrame) -> None:
         width=16,
     )
     kur_turu_kutu.pack(side="left")
-    kur_turu_kutu.bind("<<ComboboxSelected>>", lambda _e: doviz_kuru_yenile(kart, sessiz=True))
+    kur_turu_kutu.bind("<<ComboboxSelected>>", lambda _e: doviz_kur_tarihi_degisti(kart))
 
     satir2 = ttk.Frame(ust_cerceve)
     satir2.pack(fill="x", pady=2)
@@ -169,16 +169,30 @@ def doviz_para_birimi_degisti(kart) -> None:
             kart._satir_listesini_yenile()
     else:
         kart._doviz_kur_giris.configure(state="normal")
+        if getattr(kart, "_doviz_yukleniyor", False):
+            # Kayıtlı belge açılıyor: kaydedilmiş kur ve sabitleme korunur, kur yeniden çekilmez
+            doviz_ozet_guncelle(kart)
+            return
         kart._doviz_sabitlendi.set(False)
         kart._doviz_sabit_etiket.configure(text="")
         if not kart._doviz_kur_tarihi.get().strip():
             kart._doviz_kur_tarihi.set(_fatura_tarihi_al(kart).strftime("%d.%m.%Y"))
         doviz_kuru_yenile(kart, sessiz=True)
+        _satis_satirlarini_kura_uydur(kart)
     doviz_ozet_guncelle(kart)
+
+
+def _satis_satirlarini_kura_uydur(kart) -> None:
+    """TL esaslı satış satırlarını başlık PB/kuruna uydurur (alış satırları sabitlemede çevrilir)."""
+    satirlar = list(getattr(kart, "satirlar", []) or [])
+    if satirlar and all(_fiyat_alani(kart, s) == "birim_satis_fiyati" for s in satirlar):
+        doviz_satirlari_tl_cevir(kart)
 
 
 def doviz_kur_tarihi_degisti(kart) -> None:
     doviz_kuru_yenile(kart, sessiz=True)
+    _satis_satirlarini_kura_uydur(kart)
+    doviz_ozet_guncelle(kart)
 
 
 def doviz_kuru_yenile(kart, sessiz: bool = False) -> None:
@@ -299,6 +313,8 @@ def doviz_satirlari_tl_cevir(kart) -> None:
     pb = (kart._doviz_para_birimi.get() or "TRY").upper()
     if pb == "TRY":
         return
+    if getattr(kart, "_fatura_kilitli", False) or getattr(kart, "_doviz_yukleniyor", False):
+        return
     try:
         kur = Decimal(str(kart._doviz_kur.get().replace(",", ".")))
     except (InvalidOperation, ValueError):
@@ -311,15 +327,14 @@ def doviz_satirlari_tl_cevir(kart) -> None:
             _eski_doviz_cevir(satir, alan, kur)
             continue
         eski_pb, eski_kur = _satir_pb_kur(satir)
+        tl_fiyat = _dec(satir.get(alan))
         if eski_pb == pb and eski_kur > 0:
-            # Satırın TL fiyatı esastır; döviz fiyatı mevcut satır kurundan türetilir
-            bf_doviz = _dec(satir.get(alan)) / eski_kur
+            # Aynı dövizde kur değişti: döviz fiyatı sabit, TL karşılığı yeni kurdan
+            bf_doviz = tl_fiyat / eski_kur
         else:
-            bf_doviz = satir.get("birim_fiyat_doviz")
-            if bf_doviz is None:
-                bf_doviz = satir.get(alan, 0)
-            bf_doviz = _dec(bf_doviz)
-        if bf_doviz > 0 and not (eski_pb == pb and eski_kur == kur):
+            # Para birimi değişti: satırın TL fiyatı esastır (yalnızca bir kez dönüşüm)
+            bf_doviz = tl_fiyat / kur
+        if bf_doviz > 0 and eski_pb == pb and eski_kur != kur:
             tl_bf = DovizService.dovizden_tle(bf_doviz, kur, Decimal("0.0001"))
             satir[alan] = tl_bf
             if alan == "birim_fiyat":
@@ -417,7 +432,11 @@ def doviz_verilerini_doldur(kart, fatura) -> None:
         kart._doviz_sabit_etiket.configure(
             text=f"✓ Kur sabitlendi ({pb} {getattr(fatura, 'kur', 1)})"
         )
-    doviz_para_birimi_degisti(kart)
+    kart._doviz_yukleniyor = True
+    try:
+        doviz_para_birimi_degisti(kart)
+    finally:
+        kart._doviz_yukleniyor = False
 
 
 def doviz_satir_kaydet_oncesi(kart, satir: dict) -> dict:

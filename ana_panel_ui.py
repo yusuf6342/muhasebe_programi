@@ -94,6 +94,7 @@ class SolMenuDugme(tk.Frame):
     ):
         super().__init__(parent, bg=LACIVERT, highlightthickness=0, **kwargs)
         self.anahtar = anahtar
+        self._etiket = etiket
         self._varsayilan_vurgulu = vurgulu
         self.vurgulu = vurgulu
         self._komut = komut
@@ -166,6 +167,14 @@ class SolMenuDugme(tk.Frame):
     def set_aktif(self, aktif: bool) -> None:
         self._aktif = aktif
         self._yenile_renk()
+
+    def rozet_ayarla(self, sayi: int) -> None:
+        metin = f"{self._etiket} ({sayi})" if sayi else self._etiket
+        try:
+            if self.lbl_text.cget("text") != metin:
+                self.lbl_text.configure(text=metin)
+        except tk.TclError:
+            pass
 
     def _on_enter(self, _e=None):
         self._set_hover(True)
@@ -569,6 +578,9 @@ class AnaPanelKabuk:
             dugme.pack(fill="x", pady=1, padx=0)
             app.menu_dugmeleri[anahtar] = dugme
             self._menu_sirasi.append(anahtar)
+        if not getattr(app, "_stok_uyari_rozet_dongusu", False):
+            app._stok_uyari_rozet_dongusu = True
+            app.after(4000, lambda: stok_uyari_rozet_dongusu(app))
 
         # Sağ alan: açık ekranlar şeridi + geri çubuğu + ekran kabı
         sag = tk.Frame(govde, bg=ACIK_BG)
@@ -719,6 +731,34 @@ class AnaPanelKabuk:
                 dugme.set_aktif(False)
             else:
                 dugme.set_aktif(False)
+
+
+def stok_uyari_rozeti_guncelle(app, sayi: dict | None = None) -> None:
+    dugme = (getattr(app, "menu_dugmeleri", None) or {}).get("stoklar")
+    if dugme is None or not hasattr(dugme, "rozet_ayarla"):
+        return
+    if sayi is None:
+        from database.stok_uyari_service import StokUyariService
+
+        sayi = StokUyariService.aktif_sayisi()
+    dugme.rozet_ayarla(int(sayi.get("rozet", sayi.get("toplam")) or 0))
+
+
+def stok_uyari_rozet_dongusu(app) -> None:
+    """Sol menüde Stoklar yanında etkin stok ihtiyacı sayısı (dakikada bir, hafif sayım sorgusu)."""
+    try:
+        if not app.winfo_exists():
+            return
+        from database.session_manager import oturum
+
+        if oturum.firma_secili:
+            stok_uyari_rozeti_guncelle(app)
+    except Exception:  # noqa: BLE001 — menü rozeti işlevselliği etkilemez
+        pass
+    try:
+        app.after(60000, lambda: stok_uyari_rozet_dongusu(app))
+    except tk.TclError:
+        pass
 
 
 def giris_dashboard_goster(app) -> None:
@@ -1115,9 +1155,15 @@ def ayarlar_goster(app) -> None:
     from sistem_ui import hakkinda_goster
     from satis_ayarlari_ui import satis_ayarlari_goster
 
+    def _muhasebelestirme():
+        from muhasebelestirme_ui import muhasebelestirme_ayarlari_goster
+
+        muhasebelestirme_ayarlari_goster(app)
+
     for i, (baslik, komut) in enumerate(
         (
             ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
+            ("MUHASEBELEŞTİRME AYARLARI", _muhasebelestirme),
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
             ("DÖNEM DEĞİŞTİR", app.donem_degistir_ac),
             ("KULLANICI DEĞİŞTİR", app.aktif_kullanici_degistir_ac),

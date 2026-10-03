@@ -1465,6 +1465,10 @@ class CariDialog(tk.Toplevel):
         self._hareket_menu.add_command(
             label="Fatura ürünlerini göster/gizle", command=self._secili_fatura_detay_toggle
         )
+        self._hareket_menu.add_command(label="Muhasebe Fişi", command=self._hareket_muhasebe_fisi)
+        self._hareket_menu.add_command(
+            label="Tahsilat/Ödemeyi İptal Et", command=self._hareket_tahsilat_odeme_iptal
+        )
         self._hareket_menu.add_command(label="Yenile", command=self.yenile)
 
         toplam = tk.Frame(hareket, bg=BEYAZ)
@@ -2644,6 +2648,94 @@ class CariDialog(tk.Toplevel):
         from kapatma_detay_ui import kapatma_detayi_ac
 
         kapatma_detayi_ac(self, belge_no.strip(), int(self.cari.id))
+
+    def _secili_hareket_meta(self, baslik: str) -> dict | None:
+        if not self.hareket_tablosu:
+            return None
+        secim = self.hareket_tablosu.selection()
+        if not secim:
+            messagebox.showinfo(baslik, "Lütfen bir hareket satırı seçin.", parent=self)
+            return None
+        iid = secim[0]
+        if iid not in self._hareket_iid_meta:
+            iid = self.hareket_tablosu.parent(iid) or iid
+        return self._hareket_iid_meta.get(iid) or {}
+
+    @staticmethod
+    def _cari_islem_id(meta: dict) -> int | None:
+        if meta.get("hareket_kaynak") == "cari_islem" and meta.get("hareket_id"):
+            return int(meta["hareket_id"])
+        return None
+
+    def _hareket_muhasebe_fisi(self):
+        meta = self._secili_hareket_meta("Muhasebe fişi")
+        if meta is None:
+            return
+        from muhasebe_durum_ui import belge_no_kaynagi, cari_islem_kaynagi, fisi_ac
+
+        belge_no = (meta.get("belge_no") or "").strip()
+        try:
+            kaynak = cari_islem_kaynagi(self._cari_islem_id(meta))
+            if kaynak is None and belge_no.startswith("VRM-"):
+                kaynak = ("cari_virman", belge_no_kaynagi("cari_virman", belge_no))
+            elif kaynak is None and belge_no.startswith(("AHV-", "GHV-")):
+                kaynak = ("banka_havale", belge_no_kaynagi("banka_havale", belge_no))
+        except Exception as hata:
+            messagebox.showerror("Muhasebe fişi", str(hata), parent=self)
+            return
+        if not kaynak or not kaynak[1]:
+            messagebox.showinfo(
+                "Muhasebe fişi",
+                "Bu hareketin muhasebe fişine kendi evrakından (Belgeyi Aç) ulaşın.",
+                parent=self,
+            )
+            return
+        fisi_ac(self, *kaynak)
+
+    def _hareket_tahsilat_odeme_iptal(self):
+        baslik = "Tahsilat/Ödeme İptali"
+        meta = self._secili_hareket_meta(baslik)
+        if meta is None:
+            return
+        islem_id = self._cari_islem_id(meta)
+        try:
+            from muhasebe_durum_ui import cari_islem_kaynagi
+
+            kaynak = cari_islem_kaynagi(islem_id)
+        except Exception as hata:
+            messagebox.showerror(baslik, str(hata), parent=self)
+            return
+        belge_no = (meta.get("belge_no") or "").strip()
+        if kaynak is None and not belge_no.startswith(("THS-", "ODM-")):  # eski THS/ODM'yi servis doğrular
+            messagebox.showinfo(
+                baslik,
+                "Bu hareket cari kartından yapılmış bir tahsilat/ödeme evrakı değil; kendi evrakından iptal edin.",
+                parent=self,
+            )
+            return
+        neden = simpledialog.askstring(baslik, f"{belge_no} için iptal nedeni:", parent=self)
+        if neden is None:
+            return
+        if not neden.strip():
+            messagebox.showwarning(baslik, "İptal nedeni zorunludur.", parent=self)
+            return
+        if not messagebox.askyesno(
+            baslik,
+            f"{belge_no} iptal edilsin mi?\n\n"
+            "• Kasa/banka hareketi silinir.\n"
+            "• Kapattığı borçlar yeniden açılır.\n"
+            "• Muhasebeleştirilmişse muhasebe fişi ters kayıtla kapanır.",
+            parent=self,
+        ):
+            return
+        from database.cari_service import CariService
+
+        try:
+            CariService.tahsilat_odeme_iptal(islem_id, neden.strip())
+        except Exception as hata:
+            messagebox.showerror(baslik, str(hata), parent=self)
+            return
+        self.yenile()
 
     def acik_kalemler_ac(self):
         if not self.cari or not getattr(self.cari, "id", None):

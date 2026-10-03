@@ -295,6 +295,41 @@ def acik_editoru_uygula(dialog) -> bool:
     return getattr(dialog, "_satir_hucre_editor", None) is None
 
 
+def uzlasma_etkisini_kaldir(dialog) -> bool:
+    """Satır miktar/fiyatı değişince uzlaşılan Net'i kaldırır; toplam satırlardan yeniden hesaplanır.
+
+    Eski uzlaşma tutarı yeni satır toplamına sessizce uygulanmaz.
+    """
+    if getattr(dialog, "_fatura_yukleniyor", False):
+        return False
+    if getattr(dialog, "_uzlasilan_tutar", None) is None and not getattr(
+        dialog, "_uzlasilan_fiyat_snapshot", None
+    ):
+        return False
+    dialog._uzlasilan_tutar = None
+    dialog._uzlasilan_fiyat_snapshot = None
+    dialog._uzlasilan_snapshot_brut = None
+    yaz = getattr(dialog, "_uzlasilan_tutar_yaz", None)
+    if callable(yaz):
+        dialog._uzlasilan_ui_kilit = True
+        try:
+            yaz(None)
+        finally:
+            dialog._uzlasilan_ui_kilit = False
+    try:
+        from fatura_mesaj_paneli import _panel_ac_kapa, _yerel_teknik
+
+        _yerel_teknik(
+            dialog,
+            "Satır miktarı/fiyatı değişti: Uzlaşılan Tutar kaldırıldı, Net Toplam satırlardan "
+            "yeniden hesaplandı. Gerekirse uzlaşmayı yeniden girin.",
+        )
+        _panel_ac_kapa(dialog, True)
+    except Exception:
+        pass
+    return True
+
+
 def _yenile_koru(dialog, tablo, iid: str):
     # GENEL Entry odak bayrağı takılı kalırsa alt toplam güncellenmez
     try:
@@ -439,6 +474,8 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         yeni_temel = temel_miktar(yeni, birim, kod)
         if not _stok_kontrol(dialog, idx, yeni_temel, kod):
             return "break"
+        if _d(satir.get("miktar")) != yeni:
+            uzlasma_etkisini_kaldir(dialog)
         satir["miktar"] = str(yeni)
         satir["temel_miktar"] = str(yeni_temel)
         _editor_kapat(dialog)
@@ -538,6 +575,7 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         if not _stok_kontrol(dialog, idx, satir_temel_talep(guncel), kod):
             _editor_kapat(dialog)
             return "break"
+        uzlasma_etkisini_kaldir(dialog)
         dialog.satirlar[idx] = guncel
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
@@ -643,6 +681,8 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
                 return "break"
         except Exception:
             pass
+        if yeni != _d(mevcut_deger):
+            uzlasma_etkisini_kaldir(dialog)
         if doviz_giris:
             satir["birim_fiyat_doviz"] = str(yeni)
             satir["birim_satis_fiyati"] = str(_tl_fiyat(yeni, satir))
@@ -731,6 +771,7 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             )
         satir["satir_para_birimi"] = yeni
         satir["para_birimi"] = yeni
+        uzlasma_etkisini_kaldir(dialog)
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
@@ -771,7 +812,10 @@ def _satir_kur_varsayilan(dialog, pb: str) -> Decimal:
                 ).date()
             except Exception:
                 pass
-        return Decimal(str(DovizService.kur_degeri(tarih, pb) or 1))
+        kur_turu = "forex_selling"
+        if hasattr(dialog, "_doviz_kur_turu"):
+            kur_turu = dialog._doviz_kur_turu.get() or kur_turu
+        return Decimal(str(DovizService.kur_degeri(tarih, pb, kur_turu) or 1))
     except Exception:
         try:
             if hasattr(dialog, "_doviz_kur"):
@@ -820,6 +864,8 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         doviz_fiyat = (
             _d(satir.get("birim_satis_fiyati")) / eski_kur if eski_kur > 0 else Decimal("0")
         )
+        if yeni != eski_kur:
+            uzlasma_etkisini_kaldir(dialog)
         satir["kur"] = str(yeni)
         if doviz_fiyat > 0:
             satir["birim_fiyat_doviz"] = str(doviz_fiyat.quantize(Decimal("0.0001")))
@@ -857,6 +903,8 @@ def iskonto_yuzde_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
             "iskonto_orani_2": satir.get("iskonto_orani_2"),
             "iskonto_orani_3": satir.get("iskonto_orani_3"),
         }
+        if any(_d(eski.get(k)) != _d(v) for k, v in oranlar.items()):
+            uzlasma_etkisini_kaldir(dialog)
         satir.update(oranlar)
         satir.pop("_iskonto_tutar_manuel", None)
         if hasattr(dialog, "_fatura_iskonto_audit"):
@@ -927,6 +975,8 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
         else:
             hane = Decimal("0.01") if getattr(dialog, "TEK_KADEME_ISKONTO", False) else Decimal("0.0001")
             oran = (tutar / brut * Decimal("100")).quantize(hane)
+        if tutar != indirim:
+            uzlasma_etkisini_kaldir(dialog)
         satir["iskonto_orani"] = str(oran)
         satir["iskonto_orani_2"] = "0"
         satir["iskonto_orani_3"] = "0"
@@ -997,6 +1047,8 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
                 messagebox.showerror("KDV", str(hata), parent=dialog)
                 var.set(mevcut)
                 return "break"
+            if _d(satir.get("kdv_orani")) != _d(yeni):
+                uzlasma_etkisini_kaldir(dialog)
             satir["kdv_orani"] = str(yeni)
             try:
                 dialog._genel_toplam_duzenleniyor = False
