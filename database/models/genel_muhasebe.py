@@ -53,10 +53,12 @@ ESLEME_ANAHTARLARI = (
     ("kasa", "Kasa hesabı"),
     ("banka", "Banka hesabı"),
     ("yurtici_satislar", "Yurtiçi satışlar hesabı"),
+    ("satistan_iadeler", "Satıştan iadeler hesabı (610)"),
     ("satilan_mal_maliyeti", "Satılan malın maliyeti hesabı"),
     ("ticari_mallar", "Ticari mallar / stok hesabı"),
     ("hesaplanan_kdv", "Hesaplanan KDV"),
     ("indirilecek_kdv", "İndirilecek KDV"),
+    ("verilen_siparis_avanslari", "Verilen sipariş avansları (159) — tedarikçiye verilen gerçek avans"),
     ("giderler", "Gider hesapları (genel)"),
     # Banka kredileri
     ("kredi_kisa_vadeli", "Kısa vadeli banka kredileri (300)"),

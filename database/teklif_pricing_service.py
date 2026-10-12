@@ -150,7 +150,12 @@ def satir_alis_maliyeti(s) -> SatirAlisMaliyeti:
 
 
 def stok_birim_carpani(urun_kodu: str | None, birim: str | None) -> Decimal:
-    """Stok kartındaki birim dönüşümü; kart/birim tanımsızsa 1."""
+    """Stok kartındaki birim dönüşümü; kartsız/özel satırda 1.
+
+    Kartta tanımsız birim ``BirimDonusumHatasi`` verir (sessizce 1 kabul edilmez).
+    """
+    from database.stok_service import BirimDonusumHatasi
+
     kod = (urun_kodu or "").strip()
     if not kod or kod.upper() in ("OZEL", "MANUEL"):
         return Decimal("1")
@@ -169,7 +174,9 @@ def stok_birim_carpani(urun_kodu: str | None, birim: str | None) -> Decimal:
             )
             if kart is None:
                 return Decimal("1")
-            return StokService.birim_carpani(kart, birim, kart.birim or "Adet")
+            return StokService._birim_carpani_zorunlu(kart, birim, kart.birim or "Adet")
+    except BirimDonusumHatasi:
+        raise
     except Exception:
         return Decimal("1")
 

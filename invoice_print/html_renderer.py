@@ -211,9 +211,22 @@ def _toplamlar(vm: InvoicePrintViewModel) -> str:
             f"<tr><td>{_e(vm.genel_islem_etiket)}</td>"
             f"<td class='r'>{_e(vm.genel_islem_goster)}</td></tr>"
         )
-    satirlar.append(
-        f"<tr class='genel'><td>Genel Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
-    )
+    ek_satirlar = getattr(vm, "ek_bedel_satirlari", None) or []
+    if ek_satirlar:
+        satirlar.append(f"<tr><td>Ürünler Toplamı</td><td class='r'>{_e(vm.genel_goster)}</td></tr>")
+        for e in ek_satirlar:
+            satirlar.append(
+                f"<tr><td>{_e(e['etiket'])}<div class='kucuk'>Matrah {_e(e['matrah'])}</div></td>"
+                f"<td class='r'>{_e(e['tutar'])}</td></tr>"
+            )
+            satirlar.append(f"<tr><td>{_e(e['kdv_etiket'])}</td><td class='r'>{_e(e['kdv'])}</td></tr>")
+        satirlar.append(
+            f"<tr class='genel'><td>Ödenecek Toplam</td><td class='r'>{_e(vm.odenecek_goster)}</td></tr>"
+        )
+    else:
+        satirlar.append(
+            f"<tr class='genel'><td>Genel Toplam</td><td class='r'>{_e(vm.genel_goster)}</td></tr>"
+        )
     if a.get("tahsil_kalan_goster", True):
         satirlar.append(
             f"<tr><td>{_e(vm.tahsil_etiketi or 'Tahsil Edilen')}</td>"

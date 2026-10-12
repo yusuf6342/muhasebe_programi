@@ -215,6 +215,7 @@ class MasrafDagitimTest(unittest.TestCase):
             "musteriler": ("120.01.0001", "Alıcılar", "Aktif"),
             "yurtici_satislar": ("600.01.0001", "Yurtiçi Satışlar", "Gelir"),
             "hesaplanan_kdv": ("391.01.0001", "Hesaplanan KDV", "Pasif"),
+            "satistan_iadeler": ("610.01.0001", "Satıştan İadeler", "Gelir"),
         }
         with get_session() as s:
             for anahtar, (kod, ad, tur) in hesaplar.items():

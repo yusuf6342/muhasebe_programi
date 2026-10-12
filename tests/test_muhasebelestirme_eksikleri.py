@@ -436,6 +436,24 @@ class MuhasebelestirmeEksikleriTest(unittest.TestCase):
             return Decimal(str(s.scalar(select(func.coalesce(func.sum(SatisHareketi.kalan_acik_tutar), 0))
                                         .where(SatisHareketi.cari_id == cari_id))))
 
+    def test_avans_ve_sonradan_kapatma_fatura_fisine_kasa_yazdirmaz(self):
+        from database.cari_service import CariService
+        from database.muhasebe_entegrasyon import MuhasebeEntegrasyonService
+
+        self._ayar("otomatik")
+        self._kasa()
+        self._alis("U001", "100", "100", "LOT-A")
+        CariService.tahsilat_yap(self.musteri_id, TARIH, Decimal("5000"), "Nakit", "Merkez Kasa")
+        once = self._tutarli()
+        fid = self._sat("10")
+        fark = {k: v - once.get(k, Decimal("0")) for k, v in self._tutarli().items()
+                if v != once.get(k, Decimal("0"))}
+        self.assertEqual(fark.get("120.01.0001"), Decimal("2400"), fark)
+        self.assertNotIn("100.01.0001", fark, "avanstan kapanan fatura kasaya ikinci kez borç yazmamalı")
+        once = self._tutarli()
+        MuhasebeEntegrasyonService.satis_faturasi_fisi(fid, yeniden=True)
+        self.assertEqual(self._tutarli(), once, "yeniden muhasebeleştirme kasa fişi eklememeli")
+
     def test_tahsilat_iptali_bakiye_kasa_kapatma_ve_ters_fis(self):
         from database.cari_service import CariService
         from database.finans_service import FinansService

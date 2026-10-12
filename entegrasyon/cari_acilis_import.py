@@ -3,9 +3,11 @@
 EvoBulut API'de ayrı 'açılış fişi' listesi yok; cari liste satırındaki güncel
 bakiye (`text`: `Bakiye : N (B|A)`) açılış fişi olarak yazılır.
 
-Polarite (Müşteri ve Tedarikçi aynı — cari kart borç/alacak):
-  EvoBulut (B) = Borç  → yerel borc = tutar  (bakiye +; cari borçlu)
-  EvoBulut (A) = Alacak → yerel alacak = tutar (bakiye −; cari alacaklı)
+Yön: EvoBulut cari kartındaki bakiye firma defterine göredir — (B) cari borçlu, (A) cari alacaklı.
+Yerel kalem yönü ve muhasebe karşılığı cari türüne göre ``database.cari_acilis_anlam`` ile belirlenir:
+  Müşteri (B) → açık alacak kalemi (120 BORÇ); Tedarikçi (A) → açık borç kalemi (320 ALACAK).
+  Müşteri (A) / Tedarikçi (B) → avans kalemi; muhasebe karşılığı belirsiz ("İnceleme gerekiyor").
+"A" (alacak) tek başına avans sayılmaz. Açılıştan otomatik muhasebe fişi üretilmez.
 
 İdempotent belge: EVB-ACL-{EvoBulut a_id}
 """
@@ -20,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from database.cari_service import CariService
-from database.database import SessionLocal
+from database.database import get_session
 from database.models.cari import Cari
 from sqlalchemy import select
 
@@ -43,6 +45,7 @@ class AcilisImportSonuc:
     olusturulan: int = 0
     atlanan: int = 0  # zaten var / eşleşmedi / sıfır dışı atlama
     hatalar: list[str] = field(default_factory=list)
+    inceleme: list[str] = field(default_factory=list)  # muhasebe karşılığı belirsiz açılışlar
 
 
 def _normalize_unvan(metin: str) -> str:
@@ -85,7 +88,7 @@ def belge_no_icin(evobulut_id: str | int) -> str:
 
 
 def _yerel_cari_indeks() -> tuple[dict[str, Cari], dict[str, list[Cari]]]:
-    with SessionLocal() as session:
+    with get_session() as session:
         cariler = list(session.scalars(select(Cari)).all())
         # detach: session kapanınca kullanmak için id/kod/unvan yeterli
         by_kod = {c.cari_kodu.strip(): c for c in cariler if (c.cari_kodu or "").strip()}
@@ -117,6 +120,34 @@ def eslestir_cari(
         if len(adaylar) == 1:
             return adaylar[0]
     return None
+
+
+def onizle_satirlari(satirlar: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Yazmadan önce satır başına: eşleşen cari, kaynak yön, yerel kalem, muhasebe karşılığı ve durum."""
+    from database.cari_acilis_anlam import acilis_anlami
+
+    by_kod, by_unvan = _yerel_cari_indeks()
+    sonuc = []
+    for i, satir in enumerate(satirlar, start=1):
+        parsed = parse_evobulut_bakiye(satir)
+        if parsed is None:
+            continue
+        tutar, tur = parsed
+        evb_id = str(satir.get("R.a_id") or satir.get("a_id") or "").strip()
+        cari = eslestir_cari(satir, by_kod, by_unvan)
+        kayit = {"satir": i, "belge_no": belge_no_icin(evb_id) if evb_id else None, "tutar": tutar,
+                 "kaynak_yon": tur, "cari_kodu": cari.cari_kodu if cari else None,
+                 "cari_turu": cari.cari_turu if cari else None}
+        if cari is None or not evb_id:
+            kayit.update(durum="Aktarılmaz", aciklama="Cari eşleşmedi" if cari is None else "EvoBulut a_id yok")
+        elif CariService.islem_belge_var_mi(kayit["belge_no"]):
+            kayit.update(durum="Aktarılmaz", aciklama="Zaten aktarılmış")
+        else:
+            anlam = acilis_anlami(cari.cari_turu, tur)
+            kayit.update(durum=anlam.durum, yerel_kalem="açık kalem" if anlam.kalem_borc else "avans",
+                         muhasebe=anlam.muhasebe_metni, aciklama=anlam.aciklama)
+        sonuc.append(kayit)
+    return sonuc
 
 
 def aktar_satirlari(
@@ -160,19 +191,19 @@ def aktar_satirlari(
                 sonuc.atlanan += 1
                 continue
 
-            borc = tutar if tur == "B" else Decimal("0")
-            alacak = tutar if tur == "A" else Decimal("0")
             aciklama = (
                 f"EvoBulut açılış bakiyesi ({tur}) — cari_id={evb_id}"
             )
-            CariService.acilis_fisi_ekle(
+            _islem, anlam = CariService.acilis_bakiyesi_ekle(
                 cari.id,
                 fis_tarihi,
-                borc=borc,
-                alacak=alacak,
+                tutar=tutar,
+                yon=tur,
                 belge_no=belge,
                 aciklama=aciklama,
             )
+            if not anlam.belirli:
+                sonuc.inceleme.append(f"{belge} {cari.cari_kodu}: {anlam.muhasebe_metni}")
             sonuc.olusturulan += 1
         except Exception as exc:  # noqa: BLE001
             sonuc.hatalar.append(f"Satır {i}: {exc}")

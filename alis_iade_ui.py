@@ -387,6 +387,9 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         form_dis, form = beyaz_kart(govde, padx=10, pady=6)
         form_dis.pack(fill="x", pady=(2, 4))
         self._form_kur(form)
+        from evrak_baslik_gezinme import alan_odakla, baslik_gezinme_kur
+
+        baslik_gezinme_kur(self, form, son_hedef=lambda: alan_odakla(self.kod_giris))
 
         satir_dis, satir_ic = beyaz_kart(govde, padx=6, pady=4)
         satir_dis.pack(fill="both", expand=True, pady=(0, 2))
@@ -424,7 +427,35 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         self.tablo.pack(side="left", fill="both", expand=True)
         self.tablo.tag_configure("eksik", background="#FDECEC")
         self.tablo.tag_configure("kaynaksiz", background="#FFF6DB")
-        self.tablo.bind("<Double-1>", lambda _e: self.satir_duzenle())
+        self.tablo.bind("<Double-1>", self._tablo_cift_tik)
+        self.tablo.bind("<F2>", self._tablo_f2)
+        self.tablo.bind("<Button-3>", self._tablo_sag_tik)
+
+    def _tablo_cift_tik(self, event):
+        """Ürün kodu / barkod / adı: bağlı stok kartı; diğer kolonlar: satır düzenleme."""
+        row = self.tablo.identify_row(event.y)
+        try:
+            sira = int(str(self.tablo.identify_column(event.x)).replace("#", "")) - 1
+            kolon = tuple(self.tablo["displaycolumns"] if self.tablo["displaycolumns"] not in ("", ("#all",))
+                          else self.tablo["columns"])[sira]
+        except (tk.TclError, ValueError, IndexError):
+            kolon = None
+        if row and kolon in ("kod", "barkod", "ad"):
+            from satir_klavye import satir_stok_karti_ac
+
+            self.tablo.selection_set(row)
+            satir_stok_karti_ac(self, int(row))
+            return "break"
+        self.satir_duzenle()
+        return None
+
+    def _tablo_f2(self, _e=None):
+        i = self._secili_index()
+        if i is not None:
+            from satir_klavye import satir_stok_karti_ac
+
+            satir_stok_karti_ac(self, i)
+        return "break"
 
     def _form_kur(self, f):
         def etiket(metin, r, c):
@@ -732,6 +763,9 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         if not metin:
             return None
         bulunan = StokService.barkod_ile_bul(metin)
+        if bulunan and bulunan.get("birim_hatasi"):
+            messagebox.showwarning("Birim", bulunan["birim_hatasi"], parent=self)
+            return False
         if bulunan:
             return self._kart(bulunan["stok_kodu"]), metin, bulunan.get("birim"), _d(bulunan.get("miktar") or 1)
         kart = self._kart(metin)
@@ -767,8 +801,12 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         if sonuc is False:
             return
         if not sonuc:
-            messagebox.showwarning("Ürün", f"'{metin}' ile eşleşen stok kartı yok.", parent=self)
-            return
+            stok = self._kisa_urun_oner(metin)
+            if stok is None:
+                return
+            sonuc = self._urun_bul(stok.stok_kodu)
+            if not sonuc:
+                return
         kart, barkod, birim, miktar = sonuc
         self.kod_giris.delete(0, "end")
         temel_satir = {"urun_kodu": kart.stok_kodu, "urun_adi": kart.stok_adi, "barkod": barkod or None,
@@ -782,6 +820,50 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         self._satirlari_ciz()
         self.tablo.selection_set(str(len(self.satirlar) - 1))
         self._degisti()
+
+    def _kisa_urun_oner(self, metin: str):
+        """Ürün bulunamadı: yetki varsa kısa yeni ürün paneli; iade kaynak kuralları sonra yine uygulanır."""
+        if self._onayli() or self._iptal() or not yetki_var("stok_duzenleme", "yeni_kayit"):
+            messagebox.showwarning("Ürün", f"'{metin}' ile eşleşen stok kartı yok.", parent=self)
+            return None
+        if not messagebox.askyesno(
+            "Ürün bulunamadı",
+            f"'{metin}' ile eşleşen stok kartı yok.\n\nYeni ürün eklensin mi?",
+            parent=self,
+        ):
+            return None
+        from kisa_urun_paneli import kisa_urun_paneli_ac
+
+        return kisa_urun_paneli_ac(self, metin, cipa=self.kod_giris)
+
+    def _tablo_sag_tik(self, event):
+        row = self.tablo.identify_row(event.y)
+        if not row:
+            return None
+        self.tablo.selection_set(row)
+        self.tablo.focus(row)
+        idx = int(row)
+        from satir_ici_urun_giris import _kolon_adi
+
+        from alis_fiyat_gecmisi_ui import satirdan_fiyat_gecmisi
+
+        if _kolon_adi(self.tablo, event.x) == "fiyat":
+            satirdan_fiyat_gecmisi(self, self.satirlar, idx, self.tablo)
+            return "break"
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Geçmiş Alış Fiyatları…",
+                         command=lambda: satirdan_fiyat_gecmisi(self, self.satirlar, idx, self.tablo))
+        kilit = self._onayli() or self._iptal()
+        menu.add_command(label="Satır Kaynağı", command=self.satir_kaynagi_sec,
+                         state="disabled" if kilit else "normal")
+        menu.add_command(label="Kaynağı Aç", command=self.kaynagi_ac)
+        menu.add_separator()
+        menu.add_command(label="Satır Sil", command=self.satir_sil, state="disabled" if kilit else "normal")
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def _kaynak_belirle(self, satir: dict, cari, *, mevcut_miktar_temel: Decimal | None = None) -> list[dict] | None:
         """Kaynaklı adaylar varsa seçim; yoksa Kaynak Seç / Gerekçeyle Devam / Vazgeç. Vazgeç → None."""

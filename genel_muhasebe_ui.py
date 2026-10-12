@@ -89,6 +89,8 @@ def genel_muhasebe_menusu_goster(app):
             ("MİZAN", lambda: mizan_goster(app)),
             ("BİLANÇO", lambda: bilanco_goster(app)),
             ("GELİR TABLOSU", lambda: gelir_tablosu_goster(app)),
+            ("KDV RAPORU (BELGE BAZLI)",
+             lambda: __import__("kdv_raporu_ui").kdv_raporu_goster(app, "genel_muhasebe")),
         )
     ):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(

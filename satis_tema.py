@@ -58,9 +58,33 @@ def font(size: int, weight: str = "normal", root: tk.Misc | None = None) -> tupl
     return (aile, size)
 
 
-def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> ttk.Style:
-    """Satış ekranları ttk stillerini kaydeder."""
+_STIL_ISARET = "::satis_tema_uygulanan"
+
+
+def stil_uygula(
+    stil: ttk.Style | None = None, root: tk.Misc | None = None, *, tema_koru: bool = False
+) -> ttk.Style:
+    """Satış ekranları ttk stillerini kaydeder.
+
+    tema_koru: açık pencerelerin teması (vista/clam) değiştirilmez ve aynı temada stiller
+    yeniden yazılmaz — tema değişimi tüm açık ttk pencerelerini yeniden çizer (büyük
+    fatura ekranı açıkken saniyeler sürer).
+    """
     stil = stil or ttk.Style(root)
+    if tema_koru:
+        try:
+            mevcut = stil.theme_use()
+            if mevcut in ("vista", "clam"):
+                uygulanan = ""
+                if str(stil.tk.call("info", "exists", _STIL_ISARET)) == "1":
+                    uygulanan = str(stil.tk.globalgetvar(_STIL_ISARET))
+                if mevcut in uygulanan.split(","):
+                    return stil
+                _stilleri_yaz(stil, root)
+                stil.tk.globalsetvar(_STIL_ISARET, ",".join(x for x in (uygulanan, mevcut) if x))
+                return stil
+        except tk.TclError:
+            pass
     if "vista" in stil.theme_names():
         try:
             stil.theme_use("vista")
@@ -71,7 +95,22 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
             stil.theme_use("clam")
         except tk.TclError:
             pass
+    _stilleri_yaz(stil, root)
+    try:
+        mevcut = stil.theme_use()
+        uygulanan = (
+            str(stil.tk.globalgetvar(_STIL_ISARET))
+            if str(stil.tk.call("info", "exists", _STIL_ISARET)) == "1"
+            else ""
+        )
+        if mevcut not in uygulanan.split(","):
+            stil.tk.globalsetvar(_STIL_ISARET, ",".join(x for x in (uygulanan, mevcut) if x))
+    except tk.TclError:
+        pass
+    return stil
 
+
+def _stilleri_yaz(stil: ttk.Style, root: tk.Misc | None) -> None:
     f_ui = font(10, root=root)
     f_bold = font(10, "bold", root=root)
     f_baslik = font(16, "bold", root=root)
@@ -166,7 +205,6 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         background=[("selected", ACIK_SARI)],
         foreground=[("selected", KOYU_LACIVERT)],
     )
-    return stil
 
 
 def tk_buton(

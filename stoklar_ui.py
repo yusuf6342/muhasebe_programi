@@ -24,7 +24,7 @@ from satis_tema import (
 )
 
 STOKLAR_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
-    ("STOK KARTLARI / LİSTE", "Arama, filtre, bakiye ve stok kartı işlemleri", "liste"),
+    ("STOK KARTI", "Boş yeni stok kartı; ada göre arayıp mevcut kartı da açabilirsiniz", "kart"),
     ("STOK UYARILARI / SİPARİŞ İHTİYACI", "Tükenen ve kritik ürünler, öneri ve taslak sipariş", "uyari"),
     ("STOK GRUBU YÖNETİMİ", "Ana / Tali / Alt grup ağacı ve toplu taşıma", "grup"),
     ("TOPLU GRUP EŞLEŞTİRME", "Çoklu stok seçimi, ön izleme ve güvenli atama", "toplu_grup"),
@@ -37,19 +37,38 @@ STOKLAR_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("STOK BİRLEŞTİR", "Kaynak stoğu hedefe güvenli aktarma", "birlestir"),
     ("STOK PAKET", "Paket tanımlama ve üretim", "paket"),
     ("EXCEL AKTARIM", "İçe/dışa aktarma ve şablonlar", "excel"),
-    ("RAPORLAR", "Bakiye, hareket, maliyet ve kritik stok", "rapor"),
 )
 
-RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = (
-    ("STOK ENVANTER", "Depo/stok bazlı miktar ve maliyet", "envanter"),
-    ("STOK HAREKET", "Giriş/çıkış hareket defteri", "hareket"),
-    ("KAR / ZARAR", "Stok kar-zarar analizi", "kar"),
-    ("SATILMAYAN ÜRÜNLER", "Hareketsiz / satılmayan stoklar", "satilmayan"),
-    ("STOK DEVİR HIZI", "Devir hızı analizi", "devir"),
-    ("KRİTİK VE EKSİ STOK", "Sıfır ve negatif bakiyeler", "kritik"),
-    ("GRUP ÖZETİ", "Ana → Tali → Alt grup miktar ve değer", "grup"),
-    ("FİYATLI STOK EKSTRESİ", "Devir, cari, fiyat ve maliyet ekstresi", "fiyatli_ekstre"),
+RAPOR_GRUPLARI: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
+    ("Stok Listeleri", (
+        ("STOK LİSTESİ", "Arama, filtre, bakiye; seçilen stok kendi kartında açılır", "liste"),
+        ("STOK HAREKET DEFTERİ", "Tarih aralığında giriş / çıkış hareketleri", "hareket"),
+        ("STOK ENVANTERİ", "Seçilen tarihteki miktar ve maliyet (değerleme)", "envanter"),
+    )),
+    ("Durum ve Hareket", (
+        ("STOK DURUMU / KULLANILABİLİR", "Mevcut, bekleyen alış / satış siparişi, depo ve firma toplamı", "durum"),
+        ("ÜRÜN HAREKET EKSTRESİ", "Dönem başı, giriş, çıkış, kalan, fiyat ve kaynak evrak", "fiyatli_ekstre"),
+        ("DEPO TRANSFER TAKİBİ", "Gönderilen, alınan, yoldaki miktar ve bekleme günü", "transfer"),
+    )),
+    ("Stok Planlama", (
+        ("KRİTİK VE TÜKENEN STOK", "Minimum altı, sıfır ve negatif; satış hızı ve stoksuz kalma geçmişi", "kritik"),
+        ("YENİDEN SİPARİŞ ÖNERİSİ", "Satış hızı, hedef gün ve tedarik süresi varsayımıyla öneri", "siparis"),
+        ("YAVAŞ / SATILMAYAN STOK", "Son satıştan beri gün, dönem satışı, yeni alım ayrımı", "satilmayan"),
+    )),
+    ("Değer ve Verimlilik", (
+        ("GRUP BAZLI STOK DEĞERİ", "Ana / Tali / Alt grup miktar ve maliyet", "grup"),
+        ("STOK YAŞLANDIRMA", "Katman giriş tarihine göre 0–30 … 365+ gün", "yaslandirma"),
+        ("DEVİR HIZI / YETERLİLİK", "Günlük hız, yeterlilik günü ve devir oranı", "devir"),
+        ("STOK YATIRIM VERİMLİLİĞİ", "Ürün / grup bazında brüt kâr, GMROI, devir ve stokta kalma", "verimlilik"),
+        ("STOK KÂR / ZARAR", "Ürün bazında satış, maliyet ve kâr", "kar"),
+    )),
+    ("Sayım ve Kontrol", (
+        ("SAYIM FARKLARI", "Sistem / sayılan farkı, maliyet etkisi ve düzeltme hareketi", "sayim_fark"),
+        ("STOK TUTARLILIK KONTROLÜ", "Salt okunur: negatif, maliyet, birim, barkod, evrak–hareket uyumu", "tutarlilik"),
+    )),
 )
+
+RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = tuple(k for _g, kartlar in RAPOR_GRUPLARI for k in kartlar)
 
 _SIMGELER = ("◎", "▤", "☰", "▸", "⇄", "▣", "◉", "▦", "◇", "◆", "○")
 
@@ -167,6 +186,7 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         )
 
     return {
+        "kart": app.yeni_stok,
         "liste": app.stok_kartlari_goster,
         "uyari": lambda: __import__("stok_uyari_ui", fromlist=["stok_uyari_goster"]).stok_uyari_goster(app),
         "grup": lambda: __import__("stok_grup_ui", fromlist=["stok_grup_yonetimi_goster"]).stok_grup_yonetimi_goster(app),
@@ -213,7 +233,16 @@ def stoklar_hub_goster(app) -> None:
     except Exception:
         ozet = {}
     _ozet_serit(kok, ozet, app=app)
-    _kart_izgara(app, kok, _hub_kartlari_sayili(), _hub_komutlar(app), sutun=2)
+    from satin_alma_ui import AcilirMenuGrubu, _bolum_basligi, _tekerlegi_bagla
+    from ui_pencere import kaydirilabilir_govde
+
+    govde = kaydirilabilir_govde(kok, bg=ACIK_BG)
+    app.stok_raporlari_grubu = AcilirMenuGrubu(
+        app, govde, "STOK RAPORLARI", RAPOR_KARTLARI, _rapor_komutlar(app), alt_gruplar=RAPOR_GRUPLARI
+    )
+    _bolum_basligi(app, govde, "Stok İşlemleri")
+    _kart_izgara(app, govde, _hub_kartlari_sayili(), _hub_komutlar(app), sutun=2)
+    _tekerlegi_bagla(govde)
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: stoklar_hub_goster(app))
 
@@ -235,15 +264,36 @@ def _hub_kartlari_sayili() -> tuple[tuple[str, str, str], ...]:
     )
 
 
-def stoklar_raporlar_hub_goster(app) -> None:
+def _rapor_komutlar(app) -> dict[str, Callable]:
+    import stok_raporlari_ui as sr
     from fiyatli_stok_ekstresi_ui import fiyatli_stok_ekstresi_goster
-    from stok_rapor_ui import (
-        rapor_devir,
-        rapor_envanter,
-        rapor_hareket,
-        rapor_kar_zarar,
-        rapor_satilmayan,
-    )
+    from satin_alma_rapor_ui import yeniden_siparis_onerisi_goster
+    from stok_rapor_ui import rapor_hareket, rapor_kar_zarar
+
+    return {
+        "liste": app.stok_kartlari_goster,
+        "hareket": lambda: rapor_hareket(app),
+        "envanter": lambda: sr.degerleme_goster(app),
+        "durum": lambda: sr.stok_durumu_goster(app),
+        "fiyatli_ekstre": lambda: fiyatli_stok_ekstresi_goster(app),
+        "transfer": lambda: sr.transfer_takibi_goster(app),
+        "kritik": lambda: sr.kritik_tukenen_goster(app),
+        "siparis": lambda: yeniden_siparis_onerisi_goster(app, ust=sr._ust),
+        "satilmayan": lambda: sr.yavas_satilmayan_goster(app),
+        "grup": lambda: sr.degerleme_goster(app, sekme="gruplar"),
+        "yaslandirma": lambda: sr.yaslandirma_goster(app),
+        "devir": lambda: sr.devir_yeterlilik_goster(app),
+        "verimlilik": lambda: sr.yatirim_verimliligi_goster(app),
+        "kar": lambda: rapor_kar_zarar(app),
+        "sayim_fark": lambda: sr.sayim_farklari_goster(app),
+        "tutarlilik": lambda: sr.tutarlilik_kontrolu_goster(app),
+    }
+
+
+def stoklar_raporlar_hub_goster(app) -> None:
+    from satin_alma_ui import _bolum_basligi, _tekerlegi_bagla
+    from satin_alma_ui import _kart_izgara as _grup_izgara
+    from ui_pencere import kaydirilabilir_govde
 
     app._icerigi_temizle()
     stil_uygula(root=app)
@@ -257,27 +307,22 @@ def stoklar_raporlar_hub_goster(app) -> None:
     hub_ust_baslik(
         kok,
         baslik="STOK RAPORLARI",
-        alt_baslik="Envanter, hareket, maliyet ve kritik stok kontrolleri",
+        alt_baslik="Stok listeleri, durum ve hareket, planlama, değer ve verimlilik, sayım ve kontrol",
         app=app,
         geri_komut=lambda: stoklar_hub_goster(app),
         geri_metin="← Stoklar",
     )
-    komutlar = {
-        "envanter": lambda: rapor_envanter(app),
-        "hareket": lambda: rapor_hareket(app),
-        "kar": lambda: rapor_kar_zarar(app),
-        "satilmayan": lambda: rapor_satilmayan(app),
-        "devir": lambda: rapor_devir(app),
-        "kritik": lambda: kritik_eksi_stok_raporu(app),
-        "grup": lambda: grup_ozet_raporu(app),
-        "fiyatli_ekstre": lambda: fiyatli_stok_ekstresi_goster(app),
-    }
-    _kart_izgara(app, kok, RAPOR_KARTLARI, komutlar, sutun=2)
+    govde = kaydirilabilir_govde(kok, bg=ACIK_BG)
+    komutlar = _rapor_komutlar(app)
+    for grup, kartlar in RAPOR_GRUPLARI:
+        _bolum_basligi(app, govde, grup)
+        _grup_izgara(app, govde, kartlar, komutlar, sutun=3, min_yukseklik=86, pady=6)
+    _tekerlegi_bagla(govde)
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: stoklar_raporlar_hub_goster(app))
 
 
-def _liste_ust(app, baslik, alt, geri):
+def _liste_ust(app, baslik, alt, geri, geri_metin: str = "← Stoklar"):
     temizle = getattr(app, "_icerigi_temizle", None)
     if callable(temizle):
         temizle()
@@ -290,7 +335,7 @@ def _liste_ust(app, baslik, alt, geri):
     kok = tk.Frame(app.icerik, bg=ACIK_BG)
     kok.pack(fill="both", expand=True)
     hub_ust_baslik(
-        kok, baslik=baslik, alt_baslik=alt, app=app, geri_komut=geri, geri_metin="← Stoklar"
+        kok, baslik=baslik, alt_baslik=alt, app=app, geri_komut=geri, geri_metin=geri_metin
     )
     return kok
 
@@ -604,111 +649,12 @@ def stok_sayim_goster(app) -> None:
 
 
 def kritik_eksi_stok_raporu(app) -> None:
-    from database.database import get_session
-    from database.models.stok import StokKarti, StokLotu
-    from sqlalchemy import func, select
+    from stok_raporlari_ui import kritik_tukenen_goster
 
-    kok = _liste_ust(
-        app,
-        "KRİTİK VE EKSİ STOK",
-        "Sıfır veya negatif bakiyeli aktif stok kartları",
-        lambda: stoklar_raporlar_hub_goster(app),
-    )
-    cerceve = ttk.Frame(kok)
-    cerceve.pack(fill="both", expand=True, padx=16, pady=8)
-    tablo = ttk.Treeview(
-        cerceve, columns=("kod", "ad", "birim", "miktar", "durum"), show="headings"
-    )
-    treeview_stil(tablo)
-    for k, b, w in (
-        ("kod", "Kod", 110),
-        ("ad", "Ad", 260),
-        ("birim", "Birim", 70),
-        ("miktar", "Miktar", 100),
-        ("durum", "Durum", 100),
-    ):
-        tablo.heading(k, text=b)
-        tablo.column(k, width=w)
-    tablo.pack(fill="both", expand=True)
+    kritik_tukenen_goster(app)
 
-    with get_session() as session:
-        miktarlar = {
-            int(r[0]): Decimal(str(r[1] or 0))
-            for r in session.execute(
-                select(StokLotu.stok_id, func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).group_by(
-                    StokLotu.stok_id
-                )
-            ).all()
-        }
-        stoklar = list(
-            session.scalars(
-                select(StokKarti).where(
-                    StokKarti.aktif.is_(True), StokKarti.is_deleted.is_(False)
-                )
-            ).all()
-        )
-        for s in stoklar:
-            m = miktarlar.get(int(s.id), Decimal("0"))
-            if m > 0:
-                continue
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s.stok_kodu,
-                    s.stok_adi,
-                    s.birim,
-                    _para(m),
-                    "EKSİ" if m < 0 else "SIFIR",
-                ),
-            )
 
 def grup_ozet_raporu(app) -> None:
-    """Ana → Tali → Alt grup bazlı stok adedi / miktar / FIFO özet."""
-    from database.stok_grup_service import StokGrupService
+    from stok_raporlari_ui import degerleme_goster
 
-    kok = _liste_ust(
-        app,
-        "GRUP ÖZETİ",
-        "Ana Grup → Tali Grup → Alt Grup miktar ve değer",
-        lambda: stoklar_raporlar_hub_goster(app),
-    )
-    cerceve = ttk.Frame(kok)
-    cerceve.pack(fill="both", expand=True, padx=16, pady=8)
-    tablo = ttk.Treeview(
-        cerceve,
-        columns=("ana", "tali", "alt", "yol", "stok", "miktar", "deger"),
-        show="headings",
-    )
-    treeview_stil(tablo)
-    for k, b, w in (
-        ("ana", "Ana Grup", 140),
-        ("tali", "Tali Grup", 140),
-        ("alt", "Alt Grup", 140),
-        ("yol", "Tam Yol", 220),
-        ("stok", "Stok Adedi", 90),
-        ("miktar", "Miktar", 100),
-        ("deger", "FIFO Değer", 120),
-    ):
-        tablo.heading(k, text=b)
-        tablo.column(k, width=w)
-    tablo.pack(fill="both", expand=True)
-    try:
-        for s in StokGrupService.ozet_rapor():
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s.get("ana"),
-                    s.get("tali"),
-                    s.get("alt"),
-                    s.get("yol"),
-                    s.get("stok_adet"),
-                    s.get("miktar"),
-                    _para(s.get("fifo_deger")),
-                ),
-            )
-    except Exception as exc:
-        messagebox.showerror("Grup Özeti", str(exc), parent=app)
-    if hasattr(app, "nav_sayfa_isaretle"):
-        app.nav_sayfa_isaretle(lambda: grup_ozet_raporu(app))
+    degerleme_goster(app, sekme="gruplar")

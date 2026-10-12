@@ -98,13 +98,33 @@ def _sekil_turu(sekil: str | None) -> str | None:
     return None
 
 
+def _tema_stili_bir_kez(stil: ttk.Style, ad: str, yaz) -> None:
+    """Aynı temada stil bir kez yazılır: her configure tüm açık ttk pencerelerini yeniden yerleştirir."""
+    try:
+        anahtar = f"::kasa_makbuz_stil_{ad}_{stil.theme_use()}"
+        if str(stil.tk.call("info", "exists", anahtar)) == "1":
+            return
+    except tk.TclError:
+        yaz()
+        return
+    yaz()
+    try:
+        stil.tk.globalsetvar(anahtar, "1")
+    except tk.TclError:
+        pass
+
+
 def _tablo_stili(tablo: ttk.Treeview) -> None:
     treeview_stil(tablo)
     stil = ttk.Style(tablo)
-    # vista temasında başlık arka planı uygulanmaz; beyaz yazı görünmez kalır
-    stil.configure("Makbuz.Treeview", **{k: stil.lookup("Satis.Treeview", k) for k in ("font", "rowheight")})
-    stil.configure("Makbuz.Treeview.Heading", font=font(10, "bold", tablo), foreground=LACIVERT)
-    stil.map("Makbuz.Treeview", background=[("selected", ACIK_SARI)], foreground=[("selected", KOYU_LACIVERT)])
+
+    def _yaz():
+        # vista temasında başlık arka planı uygulanmaz; beyaz yazı görünmez kalır
+        stil.configure("Makbuz.Treeview", **{k: stil.lookup("Satis.Treeview", k) for k in ("font", "rowheight")})
+        stil.configure("Makbuz.Treeview.Heading", font=font(10, "bold", tablo), foreground=LACIVERT)
+        stil.map("Makbuz.Treeview", background=[("selected", ACIK_SARI)], foreground=[("selected", KOYU_LACIVERT)])
+
+    _tema_stili_bir_kez(stil, "liste", _yaz)
     tablo.configure(style="Makbuz.Treeview")
 
 
@@ -359,6 +379,8 @@ class KasaMakbuzDialog(tk.Toplevel):
         virman_id=None,
         islem_turu=None,
         fatura_id=None,
+        fatura_ozet: dict | None = None,
+        bilgi: str | None = None,
     ):
         self.makbuz_turu = (makbuz_turu or "").strip().upper()
         if self.makbuz_turu not in ("TAHSILAT", "ODEME"):
@@ -368,7 +390,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if fatura_id:
             if not self.tahsilat or virman_id or makbuz_id or islem_turu == "VIRMAN":
                 raise ValueError("Satış faturasına yalnız yeni tahsilat makbuzu bağlanabilir.")
-            self._fatura_ozet = FinansService.fatura_tahsilat_ozeti(int(fatura_id))
+            if fatura_ozet is None or fatura_ozet.get("fatura_id", int(fatura_id)) != int(fatura_id):
+                fatura_ozet = FinansService.fatura_tahsilat_ozeti(int(fatura_id))
+            self._fatura_ozet = fatura_ozet
             if self._fatura_ozet["iptal"]:
                 raise ValueError("İptal edilmiş faturaya tahsilat makbuzu bağlanamaz.")
             cari_id = self._fatura_ozet["cari_id"]
@@ -387,6 +411,10 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._kirli = False
         self._yukleniyor = True
         self._kaydediliyor = False
+        self._kapatma_plani = None
+        self._kapatma_anahtari = None
+        self._duzenleme_belge_no = None
+        self._kayitli_kapatma = None
         self._kilit_nedeni: str | None = None
         self._makbuz_no_manuel = False
         self._onerilen_no: str | None = None
@@ -400,7 +428,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._son_sekil: str | None = None
         self._virman_once: dict[str, Decimal | None] = {"musteri": None, "tedarikci": None}
 
-        stil_uygula(root=self)
+        stil_uygula(root=self, tema_koru=True)
         self.title(self._pencere_basligi())
         self.configure(bg=ACIK_BG)
         self._pencereyi_boyutlandir()
@@ -440,6 +468,8 @@ class KasaMakbuzDialog(tk.Toplevel):
             if islem_turu == "VIRMAN":
                 self.islem_turu_var.set(ISLEM_VIRMAN)
                 self._islem_turu_degisti()
+            if bilgi:
+                self._mesaj(f"{bilgi} {self.mesaj_lbl.cget('text')}".strip(), LACIVERT)
         self._yukleniyor = False
         self.after(60, self._ilk_odak)
 
@@ -587,6 +617,8 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._dugme_kutusu = tk.Frame(alt, bg=BEYAZ)
         self._dugme_kutusu.pack(side="right", padx=8, pady=(4, 8))
         self.btn_kaydet = tk_buton(self._dugme_kutusu, "Kaydet  (Ctrl+S)", self.kaydet, rol="kaydet")
+        self.btn_borclar = tk_buton(self._dugme_kutusu, "Kapatılacak Borçlar…", self.kapatilacak_borclari_sec,
+                                    rol="ara")
         self.btn_duzenle = tk_buton(self._dugme_kutusu, "Düzenle", self.duzenlemeye_gec, rol="duzenle")
         self.btn_vazgec = tk_buton(self._dugme_kutusu, "Vazgeç", self._vazgec, rol="geri")
         self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="iptal")
@@ -839,11 +871,15 @@ class KasaMakbuzDialog(tk.Toplevel):
         )
         _tablo_stili(self.tablo)
         stil = ttk.Style(self.tablo)
-        stil.configure("MakbuzSatir.Treeview", font=font(11, "bold", self), rowheight=30)
-        stil.configure("MakbuzSatir.Treeview.Heading", font=font(10, "bold", self), foreground=LACIVERT)
-        stil.map(
-            "MakbuzSatir.Treeview", background=[("selected", ACIK_SARI)], foreground=[("selected", KOYU_LACIVERT)]
-        )
+
+        def _yaz():
+            stil.configure("MakbuzSatir.Treeview", font=font(11, "bold", self), rowheight=30)
+            stil.configure("MakbuzSatir.Treeview.Heading", font=font(10, "bold", self), foreground=LACIVERT)
+            stil.map(
+                "MakbuzSatir.Treeview", background=[("selected", ACIK_SARI)], foreground=[("selected", KOYU_LACIVERT)]
+            )
+
+        _tema_stili_bir_kez(stil, "satir", _yaz)
         self.tablo.configure(style="MakbuzSatir.Treeview")
         for k, b, w, a in (
             ("tarih", "Tarih", 90, "w"),
@@ -1237,9 +1273,13 @@ class KasaMakbuzDialog(tk.Toplevel):
         gorunen = []
         if self.mod == "yeni":
             gorunen = [self.btn_kaydet, self.btn_yazdir]
+            if not self.virman:
+                gorunen.insert(1, self.btn_borclar)
             self.btn_kaydet.configure(text="Kaydet  (Ctrl+S)")
         elif self.mod == "duzenle":
             gorunen = [self.btn_kaydet, self.btn_vazgec, self.btn_yazdir]
+            if not self.virman:
+                gorunen.insert(1, self.btn_borclar)
             self.btn_kaydet.configure(text="Değişiklikleri Kaydet")
         else:
             if not iptal and not self._kilit_nedeni and yazabilir:
@@ -1426,6 +1466,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             self._virmani_yukle(makbuz)
             return
         self._yukleniyor = True
+        self._kapatma_durumunu_sifirla()
         try:
             self.makbuz = makbuz
             self.makbuz_id = int(makbuz.id)
@@ -1886,24 +1927,91 @@ class KasaMakbuzDialog(tk.Toplevel):
             "fatura_id": self._fatura_ozet["fatura_id"] if self._fatura_ozet else None,
         }
 
-    def _kapatma_secimi_ekle(self, veriler: dict) -> None:
-        """Yeni makbuzda açık kalem seçim penceresi; kapatılırsa seçim eklenmez (servis FIFO uygular)."""
+    def _kapatma_uygun(self, veriler: dict) -> bool:
         cari_id = veriler.get("cari_id")
         if not cari_id or veriler.get("fatura_id"):
-            return
-        if not self.tahsilat and not tedarikci_mi(self._cari_turleri.get(cari_id)):
-            return
-        from acik_kalem_secim_ui import kapatma_plani_sor
+            return False
+        return bool(self.tahsilat or tedarikci_mi(self._cari_turleri.get(cari_id)))
 
+    def _odeme_yontemi_ozeti(self, veriler: dict) -> str:
+        sekiller: dict[str, Decimal] = {}
+        for s in veriler.get("satirlar") or []:
+            ad = str(s.get("odeme_sekli") or "—")
+            sekiller[ad] = sekiller.get(ad, Decimal("0")) + Decimal(str(s["tutar"]))
+        return ", ".join(f"{ad} {tr_tutar(t)}" for ad, t in sekiller.items())
+
+    def _kapatma_penceresi(self, veriler: dict):
+        """Açık borç seçim penceresini açar; (acildi, sonuc) döner. Aynı cari ise eski seçim korunur."""
+        from acik_kalem_secim_ui import VAZGEC, kapatma_plani_sor, plan_ozet_metni
+
+        cari_id = int(veriler["cari_id"])
         toplam = sum((Decimal(str(s["tutar"])) for s in veriler["satirlar"]), Decimal("0"))
-        cari = CariService.getir(int(cari_id))
-        _acildi, sonuc = kapatma_plani_sor(
-            self, int(cari_id), toplam, cari_adi=getattr(cari, "unvan", "") or "",
-            baslik="Tahsilat Makbuzu — Açık Kalem Seçimi" if self.tahsilat else "Ödeme Makbuzu — Açık Kalem Seçimi",
+        onceki = ()
+        artani_fifo = False
+        if self._kapatma_anahtari and self._kapatma_anahtari[0] == cari_id and isinstance(self._kapatma_plani, dict):
+            onceki = self._kapatma_plani.get("secili") or ()
+            artani_fifo = self._kapatma_plani.get("fazla") == "FIFO"
+        duzenleme = self.mod == "duzenle" and self._duzenleme_belge_no
+        cari = CariService.getir(cari_id)
+        acildi, sonuc = kapatma_plani_sor(
+            self, cari_id, toplam, cari_adi=getattr(cari, "unvan", "") or "",
+            baslik="Tahsilat — Kapatılacak Borçlar" if self.tahsilat else "Ödeme — Kapatılacak Borçlar",
+            ust_bilgi={"cari": getattr(cari, "unvan", "") or "", "para_birimi": "TRY",
+                       "odeme": self._odeme_yontemi_ozeti(veriler)},
+            onceki_secim=onceki, islem_adi="Tahsilat" if self.tahsilat else "Ödeme",
+            haric_belge_no=self._duzenleme_belge_no if duzenleme else None,
+            kayitli=self._kayitli_kapatma if duzenleme else None,
+            artani_fifo=artani_fifo,
         )
+        if acildi and sonuc != VAZGEC:
+            self._kapatma_plani = sonuc
+            self._kapatma_anahtari = (cari_id, toplam)
+            if self.winfo_exists():
+                self._mesaj(plan_ozet_metni(sonuc), IKINCIL)
+        return acildi, sonuc
+
+    def kapatilacak_borclari_sec(self):
+        if self.mod not in ("yeni", "duzenle") or self.virman:
+            return
+        try:
+            veriler = self._verileri_topla()
+        except ValueError as hata:
+            messagebox.showinfo(self._pencere_basligi(), str(hata), parent=self)
+            return
+        if not self._kapatma_uygun(veriler):
+            messagebox.showinfo(
+                self._pencere_basligi(),
+                "Bu makbuz için açık borç seçimi yapılmaz (fatura bağlı veya cari türü uygun değil).",
+                parent=self,
+            )
+            return
+        acildi, _ = self._kapatma_penceresi(veriler)
+        if not acildi:
+            messagebox.showinfo(self._pencere_basligi(), "Bu carinin TL cinsinden açık borcu yok.", parent=self)
+
+    def _kapatma_secimi_ekle(self, veriler: dict) -> bool:
+        """Yeni makbuzda kapatma planını ekler; False → kullanıcı makbuza dönmek istedi (kayıt yok).
+
+        Önceden seçilmiş plan aynı cari ve tutar için geçerliyse yeniden sorulmaz; tutar/cari değiştiyse
+        dağıtım güncel değerlerle yeniden gösterilir.
+        """
+        if not self._kapatma_uygun(veriler):
+            return True
+        from acik_kalem_secim_ui import VAZGEC
+
+        cari_id = int(veriler["cari_id"])
+        toplam = sum((Decimal(str(s["tutar"])) for s in veriler["satirlar"]), Decimal("0"))
+        if self._kapatma_anahtari == (cari_id, toplam):
+            sonuc = self._kapatma_plani
+        else:
+            _acildi, sonuc = self._kapatma_penceresi(veriler)
+            if sonuc == VAZGEC:
+                return False
         if sonuc:
             veriler["kapatma_dagitimi"] = [{"hareket_id": h, "tutar": t} for h, t in sonuc["dagitim"]]
             veriler["kapatma_fazla"] = sonuc["fazla"]
+            veriler["kapatma_beklenen"] = dict(sonuc.get("beklenen") or {})
+        return True
 
     def kaydet(self) -> bool:
         if not self._duzenlenebilir() or self._kaydediliyor:
@@ -1939,9 +2047,16 @@ class KasaMakbuzDialog(tk.Toplevel):
             ):
                 return False
             elif onceki_mod == "duzenle":
+                if not self._kapatma_secimi_ekle(veriler):
+                    if self.winfo_exists():
+                        self._mesaj("Kayıt yapılmadı; makbuza dönüldü.", IKINCIL)
+                    return False
                 makbuz = FinansService.kasa_makbuz_guncelle(self.makbuz_id, veriler)
             else:
-                self._kapatma_secimi_ekle(veriler)
+                if not self._kapatma_secimi_ekle(veriler):
+                    if self.winfo_exists():
+                        self._mesaj("Kayıt yapılmadı; makbuza dönüldü.", IKINCIL)
+                    return False
                 if not self.winfo_exists():
                     return False
                 if self.tahsilat:
@@ -1949,10 +2064,11 @@ class KasaMakbuzDialog(tk.Toplevel):
                 else:
                     makbuz = FinansService.kasa_odeme_makbuzu_kaydet(veriler)
         except AcikKalemDegisti as hata:
+            self._kapatma_anahtari = None
             messagebox.showerror(
                 self._pencere_basligi(),
-                f"{hata}\n\nSeçtiğiniz açık kalemler başka bir işlemle değişti. Kaydı yeniden deneyin ve kalemleri "
-                "yeniden seçin.",
+                f"{hata}\n\nSeçtiğiniz açık kalemler başka bir işlemle değişti. Hiçbir kayıt yapılmadı; "
+                "Kaydet'e yeniden bastığınızda güncel açık tutarlar gösterilecek.",
                 parent=self,
             )
             return False
@@ -1964,6 +2080,8 @@ class KasaMakbuzDialog(tk.Toplevel):
             if self.winfo_exists():
                 self.btn_kaydet.configure(state="normal")
         self.result = makbuz
+        self._kapatma_plani = None
+        self._kapatma_anahtari = None
         self._makbuzu_yukle(makbuz)
         no = makbuz.makbuz_no or makbuz.belge_no
         if self.virman:
@@ -2031,8 +2149,44 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._mod_uygula()
         self._sekil_degisti()
         self._kirli = False
-        self._mesaj("Düzenleme modundasınız. Kaydettiğinizde eski etkiler geri alınıp makbuz yeniden yazılır.", LACIVERT)
+        mesaj = "Düzenleme modundasınız. Kaydettiğinizde eski etkiler geri alınıp makbuz yeniden yazılır."
+        plan_metni = self._kayitli_kapatmayi_yukle()
+        if plan_metni:
+            mesaj += " " + plan_metni
+        self._mesaj(mesaj, LACIVERT)
         self.tarih_entry.focus_set()
+
+    def _kapatma_durumunu_sifirla(self):
+        self._kapatma_plani = None
+        self._kapatma_anahtari = None
+        self._duzenleme_belge_no = None
+        self._kayitli_kapatma = None
+
+    def _kayitli_kapatmayi_yukle(self) -> str | None:
+        """Kayıtlı makbuzun belge seçimi ve dağıtım tutarlarını düzenleme planı olarak yükler.
+
+        Cari ve toplam değişmedikçe kayıtta bu plan aynen kullanılır (otomatik FIFO'ya dönülmez).
+        """
+        self._kapatma_durumunu_sifirla()
+        if self.virman or self.makbuz is None:
+            return None
+        cari_id = int(self.makbuz.cari_id)
+        veri = {"cari_id": cari_id, "fatura_id": self._fatura_ozet["fatura_id"] if self._fatura_ozet else None}
+        if not self._kapatma_uygun(veri):
+            return None
+        from acik_kalem_secim_ui import kayitli_plan, plan_ozet_metni
+
+        toplam = sum((Decimal(str(s["tutar"])) for s in self.satirlar), Decimal("0"))
+        try:
+            plan = kayitli_plan(cari_id, self.makbuz.belge_no, toplam)
+        except Exception:
+            return None
+        self._duzenleme_belge_no = self.makbuz.belge_no
+        self._kayitli_kapatma = (plan or {}).get("kayitli") or {
+            "secili": [], "dagitim": {}, "tutar": toplam, "fazla": "FIFO"}
+        self._kapatma_plani = plan
+        self._kapatma_anahtari = (cari_id, toplam)
+        return plan_ozet_metni(plan)
 
     def _vazgec(self):
         if self.mod != "duzenle":

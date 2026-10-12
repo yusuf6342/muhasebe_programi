@@ -40,6 +40,7 @@ from database.models.genel_muhasebe import (  # noqa: E402
     MuhasebeIslemGecmisi,
 )
 from database.muhasebe_entegrasyon import hesap_uygunluk_sorunu  # noqa: E402
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
 
 CIKTI_KLASORU = ROOT / "inceleme" / "muhasebelestirme"
 ISLEM_YAPAN = "muhasebe_hesap_baglantilari (kullanıcı onaylı)"
@@ -305,7 +306,8 @@ def main() -> None:
     rapor["butunluk_sonra"] = ray.butunluk(hedef)
 
     CIKTI_KLASORU.mkdir(parents=True, exist_ok=True)
-    yol = CIKTI_KLASORU / f"muhasebe_hesap_baglantilari_{'uygulama' if a.uygula else 'kuru'}.json"
+    yol = benzersiz_rapor_yolu(CIKTI_KLASORU, f"muhasebe_hesap_baglantilari_{'uygulama' if a.uygula else 'kuru'}",
+                               a.db)
     yol.write_text(json.dumps(rapor, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
 
     plan = rapor["plan"]

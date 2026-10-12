@@ -164,7 +164,10 @@ class FaturaYazdirmaOnizlemeDialog(tk.Toplevel):
             f"{satir_ozet}\n"
             f"{'─' * 56}\n"
             f"Genel Toplam: {self.vm.genel_goster}\n"
-            f"{self.vm.yaziyla_toplam}\n"
+            + (f"Ek fon bedeli + KDV: {self.vm.ek_bedel_toplam:.2f} + {self.vm.ek_bedel_kdv:.2f} TL\n"
+               f"Ödenecek Toplam: {self.vm.odenecek_goster}\n"
+               if getattr(self.vm, "ek_bedel_satirlari", None) else "")
+            + f"{self.vm.yaziyla_toplam}\n"
             f"Sayfa {self.sayfa}/{ts}   Zoom %{self.zoom}"
             f"{filigran}"
         )

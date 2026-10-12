@@ -178,6 +178,7 @@ class SatisFaturaKartSmokeTest(unittest.TestCase):
         f = SatisFaturasiService.kaydet(veriler, satirlar)
         self.assertIsNotNone(f.id)
         self.assertFalse(getattr(f, "onaylandi", False))
+        self.assertEqual(f.durum, "AÇIK")
         getir = SatisFaturasiService.getir(f.id)
         self.assertEqual(getir.fatura_no, veriler["fatura_no"])
 

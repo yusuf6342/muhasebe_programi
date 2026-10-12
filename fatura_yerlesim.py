@@ -104,7 +104,7 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
     """Dar pencerede isteğe bağlı üst çubuk öğelerini sırayla gizler.
 
     Kaydet, Onayla ve Yeni, Tahsilat Makbuzu, Yazdır / PDF, Diğer İşlemler ve Kapat her zaman
-    görünür; gizlenen Fatura Listesi ve Analiz «Diğer İşlemler» menüsünden açılır.
+    görünür; gizlenen Fatura Listesi «Diğer İşlemler» menüsünden açılır (Analiz oraya taşınmaz).
     """
     refs = getattr(dialog, "_fatura_toolbar", None) or {}
     cubuk, sol, sag = refs.get("cubuk"), refs.get("sol"), refs.get("sag")
@@ -146,8 +146,7 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
 
     diger = getattr(dialog, "_diger_mb", None)
     diger_metin = str(diger.cget("text")) if diger is not None else ""
-    _diger_menusune_tasinanlari_ekle(dialog, liste_var=any(a == "liste" for a, _ in secenekli),
-                                     analiz_var=any(a == "analiz" for a, _ in secenekli))
+    _diger_menusune_tasinanlari_ekle(dialog, liste_var=any(a == "liste" for a, _ in secenekli))
 
     durum = {"gizli": None}
     dialog._arac_sigdir = durum
@@ -219,7 +218,7 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
     _uygula_guvenli()
 
 
-def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool, analiz_var: bool) -> None:
+def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool) -> None:
     mb = getattr(dialog, "_diger_mb", None)
     if mb is None:
         return
@@ -233,25 +232,6 @@ def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool, analiz_var: boo
         etiket = str(liste.cget("text")) if liste is not None else "Fatura Listesi (F3)"
         menu.insert_command(sira, label=etiket, command=dialog._fatura_listesini_ac)
         sira += 1
-    analiz = getattr(dialog, "_analiz_mb", None)
-    if analiz_var and analiz is not None:
-        try:
-            kaynak = analiz.nametowidget(analiz.cget("menu"))
-            alt = tk.Menu(menu, tearoff=0)
-            for i in range((kaynak.index("end") or -1) + 1):
-                tip = kaynak.type(i)
-                if tip == "separator":
-                    alt.add_separator()
-                elif tip == "command":
-                    alt.add_command(
-                        label=kaynak.entrycget(i, "label"),
-                        command=kaynak.entrycget(i, "command"),
-                        state=kaynak.entrycget(i, "state"),
-                    )
-            menu.insert_cascade(sira, label="Analiz", menu=alt)
-            sira += 1
-        except (tk.TclError, KeyError):
-            pass
     if sira:
         menu.insert_separator(sira)
 
@@ -300,9 +280,10 @@ def _toplamlar_kur(parent) -> tuple[tk.Frame, dict]:
             )
             oran.grid(row=satir, column=k + 1, sticky="e", padx=(0, 4))
             degerler[f"{anahtar}_oran"] = oran
+        # Sabit genişlik: tutar yazılırken (Uzlaşılan) metin uzunluğu değişse de yerleşim kaymaz
         deger = tk.Label(
             sag, text="—" if anahtar == "doviz" else "0,00 TL", bg=ftema.BEYAZ,
-            fg=ftema.METIN, font=kalin, anchor="e", width=13,
+            fg=ftema.METIN, font=kalin, anchor="e", width=15,
         )
         deger.grid(row=satir, column=k + 2, sticky="e")
         degerler[anahtar] = deger
@@ -315,10 +296,31 @@ def _toplamlar_kur(parent) -> tuple[tk.Frame, dict]:
     ).grid(row=5, column=0, columnspan=5, sticky="e", padx=(0, 10))
     net = tk.Label(
         sag, text="0,00 TL", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
-        font=_font(parent, 13, "bold"), anchor="e",
+        font=_font(parent, 13, "bold"), anchor="e", width=16,
     )
     net.grid(row=5, column=5, columnspan=2, sticky="e")
     degerler["genel"] = net
+    # Faturaya ek fon bedeli: yalnız bedel varsa görünür (dialog._toplamlari_guncelle açar)
+    gizli = []
+    for sutun, anahtar, baslik in ((0, "fon_ek", "Ek Fon Bedeli"), (1, "fon_ek_kdv", "Ek Fon KDV")):
+        k = sutun * 4
+        et = tk.Label(sag, text=baslik, bg=ftema.BEYAZ, fg=ftema.IKINCIL, font=kucuk, anchor="e")
+        et.grid(row=6, column=k, sticky="e", padx=(16 if sutun else 0, 6))
+        deger = tk.Label(sag, text="0,00 TL", bg=ftema.BEYAZ, fg=ftema.METIN, font=kalin, anchor="e", width=15)
+        deger.grid(row=6, column=k + 2, sticky="e")
+        degerler[anahtar] = deger
+        gizli += [et, deger]
+    et = tk.Label(sag, text="Ödenecek Toplam", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
+                  font=_font(parent, 12, "bold"), anchor="e")
+    et.grid(row=7, column=0, columnspan=5, sticky="e", padx=(0, 10))
+    odenecek = tk.Label(sag, text="0,00 TL", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
+                        font=_font(parent, 13, "bold"), anchor="e", width=16)
+    odenecek.grid(row=7, column=5, columnspan=2, sticky="e")
+    degerler["odenecek"] = odenecek
+    gizli += [et, odenecek]
+    for w in gizli:
+        w.grid_remove()
+    degerler["_fon_ek_widgetleri"] = gizli
     return sag, degerler
 
 
@@ -500,7 +502,7 @@ def detay_kur(dialog) -> dict | None:
             ozet, text=f"{baslik}:", bg=ftema.ACIK_BG, fg=ftema.IKINCIL, font=_font(dialog, 9),
         ).pack(side="left", padx=(8 if anahtar == "tahsil" else 12, 3))
         lbl = tk.Label(ozet, text="—", bg=ftema.ACIK_BG, fg=ftema.METIN,
-                       font=_font(dialog, 9, "bold"))
+                       font=_font(dialog, 9, "bold"), width=16, anchor="w")
         lbl.pack(side="left")
         etiketler[anahtar] = lbl
     kapatma = None
@@ -857,10 +859,14 @@ def ust_panel_genislik_kur(dialog) -> None:
         (yeni_musteri, "Yeni Müşteri", "Yeni"),
         (getattr(dialog, "_btn_yeni_adres", None), "Yeni Adres Ekle", "Yeni Adres"),
         (_kardes_dugme(getattr(dialog, "depo", None), "Yeni Depo"), "Yeni Depo", "Yeni"),
-        (getattr(dialog, "_ort_gun_baslik", None), None, "Ort. Vade"),
     ] + [(t, "Takvim", "▼") for t in takvimler]
     for panel_ad, metinler in (
-        ("_fatura_ust_cari", {"Eski Bakiye": "Eski", "Yeni Bakiye": "Yeni"}),
+        ("_fatura_ust_cari", {
+            "Ortalama borç kapatma süresi": "Ort. kapatma",
+            "Ortalama Valör": "Ort. valör",
+            "Ortalama Valör Tarihi": "Valör tarihi",
+            "Ortalama Valör Gün Sayısı": "Valör gün",
+        }),
         ("_fatura_ust_sol", {"İşlem Saati": "Saat"}),
     ):
         panel = getattr(dialog, panel_ad, None)

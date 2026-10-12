@@ -512,6 +512,120 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
         pencere.assert_called_once()
         self.assertEqual(pencere.call_args.kwargs["fatura_id"], son.id)
 
+    def _pompala(self, sure: float = 0.3):
+        import time
+
+        bitis = time.time() + sure
+        while time.time() < bitis:
+            self.root.update()
+
+    def test_kayitta_bilgi_kutusu_beklenmeden_makbuz_bilgiyle_acilir(self):
+        dlg = self._yeni_fatura_doldur()
+        mesajlar, yamalar = self._mesajlari_yakala()
+        for y in yamalar:
+            y.start()
+        try:
+            with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere:
+                dlg.kaydet()
+        finally:
+            for y in yamalar:
+                y.stop()
+        self.assertFalse([m for m in mesajlar if m[0] in ("info", "error")], mesajlar)
+        kw = pencere.call_args.kwargs
+        self.assertEqual(kw["bilgi"], "Fatura kaydedildi.")
+        self.assertEqual(kw["fatura_ozet"]["kalan"], Decimal("120.00"))
+        # Kayıt muhasebe anlamını değiştirmez: AÇIK ama onaysız (hareket yalnız onayda)
+        self.assertEqual((dlg.fatura.durum, bool(dlg.fatura.onaylandi)), ("AÇIK", False))
+        dlg.destroy()
+
+    def test_onayla_ve_yeni_makbuz_yeni_faturadan_once_acilir(self):
+        from app import SatisFaturasiDialog
+
+        dlg = self._yeni_fatura_doldur()
+        sira = []
+        mesajlar, yamalar = self._mesajlari_yakala()
+        for y in yamalar:
+            y.start()
+        gercek_init = SatisFaturasiDialog.__init__
+
+        def _init(obj, *a, **k):
+            sira.append("fatura")
+            gercek_init(obj, *a, **k)
+
+        try:
+            with patch("kasa_makbuz_ui.KasaMakbuzDialog", side_effect=lambda *a, **k: sira.append("makbuz")) as pencere, \
+                    patch.object(SatisFaturasiDialog, "__init__", _init), \
+                    patch("satis_personeli_ui.aktif_satis_personelleri", return_value=[]), \
+                    patch("satis_personeli_ui.satis_personeli_degistirme_yetkisi", return_value=True), \
+                    patch("fatura_acilis_cache.satis_personelleri", return_value=[]):
+                dlg.onayla_ve_yeni()
+                self._pompala(0.4)
+        finally:
+            for y in yamalar:
+                y.stop()
+        self.assertFalse([m for m in mesajlar if m[0] == "error"], mesajlar)
+        pencere.assert_called_once()
+        self.assertTrue(pencere.call_args.kwargs.get("fatura_ozet"))
+        self.assertEqual(sira[:2], ["makbuz", "fatura"])
+
+    def test_makbuz_acilisi_fatura_temasini_degistirmez(self):
+        from tkinter import ttk
+
+        dlg = self._fatura_ekrani(self.fatura_id)
+        stil = ttk.Style(dlg)
+        tema = stil.theme_use()
+        d = self._dialog(fatura_id=self.fatura_id)
+        self.assertEqual(stil.theme_use(), tema)
+        d.kapat()
+        with patch.object(ttk.Style, "theme_use", wraps=stil.theme_use) as tema_izle:
+            d = self._dialog(fatura_id=self.fatura_id)
+        # ikinci açılışta tema yeniden uygulanmaz (yalnız okunur)
+        self.assertFalse([c for c in tema_izle.call_args_list if c.args], tema_izle.call_args_list)
+        d.kapat()
+        dlg.destroy()
+
+    def _ozet_metinleri(self, dlg) -> dict:
+        return {b: lbl.cget("text") for b, lbl in dlg._cari_borc_alacak.degerler.items()}
+
+    def _beklenen_ozet(self) -> dict:
+        from cari_borc_alacak_ozet import ozet_metinleri
+        from database.cari_service import CariService
+
+        return {b: m for b, (m, _r) in ozet_metinleri(CariService.kart_ozet_metrikleri(self.musteri_id)).items()}
+
+    def test_ust_panelde_cari_hesaplar_borc_alacak_ozeti(self):
+        dlg = self._fatura_ekrani(self.fatura_id)
+        self.assertFalse(hasattr(dlg, "eski_bakiye_etiket"))
+        self.assertFalse(hasattr(dlg, "_cari_ozet_karti"))
+        self.assertEqual(str(dlg._fatura_ust_cari.cget("text")), "Borç / Alacak Özeti")
+        metinler = [str(w.cget("text")) for w in dlg._fatura_ust_cari.winfo_children() if isinstance(w, tk.Label)]
+        self.assertIn("Toplam borç", metinler)
+        self.assertIn("Toplam alacak", metinler)
+        self.assertFalse([m for m in metinler if "Son işlem" in m or "Bekleyen" in m or "Eski Bakiye" in m])
+        dlg._cari_borc_alacak_yenile(hemen=True)
+        beklenen = self._beklenen_ozet()
+        self.assertEqual(self._ozet_metinleri(dlg), beklenen)
+        self.assertNotEqual(beklenen["Toplam borç"], "—")
+        # Tahsilat sonrası panel yenilenir (makbuz kaydı on_kayit → _bagli_makbuzlari_yenile)
+        _makbuz(self, [_nakit(self, "100")])
+        dlg._bagli_makbuzlari_yenile()
+        self._pompala(0.4)
+        sonra = self._beklenen_ozet()
+        self.assertNotEqual(sonra["Toplam alacak"], beklenen["Toplam alacak"])
+        self.assertEqual(self._ozet_metinleri(dlg), sonra)
+        dlg.destroy()
+
+    def test_cari_degisince_borc_alacak_ozeti_yenilenir(self):
+        from database.cari_service import CariService
+
+        dlg = self._fatura_ekrani()
+        dlg._cari_borc_alacak_yenile(hemen=True)
+        self.assertEqual(set(self._ozet_metinleri(dlg).values()), {"—"})
+        dlg._musteri_secildi_callback(CariService.getir(self.musteri_id))
+        self._pompala(0.4)
+        self.assertEqual(self._ozet_metinleri(dlg), self._beklenen_ozet())
+        dlg.destroy()
+
     def test_kaydedilmemis_faturada_once_kayit_uyarisi(self):
         dlg = self._fatura_ekrani()
         with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere, patch(

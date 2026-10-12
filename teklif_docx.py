@@ -14,7 +14,7 @@ from docx.shared import Cm, Mm, Pt, RGBColor
 
 from database.teklif_customer_view import (
     CustomerQuoteViewModel,
-    FIRMA_ALT_UNVAN,
+    alt_unvan,
     assert_customer_model_safe,
     assert_customer_output_safe,
     para_birimli,
@@ -155,7 +155,7 @@ def render_customer_quote_docx(vm: CustomerQuoteViewModel, hedef: Path) -> Path:
     p = sol.paragraphs[-1] if sol.paragraphs else sol.add_paragraph()
     if vm.logo_data_uri:
         p = sol.add_paragraph()
-    r = p.add_run((f.get("unvan") or "RAY MOBİLYA AKSESUARLARI").upper())
+    r = p.add_run((f.get("unvan") or alt_unvan(f)).upper())
     _set_run(r, size=12, bold=True, color=_NAVY)
     if vm.firma_slogan:
         p2 = sol.add_paragraph()
@@ -379,7 +379,7 @@ def render_customer_quote_docx(vm: CustomerQuoteViewModel, hedef: Path) -> Path:
     alt = " · ".join(
         x
         for x in (
-            FIRMA_ALT_UNVAN,
+            alt_unvan(f),
             f.get("telefon"),
             f.get("adres"),
             f.get("web") or f.get("email"),

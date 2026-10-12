@@ -27,33 +27,54 @@ from satis_tema import (
     treeview_stil,
 )
 
-SATIN_ALMA_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
-    ("TEDARİKÇİ KARTLARI", "Boş tedarikçi kartı açılır; kodla veya isimle hızlı arayın", "tedarikci"),
-    ("TEDARİKÇİ LİSTESİ", "Tüm tedarikçileri listeleyin, filtreleyin ve sıralayın", "tedarikci_liste"),
-    ("SATIN ALMA TALEPLERİ", "Yeni satın alma talebi formu", "talep"),
-    ("SATIN ALMA TALEP LİSTESİ", "Talepleri filtrele, onayla ve siparişe aktar", "talep_liste"),
-    ("TEDARİKÇİ TEKLİFLERİ", "Çoklu tedarikçi fiyat ve şart karşılaştırması", "teklif"),
-    ("SATIN ALMA SİPARİŞLERİ", "Sipariş, termin ve kısmi teslim takibi", "siparis"),
-    ("ALIŞ İRSALİYELERİ", "Mal kabul ve faturalanmamış irsaliyeler", "irsaliye"),
-    ("ALIŞ FATURALARI", "Borç, stok, maliyet, KDV ve ödeme", "fatura"),
+# Giriş kartları her tıklamada yeni boş belge açar; liste kartları kayıtlı belgeleri gösterir.
+ISLEM_KARTLARI: tuple[tuple[str, str, str], ...] = (
+    ("ALIŞ FATURASI", "Yeni boş alış faturası", "fatura_yeni"),
+    ("ALIŞ SİPARİŞİ", "Yeni boş satın alma siparişi", "siparis_yeni"),
+    ("ALIŞ İRSALİYESİ", "Yeni boş mal kabul irsaliyesi", "irsaliye_yeni"),
     ("ALIŞ İADE FATURASI", "Yeni boş tedarikçiye iade belgesi", "iade_yeni"),
+    ("ALIŞ TEKLİFİ", "Yeni tedarikçi teklifi: fiyat, vade, termin", "teklif_yeni"),
+    ("SATIN ALMA TALEPLERİ", "Yeni boş satın alma talebi formu", "talep"),
+)
+
+LISTE_KARTLARI: tuple[tuple[str, str, str], ...] = (
+    ("ALIŞ FATURALARI LİSTESİ", "Kayıtlı alış faturaları: aç, iade, iptal", "fatura"),
+    ("ALIŞ SİPARİŞLERİ LİSTESİ", "Sipariş, termin ve kısmi teslim takibi", "siparis"),
+    ("ALIŞ İRSALİYELERİ LİSTESİ", "Mal kabul ve faturalanmamış irsaliyeler", "irsaliye"),
     ("ALIŞ İADE FATURALARI LİSTESİ", "Kayıtlı iadeleri filtrele, aç, iptal et", "iade"),
-    ("MASRAF DAĞITIMI", "Nakliye ve diğer giderleri maliyete dağıt", "masraf"),
+    ("ALIŞ TEKLİFLERİ LİSTESİ", "Teklifleri aç, karşılaştır ve seç", "teklif"),
+    ("SATIN ALMA TALEP LİSTESİ", "Talepleri filtrele, onayla ve siparişe aktar", "talep_liste"),
+    ("TEDARİKÇİLER LİSTESİ", "Tüm tedarikçileri listeleyin, filtreleyin ve sıralayın", "tedarikci_liste"),
+)
+
+TANIM_KARTLARI: tuple[tuple[str, str, str], ...] = (
+    ("TEDARİKÇİ KARTLARI", "Boş tedarikçi kartı açılır; kodla veya isimle hızlı arayın", "tedarikci"),
     ("TEDARİKÇİ FİYAT LİSTELERİ", "Güncel alış fiyatı ve iskonto koşulları", "fiyat"),
-    ("RAPORLAR VE KONTROL", "Teslimat, borç, maliyet ve performans", "rapor"),
+    ("MASRAF DAĞITIMI", "Nakliye ve diğer giderleri maliyete dağıt", "masraf"),
     ("PDF / E-FATURA AKTARIM", "PDF/OCR ve gelen e-faturalar", "belge"),
     ("EXCEL VERİ AKTARIM", "Tedarikçi cari ve virman aktarımı", "excel"),
 )
 
+SATIN_ALMA_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = ISLEM_KARTLARI + LISTE_KARTLARI + TANIM_KARTLARI
+
 RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("TEDARİKÇİ BAKİYE DURUM", "Ortalama vadeli tedarikçi bakiyeleri", "bakiye"),
+    ("TEDARİKÇİ BORÇ VE VADE", "Açık, vadesi geçmiş, ileri vade; ödeme sözleri ayrı", "borc_vade"),
     ("TEDARİKÇİ EKSTRESİ", "Valörlü / ağırlıklı ekstre", "ekstre"),
     ("STOK DETAYLI EKSTRE", "Stok satırlı tedarikçi ekstresi", "stok_ekstre"),
     ("ÖDEME VE TAHSİLAT", "Tarih aralıklı ödeme raporu", "odeme"),
-    ("SATIN ALMA ÖZETİ", "Dönemsel alış özeti", "ozet"),
+    ("ALIŞ VE İADE ÖZETİ", "Ürün, grup, tedarikçi; KDV hariç / KDV / dahil", "ozet"),
     ("AYLIK ALIŞ ANALİZİ", "Aylara göre alış tutarı ve fatura sayısı", "aylik"),
-    ("STOK YENİLEME ÖNERİSİ", "Minimum stok altına düşen ürünler", "yenileme"),
-    ("FATURALANMAMIŞ İRSALİYELER", "Mal kabulü yapılmış, faturası bekleyen", "bekleyen_irs"),
+    ("ALIŞ FİYATI DEĞİŞİMİ", "Önceki ve son gerçekleşmiş alış fiyatı", "fiyat_degisim"),
+    ("TEDARİKÇİ FİYAT KARŞILAŞTIRMASI", "Bir ürünün tedarikçi fiyatları, yaşı ve teklifler", "fiyat_karsilastirma"),
+    ("BEKLEYEN ALIŞ SİPARİŞLERİ", "Kalan miktar, gecikme ve kalan tutar", "bekleyen_sip"),
+    ("FATURASI GELMEYEN İRSALİYELER", "Faturalanmamış mal kabulleri, tahmini tutar", "bekleyen_irs"),
+    ("YENİDEN SİPARİŞ ÖNERİSİ", "Stok, bekleyen alış ve satış hızına göre öneri", "yenileme"),
+    ("GERÇEK ALIŞ MALİYETİ", "Net alış + nakliye ve diğer masraflar", "maliyet"),
+    ("TEDARİKÇİ TESLİMAT PERFORMANSI", "Beklenen ve gerçekleşen teslim, gecikme, kısmi teslimat", "teslimat_perf"),
+    ("SATIN ALMA TALEPLERİ TAKİBİ", "Talep → sipariş → teslimat; onaylanan, karşılanan, kalan", "talep_takip"),
+    ("AÇIK ALIŞ FATURALARI VE VALÖR", "Rapor tarihindeki açık faturalar, valör günü, yaş grupları", "acik_valor"),
+    ("KDV RAPORU", "Belgelerden alış / hesaplanan KDV, oranlar, iadeler, dönem özeti", "kdv"),
 )
 
 _SIMGELER = ("◎", "▤", "☰", "▸", "⇄", "▣", "◉", "▦", "◇", "◆", "○", "●")
@@ -190,15 +211,15 @@ def _ozet_serit(parent, ozet: dict, app=None):
     return serit
 
 
-def _kart_izgara(app, parent, kartlar, komut_haritasi: dict[str, Callable], *, sutun: int = 2):
+def _kart_izgara(app, parent, kartlar, komut_haritasi: dict[str, Callable], *, sutun: int = 2,
+                 min_yukseklik: int = 110, pady: int = 16):
     ızgara = tk.Frame(parent, bg=ACIK_BG)
-    ızgara.pack(fill="both", expand=True, padx=16, pady=16)
+    ızgara.pack(fill="both", expand=True, padx=16, pady=pady)
     for c in range(sutun):
         ızgara.columnconfigure(c, weight=1, uniform="sa_kart")
-    for i, (baslik, aciklama, anahtar) in enumerate(kartlar):
-        komut = komut_haritasi.get(anahtar)
-        if komut is None:
-            continue
+    gorunen = [(b, a, k) for b, a, k in kartlar if komut_haritasi.get(k) is not None]
+    for i, (baslik, aciklama, anahtar) in enumerate(gorunen):
+        komut = komut_haritasi[anahtar]
         r, c = divmod(i, sutun)
         kart = HubKart(
             ızgara,
@@ -208,7 +229,228 @@ def _kart_izgara(app, parent, kartlar, komut_haritasi: dict[str, Callable], *, s
             simge=_SIMGELER[i % len(_SIMGELER)],
         )
         kart.grid(row=r, column=c, sticky="nsew", padx=8, pady=8)
-        ızgara.rowconfigure(r, weight=1, minsize=110)
+        ızgara.rowconfigure(r, weight=1, minsize=min_yukseklik)
+
+
+def _bolum_basligi(app, parent, metin: str) -> None:
+    satir = tk.Frame(parent, bg=ACIK_BG)
+    satir.pack(fill="x", padx=24, pady=(14, 0))
+    tk.Frame(satir, bg=SARI, width=5, height=22).pack(side="left", padx=(0, 8))
+    tk.Label(satir, text=metin, bg=ACIK_BG, fg=LACIVERT, font=font(12, "bold", app)).pack(side="left")
+
+
+class AcilirMenuGrubu:
+    """Hub içinde tıklanınca hemen altında alt menülerini alt alta açan/kapatan grup başlığı."""
+
+    def __init__(self, app, parent, metin: str, kartlar, komut_haritasi: dict[str, Callable], *,
+                 alt_gruplar=None):
+        self.metin = metin
+        self.cerceve = tk.Frame(parent, bg=ACIK_BG)
+        self.cerceve.pack(fill="x", padx=16, pady=(10, 0))
+        self.baslik = tk.Frame(self.cerceve, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI,
+                               cursor="hand2", takefocus=1)
+        self.baslik.pack(fill="x", padx=8)
+        tk.Frame(self.baslik, bg=SARI, width=5).pack(side="left", fill="y")
+        self.ok = tk.Label(self.baslik, text="▸", bg=BEYAZ, fg=SARI, font=font(14, "bold", app), width=2)
+        self.ok.pack(side="left", padx=(8, 0), pady=10)
+        self.etiket = tk.Label(self.baslik, text=metin, bg=BEYAZ, fg=LACIVERT, font=font(13, "bold", app),
+                               anchor="w")
+        self.etiket.pack(side="left", fill="x", expand=True, padx=(4, 12), pady=10)
+        for w in (self.baslik, self.ok, self.etiket):
+            w.bind("<Button-1>", lambda _e: self.degistir())
+        for tus in ("<Return>", "<space>"):
+            self.baslik.bind(tus, lambda _e: self.degistir())
+
+        self.alt = tk.Frame(self.cerceve, bg=ACIK_BG)
+        for grup_adi, grup_kartlari in alt_gruplar or ((None, kartlar),):
+            if grup_adi:
+                satir = tk.Frame(self.alt, bg=ACIK_BG)
+                satir.pack(fill="x", padx=(40, 8), pady=(10, 0))
+                tk.Label(satir, text=grup_adi, bg=ACIK_BG, fg=LACIVERT, font=font(11, "bold", app)).pack(side="left")
+            _kart_izgara(app, self.alt, grup_kartlari, komut_haritasi, sutun=1, min_yukseklik=0, pady=2)
+            for kart in self.alt.winfo_children()[-1].winfo_children():
+                kart.grid_configure(padx=(32, 8), pady=3)
+                kart._ic.pack_configure(pady=8)
+                kart._lbl_aciklama.configure(wraplength=0)
+                kart._lbl_aciklama.pack_configure(pady=(2, 0))
+
+    @property
+    def acik(self) -> bool:
+        return bool(self.alt.winfo_manager())
+
+    def degistir(self) -> None:
+        if self.acik:
+            self.alt.pack_forget()
+            self.ok.configure(text="▸")
+        else:
+            self.alt.pack(fill="x", after=self.baslik)
+            self.ok.configure(text="▾")
+
+
+def _tekerlegi_bagla(govde) -> None:
+    """Kaydırmalı gövdede fare tekerleği kartların üzerindeyken de çalışsın."""
+    def ilet(e):
+        try:
+            govde.event_generate("<MouseWheel>", delta=e.delta)
+        except tk.TclError:
+            pass
+
+    def gez(w):
+        for c in w.winfo_children():
+            c.bind("<MouseWheel>", ilet, add="+")
+            gez(c)
+
+    gez(govde)
+
+
+def _tedarikci_cari_ac(app) -> Callable:
+    def ac(cari):
+        from cari_kart_ui import CariDialog
+
+        return CariDialog(app, cari, cari_turu="Tedarikçi")
+
+    return ac
+
+
+def alis_faturasi_yeni(app):
+    """Yeni boş alış faturası (kayıt oluşturmaz; kaydedilene kadar veri tabanına yazılmaz)."""
+    from alis_ui import AlisFaturasiDialog
+
+    return pencere_ac(app, AlisFaturasiDialog, baslik="Alış Faturası", cari_ac=_tedarikci_cari_ac(app))
+
+
+def alis_siparisi_yeni(app):
+    from alis_ui import AlisSiparisiDialog
+
+    return pencere_ac(app, AlisSiparisiDialog, baslik="Alış Siparişi")
+
+
+def alis_irsaliyesi_yeni(app):
+    from alis_ui import AlisIrsaliyesiDialog
+
+    return pencere_ac(app, AlisIrsaliyesiDialog, baslik="Alış İrsaliyesi")
+
+
+def alis_teklifi_yeni(app):
+    return pencere_ac(app, TedarikciTeklifDialog, baslik="Alış Teklifi")
+
+
+def satin_alma_talebi_yeni(app):
+    from satin_alma_talep_ui import talep_formu_ac
+
+    return talep_formu_ac(app)
+
+
+def _listede_sec(app, iid: str) -> None:
+    def gez(w):
+        for c in w.winfo_children():
+            if isinstance(c, ttk.Treeview):
+                try:
+                    if c.exists(iid):
+                        c.selection_set(iid)
+                        c.focus(iid)
+                        c.see(iid)
+                        return True
+                except tk.TclError:
+                    pass
+            if gez(c):
+                return True
+        return False
+
+    try:
+        gez(app.icerik)
+    except (tk.TclError, AttributeError):
+        pass
+
+
+def belgeden_listeye_git(app, liste_fn: Callable, belge_id=None) -> None:
+    """Belge penceresi kapandıktan sonra ilgili listeyi açar ve belgeyi listede seçer."""
+    def git():
+        try:
+            _nav(app, liste_fn)
+        except Exception as hata:  # noqa: BLE001
+            acilis_hatasi_goster(app, "Liste", hata)
+            return
+        if belge_id:
+            app.after(30, lambda: _listede_sec(app, str(belge_id)))
+
+    app.after(40, git)
+
+
+def bos_liste_bilgisi(tablo: ttk.Treeview, metin: str, yeni: Callable | None = None,
+                      yeni_metin: str = "Yeni") -> None:
+    """Liste boşsa tablonun ortasında açıklama ve (yetki varsa) Yeni düğmesi gösterir."""
+    eski = getattr(tablo, "_bos_bilgi", None)
+    if eski is not None:
+        try:
+            eski.destroy()
+        except tk.TclError:
+            pass
+        tablo._bos_bilgi = None
+    try:
+        if tablo.get_children():
+            return
+        kutu = tk.Frame(tablo, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
+        tk.Label(kutu, text=metin, bg=BEYAZ, fg=IKINCIL, font=font(10), justify="center",
+                 wraplength=420).pack(padx=16, pady=(12, 6))
+        if yeni is not None:
+            tk_buton(kutu, yeni_metin, yeni, rol="yeni").pack(pady=(0, 12))
+        kutu.place(relx=0.5, rely=0.4, anchor="center")
+        tablo._bos_bilgi = kutu
+    except tk.TclError:
+        pass
+
+
+def secimi_koruyarak(tablo: ttk.Treeview, doldur: Callable[[], None]) -> None:
+    """Listeyi yeniden doldurur; önceki seçili kayıt hâlâ varsa yeniden seçer."""
+    try:
+        secili = tuple(tablo.selection())
+        ilk_gorunen = tablo.yview()[0]
+    except tk.TclError:
+        secili, ilk_gorunen = (), 0.0
+    doldur()
+    try:
+        kalan = [i for i in secili if tablo.exists(i)]
+        tablo.yview_moveto(ilk_gorunen)
+        if kalan:
+            tablo.selection_set(kalan)
+            tablo.focus(kalan[0])
+            tablo.see(kalan[0])
+    except tk.TclError:
+        pass
+
+
+def _yetkili(*anahtarlar: str) -> bool:
+    try:
+        from database.access import yetki_var
+
+        return bool(yetki_var(*anahtarlar))
+    except Exception:
+        return True
+
+
+def _rapor_komutlar(app) -> dict[str, Callable]:
+    import satin_alma_rapor_ui as r
+
+    return {
+        "bakiye": app.rapor_tedarikci_bakiye_durum,
+        "borc_vade": lambda: r.tedarikci_borc_vade_goster(app),
+        "ekstre": app.rapor_tedarikci_ekstresi,
+        "stok_ekstre": app.rapor_stok_detayli_tedarikci_ekstre,
+        "odeme": app.rapor_tahsilat_odeme,
+        "ozet": lambda: r.alis_iade_ozeti_goster(app),
+        "aylik": getattr(app, "rapor_aylik_alis_analizi", None),
+        "fiyat_degisim": lambda: r.fiyat_degisim_raporu_goster(app),
+        "fiyat_karsilastirma": lambda: r.tedarikci_fiyat_karsilastirma_goster(app),
+        "bekleyen_sip": lambda: r.bekleyen_alis_siparisleri_goster(app),
+        "bekleyen_irs": lambda: r.faturasi_gelmeyen_irsaliyeler_goster(app),
+        "yenileme": lambda: r.yeniden_siparis_onerisi_goster(app),
+        "maliyet": lambda: r.gercek_alis_maliyeti_goster(app),
+        "teslimat_perf": lambda: r.tedarikci_teslimat_performansi_goster(app),
+        "talep_takip": lambda: r.satin_alma_talep_takibi_goster(app),
+        "acik_valor": lambda: r.acik_alis_faturalari_valor_goster(app),
+        "kdv": lambda: __import__("kdv_raporu_ui").kdv_raporu_goster(app, "satin_alma"),
+    }
 
 
 def _hub_komutlar(app) -> dict[str, Callable]:
@@ -229,15 +471,14 @@ def _hub_komutlar(app) -> dict[str, Callable]:
             geri_fn=lambda: satin_alma_hub_goster(app),
         )
 
-    def talep_formu():
-        from satin_alma_talep_ui import talep_formu_ac
-
-        talep_formu_ac(app)
-
     return {
+        "fatura_yeni": lambda: alis_faturasi_yeni(app),
+        "siparis_yeni": lambda: alis_siparisi_yeni(app),
+        "irsaliye_yeni": lambda: alis_irsaliyesi_yeni(app),
+        "teklif_yeni": lambda: alis_teklifi_yeni(app),
         "tedarikci": app.tedarikci_karti_ac,
         "tedarikci_liste": app.tedarikciler_goster,
-        "talep": talep_formu,
+        "talep": lambda: satin_alma_talebi_yeni(app),
         "talep_liste": lambda: satin_alma_talepleri_goster(app),
         "teklif": lambda: tedarikci_teklifleri_goster(app),
         "siparis": app.alis_siparisleri_goster,
@@ -263,6 +504,8 @@ def satin_alma_hub_goster(app) -> None:
     except tk.TclError:
         pass
 
+    from ui_pencere import kaydirilabilir_govde
+
     kok = tk.Frame(app.icerik, bg=ACIK_BG)
     kok.pack(fill="both", expand=True)
 
@@ -283,7 +526,14 @@ def satin_alma_hub_goster(app) -> None:
     except Exception:
         ozet = {}
     _ozet_serit(kok, ozet, app=app)
-    _kart_izgara(app, kok, SATIN_ALMA_HUB_KARTLARI, _hub_komutlar(app), sutun=2)
+    govde = kaydirilabilir_govde(kok, bg=ACIK_BG)
+    komutlar = _hub_komutlar(app)
+    rapor_komut = {**komutlar, **_rapor_komutlar(app)}
+    app.satin_alma_menu_gruplari = {
+        "islem": AcilirMenuGrubu(app, govde, "Satın Alma İşlemleri", ISLEM_KARTLARI + TANIM_KARTLARI, komutlar),
+        "rapor": AcilirMenuGrubu(app, govde, "Raporlar", LISTE_KARTLARI + RAPOR_KARTLARI, rapor_komut),
+    }
+    _tekerlegi_bagla(govde)
 
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: satin_alma_hub_goster(app))
@@ -309,20 +559,7 @@ def satin_alma_raporlar_hub_goster(app) -> None:
         geri_metin="← Satın Alma",
     )
 
-    def bekleyen_irs():
-        faturalanmamis_irsaliye_raporu_goster(app)
-
-    komutlar = {
-        "bakiye": app.rapor_tedarikci_bakiye_durum,
-        "ekstre": app.rapor_tedarikci_ekstresi,
-        "stok_ekstre": app.rapor_stok_detayli_tedarikci_ekstre,
-        "odeme": app.rapor_tahsilat_odeme,
-        "ozet": app.rapor_alis_ozeti,
-        "aylik": getattr(app, "rapor_aylik_alis_analizi", app.rapor_alis_ozeti),
-        "yenileme": getattr(app, "rapor_stok_yenileme_onerisi", app.rapor_alis_ozeti),
-        "bekleyen_irs": bekleyen_irs,
-    }
-    _kart_izgara(app, kok, RAPOR_KARTLARI, komutlar, sutun=2)
+    _kart_izgara(app, kok, RAPOR_KARTLARI, _rapor_komutlar(app), sutun=3, min_yukseklik=86, pady=6)
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: satin_alma_raporlar_hub_goster(app))
 
@@ -359,8 +596,8 @@ def tedarikci_teklifleri_goster(app) -> None:
 
     kok = _liste_ust(
         app,
-        "TEDARİKÇİ TEKLİFLERİ",
-        "Fiyat, vade, termin ve nakliye ile toplam edinme maliyeti karşılaştırması",
+        "ALIŞ TEKLİFLERİ LİSTESİ",
+        "Tedarikçi teklifleri: fiyat, vade, termin ve nakliye ile toplam edinme maliyeti karşılaştırması",
         lambda: satin_alma_hub_goster(app),
     )
     cerceve = ttk.Frame(kok)
@@ -381,7 +618,7 @@ def tedarikci_teklifleri_goster(app) -> None:
     tablo.pack(side="left", fill="both", expand=True)
     ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview).pack(side="right", fill="y")
 
-    def yenile():
+    def doldur():
         for i in tablo.get_children():
             tablo.delete(i)
         for r in TedarikciTeklifService.listele():
@@ -399,12 +636,29 @@ def tedarikci_teklifleri_goster(app) -> None:
                 ),
             )
 
-    def karsilastir():
+    yeni_yetki = _yetkili("alis_teklif_duzenleme", "alis_duzenleme", "yeni_kayit")
+
+    def yenile():
+        try:
+            if not tablo.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        secimi_koruyarak(tablo, doldur)
+        bos_liste_bilgisi(
+            tablo,
+            "Kayıtlı alış teklifi yok." + (" Yeni Teklif ile ilk teklifi girin." if yeni_yetki else ""),
+            yeni if yeni_yetki else None,
+            "Yeni Teklif",
+        )
+
+    def karsilastir(_e=None):
         sec = tablo.selection()
         if not sec:
             messagebox.showinfo("Seçim", "Teklif seçin.", parent=app)
             return
-        TeklifKarsilastirmaDialog(app, int(sec[0]))
+        dlg = TeklifKarsilastirmaDialog(app, int(sec[0]))
+        app.wait_window(dlg)
         yenile()
 
     def yeni():
@@ -412,10 +666,13 @@ def tedarikci_teklifleri_goster(app) -> None:
         app.wait_window(dlg)
         yenile()
 
+    tablo.bind("<Double-1>", karsilastir)
+    tablo.bind("<Return>", karsilastir)
     alt = tk.Frame(kok, bg=ACIK_BG)
     alt.pack(fill="x", padx=16, pady=10)
-    tk_buton(alt, "Yeni Teklif", yeni, rol="yeni").pack(side="left")
-    tk_buton(alt, "Karşılaştır / Seç", karsilastir, rol="duzenle").pack(side="left", padx=6)
+    tk_buton(alt, "Yeni Teklif", yeni, rol="yeni", state="normal" if yeni_yetki else "disabled").pack(side="left")
+    tk_buton(alt, "Aç", karsilastir, rol="duzenle").pack(side="left", padx=6)
+    tk_buton(alt, "Karşılaştır / Seç", karsilastir, rol="duzenle").pack(side="left")
     tk_buton(alt, "Yenile", yenile, rol="ara").pack(side="right")
     yenile()
     if hasattr(app, "nav_sayfa_isaretle"):
@@ -693,66 +950,9 @@ def eski_fatura_masraflari_goster(app) -> None:
 
 
 def faturalanmamis_irsaliye_raporu_goster(app) -> None:
-    from database.alis_irsaliyesi_service import AlisIrsaliyesiService
-    from database.database import get_session
-    from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
+    from satin_alma_rapor_ui import faturasi_gelmeyen_irsaliyeler_goster
 
-    kok = _liste_ust(
-        app,
-        "FATURALANMAMIŞ İRSALİYELER",
-        "Kabul edilmiş fakat faturası gelmemiş mal girişleri",
-        lambda: satin_alma_raporlar_hub_goster(app),
-    )
-    cerceve = ttk.Frame(kok)
-    cerceve.pack(fill="both", expand=True, padx=16, pady=8)
-    tablo = ttk.Treeview(
-        cerceve,
-        columns=("no", "tarih", "tedarikci", "urun", "miktar", "faturalanan", "kalan"),
-        show="headings",
-    )
-    treeview_stil(tablo)
-    for k, b, w in (
-        ("no", "İrsaliye", 110),
-        ("tarih", "Tarih", 90),
-        ("tedarikci", "Tedarikçi", 160),
-        ("urun", "Ürün", 180),
-        ("miktar", "Miktar", 80),
-        ("faturalanan", "Faturalanan", 90),
-        ("kalan", "Kalan", 80),
-    ):
-        tablo.heading(k, text=b)
-        tablo.column(k, width=w)
-    tablo.pack(fill="both", expand=True)
-
-    with get_session() as session:
-        irsaliyeler = session.scalars(
-            select(AlisIrsaliyesi)
-            .options(
-                selectinload(AlisIrsaliyesi.satirlar),
-                selectinload(AlisIrsaliyesi.cari),
-            )
-            .order_by(AlisIrsaliyesi.id.desc())
-        ).all()
-        for irs in irsaliyeler:
-            for s in irs.satirlar or []:
-                kalan = (s.miktar or Decimal("0")) - (s.faturalanan_miktar or Decimal("0"))
-                if kalan <= 0:
-                    continue
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
-                        irs.irsaliye_no,
-                        _tarih(irs.irsaliye_tarihi),
-                        irs.cari.unvan if irs.cari else "",
-                        f"{s.urun_kodu} {s.urun_adi}",
-                        _para(s.miktar),
-                        _para(s.faturalanan_miktar),
-                        _para(kalan),
-                    ),
-                )
+    faturasi_gelmeyen_irsaliyeler_goster(app)
 
 
 # --- Dialoglar ---
@@ -810,6 +1010,7 @@ class _SatinAlmaSatirGirisi:
         return (s.get("urun_kodu") or "", (s.get("birim") or "").casefold())
 
     def _satir_alani_kur(self, parent, alanlar, *, depo: Callable[[], str] = lambda: "") -> None:
+        from alis_ui import satin_alma_satir_ozellikleri
         from database.stok_service import StokService
         from satir_ici_urun_giris import SatirHucreDuzenleyici, SatirIciUrunGirisi
 
@@ -846,6 +1047,7 @@ class _SatinAlmaSatirGirisi:
             fiyat_turu="alis",
             alis_fiyati=StokService.son_alis_fiyati,
             satir_menusu=self._satir_menusu,
+            **satin_alma_satir_ozellikleri(self),
         )
         self._hucre = SatirHucreDuzenleyici(
             self,
@@ -872,9 +1074,9 @@ class _SatinAlmaSatirGirisi:
     def _satir_birimleri(self, idx: int) -> list[str]:
         s = self.satirlar[idx]
         try:
-            from fatura_satir_birim_service import stok_aktif_birimleri
+            from birim_secim_ui import evrak_birim_secenekleri
 
-            return stok_aktif_birimleri(s.get("urun_kodu") or "") or [s.get("birim") or "Adet"]
+            return evrak_birim_secenekleri(s.get("urun_kodu") or "") or [s.get("birim") or "Adet"]
         except Exception:
             return [s.get("birim") or "Adet"]
 
@@ -938,6 +1140,11 @@ class _SatinAlmaSatirGirisi:
         elif kolon == "birim":
             if not metin:
                 raise ValueError("Birim seçin.")
+            if metin != (s.get("birim") or ""):
+                from birim_secim_ui import kart_birimini_hazirla
+
+                if not kart_birimini_hazirla(self, s.get("urun_kodu") or "", metin):
+                    return
             if "birim_fiyat" in yeni and metin != (s.get("birim") or ""):
                 fiyat = alis_birim_fiyati(s.get("urun_kodu") or "", metin)
                 if fiyat > 0:
@@ -991,7 +1198,7 @@ class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Yeni Tedarikçi Teklifi")
+        self.title("Yeni Alış Teklifi")
         self.geometry("980x560")
         self.transient(parent)
         self.grab_set()
@@ -1051,8 +1258,35 @@ class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
 
         alt = ttk.Frame(self)
         alt.pack(fill="x", padx=10, pady=8)
+        ttk.Button(alt, text="Listeye Git", command=self.listeye_git).pack(side="left")
         ttk.Button(alt, text="Kaydet", command=self._kaydet).pack(side="right")
         ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right", padx=6)
+
+    def listeye_git(self):
+        """Alış Teklifleri listesine geçer; girilmiş satır varsa kaydetmeyi sorar."""
+        app = self._root()
+        if self.satirlar:
+            cevap = messagebox.askyesnocancel(
+                "Listeye Git",
+                "Teklif kaydedilmedi.\n\nEvet: Kaydet ve listeye git\nHayır: Kaydetmeden listeye git\n"
+                "İptal: Belgede kal",
+                parent=self,
+            )
+            if cevap is None:
+                return
+            if cevap:
+                self._kaydet()
+                try:
+                    if self.winfo_exists():
+                        return
+                except tk.TclError:
+                    pass
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except tk.TclError:
+            pass
+        belgeden_listeye_git(app, lambda: tedarikci_teklifleri_goster(app))
 
     def _cari_etiketi(self, cari_id) -> str:
         return next((etiket for etiket, c in self.eslesme.items() if c.id == cari_id), "")

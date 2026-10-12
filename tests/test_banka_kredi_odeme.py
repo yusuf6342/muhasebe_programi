@@ -272,6 +272,52 @@ class BankaKrediOdemeTest(unittest.TestCase):
         }
         self.assertEqual(bks.BankaKrediService.taksit_toplam(veri), Decimal("12150.00"))
 
+    def test_baska_bankanin_mevduatindan_odeme_secenegi(self):
+        """Kredi kendi kartında mevduatı olmayan (devir) bankada: seçilen başka mevduattan ödenir."""
+        with self.Session() as s:
+            kart2 = BankaKarti(banka_adi="Kredi Bank", aktif=True)
+            s.add(kart2)
+            s.flush()
+            bos_mev = FinansHesabi(hesap_adi="Kredi Bank — Mevduat", hesap_turu="BANKA", acilis_bakiyesi=0,
+                                   banka_karti_id=kart2.id, alt_hesap_turu="MEVDUAT", aktif=True)
+            kred2 = FinansHesabi(hesap_adi="Kredi Bank — Krediler", hesap_turu="BANKA", acilis_bakiyesi=0,
+                                 banka_karti_id=kart2.id, alt_hesap_turu="KREDILER", aktif=True)
+            s.add_all([bos_mev, kred2])
+            s.flush()
+            s.add(FinansHareketi(hesap_id=kred2.id, tarih=date.today(), hareket_turu="AÇILIŞ",
+                                 belge_no="EVB-FA-B1-KREDILER", tutar=Decimal("1000.00")))
+            from database.models.finans import BankaKredisi
+
+            kredi = BankaKredisi(belge_no="EVB-KR-1-x", banka_karti_id=kart2.id, kredi_adi="Devir kredisi",
+                                 ana_para=Decimal("1000.00"), taksit_sayisi=1, kullandirim_tarihi=date.today(),
+                                 ilk_taksit_tarihi=date.today(), durum="KULLANDIRILDI", aktif=True)
+            s.add(kredi)
+            s.flush()
+            taksit = BankaKrediTaksit(kredi_id=kredi.id, taksit_no=1, vade_tarihi=date.today(),
+                                      anapara=Decimal("1000.00"), faiz=Decimal("20.00"), masraf=Decimal("0"),
+                                      durum="BEKLIYOR")
+            s.add(taksit)
+            s.commit()
+            bos_mev_id, kred2_id, taksit_id = bos_mev.id, kred2.id, taksit.id
+
+        secenekler = bks.BankaKrediService.odeme_hesap_secenekleri(taksit_id=taksit_id)
+        self.assertEqual(secenekler[0]["id"], bos_mev_id)
+        self.assertTrue(secenekler[0]["varsayilan"])
+        idler = [x["id"] for x in secenekler]
+        self.assertIn(self.mev_id, idler)
+        self.assertNotIn(kred2_id, idler)
+
+        bks.BankaKrediService.taksit_ode(taksit_id=taksit_id, odeme_tarihi=date.today(), banka_hesap_id=self.mev_id)
+        with self.Session() as s:
+            cikis = s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == self.mev_id,
+                                                           FinansHareketi.hareket_turu == "KREDİ TAKSİT ÖDEME")).all()
+            anapara = s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == kred2_id,
+                                                             FinansHareketi.hareket_turu == "KREDİ ANAPARA ÖDEME")).all()
+            self.assertEqual([Decimal(str(h.tutar)) for h in cikis], [Decimal("1020.00")])
+            self.assertEqual([Decimal(str(h.tutar)) for h in anapara], [Decimal("1000.00")])
+            bos = s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == bos_mev_id)).all()
+            self.assertEqual(bos, [])
+
 
 if __name__ == "__main__":
     unittest.main()

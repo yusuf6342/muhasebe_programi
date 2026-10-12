@@ -27,6 +27,21 @@ def _norm(metin: str | None) -> str:
     return (metin or "").strip()
 
 
+def _ad_anahtari(metin: str | None) -> str:
+    """Türkçe büyük/küçük harf duyarsız birebir ad anahtarı (SQLite lower() ASCII dışını küçültmez)."""
+    return " ".join(_norm(metin).replace("İ", "i").replace("I", "ı").casefold().split())
+
+
+def _rapor_secenegi_var(session, ad: str | None) -> bool:
+    key = _ad_anahtari(ad)
+    return any(
+        _ad_anahtari(a) == key
+        for a in session.scalars(
+            select(StokSecenek.ad).where(StokSecenek.tur == "rapor_grubu")
+        ).all()
+    )
+
+
 def _kod_uret(ad: str) -> str:
     temiz = re.sub(r"[^A-Za-z0-9ÇĞİÖŞÜçğıöşü]+", "", (ad or "").upper())
     return (temiz[:20] or "GRUP")
@@ -85,9 +100,9 @@ class StokGrupService:
         if haric_id:
             q = q.where(StokGrubu.id != haric_id)
         for g in session.scalars(q).all():
-            if (g.kod or "").casefold() == kod.casefold():
+            if _ad_anahtari(g.kod) == _ad_anahtari(kod):
                 raise ValueError(f"Aynı üst altında «{g.kod}» kodlu grup zaten var.")
-            if (g.ad or "").casefold() == ad.casefold():
+            if _ad_anahtari(g.ad) == _ad_anahtari(ad):
                 raise ValueError(f"Aynı üst altında «{g.ad}» adlı grup zaten var.")
 
     @staticmethod
@@ -256,13 +271,7 @@ class StokGrupService:
             session.flush()
             # Geriye uyum: ana grubu StokSecenek rapor_grubu'na da ekle
             if seviye == SEVIYE_ANA:
-                mevcut = session.scalar(
-                    select(StokSecenek).where(
-                        StokSecenek.tur == "rapor_grubu",
-                        func.lower(StokSecenek.ad) == ad_n.casefold(),
-                    )
-                )
-                if not mevcut:
+                if not _rapor_secenegi_var(session, ad_n):
                     session.add(StokSecenek(tur="rapor_grubu", ad=ad_n))
             audit_document(
                 "stok_grup_olustur",
@@ -494,24 +503,11 @@ class StokGrupService:
                 stok.alt_grup_id = dog["alt_grup_id"]
                 stok.rapor_grubu = dog["rapor_grubu"]
                 if dog["rapor_grubu"]:
-                    mevcut = session.scalar(
-                        select(StokSecenek).where(
-                            StokSecenek.tur == "rapor_grubu",
-                            func.lower(StokSecenek.ad) == dog["rapor_grubu"].casefold(),
-                        )
-                    )
-                    if not mevcut:
+                    if not _rapor_secenegi_var(session, dog["rapor_grubu"]):
                         # Yol çok uzun olabilir; ana grubu seçenek olarak tut
                         ana = session.get(StokGrubu, dog["ana_grup_id"]) if dog["ana_grup_id"] else None
-                        if ana:
-                            var2 = session.scalar(
-                                select(StokSecenek).where(
-                                    StokSecenek.tur == "rapor_grubu",
-                                    func.lower(StokSecenek.ad) == (ana.ad or "").casefold(),
-                                )
-                            )
-                            if not var2:
-                                session.add(StokSecenek(tur="rapor_grubu", ad=ana.ad))
+                        if ana and not _rapor_secenegi_var(session, ana.ad):
+                            session.add(StokSecenek(tur="rapor_grubu", ad=ana.ad))
                 adet += 1
             session.flush()
             audit_document(
@@ -559,34 +555,44 @@ class StokGrupService:
                     continue
                 # Yol ise yalnızca ilk parçayı ana grup yap
                 ilk = a.split("/")[0].strip() if "/" in a else a
-                key = ilk.casefold()
+                key = _ad_anahtari(ilk)
                 if key in gorulen:
                     continue
                 gorulen.add(key)
                 adlar.append(ilk)
 
+            ana_gruplar: dict[str, StokGrubu] = {}
+            kodlar: set[str] = set()
+            for g in session.scalars(
+                select(StokGrubu).where(StokGrubu.seviye == SEVIYE_ANA).order_by(StokGrubu.id)
+            ).all():
+                kodlar.add(_ad_anahtari(g.kod))
+                if g.parent_id is None:
+                    ana_gruplar.setdefault(_ad_anahtari(g.ad), g)
+            bagsiz_stoklar = [
+                s
+                for s in session.scalars(
+                    select(StokKarti).where(
+                        StokKarti.ana_grup_id.is_(None),
+                        StokKarti.rapor_grubu.is_not(None),
+                        StokKarti.rapor_grubu != "",
+                    )
+                ).all()
+            ]
+
             olusan = 0
             eslesen = 0
             for ad in adlar:
-                mevcut = session.scalar(
-                    select(StokGrubu).where(
-                        StokGrubu.seviye == SEVIYE_ANA,
-                        func.lower(StokGrubu.ad) == ad.casefold(),
-                    )
-                )
+                ad_key = _ad_anahtari(ad)
+                mevcut = ana_gruplar.get(ad_key)
                 if mevcut is None:
                     kod = _kod_uret(ad)
-                    # kod çakışması
                     i = 1
                     baz = kod
-                    while session.scalar(
-                        select(StokGrubu).where(
-                            StokGrubu.seviye == SEVIYE_ANA,
-                            func.lower(StokGrubu.kod) == kod.casefold(),
-                        )
-                    ):
+                    while _ad_anahtari(kod) in kodlar:
                         i += 1
                         kod = f"{baz}{i}"
+                    kodlar.add(_ad_anahtari(kod))
                     mevcut = StokGrubu(
                         kod=kod,
                         ad=ad,
@@ -598,17 +604,15 @@ class StokGrupService:
                     )
                     session.add(mevcut)
                     session.flush()
+                    ana_gruplar[ad_key] = mevcut
                     olusan += 1
                 # Stokları bağla (henüz ana_grup_id yoksa)
-                for stok in session.scalars(
-                    select(StokKarti).where(
-                        StokKarti.ana_grup_id.is_(None),
-                        or_(
-                            func.lower(StokKarti.rapor_grubu) == ad.casefold(),
-                            StokKarti.rapor_grubu.ilike(f"{ad} /%"),
-                        ),
-                    )
-                ).all():
+                for stok in bagsiz_stoklar:
+                    if stok.ana_grup_id is not None:
+                        continue
+                    rg = _ad_anahtari(stok.rapor_grubu)
+                    if rg != ad_key and not rg.startswith(ad_key + " /"):
+                        continue
                     stok.ana_grup_id = mevcut.id
                     # Tali/alt yoksa rapor_grubu ana ad olarak kalsın veya yol ise olduğu gibi
                     if not (stok.rapor_grubu or "").strip():

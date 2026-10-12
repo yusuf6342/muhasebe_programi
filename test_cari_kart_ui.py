@@ -73,6 +73,7 @@ class CariKartSmokeTest(unittest.TestCase):
                 cari_turu="Müşteri",
                 aktif=True,
                 acik_hesap_risk_limiti=Decimal("10000"),
+                acik_hesap_limit_uygula=True,
                 telefon="05321234567",
             )
             s.add(cari)

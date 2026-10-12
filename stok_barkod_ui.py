@@ -43,8 +43,26 @@ def _para(tutar):
     return f"{float(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def code128_svg(metin: str, yukseklik: int = 70, modul: int = 2) -> str:
-    """Code 128B barkod SVG üretir."""
+def etiket_barkod_durumu(barkod) -> str | None:
+    """Etikete basılabilirlik: None = geçerli; aksi halde kullanıcıya gösterilecek neden.
+
+    Barkod metin olarak ele alınır (baştaki sıfırlar korunur). 13 haneli sayısal barkodda
+    EAN-13 kontrol basamağı aranır.
+    """
+    from database.stok_kodu_barkod_service import gs1_kontrol_basamagi_dogru
+
+    kod = str(barkod or "").strip()
+    if not kod:
+        return "Stokta barkod tanımlı değil."
+    if any(not (32 <= ord(ch) <= 126) for ch in kod):
+        return f"«{kod}» barkodunda etikete basılamayan karakter var (Türkçe harf / özel karakter)."
+    if kod.isdigit() and len(kod) == 13 and not gs1_kontrol_basamagi_dogru(kod):
+        return f"«{kod}» 13 haneli ancak EAN-13 kontrol basamağı hatalı."
+    return None
+
+
+def code128_bitleri(metin: str) -> str:
+    """Code 128B çubuk deseni ('1' = siyah modül)."""
     veri = (metin or "").strip()
     if not veri:
         return ""
@@ -60,8 +78,15 @@ def code128_svg(metin: str, yukseklik: int = 70, modul: int = 2) -> str:
         toplam += k * i
     kodlar.append(toplam % 103)
     kodlar.append(106)  # Stop
+    return "".join(_CODE128[k] for k in kodlar)
 
-    bits = "".join(_CODE128[k] for k in kodlar)
+
+def code128_svg(metin: str, yukseklik: int = 70, modul: int = 2) -> str:
+    """Code 128B barkod SVG üretir."""
+    veri = (metin or "").strip()
+    if not veri:
+        return ""
+    bits = code128_bitleri(veri)
     genislik = len(bits) * modul
     dikeyler = []
     x = 0
@@ -406,7 +431,7 @@ class StokBarkodBasimSayfasi:
 
         orta = ttk.Frame(app.icerik)
         orta.pack(fill="both", expand=True, pady=6)
-        kolonlar = ("sec", "barkod", "kod", "ad", "birim", "fiyat")
+        kolonlar = ("sec", "barkod", "kod", "ad", "birim", "fiyat", "durum")
         self.tablo = ttk.Treeview(orta, columns=kolonlar, show="headings", selectmode="extended")
         for k, b, w in (
             ("sec", "Seç", 45),
@@ -415,6 +440,7 @@ class StokBarkodBasimSayfasi:
             ("ad", "Stok Adı", 260),
             ("birim", "Birim", 70),
             ("fiyat", "Satış Fiyatı", 110),
+            ("durum", "Etiket Durumu", 260),
         ):
             self.tablo.heading(k, text=b)
             self.tablo.column(k, width=w, anchor="w")
@@ -477,20 +503,24 @@ class StokBarkodBasimSayfasi:
         for item in self.tablo.get_children():
             self.tablo.delete(item)
         for i, k in enumerate(self._kayitlar):
-            iid = str(i)
+            neden = etiket_barkod_durumu(k["barkod"])
             self.tablo.insert(
                 "",
                 "end",
-                iid=iid,
+                iid=str(i),
                 values=(
-                    "☐",
+                    "—" if neden else "☐",
                     k["barkod"],
                     k["stok_kodu"],
                     k["stok_adi"],
                     k["birim"],
                     _para(k["fiyat"]),
+                    neden or "Basılabilir",
                 ),
             )
+
+    def _gecerli_mi(self, idx: int) -> bool:
+        return etiket_barkod_durumu(self._kayitlar[idx]["barkod"]) is None
 
     def _secim_tikla(self, event):
         if self.tablo.identify_region(event.x, event.y) != "cell":
@@ -501,6 +531,11 @@ class StokBarkodBasimSayfasi:
         if not satir:
             return
         idx = int(satir)
+        if not self._gecerli_mi(idx):
+            messagebox.showinfo(
+                "Etiket", etiket_barkod_durumu(self._kayitlar[idx]["barkod"]), parent=self.app
+            )
+            return "break"
         if idx in self.secimler:
             del self.secimler[idx]
             self.tablo.set(satir, "sec", "☐")
@@ -511,14 +546,16 @@ class StokBarkodBasimSayfasi:
         return "break"
 
     def tumunu_sec(self):
-        self.secimler = {i: k for i, k in enumerate(self._kayitlar)}
+        self.secimler = {i: k for i, k in enumerate(self._kayitlar) if self._gecerli_mi(i)}
         for iid in self.tablo.get_children():
-            self.tablo.set(iid, "sec", "☑")
+            if int(iid) in self.secimler:
+                self.tablo.set(iid, "sec", "☑")
 
     def secimi_temizle(self):
         self.secimler.clear()
         for iid in self.tablo.get_children():
-            self.tablo.set(iid, "sec", "☐")
+            if self._gecerli_mi(int(iid)):
+                self.tablo.set(iid, "sec", "☐")
         self._sablon_ciz(None)
 
     def _secili_liste(self):
@@ -576,7 +613,15 @@ class StokBarkodBasimSayfasi:
         )
 
     def yazdir(self):
-        liste = self._secili_liste()
+        tum = self._secili_liste()
+        liste = [k for k in tum if etiket_barkod_durumu(k["barkod"]) is None]
+        if len(liste) < len(tum):
+            messagebox.showwarning(
+                "Etiket",
+                f"{len(tum) - len(liste)} seçili barkod geçersiz olduğu için atlandı "
+                "(nedeni «Etiket Durumu» sütununda).",
+                parent=self.app,
+            )
         if not liste:
             messagebox.showwarning("Seçim", "Yazdırılacak barkod etiketlerini seçin.", parent=self.app)
             return
@@ -599,6 +644,114 @@ class StokBarkodBasimSayfasi:
             "Tarayıcıda açıldı. Yazdırırken kağıt/etiket boyutunu aynı mm değere ayarlayın.",
             parent=self.app,
         )
+
+
+def etiket_dosyasi_ac(etiketler, kopya: int) -> tuple[Path, float, float]:
+    """Etiket HTML'ini (tarayıcıda yazdırma önizlemesi) kayıtlı boyutla açar."""
+    ayar = etiket_ayarlarini_yukle()
+    en, boy = float(ayar.get("genislik_mm", 58)), float(ayar.get("yukseklik_mm", 40))
+    html = etiket_html(etiketler, kopya=kopya, genislik_mm=en, yukseklik_mm=boy)
+    klasor = Path(tempfile.gettempdir()) / "muhasebe_etiket"
+    klasor.mkdir(exist_ok=True)
+    dosya = klasor / "barkod_etiketleri.html"
+    dosya.write_text(html, encoding="utf-8")
+    webbrowser.open(dosya.as_uri())
+    return dosya, en, boy
+
+
+class EtiketYazdirDialog(tk.Toplevel):
+    """Tek stok etiketi: barkod seçimi (birden fazlaysa), adet, önizleme, sonra yazdırma.
+
+    etiketler: yalnız geçerli barkodlu kayıtlar ({barkod, stok_kodu, stok_adi, birim, fiyat}).
+    """
+
+    def __init__(self, parent, etiketler: list[dict]):
+        super().__init__(parent)
+        self.etiketler = list(etiketler)
+        self.yazdirildi = False
+        self.title("Etiket Yazdır")
+        self.transient(parent)
+        self.resizable(False, False)
+        govde = ttk.Frame(self, padding=12)
+        govde.pack(fill="both", expand=True)
+
+        ttk.Label(govde, text="Barkod").grid(row=0, column=0, sticky="w")
+        self._secenekler = [f"{e['barkod']}  ·  {e.get('birim') or ''}" for e in self.etiketler]
+        self.barkod_cb = ttk.Combobox(govde, values=self._secenekler, state="readonly", width=34)
+        self.barkod_cb.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        self.barkod_cb.current(0)
+        self.barkod_cb.bind("<<ComboboxSelected>>", lambda _e: self._ciz())
+        if len(self.etiketler) > 1:
+            ttk.Label(
+                govde, text=f"Bu stokta {len(self.etiketler)} barkod var; basılacak olanı seçin."
+            ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        ttk.Label(govde, text="Etiket adedi").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.adet = ttk.Spinbox(govde, from_=1, to=999, width=6)
+        self.adet.set("1")
+        self.adet.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(8, 0))
+
+        self.onizleme = tk.Canvas(govde, width=340, height=150, bg="white", highlightthickness=1)
+        self.onizleme.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+
+        alt = ttk.Frame(govde)
+        alt.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        ttk.Button(alt, text="Yazdır…", command=self.yazdir).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self._ciz()
+        self.grab_set()
+
+    def secili(self) -> dict:
+        return self.etiketler[max(0, self.barkod_cb.current())]
+
+    def _ciz(self):
+        et = self.secili()
+        c = self.onizleme
+        c.delete("all")
+        bits = code128_bitleri(et["barkod"])
+        modul = max(1, min(2, 300 // max(1, len(bits))))
+        x = (340 - len(bits) * modul) // 2
+        for bit in bits:
+            if bit == "1":
+                c.create_rectangle(x, 12, x + modul, 72, fill="#000", outline="")
+            x += modul
+        c.create_text(170, 84, text=et["barkod"], font=("Consolas", 10))
+        c.create_text(170, 106, text=(et.get("stok_adi") or "")[:40], font=("Segoe UI", 10, "bold"))
+        c.create_text(
+            170, 128, text=f"{et.get('birim') or 'Adet'}    {_para(et.get('fiyat') or 0)}", font=("Segoe UI", 9)
+        )
+
+    def yazdir(self):
+        try:
+            adet = int(str(self.adet.get()).strip())
+        except ValueError:
+            adet = 0
+        if adet < 1:
+            messagebox.showwarning("Etiket", "Etiket adedi en az 1 olmalıdır.", parent=self)
+            return
+        _dosya, en, boy = etiket_dosyasi_ac([self.secili()], adet)
+        self.yazdirildi = True
+        messagebox.showinfo(
+            "Yazdırma",
+            f"{adet} etiket — {en:g}×{boy:g} mm\n"
+            "Tarayıcıda yazdırma önizlemesi açıldı; «Yazdır» ile basın.",
+            parent=self,
+        )
+        self.destroy()
+
+
+def stok_etiket_yazdir(parent, stok) -> None:
+    """Kayıtlı stok için etiket: geçerli barkod yoksa nedeni söyler, varsa seçim/adet/önizleme açar."""
+    kayitlar = etiket_kayitlari([StokService.stok_getir(stok.id)])
+    gecerli = [k for k in kayitlar if etiket_barkod_durumu(k["barkod"]) is None]
+    if not gecerli:
+        neden = (
+            etiket_barkod_durumu(kayitlar[0]["barkod"]) if kayitlar else etiket_barkod_durumu("")
+        )
+        messagebox.showwarning("Etiket Yazdır", f"Etiket basılamaz: {neden}", parent=parent)
+        return
+    parent.wait_window(EtiketYazdirDialog(parent, gecerli))
 
 
 def stok_barkod_basimi_goster(app):

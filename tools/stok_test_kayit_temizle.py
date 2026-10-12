@@ -14,7 +14,7 @@ Varsayılan kuru çalıştırmadır (hiçbir şey yazılmaz). ``--uygula`` ile:
   2. SQLite backup API ile ``data\\yedekler\\`` altına yedek alır; integrity_check + tablo satır
      sayıları doğrulanmazsa durur,
   3. tek transaction içinde siler; beklenen satır sayısı tutmazsa geri alır,
-  4. önce/sonra stok mutabakatını ``inceleme\\stoklar\\test_kayit_temizlik_sonuc.json`` dosyasına yazar.
+  4. önce/sonra stok mutabakatını ``inceleme\\stoklar\\test_kayit_temizlik_sonuc_<db>_<zaman>.json`` dosyasına yazar.
 Tekrar çalıştırıldığında silinecek kayıt kalmadığını raporlar (idempotent).
 """
 from __future__ import annotations
@@ -29,6 +29,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
 
 VARSAYILAN_DB = Path.home() / "AppData/Local/MuhasebeProgrami/data/muhasebe.db"
 SONUC = ROOT / "inceleme" / "stoklar" / "test_kayit_temizlik_sonuc.json"
@@ -165,8 +167,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=str(VARSAYILAN_DB))
     ap.add_argument("--uygula", action="store_true")
-    ap.add_argument("--sonuc", default=str(SONUC))
+    ap.add_argument("--sonuc", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     a = ap.parse_args()
+    if a.sonuc is None:
+        a.sonuc = str(benzersiz_rapor_yolu(SONUC.parent, SONUC.stem, a.db, SONUC.suffix))
     db = Path(a.db)
 
     ro = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)

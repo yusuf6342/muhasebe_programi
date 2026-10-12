@@ -407,7 +407,7 @@ class AuditDeleteService:
             onay = bool(getattr(obj, "onaylandi", False))
             if durum == "İPTAL":
                 raise SoftDeleteError("Fatura zaten iptal edilmiş.")
-            if onay or durum != "TASLAK":
+            if onay or durum not in ("TASLAK", "AÇIK"):
                 raise SoftDeleteError(
                     "Onaylı/işlem görmüş fatura silinemez. İptal işlemini kullanın."
                 )
@@ -547,7 +547,11 @@ class AuditDeleteService:
             obj.deletion_log_id = log.id
             if hasattr(obj, "aktif"):
                 obj.aktif = False
-            if entity_type == ENTITY_SATIS_FATURA and (obj.durum or "").upper() == "TASLAK":
+            if (
+                entity_type == ENTITY_SATIS_FATURA
+                and not getattr(obj, "onaylandi", False)
+                and (obj.durum or "").upper() in ("TASLAK", "AÇIK")
+            ):
                 from database.satis_faturasi_service import SatisFaturasiService
 
                 # Taslak faturanın sipariş/irsaliye faturalanan miktarları serbest kalır.

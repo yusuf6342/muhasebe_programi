@@ -9,7 +9,9 @@ from typing import Callable
 
 from database.models.doviz import PARA_BIRIMLERI
 from database.models.stok import KDV_ORANLARI
+from database.stok_service import BirimDonusumHatasi
 from fatura_tema import HUCRE_EDITOR_TABAN_PX, scale_height
+from satir_klavye import odak_tabloda_mi, satir_stok_karti_ac, urun_kolonlari
 from fatura_satir_birim_service import (
     birim_degistir,
     birim_satis_fiyati,
@@ -39,6 +41,7 @@ EDITABLE_COLUMN_ORDER = (
     "para_birimi",
     "kur",
     "iskonto",
+    "iskonto_tutar",
     "kdv",
     "aciklama",
 )
@@ -74,6 +77,14 @@ def _kolon_gorunur_mu(dialog, kolon: str) -> bool:
     return kolon in gorunen
 
 
+def _bagli_kaynak_belge(satir: dict) -> str | None:
+    if satir.get("irsaliye_satiri_id"):
+        return "irsaliyeden"
+    if satir.get("siparis_satiri_id"):
+        return "siparişten"
+    return None
+
+
 def kolon_duzenlenebilir_mi(dialog, idx: int, kolon: str) -> bool:
     """Görünür + yetki + satır koşulu — Enter gezinmede atlama kararı."""
     if getattr(dialog, "_fatura_kilitli", False):
@@ -88,11 +99,8 @@ def kolon_duzenlenebilir_mi(dialog, idx: int, kolon: str) -> bool:
         return False
     satir = dialog.satirlar[idx]
     if kolon == "birim":
-        kod = (satir.get("urun_kodu") or "").strip()
-        try:
-            return len(stok_aktif_birimleri(kod)) > 1
-        except Exception:
-            return False
+        # Kartta tek birim olsa da açılır: kartta tanımsız birim seçilince katsayı sorulur
+        return not _bagli_kaynak_belge(satir)
     if kolon == "fiyat":
         try:
             from fatura_manuel_fiyat_ui import fiyat_degistirme_yetkisi
@@ -197,6 +205,9 @@ def focus_editable_cell(dialog, row_id: int, column_id: str, *, deneme: int = 0)
         return
     box = _hucre_bbox(tablo, iid, column_id)
     if not box:
+        _kolonu_gorunur_kaydir(tablo, column_id)
+        box = _hucre_bbox(tablo, iid, column_id)
+    if not box:
         if deneme < 4:
             try:
                 dialog.update_idletasks()
@@ -267,6 +278,34 @@ def _hucre_bbox(tablo: ttk.Treeview, iid: str, kolon: str):
         return None
 
 
+def _kolonu_gorunur_kaydir(tablo: ttk.Treeview, kolon: str) -> None:
+    """Tablo yatayda taşıyorsa kolonu görünür alana kaydırır (ekran dışı hücrenin bbox'ı boştur)."""
+    try:
+        gorunen = list(tablo["displaycolumns"] or ())
+        if not gorunen or gorunen[0] == "#all":
+            gorunen = list(tablo["columns"])
+        if kolon not in gorunen:
+            return
+        genislikler = [int(tablo.column(k, "width")) for k in gorunen]
+        if "tree" in str(tablo.cget("show")):
+            genislikler.insert(0, int(tablo.column("#0", "width")))
+            gorunen.insert(0, "#0")
+        toplam = sum(genislikler)
+        if toplam <= 0:
+            return
+        i = gorunen.index(kolon)
+        sol = sum(genislikler[:i])
+        sag = sol + genislikler[i]
+        bas, son = tablo.xview()
+        if sol / toplam < bas:
+            tablo.xview_moveto(sol / toplam)
+        elif sag / toplam > son:
+            tablo.xview_moveto(max(0.0, sag / toplam - (son - bas)))
+        tablo.update_idletasks()
+    except (tk.TclError, ValueError, TypeError):
+        pass
+
+
 def _editor_kapat(dialog) -> None:
     ed = getattr(dialog, "_satir_hucre_editor", None)
     if ed is None:
@@ -276,6 +315,52 @@ def _editor_kapat(dialog) -> None:
     except tk.TclError:
         pass
     dialog._satir_hucre_editor = None
+
+
+def acik_editor(dialog):
+    """Açık hücre editörü; yok edilmiş editör kaydı temizlenir."""
+    ed = getattr(dialog, "_satir_hucre_editor", None)
+    if ed is None:
+        return None
+    try:
+        if ed.winfo_exists():
+            return ed
+    except tk.TclError:
+        pass
+    dialog._satir_hucre_editor = None
+    return None
+
+
+def editoru_birak(dialog) -> bool:
+    """Başka hücreye / satıra geçmeden önce açık editörün değerini yazıp kapatır; geçersizse False."""
+    if acik_editor(dialog) is None:
+        return True
+    return acik_editoru_uygula(dialog)
+
+
+def _odak_cikinca_uygula(dialog, editor, *parcalar) -> None:
+    """Odak editör dışına (aynı penceredeki başka bir alana) geçince değer yazılır ve editör kapanır."""
+
+    def _cikti(_e=None):
+        def _kontrol():
+            if getattr(dialog, "_satir_hucre_editor", None) is not editor:
+                return
+            # Mesaj kutusu / başka uygulama odağı almışsa pencerenin son odağı hâlâ editördür
+            try:
+                odak = str(dialog.tk.call("focus", "-lastfor", str(dialog)))
+            except tk.TclError:
+                return
+            if not odak or odak.startswith(str(editor)):
+                return
+            editoru_birak(dialog)
+
+        try:
+            dialog.after(120, _kontrol)
+        except tk.TclError:
+            pass
+
+    for w in parcalar or (editor,):
+        w.bind("<FocusOut>", _cikti, add="+")
 
 
 def acik_editoru_uygula(dialog) -> bool:
@@ -295,17 +380,36 @@ def acik_editoru_uygula(dialog) -> bool:
     return getattr(dialog, "_satir_hucre_editor", None) is None
 
 
-def uzlasma_etkisini_kaldir(dialog) -> bool:
+def uzlasma_etkisini_kaldir(dialog, *, yalniz_referansli: bool = False) -> bool:
     """Satır miktar/fiyatı değişince uzlaşılan Net'i kaldırır; toplam satırlardan yeniden hesaplanır.
 
-    Eski uzlaşma tutarı yeni satır toplamına sessizce uygulanmaz.
+    Eski uzlaşma tutarı yeni satır toplamına sessizce uygulanmaz. Fiyatlara dağıtılmış
+    (``referans_birim_fiyat`` taşıyan) satırlar referans fiyatlarına döner; indirimli fiyat
+    yeni Genel Toplam'ın referansı olmaz. ``yalniz_referansli``: yalnız referanslı faturada çalışır.
     """
     if getattr(dialog, "_fatura_yukleniyor", False):
         return False
-    if getattr(dialog, "_uzlasilan_tutar", None) is None and not getattr(
-        dialog, "_uzlasilan_fiyat_snapshot", None
+    satirlar = getattr(dialog, "satirlar", None) or []
+    referansli = any(s.get("referans_birim_fiyat") not in (None, "") for s in satirlar)
+    if yalniz_referansli and not referansli:
+        return False
+    if (
+        not referansli
+        and getattr(dialog, "_uzlasilan_tutar", None) is None
+        and not getattr(dialog, "_uzlasilan_fiyat_snapshot", None)
     ):
         return False
+    fiyat_dondu = False
+    for s in satirlar:
+        ref = s.pop("referans_birim_fiyat", None)
+        if ref in (None, ""):
+            continue
+        ref_d = _d(ref)
+        if _d(s.get("birim_satis_fiyati")) != ref_d:
+            fiyat_dondu = True
+        s["birim_satis_fiyati"] = str(ref_d)
+        if "birim_fiyat" in s:
+            s["birim_fiyat"] = str(ref_d)
     dialog._uzlasilan_tutar = None
     dialog._uzlasilan_fiyat_snapshot = None
     dialog._uzlasilan_snapshot_brut = None
@@ -322,7 +426,8 @@ def uzlasma_etkisini_kaldir(dialog) -> bool:
         _yerel_teknik(
             dialog,
             "Satır miktarı/fiyatı değişti: Uzlaşılan Tutar kaldırıldı, Net Toplam satırlardan "
-            "yeniden hesaplandı. Gerekirse uzlaşmayı yeniden girin.",
+            "yeniden hesaplandı. Gerekirse uzlaşmayı yeniden girin."
+            + (" Dağıtılmış satır fiyatları orijinal (Genel Toplam) fiyatlarına döndü." if fiyat_dondu else ""),
         )
         _panel_ac_kapa(dialog, True)
     except Exception:
@@ -391,7 +496,32 @@ def _satir_ici_var(dialog) -> bool:
     return giris_bileseni(dialog) is not None
 
 
-def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
+def _satira_gec(dialog, idx: int, kolon: str, satir_yon: int) -> None:
+    """↑/↓: aynı kolonda önceki/sonraki satır; son satırdan aşağı ürün giriş satırı."""
+    hedef = idx + (1 if satir_yon > 0 else -1)
+    n = len(getattr(dialog, "satirlar", []) or [])
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if hedef >= n:
+        if _satir_ici_var(dialog):
+            _urun_arama_odakla(dialog)
+            return
+        hedef = n - 1
+    hedef = max(0, hedef)
+    if hedef != idx and kolon_duzenlenebilir_mi(dialog, hedef, kolon):
+        focus_editable_cell(dialog, hedef, kolon)
+        return
+    if tablo is None or n <= 0:
+        return
+    try:
+        tablo.selection_set(str(hedef))
+        tablo.focus(str(hedef))
+        tablo.see(str(hedef))
+        tablo.focus_set()
+    except tk.TclError:
+        pass
+
+
+def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False, satir_yon: int = 0):
     """Enter/Tab sonrası tek adım — çift atlamayı önler."""
     if getattr(dialog, "_satir_gezinme_kilit", False):
         return
@@ -399,6 +529,9 @@ def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
 
     def _ac():
         try:
+            if satir_yon:
+                _satira_gec(dialog, idx, kolon, satir_yon)
+                return
             hedef = find_next_editable_cell(
                 dialog, idx, kolon, direction=-1 if geri else 1
             )
@@ -407,7 +540,11 @@ def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
                     _urun_arama_odakla(dialog)
                 return
             r, c = hedef
-            focus_editable_cell(dialog, r, c)
+            dialog._hucre_giris_geri = geri
+            try:
+                focus_editable_cell(dialog, r, c)
+            finally:
+                dialog._hucre_giris_geri = False
         finally:
             try:
                 dialog.after(80, lambda: setattr(dialog, "_satir_gezinme_kilit", False))
@@ -418,6 +555,42 @@ def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False):
         dialog.after_idle(_ac)
     except tk.TclError:
         dialog.after(30, _ac)
+
+
+def _ok_ile_gec(editor, yon: int) -> bool:
+    from satir_klavye import ok_ile_gec
+
+    return ok_ile_gec(editor, yon)
+
+
+def _ok_gezinme_bagla(editor, uygula) -> None:
+    """``uygula(tab=True, geri=...)`` değeri yazar ve sonraki/önceki hücreye geçer.
+
+    ↑/↓ değeri yazar ve aynı kolonda önceki/sonraki satıra geçer; açılır listede Alt+↓ listeyi açar.
+    """
+    from satir_klavye import combobox_listesini_ac
+
+    def _sag(_e=None):
+        return uygula(tab=True) if _ok_ile_gec(editor, 1) else None
+
+    def _sol(_e=None):
+        return uygula(tab=True, geri=True) if _ok_ile_gec(editor, -1) else None
+
+    editor.bind("<Right>", _sag)
+    editor.bind("<Left>", _sol)
+    editor.bind("<Up>", lambda _e: uygula(tab=True, satir_yon=-1))
+    editor.bind("<Down>", lambda _e: uygula(tab=True, satir_yon=1))
+    if isinstance(editor, ttk.Combobox):
+        editor.bind("<Alt-Down>", lambda _e: (combobox_listesini_ac(editor), "break")[1])
+
+
+def _listeyi_ac(editor, event) -> None:
+    """Fareyle açılınca liste hemen açılır; Enter/ok ile gelinince kapalı kalır (oklar gezinsin)."""
+    if event is None:
+        return
+    from satir_klavye import combobox_listesini_ac
+
+    combobox_listesini_ac(editor)
 
 
 def _overlay_entry(dialog, tablo, iid, kolon, metin, *, justify="right"):
@@ -433,6 +606,7 @@ def _overlay_entry(dialog, tablo, iid, kolon, metin, *, justify="right"):
     editor.focus_set()
     editor.selection_range(0, "end")
     dialog._satir_hucre_editor = editor
+    _odak_cikinca_uygula(dialog, editor)
     return editor, var
 
 
@@ -462,7 +636,7 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         return "break"
 
-    def _kaydet(_e=None, tab=False, geri=False):
+    def _kaydet(_e=None, tab=False, geri=False, satir_yon=0):
         try:
             yeni = miktar_metnini_coz(var.get())
         except ValueError as hata:
@@ -471,7 +645,11 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         satir = dialog.satirlar[idx]
         kod = (satir.get("urun_kodu") or "").strip()
         birim = (satir.get("birim") or "Adet").strip()
-        yeni_temel = temel_miktar(yeni, birim, kod)
+        try:
+            yeni_temel = temel_miktar(yeni, birim, kod)
+        except BirimDonusumHatasi as hata:
+            messagebox.showwarning("Birim dönüşümü", str(hata), parent=dialog)
+            return "break"
         if not _stok_kontrol(dialog, idx, yeni_temel, kod):
             return "break"
         if _d(satir.get("miktar")) != yeni:
@@ -481,7 +659,7 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "miktar", geri=geri)
+            _tab_ilerle(dialog, idx, "miktar", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -493,6 +671,7 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _kaydet(tab=True, geri=True))
+    _ok_gezinme_bagla(editor, _kaydet)
 
 
 def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
@@ -504,15 +683,24 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     tablo = dialog.satir_tablosu
     iid = str(idx)
     satir = dialog.satirlar[idx]
-    kod = (satir.get("urun_kodu") or "").strip()
-    birimler = stok_aktif_birimleri(kod)
-    if len(birimler) <= 1:
-        messagebox.showinfo(
+    belge = _bagli_kaynak_belge(satir)
+    if belge:
+        messagebox.showwarning(
             "Birim",
-            "Bu stok kartında yalnızca ana birim tanımlı.",
+            f"Bu satır {belge} aktarıldı; birimi kaynak belgedeki birimle aynı kalmalıdır.",
             parent=dialog,
         )
         return
+    from birim_secim_ui import evrak_birim_secenekleri, kart_birimini_hazirla
+
+    kod = (satir.get("urun_kodu") or "").strip()
+    from fatura_satir_birim_service import _stok_yukle
+
+    # Faturada yalnız stok kartının birimleri; kartsız satırda genel birim listesi
+    if kod and _stok_yukle(kod) is not None:
+        birimler = stok_aktif_birimleri(kod)
+    else:
+        birimler = evrak_birim_secenekleri(kod)
     _editor_kapat(dialog)
     box = _hucre_bbox(tablo, iid, "birim")
     mevcut = (satir.get("birim") or birimler[0]).strip()
@@ -531,19 +719,23 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.place(x=bx, y=by, width=max(bw, 70), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
+    _odak_cikinca_uygula(dialog, editor)
 
     def _iptal(_e=None):
         _editor_kapat(dialog)
         return "break"
 
-    def _uygula(_e=None, tab=False, geri=False):
+    def _uygula(_e=None, tab=False, geri=False, satir_yon=0):
         yeni_birim = (var.get() or "").strip()
         if not yeni_birim or yeni_birim.casefold() == mevcut.casefold():
             _editor_kapat(dialog)
             if tab:
-                _tab_ilerle(dialog, idx, "birim", geri=geri)
+                _tab_ilerle(dialog, idx, "birim", geri=geri, satir_yon=satir_yon)
             if on_done:
                 on_done()
+            return "break"
+        if not kart_birimini_hazirla(dialog, kod, yeni_birim):
+            _editor_kapat(dialog)
             return "break"
         manuel = bool(satir.get("manuel_fiyat"))
         mod = "yeniden"
@@ -566,7 +758,18 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
                 musteri = dialog._secili_musteri()
             except Exception:
                 pass
-        guncel = birim_degistir(satir, yeni_birim, musteri=musteri, manuel_fiyat_modu=mod)
+        kaynak = satir
+        if satir.get("referans_birim_fiyat") not in (None, ""):
+            # Dağıtılmış satır: dönüşüm referans (Genel Toplam) fiyatından yapılır
+            kaynak = dict(satir)
+            kaynak["birim_satis_fiyati"] = str(_d(satir["referans_birim_fiyat"]))
+            kaynak.pop("referans_birim_fiyat", None)
+        try:
+            guncel = birim_degistir(kaynak, yeni_birim, musteri=musteri, manuel_fiyat_modu=mod)
+        except BirimDonusumHatasi as hata:
+            messagebox.showwarning("Birim dönüşümü", str(hata), parent=dialog)
+            _editor_kapat(dialog)
+            return "break"
         if guncel is None:
             _editor_kapat(dialog)
             return "break"
@@ -576,11 +779,12 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             _editor_kapat(dialog)
             return "break"
         uzlasma_etkisini_kaldir(dialog)
+        guncel.pop("referans_birim_fiyat", None)
         dialog.satirlar[idx] = guncel
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "birim", geri=geri)
+            _tab_ilerle(dialog, idx, "birim", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -593,10 +797,8 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _uygula(tab=True, geri=True))
-    try:
-        editor.event_generate("<Down>")
-    except tk.TclError:
-        pass
+    _ok_gezinme_bagla(editor, _uygula)
+    _listeyi_ac(editor, event)
 
 
 def _satir_pb(satir: dict) -> str:
@@ -663,7 +865,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         return "break"
 
-    def _kaydet(_e=None, tab=False, geri=False):
+    def _kaydet(_e=None, tab=False, geri=False, satir_yon=0):
         yeni = _d(var.get())
         if yeni < 0:
             messagebox.showerror("Fiyat", "Fiyat negatif olamaz.", parent=dialog)
@@ -692,7 +894,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "fiyat", geri=geri)
+            _tab_ilerle(dialog, idx, "fiyat", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -704,6 +906,7 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _kaydet(tab=True, geri=True))
+    _ok_gezinme_bagla(editor, _kaydet)
 
 
 def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
@@ -741,12 +944,13 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.place(x=bx, y=by, width=max(bw, 60), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
+    _odak_cikinca_uygula(dialog, editor)
 
     def _iptal(_e=None):
         _editor_kapat(dialog)
         return "break"
 
-    def _uygula(_e=None, tab=False, geri=False):
+    def _uygula(_e=None, tab=False, geri=False, satir_yon=0):
         yeni = (var.get() or "TRY").upper()
         if yeni == "TL":
             yeni = "TRY"
@@ -754,10 +958,12 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         if yeni == eski:
             _editor_kapat(dialog)
             if tab:
-                _tab_ilerle(dialog, idx, "para_birimi", geri=geri)
+                _tab_ilerle(dialog, idx, "para_birimi", geri=geri, satir_yon=satir_yon)
             if on_done:
                 on_done()
             return "break"
+        # Dağıtım varsa önce referans fiyata dön; döviz fiyatı onun üzerinden türetilir
+        uzlasma_etkisini_kaldir(dialog)
         # TL birim fiyat (hesap esası) korunur; döviz fiyatı yeni kurdan türetilir
         tl_fiyat = _d(satir.get("birim_satis_fiyati"))
         if yeni == "TRY":
@@ -771,11 +977,10 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             )
         satir["satir_para_birimi"] = yeni
         satir["para_birimi"] = yeni
-        uzlasma_etkisini_kaldir(dialog)
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "para_birimi", geri=geri)
+            _tab_ilerle(dialog, idx, "para_birimi", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -788,10 +993,8 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _uygula(tab=True, geri=True))
-    try:
-        editor.event_generate("<Down>")
-    except tk.TclError:
-        pass
+    _ok_gezinme_bagla(editor, _uygula)
+    _listeyi_ac(editor, event)
 
 
 def _satir_kur_varsayilan(dialog, pb: str) -> Decimal:
@@ -825,6 +1028,14 @@ def _satir_kur_varsayilan(dialog, pb: str) -> Decimal:
     return Decimal("1")
 
 
+def _kur_duzenlenebilir(dialog, row) -> bool:
+    """TL satırında kur 1'dir; hücre tıklanınca hiçbir şey açılmaz."""
+    try:
+        return kolon_duzenlenebilir_mi(dialog, int(row), "kur")
+    except (TypeError, ValueError):
+        return False
+
+
 def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     if getattr(dialog, "_fatura_kilitli", False):
         return
@@ -842,9 +1053,7 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     tablo = dialog.satir_tablosu
     iid = str(idx)
     satir = dialog.satirlar[idx]
-    pb = _satir_pb(satir)
-    if pb == "TRY":
-        messagebox.showinfo("Kur", "TL satırında kur sabittir (1).", parent=dialog)
+    if _satir_pb(satir) == "TRY":
         return
     mevcut = str(satir.get("kur") or "1").replace(".", ",")
     editor, var = _overlay_entry(dialog, tablo, iid, "kur", mevcut, justify="right")
@@ -855,17 +1064,17 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         return "break"
 
-    def _kaydet(_e=None, tab=False, geri=False):
+    def _kaydet(_e=None, tab=False, geri=False, satir_yon=0):
         yeni = _d(var.get(), Decimal("1"))
         if yeni <= 0:
             messagebox.showerror("Kur", "Kur sıfırdan büyük olmalıdır.", parent=dialog)
             return "break"
         eski_kur = _satir_kuru(satir)
+        if yeni != eski_kur:
+            uzlasma_etkisini_kaldir(dialog)
         doviz_fiyat = (
             _d(satir.get("birim_satis_fiyati")) / eski_kur if eski_kur > 0 else Decimal("0")
         )
-        if yeni != eski_kur:
-            uzlasma_etkisini_kaldir(dialog)
         satir["kur"] = str(yeni)
         if doviz_fiyat > 0:
             satir["birim_fiyat_doviz"] = str(doviz_fiyat.quantize(Decimal("0.0001")))
@@ -873,7 +1082,7 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "kur", geri=geri)
+            _tab_ilerle(dialog, idx, "kur", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -885,10 +1094,79 @@ def kur_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _kaydet(tab=True, geri=True))
+    _ok_gezinme_bagla(editor, _kaydet)
 
 
 def iskonto_yuzde_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
-    """İskonto hücresi → ortak üçlü iskonto modalı (doğrudan hücreye serbest giriş yok)."""
+    """İskonto 1 → 2 → 3 ardışık hücreler (Enter / Tab / → sıradaki); tek kademeli belgede tek hücre."""
+    if getattr(dialog, "_fatura_kilitli", False):
+        return
+    if not (0 <= idx < len(dialog.satirlar)):
+        return
+    from satir_ici_urun_giris import iskonto_metni_coz, sayi_metni
+    from satir_klavye import ISKONTO_ALANLARI, UcluIskontoEditor, iskonto_birlestir
+
+    tablo = dialog.satir_tablosu
+    iid = str(idx)
+    satir = dialog.satirlar[idx]
+    tek_kademe = bool(getattr(dialog, "TEK_KADEME_ISKONTO", False))
+    _editor_kapat(dialog)
+    box = _hucre_bbox(tablo, iid, "iskonto")
+    if not box:
+        return
+
+    def _bitir(degerler, hareket):
+        try:
+            i1, i2, i3 = iskonto_metni_coz(iskonto_birlestir(degerler))
+            if tek_kademe and (i2 or i3):
+                raise ValueError("Bu belgede tek kademe iskonto girilir (ör. 10).")
+        except ValueError as hata:
+            messagebox.showerror("İskonto", str(hata), parent=dialog)
+            return False
+        _kaydet(
+            i1, i2, i3,
+            tab=hareket != "kal",
+            geri=hareket == "geri",
+            satir_yon={"yukari": -1, "asagi": 1}.get(hareket, 0),
+        )
+        return True
+
+    def _kaydet(i1, i2, i3, tab=False, geri=False, satir_yon=0):
+        oranlar = {"iskonto_orani": str(i1), "iskonto_orani_2": str(i2), "iskonto_orani_3": str(i3)}
+        eski = {k: satir.get(k) for k in oranlar}
+        if any(_d(eski.get(k)) != _d(v) for k, v in oranlar.items()):
+            uzlasma_etkisini_kaldir(dialog)
+            satir.update(oranlar)
+            satir.pop("_iskonto_tutar_manuel", None)
+            if hasattr(dialog, "_fatura_iskonto_audit"):
+                try:
+                    dialog._fatura_iskonto_audit(idx, eski, oranlar)
+                except Exception:
+                    pass
+        _editor_kapat(dialog)
+        _yenile_koru(dialog, tablo, iid)
+        if tab:
+            _tab_ilerle(dialog, idx, "iskonto", geri=geri, satir_yon=satir_yon)
+        if on_done:
+            on_done()
+
+    editor = UcluIskontoEditor(
+        tablo,
+        box,
+        [sayi_metni(satir.get(k) or 0) for k in ISKONTO_ALANLARI],
+        adet=1 if tek_kademe else 3,
+        on_bitir=_bitir,
+        on_iptal=lambda: _editor_kapat(dialog),
+        yukseklik=scale_height(HUCRE_EDITOR_TABAN_PX),
+    )
+    if getattr(dialog, "_hucre_giris_geri", False):
+        editor.kutu_odakla(len(editor.kutular) - 1)
+    dialog._satir_hucre_editor = editor
+    _odak_cikinca_uygula(dialog, editor, *editor.kutular)
+
+
+def iskonto_penceresi_ac(dialog, *, idx: int, event=None, on_done=None) -> None:
+    """Satır işlemleri menüsünden: ortak üçlü iskonto penceresi."""
     if getattr(dialog, "_fatura_kilitli", False):
         return
     if not (0 <= idx < len(dialog.satirlar)):
@@ -962,7 +1240,7 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         return "break"
 
-    def _kaydet(_e=None, tab=False, geri=False):
+    def _kaydet(_e=None, tab=False, geri=False, satir_yon=0):
         tutar = _d(var.get())
         if tutar < 0:
             messagebox.showerror("İskonto", "İskonto tutarı negatif olamaz.", parent=dialog)
@@ -983,7 +1261,7 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "iskonto_tutar", geri=geri)
+            _tab_ilerle(dialog, idx, "iskonto_tutar", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -995,6 +1273,7 @@ def iskonto_tutar_hucre(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _kaydet(tab=True, geri=True))
+    _ok_gezinme_bagla(editor, _kaydet)
 
 
 def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
@@ -1026,12 +1305,13 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.place(x=bx, y=by, width=max(bw, 72), height=max(bh, scale_height(26)))
     editor.focus_set()
     dialog._satir_hucre_editor = editor
+    _odak_cikinca_uygula(dialog, editor)
 
     def _iptal(_e=None):
         _editor_kapat(dialog)
         return "break"
 
-    def _uygula(_e=None, tab=False, geri=False):
+    def _uygula(_e=None, tab=False, geri=False, satir_yon=0):
         if getattr(dialog, "_kdv_uygulaniyor", False):
             return "break"
         # Editor yoksa (önceki ComboboxSelected sonrası FocusOut) tekrar işleme
@@ -1057,7 +1337,7 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             _editor_kapat(dialog)
             _yenile_koru(dialog, tablo, iid)
             if tab:
-                _tab_ilerle(dialog, idx, "kdv", geri=geri)
+                _tab_ilerle(dialog, idx, "kdv", geri=geri, satir_yon=satir_yon)
             if on_done:
                 on_done()
         finally:
@@ -1072,12 +1352,8 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _uygula(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _uygula(tab=True, geri=True))
-    # FocusOut: seçim sonrası çift tetiklemeyi _satir_hucre_editor kontrolü keser
-    editor.bind("<FocusOut>", lambda e: _uygula(tab=False))
-    try:
-        editor.event_generate("<Down>")
-    except tk.TclError:
-        pass
+    _ok_gezinme_bagla(editor, _uygula)
+    _listeyi_ac(editor, event)
 
 
 def aciklama_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
@@ -1097,12 +1373,12 @@ def aciklama_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> Non
         _editor_kapat(dialog)
         return "break"
 
-    def _kaydet(_e=None, tab=False, geri=False):
+    def _kaydet(_e=None, tab=False, geri=False, satir_yon=0):
         satir["aciklama"] = (var.get() or "").strip()
         _editor_kapat(dialog)
         _yenile_koru(dialog, tablo, iid)
         if tab:
-            _tab_ilerle(dialog, idx, "aciklama", geri=geri)
+            _tab_ilerle(dialog, idx, "aciklama", geri=geri, satir_yon=satir_yon)
         if on_done:
             on_done()
         return "break"
@@ -1114,10 +1390,11 @@ def aciklama_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> Non
     editor.bind("<Escape>", _iptal)
     editor.bind("<Tab>", lambda e: _kaydet(tab=True))
     editor.bind("<Shift-Tab>", lambda e: _kaydet(tab=True, geri=True))
+    _ok_gezinme_bagla(editor, _kaydet)
 
 
 def fatura_satir_hucre_etkilesim(dialog) -> None:
-    """Tek tık hücre düzenleme; iskonto için çift tık / F2; bind çoğalmasını engeller."""
+    """Tek tık hücre düzenleme; ürün adı/kodu/barkod çift tık veya F2 stok kartı; bind çoğalmasını engeller."""
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
@@ -1152,7 +1429,12 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
             return
         kolon = _kolon_adi(tablo, event)
         row = tablo.identify_row(event.y)
-        if not row or row == "__yeni__" or kolon not in DUZENLENEBILIR_KOLONLAR:
+        if (
+            not row
+            or row == "__yeni__"
+            or kolon not in DUZENLENEBILIR_KOLONLAR
+            or (kolon == "kur" and not _kur_duzenlenebilir(dialog, row))
+        ):
             _tooltip_gizle()
             try:
                 tablo.configure(cursor="")
@@ -1163,8 +1445,8 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
             tablo.configure(cursor="hand2" if kolon in ("birim", "para_birimi", "kdv") else "xterm")
         except tk.TclError:
             pass
-        if kolon in ("iskonto", "iskonto_tutar"):
-            tip.configure(text="Çift tık veya F2 — çoklu iskonto")
+        if kolon == "iskonto":
+            tip.configure(text="Tıkla — iskonto 1 / 2 / 3 (Enter ile sıradaki)")
         else:
             tip.configure(text=f"Tıkla — {kolon} düzenle")
         try:
@@ -1187,24 +1469,19 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
         _tooltip_gizle()
         if getattr(dialog, "_fatura_kilitli", False):
             return None
-        if getattr(dialog, "_satir_hucre_editor", None) is not None:
-            return None
         kolon = _kolon_adi(tablo, event)
         row = tablo.identify_row(event.y)
-        if not row or kolon not in DUZENLENEBILIR_KOLONLAR:
-            return None
-        # İskonto: çift tık / F2 / araç çubuğu
-        if kolon in ("iskonto", "iskonto_tutar"):
-            try:
-                tablo.selection_set(row)
-            except tk.TclError:
-                pass
+        if not editoru_birak(dialog):
+            return "break"
+        if not row or row == "__yeni__" or kolon not in DUZENLENEBILIR_KOLONLAR:
             return None
         try:
             idx = int(row)
         except (TypeError, ValueError):
             return None
         tablo.selection_set(row)
+        if kolon == "kur" and not _kur_duzenlenebilir(dialog, row):
+            return None
         # Kısa gecikme: seçim + odak otursun, çift tık ile çakışmasın
         def _ac(_i=idx, _k=kolon):
             if getattr(dialog, "_satir_cift_tik_engel", False):
@@ -1220,38 +1497,50 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
         _tooltip_gizle()
         kolon = _kolon_adi(tablo, event)
         row = tablo.identify_row(event.y)
+        if row and row != "__yeni__" and kolon in urun_kolonlari(dialog):
+            try:
+                idx = int(row)
+            except (TypeError, ValueError):
+                return None
+            tablo.selection_set(row)
+            satir_stok_karti_ac(dialog, idx)
+            return "break"
         if row and kolon in DUZENLENEBILIR_KOLONLAR:
             try:
                 idx = int(row)
             except (TypeError, ValueError):
                 return "break"
             tablo.selection_set(row)
+            if kolon == "kur" and not _kur_duzenlenebilir(dialog, row):
+                return "break"
             hucre_duzenle(dialog, idx=idx, kolon=kolon, event=event)
             return "break"
         return None
 
     def _f2(_event=None):
-        if getattr(dialog, "_fatura_kilitli", False):
-            return "break"
-        if getattr(dialog, "_satir_hucre_editor", None) is not None:
-            return "break"
-        secim = tablo.selection()
+        """F2: seçili satırın bağlı stok kartı (kilitli/onaylı faturada da açılır)."""
+        if not odak_tabloda_mi(dialog, tablo):
+            return None
+        ed = getattr(dialog, "_satir_hucre_editor", None)
+        secim = [i for i in tablo.selection() if i != "__yeni__"]
         if not secim:
             return "break"
         try:
             idx = int(secim[0])
         except (TypeError, ValueError):
             return "break"
-        kolon = ilk_duzenlenebilir_kolon(dialog, idx) or "miktar"
-        focus_editable_cell(dialog, idx, kolon)
+        if ed is not None and not acik_editoru_uygula(dialog):
+            return "break"
+        satir_stok_karti_ac(dialog, idx)
         return "break"
 
     def _enter_tablo(event=None):
         """Seçili satırda editör yoksa ilk alana gir; çift işleme yok."""
         if getattr(dialog, "_fatura_kilitli", False):
             return None
-        if getattr(dialog, "_satir_hucre_editor", None) is not None:
-            return None
+        secim = _secili_satirlar()
+        if not editoru_birak(dialog):
+            return "break"
         # İskonto modalı açıksa sızma
         try:
             for w in dialog.winfo_children():
@@ -1261,7 +1550,6 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
                         return "break"
         except tk.TclError:
             pass
-        secim = tablo.selection()
         if not secim:
             return None
         try:
@@ -1272,6 +1560,32 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
         if not kolon:
             return "break"
         focus_editable_cell(dialog, idx, kolon)
+        return "break"
+
+    def _secili_satirlar() -> list[str]:
+        # Açık editör yazılınca tablo kendi satırını yeniden seçer; kullanıcının seçimi önce alınır
+        try:
+            return [i for i in tablo.selection() if i != "__yeni__"]
+        except tk.TclError:
+            return []
+
+    def _ok_tablo(geri: bool):
+        """Seçili satırda sağ ok ilk, sol ok son düzenlenebilir hücreyi açar (açık editör önce yazılır)."""
+        if getattr(dialog, "_fatura_kilitli", False):
+            return None
+        secim = _secili_satirlar()
+        if not editoru_birak(dialog):
+            return "break"
+        if not secim:
+            return None
+        try:
+            idx = int(secim[0])
+        except (TypeError, ValueError):
+            return None
+        sira = reversed(EDITABLE_COLUMN_ORDER) if geri else EDITABLE_COLUMN_ORDER
+        kolon = next((k for k in sira if kolon_duzenlenebilir_mi(dialog, idx, k)), None)
+        if kolon:
+            focus_editable_cell(dialog, idx, kolon)
         return "break"
 
     def _kapanista_temizle(_e=None):
@@ -1287,6 +1601,8 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
     tablo.bind("<F2>", _f2)
     tablo.bind("<Return>", _enter_tablo)
     tablo.bind("<KP_Enter>", _enter_tablo)
+    tablo.bind("<Right>", lambda e: _ok_tablo(False))
+    tablo.bind("<Left>", lambda e: _ok_tablo(True))
     tablo.bind("<Motion>", _motion)
     tablo.bind("<Leave>", _tooltip_gizle)
     dialog.bind("<F2>", _f2)

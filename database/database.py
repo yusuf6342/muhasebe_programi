@@ -17,7 +17,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Proje içi data (eski konum / resimler / ayarlar)
 PROJE_DATA_DIR = BASE_DIR / "data"
-PROJE_DATA_DIR.mkdir(exist_ok=True)
+try:
+    PROJE_DATA_DIR.mkdir(exist_ok=True)
+except OSError:
+    # Program klasörü yazılamaz olabilir (ör. Program Files); veri ayrı klasörde tutulur
+    pass
 
 
 VERI_KONUMU_DOSYA_ADI = "veri_konumu.txt"
@@ -136,6 +140,7 @@ def _konum_dosyasi_yaz(db_yolu: Path) -> None:
 DB_DIR, DB_DIR_KAYNAGI = _db_dir_sec()
 TEST_KURULUMU = _test_kurulumu_mu()
 TEST_FIRMA_UNVAN = "TEST FİRMASI (Deneme)"
+YENI_FIRMA_UNVAN = "YENİ FİRMA"
 _eski_db_tasi(DB_DIR)
 DB_PATH = (DB_DIR / "muhasebe.db").resolve()
 SYSTEM_DB_PATH = (DB_DIR / "system.db").resolve()
@@ -196,8 +201,9 @@ def baslangic_veri_uyarisi() -> str | None:
             f"(muhasebe.db) YOK:\n{DB_PATH}\n\n"
             "Devam ederseniz Ray Mobilya için BOŞ bir veritabanı oluşturulur ve "
             "müşteri/stok/fatura listeleri boş görünür.\n\n"
-            "Gerçek veriyi aktarmak için programı kapatıp "
-            "veri_geri_yukle.ps1 ile veri paketini bu klasöre yükleyin.\n\n"
+            "Gerçek veriyi aktarmak için programı kapatıp veri paketini "
+            "bu klasöre yükleyin (kurulumda: Başlat menüsü → Cin Muhasebe → "
+            "«Veri Paketinden Yükle»; test kurulumunda: veri_geri_yukle.ps1).\n\n"
             "Yine de boş veritabanı ile devam edilsin mi?"
         )
     return (
@@ -205,8 +211,9 @@ def baslangic_veri_uyarisi() -> str | None:
         f"{DB_DIR}\n\n"
         "Devam ederseniz YENİ ve BOŞ bir veritabanı oluşturulur "
         "(firma adı görünür ama müşteri/stok/fatura boş olur).\n\n"
-        "Gerçek veriyi görmek için programı kapatıp veri paketini "
-        "veri_geri_yukle.ps1 ile bu klasöre yükleyin.\n\n"
+        "Mevcut bir firmanın verisini kullanmak için programı kapatıp veri paketini "
+        "bu klasöre yükleyin (kurulumda: Başlat menüsü → Cin Muhasebe → "
+        "«Veri Paketinden Yükle»; test kurulumunda: veri_geri_yukle.ps1).\n\n"
         "Boş veritabanı ile devam edilsin mi?"
     )
 
@@ -378,21 +385,30 @@ def sistem_altyapisini_baslat() -> dict:
     from database.session_manager import oturum
 
     yeni_test = TEST_KURULUMU and not SYSTEM_DB_ONCEDEN_VAR
+    # Kurulum paketiyle tamamen boş klasörde ilk açılış: firma adı tarafsız ("boş firma")
+    yeni_bos = (
+        getattr(sys, "frozen", False)
+        and not TEST_KURULUMU
+        and not SYSTEM_DB_ONCEDEN_VAR
+        and not MUHASEBE_DB_ONCEDEN_VAR
+    )
+    if yeni_test:
+        yeni_firma_bilgisi = {
+            "unvan": TEST_FIRMA_UNVAN,
+            "kisa_ad": "Test Firması",
+            "adres": "Örnek Mah. Deneme Cad. No:1",
+            "il": "İstanbul",
+            "telefon": "0000 000 00 00",
+        }
+    elif yeni_bos:
+        yeni_firma_bilgisi = {"unvan": YENI_FIRMA_UNVAN, "kisa_ad": "Yeni Firma"}
+    else:
+        yeni_firma_bilgisi = None
     sonuc = sistem_baslat(
         system_db_path=SYSTEM_DB_PATH,
         muhasebe_db_path=DB_PATH,
         sifre_dosyasi=DB_DIR / "ILK_YONETICI_SIFRE.txt",
-        yeni_firma_bilgisi=(
-            {
-                "unvan": TEST_FIRMA_UNVAN,
-                "kisa_ad": "Test Firması",
-                "adres": "Örnek Mah. Deneme Cad. No:1",
-                "il": "İstanbul",
-                "telefon": "0000 000 00 00",
-            }
-            if yeni_test
-            else None
-        ),
+        yeni_firma_bilgisi=yeni_firma_bilgisi,
     )
 
     system_engine = system_engine_olustur(SYSTEM_DB_PATH)
@@ -572,6 +588,10 @@ def cari_kart_schemasini_guncelle() -> None:
         with engine.begin() as connection:
             for alan, tip in eksikler.items():
                 connection.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    from database.cari_risk_service import schema_hazirla as cari_risk_schema_hazirla
+
+    cari_risk_schema_hazirla(engine)
 
     # İade satırına FIFO maliyet kolonu
     iade_tablo = "satis_iade_faturasi_satirlari"
@@ -1190,7 +1210,15 @@ def doviz_schema_guncelle() -> None:
         "manuel_fiyat": "BOOLEAN DEFAULT 0 NOT NULL",
         "dagitima_kapali": "BOOLEAN DEFAULT 0 NOT NULL",
     }
+    fon_ek_bedel = {
+        "fon_ek_bedel_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+        "fon_ek_bedel_kdv": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+    }
+    _ekle("satis_faturalari", fon_ek_bedel)
+    _ekle("satis_iade_faturalari", fon_ek_bedel)
     _ekle("satis_faturasi_satirlari", satir_doviz)
+    _ekle("satis_faturasi_satirlari", {"referans_birim_fiyat": "NUMERIC(18, 4)"})
+    _ekle("stok_fiyatlari", {"kdv_durumu": "VARCHAR(10)"})
     _ekle("alis_faturasi_satirlari", {
         k: v for k, v in satir_doviz.items() if k not in ("manuel_fiyat", "dagitima_kapali")
     })

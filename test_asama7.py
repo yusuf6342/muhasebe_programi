@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import traceback
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -231,7 +231,7 @@ def main() -> int:
         eski = session.scalar(select(Company).where(Company.firma_kodu == test_firma_kod))
         if eski:
             # benzersiz kod
-            test_firma_kod = f"TESTA7_{date.today().strftime('%H%M%S')}"
+            test_firma_kod = f"TESTA7_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
     yeni_id = CompanyMgmtService.ekle(
         {

@@ -8,7 +8,7 @@ Bir hareket yalnız şu koşulların TAMAMI sağlanırsa "kesin test" sayılır:
   * cari veya ürün kartı test kartıdır (kod/ad "TEST" ile başlar) VEYA belge açıklaması "test" içerir,
   * cari kartın bu belgeler dışında finans / cari / başka belge bağı yoktur,
   * aynı belgede başka ürünlerin stok hareketi yoktur.
-Kesin olmayan hiçbir kayda yazılmaz; sonuç ``inceleme\\stoklar\\stok851_dogrulama.json``.
+Kesin olmayan hiçbir kayda yazılmaz; sonuç ``inceleme\\stoklar\\stok851_dogrulama_<db>_<zaman>.json``.
 """
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
+
 SONUC = ROOT / "inceleme" / "stoklar" / "stok851_dogrulama.json"
 STOK_ID, LOT_ID = 851, 1
 BELGELER = ("ARAY000001", "SRAY000001", "SRAY000003", "SRAY000004", "PKT000001")
@@ -136,8 +140,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True, help="Gerçek DB'nin salt okunur kopyası")
     ap.add_argument("--kaynak", default="", help="Kopyanın alındığı gerçek DB yolu (rapor için)")
-    ap.add_argument("--sonuc", default=str(SONUC))
+    ap.add_argument("--sonuc", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     a = ap.parse_args()
+    if a.sonuc is None:
+        a.sonuc = str(benzersiz_rapor_yolu(SONUC.parent, SONUC.stem, a.kaynak or a.db, SONUC.suffix))
     c = sqlite3.connect(f"file:{Path(a.db).as_posix()}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
 

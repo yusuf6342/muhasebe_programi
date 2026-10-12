@@ -10,7 +10,7 @@ import re
 
 from database.teklif_customer_view import (
     CustomerQuoteViewModel,
-    FIRMA_ALT_UNVAN,
+    alt_unvan,
     assert_customer_model_safe,
     assert_customer_output_safe,
     para_birimli,
@@ -97,7 +97,7 @@ def render_customer_quote_html(
     if vm.logo_data_uri:
         logo = f'<img class="logo" src="{vm.logo_data_uri}" alt="Logo"/>'
 
-    unvan = (f.get("unvan") or "RAY MOBİLYA AKSESUARLARI").upper()
+    unvan = (f.get("unvan") or alt_unvan(f)).upper()
     slogan = vm.firma_slogan or ""
     iletisim_html = "".join(f"<div>{s}</div>" for s in _firma_iletisim_satirlari(f))
 
@@ -226,8 +226,9 @@ def render_customer_quote_html(
         )
 
     onay = f"<div class='onay-beyan'>{_e(vm.onay_beyani)}</div>" if vm.onay_beyani else ""
+    alt_firma = alt_unvan(f)
     alt_parcalar = [
-        FIRMA_ALT_UNVAN,
+        alt_firma,
         f.get("telefon"),
         f.get("adres"),
         f.get("web") or f.get("email"),
@@ -302,7 +303,7 @@ body.onizleme {{
   size: A4 portrait;
   margin: 10mm 12mm 16mm 12mm;
   @bottom-left {{
-    content: "{_css_str(FIRMA_ALT_UNVAN)} · {_css_str(vm.teklif_no)}";
+    content: "{_css_str(alt_firma)} · {_css_str(vm.teklif_no)}";
     font-size: 7pt;
     color: #64748B;
   }}

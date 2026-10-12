@@ -106,9 +106,35 @@ def _basit_pdf_olustur(baslik: str, satirlar: list[str], yol: Path) -> Path:
     return yol
 
 
+def _ek_bedel_var(veri: dict[str, Any]) -> bool:
+    return float(veri.get("fon_ek_bedel") or 0) > 0
+
+
+def _ek_bedel_satirlari(veri: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Ek fon bedeli varsa (etiket, tutar) satırları: fon bedelleri, bedel KDV'si, ödenecek toplam."""
+    if not _ek_bedel_var(veri):
+        return []
+    satirlar = []
+    for e in veri.get("fon_ek_bedeller") or []:
+        oran = e.get("oran")
+        oran_metni = f" %{Decimal(str(oran)).normalize():f}".replace(".", ",") if oran is not None else ""
+        satirlar.append((f"Ek fon bedeli {e.get('fon_kod') or ''}{oran_metni}", e.get("tutar")))
+    if not satirlar:
+        satirlar.append(("Ek fon bedeli", veri.get("fon_ek_bedel")))
+    satirlar.append(("Ek fon bedeli KDV", veri.get("fon_ek_bedel_kdv")))
+    return satirlar
+
+
 def fis_html(veri: dict[str, Any]) -> str:
     """Dar fiş (tarayıcı yazdırma / önizleme)."""
     firma = html.escape(str(veri.get("firma") or _firma_adi()))
+    ek_html = "".join(
+        f"<tr><td>{html.escape(etiket)}</td><td class='r'>{html.escape(_para(tutar))}</td></tr>"
+        for etiket, tutar in _ek_bedel_satirlari(veri)
+    )
+    if ek_html:
+        ek_html += (f"<tr class='toplam'><td>ÖDENECEK</td><td class='r'>"
+                    f"{html.escape(_para(veri.get('odenecek_toplam')))}</td></tr>")
     satir_html = ""
     for s in veri.get("satirlar") or []:
         satir_html += (
@@ -157,6 +183,7 @@ Müşteri: {html.escape(str(veri.get('musteri') or '—'))}
 <tr><td>İskonto</td><td class="r">{html.escape(_para(veri.get('iskonto')))}</td></tr>
 <tr><td>KDV</td><td class="r">{html.escape(_para(veri.get('kdv')))}</td></tr>
 <tr class="toplam"><td>GENEL</td><td class="r">{html.escape(_para(veri.get('genel_toplam')))}</td></tr>
+{ek_html}
 </table>
 <div class="cizgi"></div>
 <table>{odeme_html}
@@ -189,6 +216,12 @@ def a4_html(veri: dict[str, Any]) -> str:
         f"<td class='r'>{html.escape(_para(o.get('tutar')))}</td></tr>"
         for o in (veri.get("tahsilatlar") or [])
     )
+    ek_html = "".join(
+        f" &nbsp;<b>{html.escape(etiket)}:</b> {html.escape(_para(tutar))}"
+        for etiket, tutar in _ek_bedel_satirlari(veri)
+    )
+    if ek_html:
+        ek_html += f" &nbsp;<b>Ödenecek Toplam:</b> {html.escape(_para(veri.get('odenecek_toplam')))}"
     return f"""<!DOCTYPE html>
 <html lang="tr"><head><meta charset="utf-8"/>
 <title>Satış {html.escape(str(veri.get('fatura_no') or ''))}</title>
@@ -217,7 +250,7 @@ Müşteri: {html.escape(str(veri.get('musteri') or '—'))}</p>
 <p><b>Ara:</b> {html.escape(_para(veri.get('ara_toplam')))} &nbsp;
 <b>İskonto:</b> {html.escape(_para(veri.get('iskonto')))} &nbsp;
 <b>KDV:</b> {html.escape(_para(veri.get('kdv')))} &nbsp;
-<b>Genel:</b> {html.escape(_para(veri.get('genel_toplam')))}</p>
+<b>Genel:</b> {html.escape(_para(veri.get('genel_toplam')))}{ek_html}</p>
 <table><thead><tr><th>Ödeme</th><th>Hesap</th><th>Tutar</th></tr></thead>
 <tbody>{odemeler or '<tr><td colspan="3">—</td></tr>'}
 <tr><td colspan="2"><b>Tahsil / Kalan</b></td>
@@ -295,6 +328,11 @@ def pdf_metin_satirlari(veri: dict[str, Any]) -> list[str]:
     lines.append(f"Iskonto: {_para(veri.get('iskonto'))}")
     lines.append(f"KDV: {_para(veri.get('kdv'))}")
     lines.append(f"Genel: {_para(veri.get('genel_toplam'))}")
+    ek = _ek_bedel_satirlari(veri)
+    for etiket, tutar in ek:
+        lines.append(f"{etiket}: {_para(tutar)}")
+    if ek:
+        lines.append(f"Odenecek Toplam: {_para(veri.get('odenecek_toplam'))}")
     lines.append(f"Tahsil: {_para(veri.get('tahsilat_tutari'))}")
     lines.append(f"Kalan: {_para(veri.get('kalan'))}")
     for o in veri.get("tahsilatlar") or []:

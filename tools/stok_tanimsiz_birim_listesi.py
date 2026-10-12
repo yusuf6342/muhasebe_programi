@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
 from tools.stok_birim_inceleme_listesi import satirlari_topla  # noqa: E402
 
 VARSAYILAN_CIKTI = ROOT / "inceleme" / "stoklar" / "Tanimsiz_Birim_Satirlari_Inceleme.xlsx"
@@ -105,8 +106,11 @@ def main() -> int:
         pass
     ap = argparse.ArgumentParser()
     ap.add_argument("db")
-    ap.add_argument("--cikti", default=str(VARSAYILAN_CIKTI))
+    ap.add_argument("--cikti", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     a = ap.parse_args()
+    if a.cikti is None:
+        a.cikti = str(benzersiz_rapor_yolu(VARSAYILAN_CIKTI.parent, VARSAYILAN_CIKTI.stem, a.db,
+                                           VARSAYILAN_CIKTI.suffix))
     satirlar = tanimsiz_satirlar(Path(a.db))
     excel_yaz(satirlar, Path(a.cikti))
     tur: dict[str, int] = defaultdict(int)

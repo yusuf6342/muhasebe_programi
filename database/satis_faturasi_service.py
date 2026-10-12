@@ -13,14 +13,15 @@ from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri, S
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
 from database.satis_siparisi_service import decimal
-from database.stok_service import StokService
+from database.stok_service import StokService, birim_anahtari
 from database.doviz_service import DovizService
 from database.finans_service import FinansService
 
 # Sipariş → fatura: kalan = sipariş miktarı − faturalanan_miktar (sevk zorunlu değil).
 # İrsaliye → fatura: kalan = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
 # satırının faturalanan_miktar'ı da artar. Kaynak: FATURA_KAYNAK_KURALI.
-# Evrak durumu: TASLAK → (onay) AÇIK → İPTAL. Ödenme ayrı alanda (odeme_durumu).
+# Evrak durumu: TASLAK (kaydedilmemiş) → (kaydet) AÇIK → İPTAL. Hareketler yalnız onaylandi=True iken.
+# Ödenme ayrı alanda (odeme_durumu).
 # "KAPALI" yalnız eski kayıtlarda okunur; ekranda AÇIK gösterilir.
 FATURA_DURUMLARI = ("TASLAK", "AÇIK", "İPTAL")
 SATIS_FATURA_ONEKI = "RAY-"
@@ -319,6 +320,7 @@ class SatisFaturasiService:
                 genel = Decimal(str(getattr(f, "tl_genel_toplam", 0) or 0))
                 if genel <= 0:
                     genel = toplam_map.get(f.id, Decimal("0"))
+                genel += sum(SatisFaturasiService.ek_fon_bedeli(f), Decimal("0"))
                 tahsilat = Decimal(str(f.tahsilat_tutari or 0))
                 if (f.durum or "") == "İPTAL":
                     acik = Decimal("0")
@@ -487,7 +489,17 @@ class SatisFaturasiService:
                 sp_ad = (veriler.get("sales_person_full_name") or "").strip() or None
         tahsilat_verileri = list(tahsilat_verileri or [])
         beklenen_versiyon = veriler.get("row_version")
+        istenen_no = (veriler.get("fatura_no") or "").strip()
         with get_session() as session:
+            if istenen_no:
+                cakisan = session.scalar(
+                    select(SatisFaturasi.id).where(
+                        SatisFaturasi.fatura_no == istenen_no,
+                        SatisFaturasi.id != int(fatura_id or 0),
+                    )
+                )
+                if cakisan:
+                    raise ValueError(f"{istenen_no} numaralı bir satış faturası zaten var.")
             yeni = False
             if fatura_id:
                 fatura = session.get(SatisFaturasi, fatura_id)
@@ -510,12 +522,13 @@ class SatisFaturasiService:
                 fatura.satirlar.clear()
                 fatura.tahsilatlar.clear()
                 fatura.row_version = mevcut_v + 1
+                if istenen_no:
+                    fatura.fatura_no = istenen_no
             else:
                 onceki_irsaliye_satirlari = []
                 yeni = True
                 fatura = SatisFaturasi(
-                    fatura_no=(veriler.get("fatura_no") or "").strip()
-                    or SatisFaturasiService.fatura_no(),
+                    fatura_no=istenen_no or SatisFaturasiService.fatura_no(),
                     row_version=1,
                 )
                 session.add(fatura)
@@ -545,6 +558,16 @@ class SatisFaturasiService:
                     veri = dict(veri)
                     veri["birim_fiyat"] = doviz_satir["tl_birim_fiyat"]
                 irs_id, sip_id = veri.get("irsaliye_satiri_id"), veri.get("siparis_satiri_id")
+                bagli = (session.get(SatisIrsaliyesiSatiri, int(irs_id)) if irs_id
+                         else session.get(SatisSiparisiSatiri, int(sip_id)) if sip_id else None)
+                if bagli is not None:
+                    kaynak_birim = (bagli.birim or "Adet").strip() or "Adet"
+                    if birim_anahtari(veri.get("birim") or "Adet") != birim_anahtari(kaynak_birim):
+                        kaynaktan, belge = ("irsaliyeden", "irsaliye") if irs_id else ("siparişten", "sipariş")
+                        raise ValueError(
+                            f"{veri.get('urun_kodu')}: {kaynaktan} aktarılan satırın birimi "
+                            f"{belge} birimiyle aynı olmalıdır ({kaynak_birim})."
+                        )
                 if irs_id:
                     kaynak = session.get(SatisIrsaliyesiSatiri, int(irs_id))
                     if not kaynak or miktar > kaynak.miktar - kaynak.faturalanan_miktar:
@@ -599,6 +622,11 @@ class SatisFaturasiService:
                         birim_fiyat_doviz=doviz_satir["birim_fiyat_doviz"],
                         tl_birim_fiyat=doviz_satir["tl_birim_fiyat"],
                         tl_tutar=doviz_satir["tl_tutar"],
+                        referans_birim_fiyat=(
+                            None
+                            if veri.get("referans_birim_fiyat") in (None, "")
+                            else decimal(veri["referans_birim_fiyat"], "Referans fiyat", Decimal("0"))
+                        ),
                         manuel_fiyat=bool(veri.get("manuel_fiyat")),
                         dagitima_kapali=bool(
                             veri.get("dagitima_kapali")
@@ -650,8 +678,11 @@ class SatisFaturasiService:
 
             toplam_dict = SatisFaturasiService.toplam(fatura.satirlar)
             SatisFaturasiService._doviz_alanlarini_yaz(fatura, veriler, toplam_dict)
-            # Muhasebe tutarı = Net (tl_genel_toplam)
-            toplam = Decimal(str(fatura.tl_genel_toplam or 0))
+            from database.fon_service import FonService
+
+            # Ek fon bedeli ürün Net'ine (tl_genel_toplam) eklenmez; ödenecek toplamı artırır
+            ek_bedel = FonService.ek_bedel_uygula(session, fatura)
+            toplam = (Decimal(str(fatura.tl_genel_toplam or 0)) + ek_bedel["tutar"] + ek_bedel["kdv"])
             if pb != "TRY" and fatura.doviz_ara_toplam <= 0:
                 doviz_ara = Decimal("0")
                 for satir in fatura.satirlar:
@@ -679,8 +710,9 @@ class SatisFaturasiService:
             ilk = fatura.tahsilatlar[0] if fatura.tahsilatlar else None
             fatura.tahsilat_sekli = ilk.odeme_sekli if ilk else None
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
+            # Kayıtlı fatura AÇIK; stok/cari/finans hareketleri yalnız onayla() ile oluşur
             fatura.onaylandi = False
-            fatura.durum = "TASLAK"
+            fatura.durum = "AÇIK"
             fatura.sales_person_id = sp_id
             fatura.sales_person_full_name = sp_ad
             if yeni:
@@ -692,6 +724,8 @@ class SatisFaturasiService:
                 session, fatura, onceki_irsaliye_satirlari=onceki_irsaliye_satirlari
             )
             try:
+                session.flush()
+                FonService.ek_bedel_kaydet(session, fatura, ek_bedel)
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi.") from hata
@@ -814,8 +848,9 @@ class SatisFaturasiService:
                     if ir is not None and not stok_cikis_gerekli(ir):
                         skip_stok = True
                         satir.lot_cikisi = "İrsaliye stokundan"
-                        if getattr(satir, "fifo_birim_maliyeti", None) is None:
-                            satir.fifo_birim_maliyeti = Decimal("0")
+                        satir.fifo_birim_maliyeti = (
+                            SatisFaturasiService.irsaliye_birim_maliyeti(session, satir) or Decimal("0")
+                        )
                 if skip_stok:
                     continue
                 try:
@@ -861,6 +896,15 @@ class SatisFaturasiService:
             hareket.borc_esasi = getattr(fatura, "borc_esasi", "TL_SABIT") or "TL_SABIT"
             if hareket.borc_esasi == "DOVIZ_SABIT" and hareket.para_birimi != "TRY":
                 hareket.doviz_tutari = Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0))
+                ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(fatura)
+                if ek + ek_kdv > 0:
+                    from database.fon_service import FonService
+
+                    FonService._kur_dogrula(fatura)
+                    # Ek bedel TL hesaplanır; döviz borca faturanın kayıtlı kuruyla bir kez çevrilir
+                    hareket.doviz_tutari += ((ek + ek_kdv) / hareket.kur).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
             else:
                 hareket.doviz_tutari = Decimal("0")
 
@@ -920,6 +964,10 @@ class SatisFaturasiService:
             AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
+                from database.fon_service import FonService
+
+                FonService.satis_onaylandi(session, fatura)
+                session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura onaylanamadı.") from hata
             fid = int(fatura.id)
@@ -972,8 +1020,11 @@ class SatisFaturasiService:
                 session, fatura.fatura_no, fatura.cari_id, neden=neden
             )
             fatura.onaylandi = False
-            fatura.durum = "TASLAK"
+            fatura.durum = "AÇIK"
             SatisFaturasiService._durumlari_guncelle(session, fatura)
+            from database.fon_service import FonService
+
+            FonService.satis_onayi_geri_alindi(session, fatura, neden)
             try:
                 session.flush()
             except IntegrityError as hata:
@@ -1027,6 +1078,10 @@ class SatisFaturasiService:
                     AcikKalemService.belge_kalemlerini_sil(
                         session, fatura.fatura_no, fatura.cari_id, neden=f"Fatura iptal {fatura.fatura_no}"
                     )
+                if onayliydi:
+                    from database.fon_service import FonService
+
+                    FonService.satis_onayi_geri_alindi(session, fatura, f"Fatura iptal: {neden}")
                 fatura.onaylandi = False
                 fatura.durum = "İPTAL"
                 stamp_cancel(fatura, neden)
@@ -1116,6 +1171,48 @@ class SatisFaturasiService:
         kaynak = session.get(SatisIrsaliyesiSatiri, int(satir.irsaliye_satiri_id))
         irsaliye_id = kaynak.irsaliye_id if kaynak is not None else fatura.irsaliye_id
         return session.get(SatisIrsaliyesi, irsaliye_id) if irsaliye_id else None
+
+    @staticmethod
+    def irsaliye_birim_maliyeti(session, satir) -> Decimal | None:
+        """İrsaliyeden gelen fatura satırının temel birim başına maliyeti: irsaliyenin aynı ürüne ait
+        İRSALİYE ÇIKIŞ hareketlerinin ağırlıklı ortalaması. Stok çıkışı bulunamazsa None (tahmin yok)."""
+        from database.models.stok import StokHareketi, StokKarti
+
+        if not getattr(satir, "irsaliye_satiri_id", None):
+            return None
+        fatura = getattr(satir, "fatura", None)
+        ir = SatisFaturasiService._satir_irsaliyesi(session, fatura, satir) if fatura is not None else None
+        if ir is None:
+            kaynak = session.get(SatisIrsaliyesiSatiri, int(satir.irsaliye_satiri_id))
+            ir = session.get(SatisIrsaliyesi, kaynak.irsaliye_id) if kaynak is not None else None
+        if ir is None or not ir.irsaliye_no:
+            return None
+        stok_id = session.scalar(select(StokKarti.id).where(StokKarti.stok_kodu == (satir.urun_kodu or "").strip()))
+        if stok_id is None:
+            return None
+        hareketler = session.execute(
+            select(StokHareketi.miktar, StokHareketi.birim_maliyet).where(
+                StokHareketi.belge_no == ir.irsaliye_no,
+                StokHareketi.hareket_turu == "İRSALİYE ÇIKIŞ",
+                StokHareketi.stok_id == stok_id,
+            )
+        ).all()
+        miktar = sum((Decimal(str(m or 0)) for m, _ in hareketler), Decimal("0"))
+        if miktar <= 0:
+            return None
+        tutar = sum((Decimal(str(m or 0)) * Decimal(str(b or 0)) for m, b in hareketler), Decimal("0"))
+        return (tutar / miktar).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def satir_birim_maliyeti(session, satir) -> Decimal | None:
+        """Satış satırında kaydedilen maliyet (temel birim başına). Stok çıkışı irsaliyede olduysa
+        irsaliyenin çıkış maliyeti; maliyet bilinmiyorsa None."""
+        mb = getattr(satir, "fifo_birim_maliyeti", None)
+        if mb is not None and Decimal(str(mb)) > 0:
+            return Decimal(str(mb))
+        if getattr(satir, "irsaliye_satiri_id", None):
+            return SatisFaturasiService.irsaliye_birim_maliyeti(session, satir)
+        return Decimal(str(mb)) if mb is not None else None
 
     @staticmethod
     def _durumlari_guncelle(session, fatura, onceki_irsaliye_satirlari=()):
@@ -1217,13 +1314,26 @@ class SatisFaturasiService:
             return kayitlar
 
     @staticmethod
-    def net_toplam(fatura) -> Decimal:
-        """Cari borç ve tahsilat esası: uzlaşma/genel işlem sonrası Net (yoksa satır toplamı)."""
+    def urun_net_toplam(fatura) -> Decimal:
+        """Ürünlerin uzlaşma/genel işlem sonrası Net'i (yoksa satır toplamı); ek fon bedeli hariç."""
         from database.fatura_genel_toplam_service import fatura_net_toplami
 
         return fatura_net_toplami(
             fatura, SatisFaturasiService.toplam(fatura.satirlar)["genel_toplam"]
         )
+
+    @staticmethod
+    def ek_fon_bedeli(fatura) -> tuple[Decimal, Decimal]:
+        return (
+            Decimal(str(getattr(fatura, "fon_ek_bedel_tutari", 0) or 0)),
+            Decimal(str(getattr(fatura, "fon_ek_bedel_kdv", 0) or 0)),
+        )
+
+    @staticmethod
+    def net_toplam(fatura) -> Decimal:
+        """Cari borç ve tahsilat esası (ödenecek toplam): ürün Net'i + ek fon bedeli + KDV'si."""
+        ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(fatura)
+        return SatisFaturasiService.urun_net_toplam(fatura) + ek + ek_kdv
 
     @staticmethod
     def toplam(satirlar):

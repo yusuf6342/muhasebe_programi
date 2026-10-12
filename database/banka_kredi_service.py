@@ -359,6 +359,46 @@ class BankaKrediService:
         return kart, kredi_hesap, odeme_hesap
 
     @staticmethod
+    def odeme_hesap_secenekleri(kredi_id=None, taksit_id=None) -> list[dict]:
+        """Kullanılabilir bakiyesi olan kasa/mevduat/KMH/kredi kartı hesapları; ilk satır kredinin varsayılanı."""
+        with get_session() as session:
+            kredi = None
+            if taksit_id:
+                taksit = session.get(BankaKrediTaksit, int(taksit_id))
+                kredi = taksit.kredi if taksit else None
+            elif kredi_id:
+                kredi = session.get(BankaKredisi, int(kredi_id))
+            varsayilan_id = None
+            if kredi is not None:
+                try:
+                    varsayilan_id = BankaKrediService._kredi_hesaplari(session, kredi)[2].id
+                except ValueError:
+                    varsayilan_id = None
+            hesaplar = session.scalars(
+                select(FinansHesabi)
+                .where(FinansHesabi.aktif.is_(True))
+                .options(selectinload(FinansHesabi.hareketler), selectinload(FinansHesabi.banka_karti))
+            ).all()
+            sonuc = []
+            for h in hesaplar:
+                tur = (h.hesap_turu or "").upper()
+                alt = (h.alt_hesap_turu or "").upper()
+                if tur != "KASA" and alt not in ODEME_HESAP_ALT_TURLERI:
+                    continue
+                if h.id != varsayilan_id and FinansService.kullanilabilir_bakiye(h, kart=h.banka_karti) <= 0:
+                    continue
+                bakiye = FinansService.bakiye(h)
+                ad = h.banka_karti.banka_adi if h.banka_karti else h.hesap_adi
+                sonuc.append({
+                    "id": h.id,
+                    "etiket": f"{ad} — {alt or 'KASA'} — {bakiye:,.2f}",
+                    "bakiye": bakiye,
+                    "varsayilan": h.id == varsayilan_id,
+                })
+            sonuc.sort(key=lambda s: (not s["varsayilan"], s["etiket"].casefold()))
+            return sonuc
+
+    @staticmethod
     def _odenen_bilesenler(session, taksit_id) -> dict:
         veri = {alan: SIFIR for alan in BILESEN_ALANLARI}
         if not taksit_id:

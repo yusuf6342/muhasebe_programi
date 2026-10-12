@@ -26,6 +26,16 @@ class Cari(Base):
     acik_hesap_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     cek_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     senet_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    toplam_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    # Limit denetimi yalnız işaretliyse yapılır; işaretli ve 0 TL geçerli limittir.
+    acik_hesap_limit_uygula: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    cek_limit_uygula: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    senet_limit_uygula: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    toplam_limit_uygula: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    vade_farki_aylik_oran: Mapped[Decimal | None] = mapped_column(Numeric(9, 4), nullable=True)
+    vade_farki_yillik_oran: Mapped[Decimal | None] = mapped_column(Numeric(9, 4), nullable=True)
+    vade_farki_donem: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    vade_farki_aciklama: Mapped[str | None] = mapped_column(String(200), nullable=True)
     satis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
     alis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
     muhasebe_borclu_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -238,3 +248,4 @@ class CariKapatma(Base):
 
 # Cari hareket kaydedilirken USD karşılığını yazan oturum dinleyicisi
 from database import cari_usd_karsilik_service as _cari_usd_karsilik_service  # noqa: E402,F401
+from database.models import cari_risk as _cari_risk  # noqa: E402,F401

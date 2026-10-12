@@ -23,6 +23,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
+
 VARSAYILAN_DB = Path(os.environ.get("LOCALAPPDATA", "")) / "MuhasebeProgrami" / "data" / "muhasebe.db"
 SONUC = ROOT / "inceleme" / "stoklar" / "stok_uyari_performans.json"
 
@@ -132,10 +134,11 @@ def main() -> int:
         engine.dispose()
         shutil.rmtree(gecici, ignore_errors=True)
     SONUC.parent.mkdir(parents=True, exist_ok=True)
-    SONUC.write_text(json.dumps(sonuc, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    yol = benzersiz_rapor_yolu(SONUC.parent, SONUC.stem, kaynak, SONUC.suffix)
+    yol.write_text(json.dumps(sonuc, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(json.dumps({k: v for k, v in sonuc.items() if k != "ilk_tarama"}, ensure_ascii=False, indent=1, default=str))
     print("ilk_tarama:", {k: v for k, v in sonuc["ilk_tarama"].items() if k != "parca_ilerleme"})
-    print("Sonuç:", SONUC)
+    print("Sonuç:", yol)
     return 0
 
 

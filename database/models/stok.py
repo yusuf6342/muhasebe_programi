@@ -32,6 +32,18 @@ class StokSecenek(Base):
     ad: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
+class StokBirimKisaKod(Base):
+    """Genel birim listesindeki (StokSecenek tur="birim") birimin isteğe bağlı kısa kodu.
+
+    Eski firma veritabanlarında tablo ilk kullanımda ``create(checkfirst=True)`` ile açılır.
+    """
+
+    __tablename__ = "stok_birim_kisa_kodlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    birim_adi: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    kisa_kod: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
 class StokGrubu(Base):
     """Üç seviyeli stok sınıflandırma: 1=Ana, 2=Tali, 3=Alt."""
 
@@ -141,6 +153,8 @@ class StokFiyati(Base):
     fiyat_adi: Mapped[str] = mapped_column(String(100), nullable=False)
     tutar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     para_birimi: Mapped[str] = mapped_column(String(10), nullable=False, default="TL")
+    # "HARIC" / "DAHIL"; NULL = KDV durumu belirtilmemiş (eski kayıtlar)
+    kdv_durumu: Mapped[str | None] = mapped_column(String(10), nullable=True)
     stok: Mapped["StokKarti"] = relationship("StokKarti", back_populates="fiyatlar")
 
 
@@ -238,6 +252,19 @@ class StokHareketi(Base):
     lot_id: Mapped[int | None] = mapped_column(ForeignKey("stok_lotlari.id"), nullable=True)
     miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     birim_maliyet: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class StokStandartMaliyet(Base):
+    """Karşılaştırma amaçlı standart maliyet (temel birim başına); geçerlilik tarihinden itibaren kullanılır."""
+    __tablename__ = "stok_standart_maliyetleri"
+    __table_args__ = (UniqueConstraint("stok_id", "gecerlilik_tarihi", name="uq_stok_standart_maliyet_tarih"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    stok_id: Mapped[int] = mapped_column(ForeignKey("stok_kartlari.id"), nullable=False, index=True)
+    gecerlilik_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    birim_maliyet: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    aciklama: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    olusturan: Mapped[str | None] = mapped_column(String(100), nullable=True)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 

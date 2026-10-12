@@ -30,6 +30,9 @@ class SatisIadeFaturasi(Base):
     kur_sabitlendi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
     doviz_ara_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # İade edilen ek fon bedeli ve KDV'si (kaynak faturanın kayıtlı oranıyla); cari alacağa dahil
+    fon_ek_bedel_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    fon_ek_bedel_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     cari = relationship("Cari")

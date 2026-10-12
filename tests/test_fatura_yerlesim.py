@@ -267,16 +267,86 @@ class FaturaYerlesimTest(unittest.TestCase):
         d.tk.eval(menu.cget("postcommand"))
         etiketler = _menu_etiketleri(menu)
         for beklenen in (
-            "Satırı Düzenle (F2)", "Satırı Çoğalt (Ctrl+D)", "Üste Taşı (Alt+↑)", "Alta Taşı (Alt+↓)",
+            "Satırı Çoğalt (Ctrl+D)", "Üste Taşı (Alt+↑)", "Alta Taşı (Alt+↓)",
             "Fiyatı Stok Kartından Yenile", "Fiyatı Kilitle / Dağıtıma Kapalı",
             "Çoklu İskonto Düzenle", "İskontoyu Temizle", "Satır Açıklaması Gir",
             "Satır Sil (Del)", "Kolon Ayarları…",
         ):
             self.assertIn(beklenen, etiketler)
+        self.assertNotIn("Satırı Düzenle (F2)", etiketler)
         baglam = _menu_etiketleri(d._satir_ctx)
+        self.assertFalse(any("Düzenle" in e and "Satır" in e for e in baglam), baglam)
         self.assertIn("Satır Sil (Del)", baglam)
         self.assertNotIn("Seçili Satırı Sil", baglam)
         self.assertEqual(_menu_etiketleri(d._satir_kolon_ctx), ["Kolon Ayarları…"])
+
+    def test_diger_menusunde_analiz_ve_pencere_dugmeleri_yok(self):
+        self._ac(satir_sayisi=2)
+        d = self.dlg
+        menuler = [d.nametowidget(d._diger_mb.cget("menu"))]
+        etiketler = []
+        while menuler:
+            m = menuler.pop()
+            son = m.index("end")
+            for i in range(0 if son is None else son + 1):
+                if m.type(i) == "separator":
+                    continue
+                etiketler.append(m.entrycget(i, "label"))
+                if m.type(i) == "cascade":
+                    menuler.append(d.nametowidget(m.entrycget(i, "menu")))
+        self.assertTrue(etiketler)
+        self.assertFalse([e for e in etiketler if "Analiz" in e], etiketler)
+        metinler = []
+        yigin = [d]
+        while yigin:
+            w = yigin.pop()
+            yigin.extend(w.winfo_children())
+            metinler.append(_metin(w))
+        self.assertNotIn("─", metinler)
+        self.assertNotIn("□", metinler)
+
+    def test_uzlasilan_tutar_girisinde_yerlesim_kaymaz(self):
+        self._ac(satir_sayisi=3)
+        d = self.dlg
+        self._boyutla(1366, 705)
+
+        def konumlar():
+            sonuc = {}
+            yigin = [d]
+            while yigin:
+                w = yigin.pop()
+                yigin.extend(w.winfo_children())
+                if w.winfo_ismapped() and not isinstance(w, (tk.Menu, tk.Toplevel)):
+                    sonuc[str(w)] = (w.winfo_rootx(), w.winfo_rooty(), w.winfo_width(), w.winfo_height())
+            return sonuc
+
+        giris = d._uzlasilan_tutar_entry
+        ilk = konumlar()
+        for metin in ("4", "40", "400", "4000", "40000,5", "1"):
+            giris.delete(0, "end")
+            giris.insert(0, metin)
+            giris.event_generate("<KeyRelease>")
+            self._pompala(4)
+            simdi = konumlar()
+            degisen = [ad for ad, k in ilk.items() if ad in simdi and simdi[ad] != k]
+            self.assertEqual(degisen, [], f"'{metin}' yazılınca kayan bileşenler")
+
+    def test_fatura_no_elle_yazilip_kaydedilir(self):
+        from database.satis_faturasi_service import SatisFaturasiService
+
+        self._ac(satir_sayisi=2)
+        d = self.dlg
+        self.assertTrue(d.fatura_no_alani.get().strip(), "yeni faturada otomatik numara gelmeli")
+        self.assertNotIn(str(d.fatura_no_alani.cget("state")), ("readonly", "disabled"))
+        d.fatura_no_alani.delete(0, "end")
+        d.fatura_no_alani.insert(0, "ELLE-001")
+        veriler, satirlar = d._fatura_kayit_verilerini_topla()
+        self.assertEqual(veriler["fatura_no"], "ELLE-001")
+        f = SatisFaturasiService.kaydet(veriler, satirlar, None)
+        self.assertEqual((f.fatura_no, f.durum, f.onaylandi), ("ELLE-001", "AÇIK", False))
+        self._ac(fatura=SatisFaturasiService.getir(f.id))
+        self.assertEqual(self.dlg.fatura_no_alani.get(), "ELLE-001")
+        self.assertEqual(self.dlg._fatura_toolbar["rozet"].cget("text"), "AÇIK")
 
     def test_mesaj_paneli_kompakt_hata_gelince_acilir(self):
         from fatura_mesaj_paneli import panel_mesaj_ekle

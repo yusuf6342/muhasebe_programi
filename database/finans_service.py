@@ -217,7 +217,7 @@ class FinansService:
             raise ValueError("Hesap adı zorunludur.")
         if hesap_turu not in HESAP_TURLERI:
             raise ValueError("Geçersiz hesap türü.")
-        acilis = _decimal(veriler.get("acilis_bakiyesi") or 0, "Açılış bakiyesi", Decimal("0"))
+        acilis = _decimal(veriler.get("acilis_bakiyesi") or 0, "Açılış bakiyesi")
 
         with get_session() as session:
             hesap_id = veriler.get("hesap_id")
@@ -1006,7 +1006,10 @@ class FinansService:
         fazla = (veriler.get("kapatma_fazla") or "FIFO").upper()
         if fazla not in ("FIFO", "AVANS"):
             raise ValueError("Kalan tutar için FIFO veya AVANS seçilmelidir.")
-        return {"dagitim": dagitim, "fazla": fazla}
+        beklenen = {
+            int(h): Decimal(str(t)) for h, t in (veriler.get("kapatma_beklenen") or {}).items()
+        }
+        return {"dagitim": dagitim, "fazla": fazla, "beklenen": beklenen}
 
     @staticmethod
     def _kapatma_plani_uygula(session, cari_id, tutar, belge_no, tarih, kaynak_tur, plan) -> None:
@@ -3601,6 +3604,10 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 if tur == "TAHSILAT"
                 else (None, None)
             )
+            if kapatma_plani and kapatma_plani.get("beklenen"):
+                from database.acik_kalem_service import AcikKalemService
+
+                AcikKalemService.beklenen_dogrula(session, cari_id, kapatma_plani["beklenen"])
 
             if otomatik:
                 makbuz_no = FinansService._makbuz_no_sonraki(session)

@@ -178,21 +178,52 @@ class EvobulutCariAktarDialog(tk.Toplevel):
             self.durum.configure(text="Açılış bakiyeleri çekiliyor…")
 
             def _is():
-                from entegrasyon.cari_acilis_import import aktar_api_den
+                from entegrasyon.cari_acilis_import import onizle_satirlari
+                from entegrasyon.evobulut_client import EvobulutClient, load_credentials
 
-                return aktar_api_den()
+                client = EvobulutClient(load_credentials())
+                client.login()
+                satirlar = client.tum_carileri_cek()
+                return satirlar, onizle_satirlari(satirlar)
 
-            def _ok(sonuc):
+            def _sonuc(sonuc):
                 self._busy = False
                 msg = (
                     f"Çekilen: {sonuc.cekilen}  |  Oluşturulan: {sonuc.olusturulan}  |  "
                     f"Atlanan: {sonuc.atlanan}  |  Sıfır: {sonuc.sifir_bakiye}"
                 )
+                if sonuc.inceleme:
+                    msg += (f"\nMuhasebe karşılığı belirsiz ({len(sonuc.inceleme)}; otomatik "
+                            "muhasebeleştirilmez):\n" + "\n".join(sonuc.inceleme[:5]))
                 if sonuc.hatalar:
                     msg += f"\nİlk hatalar:\n" + "\n".join(sonuc.hatalar[:5])
                 self.durum.configure(text=msg)
                 messagebox.showinfo("Açılış aktarım sonucu", msg, parent=self)
                 self.result = sonuc
+
+            def _ok(veri):
+                satirlar, onizleme = veri
+                yazilacak = [k for k in onizleme if k.get("durum") != "Aktarılmaz"]
+                belirsiz = [k for k in yazilacak if k.get("durum") != "Belirli"]
+                metin = (f"Yazılacak açılış: {len(yazilacak)}  |  Muhasebe karşılığı belirli: "
+                         f"{len(yazilacak) - len(belirsiz)}  |  İnceleme gerekiyor: {len(belirsiz)}")
+                if belirsiz:
+                    metin += "\n\nİnceleme gerekenler (cari tarafta yazılır, muhasebe karşılığı tahmin edilmez):\n"
+                    metin += "\n".join(
+                        f"{k['cari_kodu']} ({k['cari_turu']}) {k['tutar']} ({k['kaynak_yon']}): {k['aciklama']}"
+                        for k in belirsiz[:8])
+                if not messagebox.askyesno("Açılış önizleme", metin + "\n\nAktarılsın mı?", parent=self):
+                    self._busy = False
+                    self.durum.configure(text="Açılış aktarımı iptal edildi.")
+                    return
+
+                def _yaz():
+                    from entegrasyon.cari_acilis_import import aktar_satirlari
+
+                    return aktar_satirlari(satirlar)
+
+                arka_planda(self, _yaz, on_ok=_sonuc,
+                            on_err=lambda e: self._hata("EvoBulut API", e))
 
             arka_planda(
                 self,

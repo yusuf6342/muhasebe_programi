@@ -134,6 +134,11 @@ def scan_fatura(rapor: CheckReport, *, yon: str = "satis") -> None:
                     (COALESCE(f.tl_matrah,0) + COALESCE(f.tl_kdv,0))
                     - {beklenen}
                   ) > :tol
+                  -- Fiyatlara dağıtılmış uzlaşma: satırlar zaten Net'i verir
+                  AND ABS(
+                    (COALESCE(f.tl_matrah,0) + COALESCE(f.tl_kdv,0))
+                    - COALESCE(f.tl_genel_toplam,0)
+                  ) > :tol
                 LIMIT :lim
                 """,
                 {"tol": TOL, "lim": MAX_ORNEK},

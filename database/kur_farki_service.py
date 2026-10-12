@@ -204,6 +204,9 @@ class KurFarkiService:
             return None
         kk, ok = _d(fatura.kur), _d(odeme_kuru)
         net = _d(getattr(fatura, "tl_genel_toplam", None)) or Decimal("0")
+        if net > 0:
+            # Döviz borcu ödenecek toplam üzerinden (ek fon bedeli ve KDV'si dahil)
+            net += _d(getattr(fatura, "fon_ek_bedel_tutari", 0)) + _d(getattr(fatura, "fon_ek_bedel_kdv", 0))
         doviz_borc = _q(net / kk) if kk and kk > 0 and net > 0 else None
         doviz = _q(tutar / ok) if ok and ok > 0 else None
         eksik = None if doviz_borc is not None or not (kk and kk > 0) else "faturanın TL net toplamı yok"

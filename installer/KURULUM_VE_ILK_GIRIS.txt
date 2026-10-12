@@ -1,0 +1,62 @@
+﻿CIN MUHASEBE - KURULUM VE İLK GİRİŞ
+===================================
+
+GEREKSİNİMLER
+- Windows 10 / 11, 64 bit. Python veya başka bir program gerekmez.
+- Yönetici (admin) yetkisi gerekmez; program yalnız kuran kullanıcı için kurulur.
+
+KURULUM
+1. CinMuhasebe_Setup_<sürüm>_<tarih>.exe dosyasını çalıştırın.
+2. Cin Muhasebe açıksa önce programı normal şekilde kapatın. Program açıkken kurulum
+   dosyaları değiştirmez; kapatmanız istenir.
+3. İlk kurulumda "Firma verisi" adımında seçin:
+   - Boş firma ile başla: program "YENİ FİRMA" adıyla boş bir firma açar. Firma adı ve
+     bilgilerini program içinden girin (Kullanıcı ve Firma Yönetimi > Firmalar).
+   - Veri paketinden (yedekten) yükle: başka bilgisayarda "Veri Paketi Oluştur" ile
+     alınmış .zip dosyasını seçin. Paket doğrulanır ve yalnız boş veri klasörüne yüklenir;
+     mevcut veri hiçbir zaman üzerine yazılmaz.
+4. İsteğe bağlı: Masaüstü kısayolu. Başlat menüsünde "Cin Muhasebe" klasörü oluşur.
+
+KONUMLAR
+- Program dosyaları : %LOCALAPPDATA%\Programs\Cin Muhasebe
+- Firma verileri    : %LOCALAPPDATA%\MuhasebeProgrami\data
+  Program dosyaları ile veriler ayrı klasördedir. Veri klasörünü OneDrive, Dropbox,
+  Google Drive gibi eşitleme klasörlerine veya ağ klasörüne taşımayın (veri bozulabilir).
+
+İLK GİRİŞ (BOŞ FİRMA)
+1. Programı açın. Giriş ekranında bu kuruluma özel üretilmiş geçici yönetici şifresi
+   gösterilir (kullanıcı adı: admin). "Kopyala" veya "Şifre alanına yaz" ile kullanın.
+   Şifre her kurulumda farklıdır; ortak/sabit bir şifre yoktur.
+2. İlk girişte kendi şifrenizi belirlemeniz zorunludur. Yeni şifre belirlendikten sonra
+   geçici şifre geçersiz olur ve ekranda gösterilmez.
+3. Kullanıcı ve Firma Yönetimi > Firmalar bölümünden firma adı ve bilgilerini girin,
+   ardından gerekirse ek kullanıcıları tanımlayın.
+
+İLK GİRİŞ (VERİ PAKETİNDEN)
+- Paketteki firmanın mevcut kullanıcı adı ve şifresiyle giriş yapın. Kurulum şifreleri
+  değiştirmez.
+
+GÜNCELLEME
+- Yeni sürümün kurulum dosyasını aynı kullanıcıyla çalıştırın. Firma verileri, kullanıcılar,
+  şifreler ve ayarlar korunur.
+- Kurulum, dosyaları değiştirmeden önce veritabanlarını şu klasöre kopyalar:
+  %LOCALAPPDATA%\MuhasebeProgrami\data\yedekler\kurulum_oncesi_<tarih_saat>
+- Yeni sürüm veritabanı yapısında değişiklik gerektiriyorsa program ilk açılışta önce
+  doğrulanmış bir yedek alır, sonra güncellemeyi yapar.
+
+YEDEK / BAŞKA BİLGİSAYARA TAŞIMA
+- Başlat > Cin Muhasebe > "Veri Paketi Oluştur (yedek)": program kapalıyken veri klasörünü
+  tarih damgalı bir .zip paketine koyar (varsayılan: Masaüstü). Paketi güvenli bir yerde
+  saklayın; firma bilgileri içerir.
+- Yeni bilgisayarda kurulumda "Veri paketinden yükle"yi seçin veya kurulumdan sonra programı
+  açmadan Başlat > Cin Muhasebe > "Veri Paketinden Yükle (ilk kurulum)" çalıştırın.
+
+KALDIRMA
+- Ayarlar > Uygulamalar veya Başlat > Cin Muhasebe > "Cin Muhasebe Kaldır".
+- Kaldırma firma verilerini SİLMEZ. Veri klasörü (%LOCALAPPDATA%\MuhasebeProgrami\data)
+  yerinde kalır; tekrar kurulumda aynı verilerle açılır.
+
+AĞ / ORTAK KULLANIM
+- Bu sürüm tek bilgisayarda kullanım içindir. Aynı veritabanının birden fazla bilgisayardan
+  ortak kullanımı (ağ paylaşımı, OneDrive vb. eşitleme) desteklenmez ve veri kaybına yol
+  açabilir. Bilgisayarlar arasında veri taşımak için veri paketi kullanın.

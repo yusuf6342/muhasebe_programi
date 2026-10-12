@@ -281,7 +281,37 @@ class QuoteService:
             )
 
     @staticmethod
+    def _kart_birim_carpani(session, veri: dict) -> Decimal:
+        """Katsayısı gönderilmeyen satır: kartlı üründe kartın katsayısı, kartsızda 1.
+
+        Kartta tanımsız birimli satır yalnız TASLAK kalabilir (onay/aktarım ``belge_birim_sorunu`` ile
+        engellenir); o satırın katsayısı birim tanımlanıp yeniden kaydedilince karttan alınır.
+        """
+        from database.models.stok import StokKarti
+        from database.stok_service import StokService
+
+        kod = (veri.get("urun_kodu") or "").strip()
+        if not kod or kod.upper() in ("OZEL", "MANUEL"):
+            return Decimal("1")
+        kart = session.scalar(
+            select(StokKarti).options(selectinload(StokKarti.birimler)).where(StokKarti.stok_kodu == kod)
+        )
+        if kart is None:
+            return Decimal("1")
+        c = StokService.birim_carpani_bul(kart, veri.get("birim") or kart.birim, kart.birim or "Adet")
+        return c if c is not None else Decimal("1")
+
+    @staticmethod
     def _satirlari_yaz(teklif: SatisTeklifi, satir_verileri: list[dict]) -> None:
+        from sqlalchemy.orm import object_session
+
+        session = object_session(teklif)
+        if session is not None:
+            satir_verileri = [
+                v if v.get("birim_carpani") not in (None, "")
+                else {**v, "birim_carpani": QuoteService._kart_birim_carpani(session, v)}
+                for v in satir_verileri
+            ]
         teklif.satirlar.clear()
         for i, veri in enumerate(satir_verileri, start=1):
             miktar = _d(veri["miktar"], "Miktar", Decimal("0.0001"))

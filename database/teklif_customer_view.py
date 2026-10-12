@@ -160,6 +160,13 @@ FIRMA_ALT_UNVAN = "Ray Mobilya Aksesuarları"
 FIRMA_ALT_SLOGAN = "Mobilya Aksesuarları ve Hırdavat Ürünleri"
 
 
+def alt_unvan(firma: dict) -> str:
+    """Belge alt bilgisindeki firma adı (Ray varsayılanı yalnız Ray firmasında)."""
+    from branding import ray_firmasi_mi
+
+    return FIRMA_ALT_UNVAN if ray_firmasi_mi(firma.get("unvan") or None) else (firma.get("unvan") or "")
+
+
 def para_birimi_etiket(kod: str) -> str:
     k = (kod or "TRY").upper()
     return {"TRY": "TL", "TRL": "TL"}.get(k, k)
@@ -741,11 +748,14 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
     firma_adres = _adres_satiri(
         branding.get("adres"), branding.get("ilce"), branding.get("il")
     )
-    # Ray Mobilya varsayılan iletişim (firma kartı boşsa)
-    telefon = branding.get("telefon") or "0506 136 97 24"
-    if not firma_adres:
+    from branding import _aktif_firma_unvani, ray_firmasi_mi
+
+    # Ray Mobilya varsayılan iletişim (firma kartı boşsa) yalnız Ray firmasında
+    ray = ray_firmasi_mi(branding.get("unvan") or None)
+    telefon = branding.get("telefon") or ("0506 136 97 24" if ray else "")
+    if not firma_adres and ray:
         firma_adres = "Adnan Kahveci Mah. Kazım Karabekir Cad. No:52 Beylikdüzü/İstanbul"
-    unvan = branding.get("unvan") or "RAY MOBİLYA AKSESUARLARI"
+    unvan = branding.get("unvan") or ("RAY MOBİLYA AKSESUARLARI" if ray else _aktif_firma_unvani())
 
     vm = CustomerQuoteViewModel(
         belge_baslik="FİYAT TEKLİFİ",
@@ -761,7 +771,7 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
             "vergi_no": branding.get("vergi_no") or "",
         },
         logo_data_uri=logo,
-        firma_slogan=sablon.get("firma_slogan") or FIRMA_ALT_SLOGAN,
+        firma_slogan=sablon.get("firma_slogan") or (FIRMA_ALT_SLOGAN if ray else ""),
         teklif_no=teklif_no,
         teklif_tarihi=_g("teklif_tarihi")
         or (_tarih(teklif.teklif_tarihi) if teklif else ""),

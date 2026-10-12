@@ -87,6 +87,10 @@ def fatura_ozet_alanlari(kart) -> list[tuple[str, str]]:
         ("Vade Tarihi", vade or "—"),
         ("Genel Toplam", _para(genel)),
     ]
+    ek, ek_kdv = getattr(kart, "_fon_ek_bedel", (Decimal("0"), Decimal("0")))
+    if ek > 0:
+        alanlar += [("Ek Fon Bedeli", _para(ek)), ("Ek Fon Bedeli KDV", _para(ek_kdv)),
+                    ("Ödenecek Toplam", _para(genel + ek + ek_kdv))]
 
     satirlar = getattr(kart, "satirlar", None) or []
     for i, s in enumerate(satirlar[:40], start=1):

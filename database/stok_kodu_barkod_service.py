@@ -1,7 +1,11 @@
 """Stok kodu → 1. barkod otomatik senkron (merkezi kural).
 
 Kurallar:
-- Stok kodu trim + yalnızca 13 rakam → barkod adayı (metin; baştaki sıfır korunur).
+- Stok kodu trim; yalnızca programın ürettiği/desteklediği EAN-13 biçimine uzunluk ve kontrol
+  basamağıyla uyan kod barkod olur (metin; baştaki sıfır korunur). Yalnızca sayısal olması yetmez.
+  8/12 haneli sayısal kodlar çoğunlukla iç koddur; tesadüfen tutan kontrol basamağıyla barkod sayılmaz.
+- Barkod uzunluğunda olup kontrol basamağı tutmayan kod barkoda alınmaz; uyarı verilir, mevcut
+  satırlara dokunulmaz.
 - Otomatik satırlar aciklama içinde AUTO_STOK_KODU işareti taşır.
 - Manuel barkodlar asla silinmez / üzerine yazılmaz.
 """
@@ -21,6 +25,8 @@ TUR_EAN13 = "EAN-13"
 TUR_EAN13_DOGRULANDI = "EAN-13 Doğrulandı"
 TUR_DAHILI = "13 Haneli Dahili Barkod"
 
+GS1_BICIMLERI = {13: "EAN-13"}
+
 
 def normalize_stock_code_as_text(stock_code: Any) -> str:
     """Metin olarak normalize; sayıya çevirme, baştaki sıfırları koru."""
@@ -38,8 +44,35 @@ def validate_ean13_check_digit(barcode: Any) -> bool:
     return ean13_dogrula(normalize_stock_code_as_text(barcode))
 
 
-def _auto_aciklama(*, ean_ok: bool) -> str:
-    tur = TUR_EAN13_DOGRULANDI if ean_ok else TUR_DAHILI
+def gs1_kontrol_basamagi_dogru(kod: str) -> bool:
+    """GS1 mod-10: kontrol basamağının solundaki haneden başlayarak 3,1,3,1… ağırlık."""
+    if not kod.isdigit() or len(kod) not in GS1_BICIMLERI:
+        return False
+    govde = kod[:-1]
+    toplam = sum(int(h) * (3 if i % 2 == 0 else 1) for i, h in enumerate(reversed(govde)))
+    return (10 - toplam % 10) % 10 == int(kod[-1])
+
+
+def barkod_uzunlugunda_mi(stock_code: Any) -> bool:
+    kod = normalize_stock_code_as_text(stock_code)
+    return kod.isdigit() and len(kod) in GS1_BICIMLERI
+
+
+def barkod_bicimi(stock_code: Any) -> str | None:
+    """Kod desteklenen bir barkod biçimine uzunluk + kontrol basamağıyla uyuyorsa biçim adı."""
+    kod = normalize_stock_code_as_text(stock_code)
+    if gs1_kontrol_basamagi_dogru(kod):
+        return GS1_BICIMLERI[len(kod)]
+    return None
+
+
+def _auto_aciklama(*, ean_ok: bool, bicim: str = "EAN-13") -> str:
+    if not ean_ok:
+        tur = TUR_DAHILI
+    elif bicim == "EAN-13":
+        tur = TUR_EAN13_DOGRULANDI
+    else:
+        tur = f"{bicim} Doğrulandı"
     return f"{AUTO_MARKER} {tur} | {KAYNAK_METIN}"
 
 
@@ -125,14 +158,15 @@ def check_duplicate_barcode(
     return None
 
 
-def _auto_kayit(kod: str, *, birim: str, ean_ok: bool) -> dict:
+def _auto_kayit(kod: str, *, birim: str, ean_ok: bool, bicim: str = "EAN-13") -> dict:
+    aciklama = _auto_aciklama(ean_ok=ean_ok, bicim=bicim)
     return {
         "barkod": kod,  # metin
         "birim": (birim or "Adet").strip() or "Adet",
         "fiyat_adi": "SATIŞ FİYATI 1",
         "fiyat": "0",
-        "aciklama": _auto_aciklama(ean_ok=ean_ok),
-        "barkod_turu": TUR_EAN13_DOGRULANDI if ean_ok else TUR_DAHILI,
+        "aciklama": aciklama,
+        "barkod_turu": aciklama.split(" | ")[0].replace(AUTO_MARKER, "").strip(),
         "sira": 1,
     }
 
@@ -167,14 +201,23 @@ def sync_primary_barcode_from_stock_code(
         "atlandi_mukerrer": False,
     }
 
-    gecerli = is_13_digit_barcode(kod)
-    ean_ok = validate_ean13_check_digit(kod) if gecerli else False
+    bicim = barkod_bicimi(kod)
+    ean_ok = bicim is not None
     rapor["ean_ok"] = ean_ok
+    rapor["bicim"] = bicim
 
     # Otomatik satır indeksleri
     auto_idx = [i for i, b in enumerate(liste) if is_auto_from_stock_code(b)]
 
-    if not gecerli:
+    if not ean_ok and barkod_uzunlugunda_mi(kod):
+        rapor["uyari_ean"] = (
+            f"Stok kodu {len(kod)} hanelidir ancak {GS1_BICIMLERI[len(kod)]} kontrol basamağı tutmuyor; "
+            "barkod olarak eklenmedi."
+        )
+        rapor["aksiyon"] = "gecersiz"
+        return rapor
+
+    if not ean_ok:
         if auto_idx:
             # Yalnızca otomatik satırları kaldır; manuel korunur
             yeni = [b for i, b in enumerate(liste) if i not in set(auto_idx)]
@@ -182,11 +225,6 @@ def sync_primary_barcode_from_stock_code(
             rapor["aksiyon"] = "remove"
             rapor["kaldirildi"] = True
         return rapor
-
-    if not ean_ok:
-        rapor["uyari_ean"] = (
-            "Kod 13 hanelidir ancak EAN-13 kontrol basamağı doğrulanamadı."
-        )
 
     # Kod zaten listede mi?
     mevcut_kodlar = {
@@ -204,7 +242,7 @@ def sync_primary_barcode_from_stock_code(
             rapor["atlandi_mukerrer"] = True
             return rapor
 
-    yeni_kayit = _auto_kayit(kod, birim=birim, ean_ok=ean_ok)
+    yeni_kayit = _auto_kayit(kod, birim=birim, ean_ok=ean_ok, bicim=bicim)
 
     # Mevcut otomatik satırları kaldırıp birincil otomatik kaydı yeniden yerleştir
     if auto_idx:

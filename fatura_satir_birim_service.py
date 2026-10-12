@@ -111,6 +111,7 @@ def _stok_yukle(urun_kodu: str):
                     fiyat_adi=f.fiyat_adi,
                     tutar=f.tutar,
                     para_birimi=getattr(f, "para_birimi", None) or "TL",
+                    kdv_durumu=getattr(f, "kdv_durumu", None),
                 )
                 for f in (stok.fiyatlar or [])
             ]
@@ -225,8 +226,7 @@ def birim_satis_fiyati(
         )
     except Exception:
         temel = varsayilan or Decimal("0")
-    ana = (getattr(stok, "birim", None) or "Adet").strip()
-    carpan = StokService.birim_carpani(stok, birim, ana)
+    carpan = _kart_carpani(stok, birim)
     if carpan == 1:
         return Decimal(str(temel)) if temel is not None else varsayilan
     return (Decimal(str(temel)) * carpan).quantize(Decimal("0.0001"))
@@ -265,11 +265,8 @@ def fiyat_birim_donustur(
 ) -> Decimal:
     """Aynı mal bedeli: eski birim fiyatını yeni birime çevir."""
     stok = _stok_yukle(urun_kodu)
-    ana = (getattr(stok, "birim", None) or "Adet") if stok else "Adet"
-    eski_c = StokService.birim_carpani(stok or [], eski_birim, ana)
-    yeni_c = StokService.birim_carpani(stok or [], yeni_birim, ana)
-    if eski_c <= 0:
-        eski_c = Decimal("1")
+    eski_c = _kart_carpani(stok, eski_birim)
+    yeni_c = _kart_carpani(stok, yeni_birim)
     return (Decimal(str(eski_fiyat)) * (yeni_c / eski_c)).quantize(Decimal("0.0001"))
 
 
@@ -281,17 +278,23 @@ def miktar_birim_donustur(
 ) -> Decimal:
     """Aynı fiziksel miktarı yeni birimde ifade et."""
     stok = _stok_yukle(urun_kodu)
-    ana = (getattr(stok, "birim", None) or "Adet") if stok else "Adet"
-    oniz = StokService.birim_donusum_onizleme(
-        eski_miktar, eski_birim, yeni_birim, stok or [], ana
-    )
+    if stok is None:
+        return Decimal(str(eski_miktar or 0)).quantize(Decimal("0.000001"))
+    oniz = StokService.birim_donusum_onizleme(eski_miktar, eski_birim, yeni_birim, stok, stok.birim)
     return Decimal(str(oniz["hedef_miktar"]))
 
 
+def _kart_carpani(stok, birim: str) -> Decimal:
+    """Kartlı satırda kesin katsayı (tanımsız birim ``BirimDonusumHatasi``); kartsız satırda 1."""
+    if stok is None:
+        return Decimal("1")
+    return StokService._birim_carpani_zorunlu(stok, birim, stok.birim)
+
+
 def temel_miktar(miktar, birim: str, urun_kodu: str) -> Decimal:
+    """Temel stok birimi miktarı; kartta tanımsız birimde ``BirimDonusumHatasi``."""
     stok = _stok_yukle(urun_kodu)
-    ana = (getattr(stok, "birim", None) or "Adet") if stok else "Adet"
-    return StokService.temel_miktara_cevir(miktar, birim, stok or [], ana)
+    return (Decimal(str(miktar or 0)) * _kart_carpani(stok, birim)).quantize(Decimal("0.000001"))
 
 
 def birim_degistir(
@@ -362,7 +365,7 @@ def birim_degistir(
                 )
             except ValueError:
                 yeni_fiyat = None
-        if yeni_fiyat is None:
+        if yeni_fiyat is None or (yeni_fiyat <= 0 < eski_fiyat):
             yeni_fiyat = fiyat_birim_donustur(eski_fiyat, eski_birim, yeni_birim, kod)
         sonuc["birim_satis_fiyati"] = str(yeni_fiyat)
         sonuc["manuel_fiyat"] = False

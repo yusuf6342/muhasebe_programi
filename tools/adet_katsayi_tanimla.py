@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("MUHASEBE_DB_DIR", tempfile.mkdtemp(prefix="cin_adet_"))
 
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
 from tools.stok_birim_inceleme_listesi import satirlari_topla, tr_kucuk  # noqa: E402
 
 VARSAYILAN_DB = Path(os.environ["LOCALAPPDATA"]) / "MuhasebeProgrami" / "data" / "muhasebe.db"
@@ -304,10 +305,12 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dry-run", action="store_true", default=True)
     g.add_argument("--uygula", action="store_true")
-    ap.add_argument("--cikti", default=str(CIKTI))
+    ap.add_argument("--cikti", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     ap.add_argument("--sonuc", default=None)
     a = ap.parse_args()
     db = Path(a.db)
+    if a.cikti is None:
+        a.cikti = str(benzersiz_rapor_yolu(CIKTI.parent, CIKTI.stem, db, CIKTI.suffix))
     gercek = db.resolve() == VARSAYILAN_DB.resolve()
 
     urunler, sayim = urun_kanitlari(db)

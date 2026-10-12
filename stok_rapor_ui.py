@@ -160,87 +160,9 @@ def _rapor_ust(app, baslik):
 
 
 def rapor_envanter(app):
-    _rapor_ust(app, "STOK ENVANTER RAPORU")
-    filtre = ttk.Frame(app.icerik)
-    filtre.pack(fill="x", pady=(10, 4))
+    from stok_raporlari_ui import degerleme_goster
 
-    ttk.Label(filtre, text="Tarih:").pack(side="left")
-    tarih_c = ttk.Frame(filtre)
-    tarih_c.pack(side="left", padx=4)
-    tarih = ttk.Entry(tarih_c, width=12)
-    tarih.pack(side="left")
-    tarih.insert(0, _tarih(date.today()))
-    takvim_butonu(tarih_c, tarih)
-
-    ttk.Label(filtre, text="Maliyet:").pack(side="left", padx=(10, 2))
-    maliyet = ttk.Combobox(filtre, values=MALIYET_YONTEMLERI_RAPOR, state="readonly", width=28)
-    maliyet.set("FIFO")
-    maliyet.pack(side="left", padx=4)
-
-    depolar = ["(Tümü)"] + [d.ad for d in StokService.depolar()]
-    ttk.Label(filtre, text="Depo:").pack(side="left", padx=(10, 2))
-    depo = ttk.Combobox(filtre, values=depolar, state="readonly", width=16)
-    depo.set("(Tümü)")
-    depo.pack(side="left", padx=4)
-
-    ttk.Label(filtre, text="Stok:").pack(side="left", padx=(10, 2))
-    stok = ttk.Entry(filtre, width=14)
-    stok.pack(side="left", padx=4)
-
-    ozet = ttk.Label(app.icerik, text="Tarih ve maliyet yöntemini seçip raporu getirin.")
-    ozet.pack(anchor="w", pady=4)
-    tablo = _tablo(
-        app.icerik,
-        ("kod", "ad", "tur", "depo", "birim", "miktar", "maliyet", "tutar"),
-        ("Stok Kodu", "Stok Adı", "Tür", "Depo", "Birim", "Miktar", "Birim Maliyet", "Tutar"),
-        (100, 200, 90, 100, 60, 80, 110, 110),
-    )
-
-    def getir():
-        try:
-            t = _tarih_oku(tarih, zorunlu=True)
-        except ValueError as hata:
-            messagebox.showerror("Tarih", str(hata), parent=app)
-            return
-        depo_adi = None if depo.get() == "(Tümü)" else depo.get()
-        maliyet_adi = maliyet.get()
-        stok_f = stok.get().strip() or None
-        ozet.configure(text="Rapor hesaplanıyor…")
-
-        def _yukle():
-            return RaporService.stok_envanter(
-                tarih=t,
-                maliyet_yontemi=maliyet_adi,
-                depo_adi=depo_adi,
-                stok_filtre=stok_f,
-            )
-
-        def _ok(rapor):
-            if not app.winfo_exists():
-                return
-            ozet.configure(
-                text=(
-                    f"Tarih: {_tarih(rapor['tarih'])}  |  {rapor['maliyet_yontemi']}  |  "
-                    f"Satır: {len(rapor['satirlar'])}  |  "
-                    f"Toplam tutar: {_para(rapor['toplam_tutar'])}"
-                )
-            )
-            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
-                s["stok_kodu"], s["stok_adi"], s["kart_turu"], s["depo"], s["birim"],
-                s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
-            ))
-
-        def _err(exc):
-            if app.winfo_exists():
-                ozet.configure(text="Rapor alınamadı.")
-                messagebox.showerror("Stok envanter", str(exc), parent=app)
-
-        from ui_bg import arka_planda
-
-        arka_planda(app, _yukle, on_ok=_ok, on_err=_err)
-
-    ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=10)
-    getir()
+    return degerleme_goster(app)
 
 
 def rapor_kar_zarar(app):
@@ -424,130 +346,15 @@ def rapor_kar_zarar(app):
 
 
 def rapor_satilmayan(app):
-    _rapor_ust(app, "SATILMAYAN ÜRÜNLER RAPORU")
-    filtre = ttk.Frame(app.icerik)
-    filtre.pack(fill="x", pady=(10, 4))
-    ttk.Label(filtre, text="En az kaç gündür satılmadı:").pack(side="left")
-    gun = ttk.Spinbox(filtre, from_=0, to=9999, width=8)
-    gun.set("30")
-    gun.pack(side="left", padx=6)
-    ttk.Label(filtre, text="Stok:").pack(side="left", padx=(10, 2))
-    stok = ttk.Entry(filtre, width=16)
-    stok.pack(side="left")
-    ozet = ttk.Label(app.icerik, text="")
-    ozet.pack(anchor="w", pady=4)
-    tablo = _tablo(
-        app.icerik,
-        ("kod", "ad", "birim", "mevcut", "son", "gun"),
-        ("Stok Kodu", "Stok Adı", "Birim", "Mevcut", "Son Satış", "Gün"),
-        (110, 280, 70, 90, 110, 80),
-    )
+    from stok_raporlari_ui import yavas_satilmayan_goster
 
-    def getir():
-        try:
-            min_gun = int(gun.get())
-        except ValueError:
-            messagebox.showerror("Gün", "Geçerli gün sayısı girin.", parent=app)
-            return
-        stok_f = stok.get().strip() or None
-
-        def goster(rapor):
-            ozet.configure(
-                text=f"Eşik: {rapor['min_gun']} gün  |  {len(rapor['satirlar'])} ürün  |  {_tarih(rapor['tarih'])}"
-            )
-            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
-                s["stok_kodu"], s["stok_adi"], s["birim"], s["mevcut"],
-                "Hiç satılmadı" if s["hic_satilmadi"] else _tarih(s["son_satis"]),
-                "—" if s["hic_satilmadi"] else s["gun"],
-            ))
-
-        arka_plan_rapor(app, ozet, buton, lambda: RaporService.satilmayan_urunler(min_gun, stok_f),
-                        goster, "Satılmayan ürünler")
-
-    buton = ttk.Button(filtre, text="Raporu Getir", command=getir)
-    buton.pack(side="left", padx=10)
-    getir()
+    return yavas_satilmayan_goster(app)
 
 
 def rapor_devir(app):
-    _rapor_ust(app, "STOK DEVİR HIZI")
-    ttk.Label(
-        app.icerik,
-        text=(
-            "Devir Hızı = Dönem Satış Maliyeti (COGS) / Ortalama Stok Değeri. "
-            "Ortalama Stok = (Dönem Başı + Dönem Sonu) / 2. "
-            "Stokta Kalma (gün) = Dönem Gün Sayısı / Devir Hızı."
-        ),
-        wraplength=900,
-        justify="left",
-    ).pack(anchor="w", pady=(8, 4))
+    from stok_raporlari_ui import devir_yeterlilik_goster
 
-    filtre = ttk.Frame(app.icerik)
-    filtre.pack(fill="x", pady=4)
-    ttk.Label(filtre, text="Başlangıç:").pack(side="left")
-    b_c = ttk.Frame(filtre)
-    b_c.pack(side="left")
-    baslangic = ttk.Entry(b_c, width=11)
-    baslangic.pack(side="left")
-    baslangic.insert(0, _tarih(date(date.today().year, 1, 1)))
-    takvim_butonu(b_c, baslangic)
-
-    ttk.Label(filtre, text="Bitiş:").pack(side="left", padx=(8, 0))
-    e_c = ttk.Frame(filtre)
-    e_c.pack(side="left")
-    bitis = ttk.Entry(e_c, width=11)
-    bitis.pack(side="left")
-    bitis.insert(0, _tarih(date.today()))
-    takvim_butonu(e_c, bitis)
-
-    ttk.Label(filtre, text="Stok:").pack(side="left", padx=(10, 2))
-    stok = ttk.Entry(filtre, width=12)
-    stok.pack(side="left")
-    ttk.Label(filtre, text="Maliyet:").pack(side="left", padx=(8, 2))
-    maliyet = ttk.Combobox(filtre, values=MALIYET_YONTEMLERI_RAPOR, state="readonly", width=24)
-    maliyet.set("FIFO")
-    maliyet.pack(side="left")
-
-    ozet = ttk.Label(app.icerik, text="")
-    ozet.pack(anchor="w", pady=4)
-    tablo = _tablo(
-        app.icerik,
-        ("kod", "ad", "bas", "son", "ort", "cogs", "devir", "gun"),
-        ("Kod", "Ad", "Başı Miktar", "Sonu Miktar", "Ort. Değer", "COGS", "Devir Hızı", "Gün Stokta"),
-        (90, 180, 90, 90, 100, 100, 90, 90),
-    )
-
-    def getir():
-        try:
-            b = _tarih_oku(baslangic, zorunlu=True)
-            e = _tarih_oku(bitis, zorunlu=True)
-        except ValueError as hata:
-            messagebox.showerror("Rapor", str(hata), parent=app)
-            return
-        stok_f, yontem = stok.get().strip() or None, maliyet.get()
-
-        def goster(rapor):
-            ozet.configure(
-                text=(
-                    f"{_tarih(rapor['baslangic'])} – {_tarih(rapor['bitis'])}  "
-                    f"({rapor['gun_sayisi']} gün)  |  {rapor['maliyet_yontemi']}  |  "
-                    f"{len(rapor['satirlar'])} stok"
-                )
-            )
-            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
-                s["stok_kodu"], s["stok_adi"][:28],
-                s["bas_miktar"], s["son_miktar"],
-                _para(s["ort_deger"]), _para(s["cogs"]),
-                f"{s['devir_hizi']:.2f}",
-                f"{s['gun_stokta']:.1f}" if s["gun_stokta"] is not None else "—",
-            ))
-
-        arka_plan_rapor(app, ozet, buton, lambda: RaporService.stok_devir_hizi(b, e, stok_f, yontem),
-                        goster, "Stok devir hızı")
-
-    buton = ttk.Button(filtre, text="Raporu Getir", command=getir)
-    buton.pack(side="left", padx=10)
-    getir()
+    return devir_yeterlilik_goster(app)
 
 
 def rapor_hareket(app):

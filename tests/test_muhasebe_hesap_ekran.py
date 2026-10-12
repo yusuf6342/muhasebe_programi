@@ -192,7 +192,8 @@ class FaturaVeFisListeleriEkranTest(_EkranTemel):
                    "yeni_iade", "iade_ac", "iade_iptal", "_secili_iade_id"):
             setattr(sahte, ad, getattr(app_modul.MuhasebeApp, ad).__get__(sahte))
         sahte.satis_iade_faturalari_goster()
-        self.assertEqual(self._kolon()[str(si.id)], BELGE_BEKLIYOR)
+        # Kaynak satışı olmayan iadede ilk satış maliyeti tahmin edilmez
+        self.assertEqual(self._kolon()[str(si.id)], BELGE_INCELEME)
         self._ekran("satis_iade_listesi")
         sahte.alis_iade_faturalari_goster()
         self.assertEqual(self._kolon()[str(ai.id)], BELGE_BEKLIYOR)

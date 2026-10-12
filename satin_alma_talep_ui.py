@@ -121,7 +121,8 @@ class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
         self.kaydet_btn.pack(side="left", padx=3)
         for metin, islem in (("Önizle", "onizleme"), ("PDF", "pdf"), ("Word", "word"), ("Yazdır", "yazdir")):
             ftema.tk_buton(sag, metin, lambda i=islem: self.cikti(i), rol="ikincil").pack(side="left", padx=3)
-        ftema.tk_buton(sag, "Kapat", self.kapat, rol="ikincil").pack(side="left", padx=(10, 3))
+        ftema.tk_buton(sag, "Listeye Git", self.listeye_git, rol="ikincil").pack(side="left", padx=(10, 3))
+        ftema.tk_buton(sag, "Kapat", self.kapat, rol="ikincil").pack(side="left", padx=3)
         ftema.renkleri_tersle(refs["cubuk"], haric=[self.durum_lbl])
 
         # --- alt çubuklar ekranın altına sabitlenir (kısa ekranda düğmeler görünür kalır)
@@ -1021,6 +1022,18 @@ class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
                 return
         self.destroy()
 
+    def listeye_git(self):
+        from satin_alma_ui import belgeden_listeye_git
+
+        app = self._root()
+        self.kapat()
+        try:
+            if self.winfo_exists():
+                return
+        except tk.TclError:
+            pass
+        belgeden_listeye_git(app, lambda: satin_alma_talep_listesi_goster(app), self.talep_id)
+
 
 class EklerDialog(tk.Toplevel):
     def __init__(self, parent, talep_id: int, duzenlenebilir: bool = True):
@@ -1429,6 +1442,13 @@ def satin_alma_talep_listesi_goster(app) -> dict:
         ciz()
 
     def yenile():
+        from satin_alma_ui import bos_liste_bilgisi, secimi_koruyarak
+
+        try:
+            if not tablo.winfo_exists():
+                return
+        except tk.TclError:
+            return
         try:
             durum["kayitlar"] = SatinAlmaTalepService.listele(
                 alanlar["durum"].get(), baslangic=_tarih_oku(alanlar["bas"].get()),
@@ -1439,7 +1459,9 @@ def satin_alma_talep_listesi_goster(app) -> dict:
         except (ValueError, PermissionError) as e:
             messagebox.showerror("Talep listesi", str(e), parent=app)
             return
-        ciz()
+        secimi_koruyarak(tablo, ciz)
+        bos_liste_bilgisi(tablo, "Bu filtrelere uyan satın alma talebi yok. Filtreleri değiştirin veya "
+                                 "Yeni Talep ile ilk talebi girin.", lambda: ac(None), "Yeni Talep")
 
     def ac(talep_id=None):
         dlg = talep_formu_ac(app, talep_id)

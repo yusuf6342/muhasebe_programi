@@ -40,7 +40,9 @@ class StokGrupDialog(tk.Toplevel):
         seviye: int = SEVIYE_ANA,
         parent_id: int | None = None,
         duzenle: dict | None = None,
+        seviye_sabit: bool = False,
     ):
+        """seviye_sabit: stok kartındaki seviye düğmesinden açılır; seviye ve üst grup değiştirilemez."""
         super().__init__(parent)
         self.result = None
         self._kaydediliyor = False
@@ -113,6 +115,10 @@ class StokGrupDialog(tk.Toplevel):
             self._baslangic_seviye = int(seviye)
             self._baslangic_parent = parent_id
             self._seviye_degisti(secili_parent=parent_id)
+            if seviye_sabit:
+                self.title(f"Yeni {SEVIYE_ADLARI.get(int(seviye), 'Grup')}")
+                self.seviye_cb.configure(state="disabled")
+                self.ust_cb.configure(state="disabled")
 
         self.kod.focus_set()
         self.bind("<Return>", lambda _e: self._kaydet())

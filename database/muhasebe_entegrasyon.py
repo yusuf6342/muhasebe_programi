@@ -220,6 +220,7 @@ ONERI_HESAPLAR = (
     ("391", "Hesaplanan KDV", "Pasif", "hesaplanan_kdv"),
     ("400", "Banka Kredileri", "Pasif", "kredi_uzun_vadeli"),
     ("600", "Yurtiçi Satışlar", "Gelir", "yurtici_satislar"),
+    ("610", "Satıştan İadeler (-)", "Gelir", "satistan_iadeler"),
     ("621", "Satılan Ticari Mallar Maliyeti", "Gider", "satilan_mal_maliyeti"),
     ("646", "Kambiyo Karları", "Gelir", "kur_farki_geliri"),
     ("656", "Kambiyo Zararları", "Gider", "kur_farki_gideri"),
@@ -481,7 +482,8 @@ class MuhasebeEntegrasyonService:
     def evrak_fis_idleri(evrak_turu: str, kaynak_id: int, *, session=None) -> list[int]:
         """Evrakın etkin (iptal edilmemiş) fişleri: ana fiş + tahsilat/ödeme fişi."""
         sonuc = []
-        for kaynak in EVRAKLAR[evrak_turu]["kaynaklar"]:
+        kaynaklar = list(EVRAKLAR[evrak_turu]["kaynaklar"])
+        for kaynak in kaynaklar + ["kdv_duz_" + kaynaklar[0]]:
             fid = MuhasebeEntegrasyonService.mevcut_fis_id(kaynak, kaynak_id, session=session)
             if fid:
                 sonuc.append(int(fid))
@@ -498,9 +500,21 @@ class MuhasebeEntegrasyonService:
             )
             if not fis_id:
                 return None
+            MuhasebeEntegrasyonService._kdv_duzeltme_fisini_kapat(
+                kaynak_turu, kaynak_id, neden or f"Kaynak iptal: {kaynak_turu}", session=session)
             return MuhasebeFisService.iptal(
                 fis_id, neden or f"Kaynak iptal: {kaynak_turu}", otomatik=True, session=session
             )
+
+    @staticmethod
+    def _kdv_duzeltme_fisini_kapat(kaynak_turu: str, kaynak_id: int, neden: str, *, session) -> None:
+        """Ana fiş iptal / yeniden yazılırken belgeye bağlı KDV düzeltme fişi de ters kayıtla kapanır."""
+        if not kaynak_turu or kaynak_turu.startswith("kdv_duz_"):
+            return
+        duz = MuhasebeEntegrasyonService.mevcut_fis_id("kdv_duz_" + kaynak_turu, kaynak_id, session=session)
+        if duz:
+            MuhasebeFisService.iptal(duz, neden, otomatik=True, session=session)
+            session.flush()
 
     @staticmethod
     def _hesap(anahtar: str, *, session=None) -> dict:
@@ -530,12 +544,50 @@ class MuhasebeEntegrasyonService:
             return {"id": h.id, "kod": h.hesap_kodu, "ad": h.hesap_adi}
 
     @staticmethod
+    def _hesap_kodla(kod: str | None, etiket: str, *, session=None) -> dict:
+        """Ayarda kodu saklanan hesap (ör. fon ek bedeli): eşleştirme hesabıyla aynı uygunluk kuralları."""
+        kod = (kod or "").strip()
+        if not kod:
+            raise ValueError(f"{etiket} seçilmemiş.")
+        with oturum_kullan(session) as session:
+            firma_id = MuhasebeService.yerel_firma_id(session)
+            h = session.scalar(
+                select(HesapPlani).where(HesapPlani.firma_id == firma_id, HesapPlani.hesap_kodu == kod)
+            )
+            if h is None or not h.aktif:
+                raise ValueError(f"{etiket} ({kod}) hesap planında yok veya pasif.")
+            if not fis_icin_alt_hesap_mi(h.hesap_kodu):
+                raise ValueError(
+                    f"{etiket} ana hesaba bağlı ({kod}). Fiş yalnız alt hesaba yazılır "
+                    f"(ör. {kod}.01.0001)."
+                )
+            sorun = hesap_uygunluk_sorunu(session, h, firma_id)
+            if sorun:
+                raise ValueError(f"{etiket} uygun değil: {sorun}")
+            return {"id": h.id, "kod": h.hesap_kodu, "ad": h.hesap_adi}
+
+    @staticmethod
     def esleme_sorunu(anahtar: str, *, session=None) -> str | None:
         try:
             MuhasebeEntegrasyonService._hesap(anahtar, session=session)
         except ValueError as hata:
             return str(hata)
         return None
+
+    @staticmethod
+    def _fatura_finans_tutari(session, belge_no: str, hareket_turu: str) -> Decimal:
+        """Faturanın kendi kasa/banka hareketi. Açık kalem kapatmaları (avans mahsubu, sonradan cari
+        tahsilat/ödeme) belgenin tahsilat/ödeme tutarını artırır ama kendi fişleri vardır; dahil edilmez."""
+        from sqlalchemy import func
+
+        from database.models.finans import FinansHareketi
+
+        toplam = session.scalar(
+            select(func.coalesce(func.sum(FinansHareketi.tutar), 0)).where(
+                FinansHareketi.belge_no == belge_no, FinansHareketi.hareket_turu == hareket_turu
+            )
+        )
+        return decimal(toplam or 0)
 
     @staticmethod
     def _kasa_veya_banka(odeme_sekli: str | None, hesap_adi: str | None, *, session=None) -> dict:
@@ -577,6 +629,8 @@ class MuhasebeEntegrasyonService:
             if mevcut and not yeniden:
                 return mevcut
             if mevcut and yeniden:
+                MuhasebeEntegrasyonService._kdv_duzeltme_fisini_kapat(
+                    kaynak_turu, kaynak_id, "Kaynak belge güncellendi", session=session)
                 MuhasebeFisService.iptal(
                     mevcut, "Kaynak belge güncellendi", otomatik=True, session=session
                 )
@@ -599,10 +653,32 @@ class MuhasebeEntegrasyonService:
                 session=session,
             )
 
+    @staticmethod
+    def _fon_ek_bedel_satirlari(s, kaynak_turu: str, belge_id: int, *, alacak: bool, no: str
+                                ) -> tuple[list[dict], Decimal, Decimal]:
+        """Belgede saklanan ek fon bedeli: fon başına kayıtlı hesaba satır; (satırlar, bedel, KDV)."""
+        from database.fon_service import FonService
+
+        satirlar, toplam, kdv = [], SIFIR, SIFIR
+        for e in FonService.belge_ek_bedelleri(kaynak_turu, belge_id, session=s):
+            tutar = decimal(e["tutar"])
+            if tutar <= 0:
+                continue
+            hesap = MuhasebeEntegrasyonService._hesap_kodla(
+                e["hesap_kodu"], f"{e['fon_kod']} fonu ek bedel hesabı", session=s)
+            aciklama = f"Ek fon bedeli {e['fon_kod']} {no}"
+            satirlar.append(MuhasebeEntegrasyonService._satir(
+                hesap, alacak=tutar if alacak else SIFIR, borc=SIFIR if alacak else tutar, aciklama=aciklama))
+            toplam += tutar
+            kdv += decimal(e["kdv"])
+        return satirlar, toplam, kdv
+
     # ---- Satış faturası ----
 
     @staticmethod
-    def satis_faturasi_fisi(fatura_id: int, *, yeniden: bool = False, session=None) -> int | None:
+    def satis_faturasi_fisi(fatura_id: int, *, yeniden: bool = False, session=None,
+                            sadece_ana_fis: bool = False) -> int | None:
+        from database.belge_kdv import EKSIK, satis_faturasi_kdv
         from database.models.satis_faturasi import SatisFaturasi
 
         H = MuhasebeEntegrasyonService
@@ -610,46 +686,44 @@ class MuhasebeEntegrasyonService:
             f = s.get(SatisFaturasi, int(fatura_id))
             if f is None or f.durum == "İPTAL" or not getattr(f, "onaylandi", False):
                 return None
-            matrah = decimal(getattr(f, "tl_matrah", None) or 0)
-            kdv = decimal(getattr(f, "tl_kdv", None) or 0)
-            genel = decimal(getattr(f, "tl_genel_toplam", None) or 0)
-            if genel <= 0:
-                from database.satis_faturasi_service import SatisFaturasiService
-
-                t = SatisFaturasiService.toplam(f.satirlar)
-                matrah = decimal(t["ara_toplam"] - t["iskonto"])
-                kdv = decimal(t["kdv"])
-                genel = decimal(t["genel_toplam"])
-            elif genel != matrah + kdv:
-                # Uzlaşma / genel indirim-masraf: fark satış hesabında netleşir, fiş dengeli kalır.
-                matrah = genel - kdv
+            # Doğrulanmış tutar (KDV raporuyla aynı kaynak). Uzlaşma / genel indirim-masraf farkı
+            # satış hesabında netleşir (matrah = genel − KDV), fiş dengeli kalır.
+            k = satis_faturasi_kdv(f)
+            if k["durum"] == EKSIK:
+                raise AyarEksik(f"{f.fatura_no}: {k['sorun']}")
+            matrah, kdv, genel = k["matrah"], k["kdv"], k["genel"]
             tarih = f.fatura_tarihi
             no = f.fatura_no
-            tahsilat = decimal(f.tahsilat_tutari or 0)
+            tahsilat = H._fatura_finans_tutari(s, no, "FATURA TAHSİLATI")
             sekil, tahsilat_hesabi = f.tahsilat_sekli, f.tahsilat_hesabi
             if f.tahsilatlar:
                 th0 = f.tahsilatlar[0]
                 sekil = th0.odeme_sekli or sekil
                 tahsilat_hesabi = th0.hesap or tahsilat_hesabi
-            # FIFO maliyet (varsa)
+            # FIFO maliyet (varsa). İrsaliyeli satışta stok irsaliyede çıkar; maliyet bir kez, fatura
+            # tarihli bu fişte, irsaliyenin çıkış maliyetiyle yazılır.
             maliyet = SIFIR
+            from database.satis_faturasi_service import SatisFaturasiService
             from database.stok_service import StokService
 
             for satir in f.satirlar:
-                mb = decimal(getattr(satir, "fifo_birim_maliyeti", None) or 0)
+                mb = decimal(SatisFaturasiService.satir_birim_maliyeti(s, satir) or 0)
                 if mb:
                     # FIFO maliyet temel birim başına; belge birimi katsayısıyla temel miktara çevrilir
                     maliyet += mb * decimal(satir.miktar) * StokService.satir_birim_carpani(s, satir)
 
             musteri = H._hesap("musteriler", session=s)
             satis = H._hesap("yurtici_satislar", session=s)
+            ek_satirlar, ek_toplam, ek_kdv = H._fon_ek_bedel_satirlari(
+                s, "SATIS_FATURASI", int(fatura_id), alacak=True, no=no)
             satirlar = [
-                H._satir(musteri, borc=genel, aciklama=f"Satış faturası {no}"),
+                H._satir(musteri, borc=genel + ek_toplam + ek_kdv, aciklama=f"Satış faturası {no}"),
                 H._satir(satis, alacak=matrah, aciklama=f"Satış matrah {no}"),
+                *ek_satirlar,
             ]
-            if kdv > 0:
+            if kdv + ek_kdv > 0:
                 hesap_kdv = H._hesap("hesaplanan_kdv", session=s)
-                satirlar.append(H._satir(hesap_kdv, alacak=kdv, aciklama=f"Hesaplanan KDV {no}"))
+                satirlar.append(H._satir(hesap_kdv, alacak=kdv + ek_kdv, aciklama=f"Hesaplanan KDV {no}"))
             if maliyet > 0:
                 # SMM eşleştirmesi isteğe bağlıdır (mevcut davranış): yoksa maliyet satırı yazılmaz.
                 try:
@@ -672,7 +746,7 @@ class MuhasebeEntegrasyonService:
                 yeniden=yeniden,
                 session=s,
             )
-            if kasa is not None:
+            if kasa is not None and not sadece_ana_fis:
                 H._olustur(
                     kaynak_turu=KAYNAK_SATIS_TAHSILAT,
                     kaynak_id=fatura_id,
@@ -703,7 +777,9 @@ class MuhasebeEntegrasyonService:
     # ---- Alış faturası ----
 
     @staticmethod
-    def alis_faturasi_fisi(fatura_id: int, *, yeniden: bool = True, session=None) -> int | None:
+    def alis_faturasi_fisi(fatura_id: int, *, yeniden: bool = True, session=None,
+                           sadece_ana_fis: bool = False) -> int | None:
+        from database.belge_kdv import EKSIK, alis_faturasi_kdv
         from database.models.alis_faturasi import AlisFaturasi
 
         H = MuhasebeEntegrasyonService
@@ -711,19 +787,13 @@ class MuhasebeEntegrasyonService:
             f = s.get(AlisFaturasi, int(fatura_id))
             if f is None or f.durum == "İPTAL":
                 return None
-            matrah = decimal(getattr(f, "tl_matrah", None) or 0)
-            kdv = decimal(getattr(f, "tl_kdv", None) or 0)
-            genel = decimal(getattr(f, "tl_genel_toplam", None) or 0)
-            if genel <= 0:
-                from database.alis_faturasi_service import AlisFaturasiService
-
-                t = AlisFaturasiService.toplam(f.satirlar)
-                matrah = decimal(t["ara_toplam"] - t["iskonto"])
-                kdv = decimal(t["kdv"])
-                genel = decimal(t["genel_toplam"])
+            k = alis_faturasi_kdv(f)
+            if k["durum"] == EKSIK:
+                raise AyarEksik(f"{f.fatura_no}: {k['sorun']}")
+            matrah, kdv, genel = k["matrah"], k["kdv"], k["genel"]
             tarih = f.fatura_tarihi
             no = f.fatura_no
-            odeme = decimal(f.odeme_tutari or 0)
+            odeme = H._fatura_finans_tutari(s, no, "FATURA ÖDEMESİ")
             odeme_sekli = f.odeme_sekli
             odeme_hesabi = f.odeme_hesabi
 
@@ -749,7 +819,9 @@ class MuhasebeEntegrasyonService:
                 yeniden=yeniden,
                 session=s,
             )
-            if kasa is not None:
+            if sadece_ana_fis:
+                pass
+            elif kasa is not None:
                 H._olustur(
                     kaynak_turu=KAYNAK_ALIS_ODEME,
                     kaynak_id=fatura_id,
@@ -797,15 +869,30 @@ class MuhasebeEntegrasyonService:
             genel = decimal(t["genel_toplam"])
             tarih, no = f.iade_tarihi, f.iade_no
 
+            maliyet, sorun = H._satis_iade_maliyeti(s, f)
+            if sorun:
+                raise AyarEksik(sorun)
             musteri = H._hesap("musteriler", session=s)
-            satis = H._hesap("yurtici_satislar", session=s)
+            iade_hesabi = H._hesap("satistan_iadeler", session=s)
+            ek_satirlar, ek_toplam, ek_kdv = H._fon_ek_bedel_satirlari(
+                s, "SATIS_IADE", int(iade_id), alacak=False, no=no)
             satirlar = [
-                H._satir(satis, borc=matrah, aciklama=f"Satış iade {no}"),
-                H._satir(musteri, alacak=genel, aciklama=f"Satış iade {no}"),
+                H._satir(iade_hesabi, borc=matrah, aciklama=f"Satış iade {no}"),
+                *ek_satirlar,
+                H._satir(musteri, alacak=genel + ek_toplam + ek_kdv, aciklama=f"Satış iade {no}"),
             ]
-            if kdv > 0:
+            if kdv + ek_kdv > 0:
                 hkdv = H._hesap("hesaplanan_kdv", session=s)
-                satirlar.insert(1, H._satir(hkdv, borc=kdv, aciklama=f"KDV iade {no}"))
+                satirlar.insert(1, H._satir(hkdv, borc=kdv + ek_kdv, aciklama=f"KDV iade {no}"))
+            if maliyet > 0:
+                # Satıştaki SMM gibi isteğe bağlı: eşleştirme yoksa satışta da maliyet yazılmamıştır.
+                try:
+                    smm = H._hesap("satilan_mal_maliyeti", session=s)
+                    stok = H._hesap("ticari_mallar", session=s)
+                    satirlar.append(H._satir(stok, borc=maliyet, aciklama=f"İade stok maliyeti {no}"))
+                    satirlar.append(H._satir(smm, alacak=maliyet, aciklama=f"SMM iadesi {no}"))
+                except ValueError:
+                    pass
             return H._olustur(
                 kaynak_turu=KAYNAK_SATIS_IADE,
                 kaynak_id=iade_id,
@@ -817,6 +904,42 @@ class MuhasebeEntegrasyonService:
                 yeniden=yeniden,
                 session=s,
             )
+
+    @staticmethod
+    def _satis_iade_maliyeti(s, f) -> tuple[Decimal, str | None]:
+        """İade edilen malın maliyeti: kaynak satış satırında kaydedilen birim maliyet × iade miktarı.
+
+        Kısmi iadede yalnız iade miktarı alınır. Kaynak satış satırı veya maliyeti yoksa tahmin
+        edilmez; dönüşte sorun metni (evrak 'İnceleme gerekiyor' kalır)."""
+        from database.models.satis_faturasi import SatisFaturasiSatiri
+        from database.satis_faturasi_service import SatisFaturasiService
+
+        toplam, eksik = SIFIR, []
+        for st in f.satirlar:
+            kaynak = (s.get(SatisFaturasiSatiri, int(st.kaynak_fatura_satiri_id))
+                      if st.kaynak_fatura_satiri_id else None)
+            birim = SatisFaturasiService.satir_birim_maliyeti(s, kaynak) if kaynak is not None else None
+            if birim is None:
+                eksik.append(f"{st.urun_kodu} ({'kaynak satış satırı yok' if kaynak is None else 'satış maliyeti yok'})")
+                continue
+            carpan = decimal(getattr(st, "birim_carpani", None) or 1)
+            toplam += Decimal(str(birim)) * decimal(st.miktar) * carpan
+        if eksik:
+            return SIFIR, ("Satış iadesinde ilk satış maliyeti bulunamadı; maliyet iadesi tahmin edilmedi: "
+                           + ", ".join(eksik) + ". Kaynak satış satırını seçin veya fişi elle düzenleyin.")
+        return decimal(toplam), None
+
+    @staticmethod
+    def _satis_iade_karar_neden(s, iade_id: int) -> str | None:
+        from database.models.satis_iade_faturasi import SatisIadeFaturasi
+
+        f = s.get(SatisIadeFaturasi, int(iade_id))
+        if f is None or f.durum == "İPTAL":
+            return None
+        sorun = MuhasebeEntegrasyonService.esleme_sorunu("satistan_iadeler", session=s)
+        if sorun:
+            return sorun
+        return MuhasebeEntegrasyonService._satis_iade_maliyeti(s, f)[1]
 
     @staticmethod
     def alis_iade_fisi(iade_id: int, *, yeniden: bool = True, session=None) -> int | None:
@@ -933,10 +1056,13 @@ class MuhasebeEntegrasyonService:
             f = s.get(HizmetFaturasi, int(fatura_id))
             if f is None or f.durum == "İPTAL":
                 return None
-            kdv = decimal(f.tl_kdv or 0)
-            genel = decimal(f.tl_genel_toplam or 0)
+            from database.belge_kdv import EKSIK, hizmet_faturasi_kdv
+
             # Kuruş yuvarlama farkı gelir/gider satırında netleşir; cari tutarı belgedeki genel toplamdır.
-            matrah = genel - kdv
+            k = hizmet_faturasi_kdv(f)
+            if k["durum"] == EKSIK:
+                raise AyarEksik(f"{f.fatura_no}: {k['sorun']}")
+            matrah, kdv, genel = k["matrah"], k["kdv"], k["genel"]
             tur = (f.fatura_turu or "GIDER").upper()
             tarih, no = f.fatura_tarihi, f.fatura_no
 
@@ -1178,6 +1304,15 @@ class MuhasebeEntegrasyonService:
         with oturum_kullan(session) as s:
             if evrak == "alis_iade":
                 return H._alis_iade_karar_neden(s, int(kaynak_id))
+            if evrak == "satis_iade":
+                return H._satis_iade_karar_neden(s, int(kaynak_id))
+            if evrak in ("satis_faturasi", "alis_faturasi", "hizmet_faturasi"):
+                from database.belge_kdv import kdv_eksik_nedeni
+
+                model = _fatura_modeli(evrak)
+                neden = kdv_eksik_nedeni(evrak, s.get(model, int(kaynak_id)))
+                if neden:
+                    return neden
             if evrak in PLANLAR:
                 try:
                     H._planla(evrak, s, kaynak_id)
@@ -1997,6 +2132,20 @@ class MuhasebeEntegrasyonService:
 
 # Finans İşlem Ayarları'na bağlı evraklar: plan (``_olustur`` argümanları) ayrı üretilir; karar / muhasebe
 # dışı kontrolleri fiş yazmadan aynı planı kullanır.
+def _fatura_modeli(evrak: str):
+    if evrak == "satis_faturasi":
+        from database.models.satis_faturasi import SatisFaturasi
+
+        return SatisFaturasi
+    if evrak == "alis_faturasi":
+        from database.models.alis_faturasi import AlisFaturasi
+
+        return AlisFaturasi
+    from database.models.hizmet_faturasi import HizmetFaturasi
+
+    return HizmetFaturasi
+
+
 def _kur_farki_baska_fiste(s, k, hesap_idleri: set[int]) -> str | None:
     """Aynı kaynak/kapatma belgesinin başka (kur farkı kaynaklı olmayan) etkin fişinde kur farkı satırı var mı."""
     from sqlalchemy import exists

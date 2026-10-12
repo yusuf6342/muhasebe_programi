@@ -45,7 +45,7 @@ from database.models.stok import Depo, StokKarti, StokLotu
 from database.satis_faturasi_service import TAHSILAT_SEKILLERI, SatisFaturasiService
 from database.satis_siparisi_service import decimal
 from database.session_manager import oturum
-from database.stok_service import StokService
+from database.stok_service import BirimDonusumHatasi, StokService
 from hizli_satis_musteri import IZIN_ACIK_HESAP, IZIN_IPTAL, acik_hesap_risk_degerlendir
 from hizli_satis_sepet import VARSAYILAN_KDV
 
@@ -59,6 +59,7 @@ HIZLI_ODEME_SEKILLERI = TAHSILAT_SEKILLERI + ("AÇIK HESAP",)
 
 _token_kilidi = threading.Lock()
 _kullanilan_tokenler: set[str] = set()
+_REFERANS_KOLON_HAZIR: set[str] = set()
 
 
 def _kurus(tutar) -> Decimal:
@@ -217,26 +218,33 @@ class HizliSatisService:
         satirlar: list[dict[str, Any]] | Any,
         *,
         depo: str = VARSAYILAN_DEPO,
+        birim_hatasi_atla: bool = False,
     ) -> list[str]:
-        """UI + kayıt öncesi stok kontrolü. Dönüş: hata mesajları (boş = OK)."""
+        """UI + kayıt öncesi stok kontrolü. Dönüş: hata mesajları (boş = OK).
+
+        birim_hatasi_atla: tanımsız birim satırını mesajsız geç; kayıt yolunda birim hatası
+        ``belge_birimlerini_dogrula`` tarafından ``BirimDonusumHatasi`` olarak yükseltilir.
+        """
         depo_adi = (depo or VARSAYILAN_DEPO).strip() or VARSAYILAN_DEPO
-        ihtiyac: dict[str, Decimal] = {}
+        talepler: dict[str, list[tuple[str, Decimal]]] = {}
         adlar: dict[str, str] = {}
         for ham in satirlar:
             if hasattr(ham, "stok_kodu"):
                 kod = (ham.stok_kodu or "").strip()
                 miktar = Decimal(str(getattr(ham, "miktar", 0) or 0))
                 adi = (getattr(ham, "stok_adi", None) or kod).strip()
+                birim = (getattr(ham, "birim", None) or "").strip()
             else:
                 kod = (ham.get("urun_kodu") or ham.get("stok_kodu") or "").strip()
                 miktar = Decimal(str(ham.get("miktar") or 0))
                 adi = (ham.get("urun_adi") or ham.get("stok_adi") or kod).strip()
+                birim = (ham.get("birim") or "").strip()
             if not kod or miktar <= 0:
                 continue
-            ihtiyac[kod] = ihtiyac.get(kod, Decimal("0")) + miktar
+            talepler.setdefault(kod, []).append((birim, miktar))
             adlar[kod] = adi
 
-        if not ihtiyac:
+        if not talepler:
             return ["Sepet boş — stok kontrolü yapılamadı."]
 
         hatalar: list[str] = []
@@ -244,10 +252,23 @@ class HizliSatisService:
             depo_row = session.scalar(select(Depo).where(Depo.ad == depo_adi))
             if not depo_row:
                 return [f"{depo_adi} deposu bulunamadı."]
-            for kod, istenen in ihtiyac.items():
-                stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+            for kod, kalemler in talepler.items():
+                stok = session.scalar(
+                    select(StokKarti)
+                    .where(StokKarti.stok_kodu == kod)
+                    .options(selectinload(StokKarti.birimler))
+                )
                 if not stok or getattr(stok, "is_deleted", False) or not getattr(stok, "aktif", True):
                     hatalar.append(f"{adlar.get(kod, kod)} ({kod}): stok kartı yok veya pasif.")
+                    continue
+                # Satır birimi → temel birim (2 Koli × 10 = 20 Adet)
+                istenen = Decimal("0")
+                try:
+                    for birim, miktar in kalemler:
+                        istenen += miktar * StokService.birim_carpani_kesin(stok, birim)
+                except BirimDonusumHatasi as hata:
+                    if not birim_hatasi_atla:
+                        hatalar.append(str(hata))
                     continue
                 lotlar = list(
                     session.scalars(
@@ -282,6 +303,7 @@ class HizliSatisService:
                         "birim_fiyat": s.birim_fiyat,
                         "iskonto_orani": getattr(s, "iskonto_orani", 0) or 0,
                         "kdv_orani": _kdv_orani(getattr(s, "kdv_orani", None)),
+                        "referans_birim_fiyat": getattr(s, "referans_birim_fiyat", None),
                     }
                 )
             else:
@@ -305,6 +327,39 @@ class HizliSatisService:
             s.kdv_orani = _kdv_orani(v.get("kdv_orani"))
             gecici.append(s)
         return SatisFaturasiService.toplam(gecici)["genel_toplam"]
+
+    @staticmethod
+    def ek_fon_bedeli_onizleme(satir_verileri: list[dict], urun_toplami) -> dict[str, Any]:
+        """Sepet için ek fon bedeli önizlemesi (ürün toplamı = Yeni Toplam; kayıt oluşturmaz)."""
+        from database.fon_service import FonService
+
+        try:
+            onizleme = FonService.belge_onizleme(list(satir_verileri or []), net_toplam=urun_toplami)
+        except Exception:  # noqa: BLE001
+            onizleme = []
+        return FonService.ek_bedel_ozeti(onizleme)
+
+    @staticmethod
+    def _brut_net_alanlari(satir_verileri: list[dict], genel: Decimal) -> dict[str, Any]:
+        """Genel Toplam (referans) ile Yeni Toplam farkı; normal fatura ekranının Brüt/Net alanları."""
+        referansli = [
+            {**v, "birim_fiyat": v["birim_fiyat"] if v.get("referans_birim_fiyat") in (None, "")
+             else v["referans_birim_fiyat"]}
+            for v in satir_verileri
+        ]
+        brut = HizliSatisService._genel_toplam_satirlardan(referansli)
+        if brut == genel:
+            return {}
+        from database.uzlasilan_tutar_service import uzlasilan_indirim_masraf
+
+        fark = uzlasilan_indirim_masraf(brut, genel)
+        return {
+            "tl_brut_toplam": fark["brut"],
+            "tl_genel_toplam": fark["net"],
+            "genel_islem_turu": fark["islem_turu"] or None,
+            "genel_islem_orani": fark["islem_orani"],
+            "genel_islem_tutari": fark["islem_tutari"],
+        }
 
     @staticmethod
     def _tahsilatlari_normalize(
@@ -404,7 +459,9 @@ class HizliSatisService:
             if not satir_verileri:
                 raise ValueError("Sepet boş — satış tamamlanamaz.")
 
-            hatalar = HizliSatisService.stok_yeterlilik_kontrol(satir_verileri, depo=depo)
+            hatalar = HizliSatisService.stok_yeterlilik_kontrol(
+                satir_verileri, depo=depo, birim_hatasi_atla=True
+            )
             if hatalar:
                 raise ValueError("Stok yetersiz — eksi stoka izin yok.\n" + "\n".join(hatalar))
 
@@ -418,11 +475,17 @@ class HizliSatisService:
             genel = HizliSatisService._genel_toplam_satirlardan(satir_verileri)
             if genel <= 0:
                 raise ValueError("Satış tutarı sıfır olamaz.")
+            # Ödenecek = ürün toplamı (Yeni Toplam) + ek fon bedeli + KDV'si; kesin tutar kayıtta doğrulanır
+            ek = HizliSatisService.ek_fon_bedeli_onizleme(satir_verileri, genel)
+            if ek["eksik_ayar"]:
+                raise ValueError(f"Ek fon bedeli ayarı eksik: {ek['eksik_ayar']}. "
+                                 "Fon Yönetimi > Fon Tanımları ekranından tamamlayın.")
+            odenecek = _kurus(genel + ek["tutar"] + ek["kdv"])
 
             th_listesi, tahsilat_toplam = HizliSatisService._tahsilatlari_normalize(
-                tahsilatlar, genel_toplam=genel, tarih=tarih
+                tahsilatlar, genel_toplam=odenecek, tarih=tarih
             )
-            kalan = _kurus(genel - tahsilat_toplam)
+            kalan = _kurus(odenecek - tahsilat_toplam)
             HizliSatisService._acik_hesap_enforce(
                 kalan=kalan,
                 bakiye=musteri_bakiye or 0,
@@ -438,6 +501,7 @@ class HizliSatisService:
                 "para_birimi": "TRY",
                 "kur": Decimal("1"),
                 "islem_saati": datetime.now().strftime("%H:%M"),
+                **HizliSatisService._brut_net_alanlari(satir_verileri, genel),
             }
 
             fatura_id = HizliSatisService._kaydet_ve_onayla_tek_session(
@@ -451,12 +515,17 @@ class HizliSatisService:
         toplam = SatisFaturasiService.toplam(fatura.satirlar)
         th = _kurus(getattr(fatura, "tahsilat_tutari", 0) or 0)
         genel_t = toplam["genel_toplam"]
+        ek_t, ek_kdv_t = SatisFaturasiService.ek_fon_bedeli(fatura)
+        odenecek_t = _kurus(genel_t + ek_t + ek_kdv_t)
         return {
             "fatura_id": int(fatura.id),
             "fatura_no": fatura.fatura_no,
             "genel_toplam": genel_t,
+            "fon_ek_bedel": _kurus(ek_t),
+            "fon_ek_bedel_kdv": _kurus(ek_kdv_t),
+            "odenecek_toplam": odenecek_t,
             "tahsilat_tutari": th,
-            "kalan": _kurus(genel_t - th),
+            "kalan": _kurus(odenecek_t - th),
             "onaylandi": bool(getattr(fatura, "onaylandi", False)),
             "durum": fatura.durum,
             "fatura": fatura,
@@ -541,6 +610,11 @@ class HizliSatisService:
                         birim_fiyat_doviz=doviz_satir["birim_fiyat_doviz"],
                         tl_birim_fiyat=doviz_satir["tl_birim_fiyat"],
                         tl_tutar=doviz_satir["tl_tutar"],
+                        referans_birim_fiyat=(
+                            None
+                            if veri.get("referans_birim_fiyat") is None
+                            else decimal(veri["referans_birim_fiyat"], "Referans fiyat", Decimal("0"))
+                        ),
                     )
                 )
 
@@ -559,8 +633,12 @@ class HizliSatisService:
                 )
 
             toplam_dict = SatisFaturasiService.toplam(fatura.satirlar)
-            toplam = toplam_dict["genel_toplam"]
             SatisFaturasiService._doviz_alanlarini_yaz(fatura, veriler, toplam_dict)
+            from database.fon_service import FonService
+
+            ek_bedel = FonService.ek_bedel_uygula(session, fatura)
+            # Cari borç / tahsilat esası = ödenecek toplam (ürün + ek fon bedeli + KDV'si)
+            toplam = toplam_dict["genel_toplam"] + ek_bedel["tutar"] + ek_bedel["kdv"]
             if tahsilat_toplam > toplam:
                 raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
             fatura.tahsilat_tutari = tahsilat_toplam
@@ -578,6 +656,8 @@ class HizliSatisService:
             fatura.kasa_terminal = (veriler.get("kasa_terminal") or "").strip() or None
             fatura.satis_baslangic = veriler.get("satis_baslangic") or actor["now"]
             fatura.satis_bitis = actor["now"]
+            session.flush()
+            FonService.ek_bedel_kaydet(session, fatura, ek_bedel)
             session.flush()
 
             # —— Onay (aynı session) ——
@@ -640,6 +720,8 @@ class HizliSatisService:
             AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
+                FonService.satis_onaylandi(session, fatura)
+                session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi / onaylanamadı.") from hata
             fid = int(fatura.id)
@@ -673,6 +755,22 @@ class HizliSatisService:
             HizliSatisHizliUrun.__table__,
         ):
             tablo.create(engine, checkfirst=True)
+
+        anahtar = str(engine.url)
+        if anahtar in _REFERANS_KOLON_HAZIR:
+            return
+        from sqlalchemy import inspect, text
+
+        bekleyen_tablo = HizliSatisBekleyenSatiri.__tablename__
+        sutunlar = {s["name"] for s in inspect(engine).get_columns(bekleyen_tablo)}
+        if "referans_birim_fiyat" not in sutunlar:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f'ALTER TABLE "{bekleyen_tablo}" ADD COLUMN "referans_birim_fiyat" NUMERIC(18, 4)'
+                    )
+                )
+        _REFERANS_KOLON_HAZIR.add(anahtar)
 
     # —— Ürün pin (ÜRÜN EKLE) — stok hareketi / muhasebe yok ——
 
@@ -1231,6 +1329,7 @@ class HizliSatisService:
                     kdv = _kdv_orani(satir.get("kdv_orani"))
                     carpan = decimal(satir.get("carpan") or 1, "Çarpan", Decimal("0.0001"))
                     barkod = (satir.get("barkod") or None)
+                    referans = satir.get("referans_birim_fiyat")
                 else:
                     stok_id = int(getattr(satir, "stok_id", 0) or 0)
                     stok_kodu = (getattr(satir, "stok_kodu", None) or "").strip()
@@ -1246,6 +1345,10 @@ class HizliSatisService:
                     kdv = _kdv_orani(getattr(satir, "kdv_orani", None))
                     carpan = decimal(getattr(satir, "carpan", 1) or 1, "Çarpan", Decimal("0.0001"))
                     barkod = getattr(satir, "barkod", None)
+                    referans = getattr(satir, "referans_birim_fiyat", None)
+                referans = (
+                    None if referans is None else decimal(referans, "Referans fiyat", Decimal("0"))
+                )
 
                 if stok_id <= 0 or not stok_kodu:
                     raise ValueError(f"Geçersiz sepet satırı (sıra {i + 1}).")
@@ -1266,6 +1369,7 @@ class HizliSatisService:
                         kdv_orani=kdv,
                         carpan=carpan if carpan > 0 else Decimal("1"),
                         barkod=(str(barkod).strip() if barkod else None),
+                        referans_birim_fiyat=referans,
                     )
                 )
 
@@ -1332,6 +1436,11 @@ class HizliSatisService:
                     "kdv_orani": decimal(s.kdv_orani, "KDV", Decimal("0")),
                     "carpan": decimal(s.carpan, "Çarpan", Decimal("0")),
                     "barkod": s.barkod,
+                    "referans_birim_fiyat": (
+                        None
+                        if getattr(s, "referans_birim_fiyat", None) is None
+                        else decimal(s.referans_birim_fiyat, "Referans fiyat", Decimal("0"))
+                    ),
                 }
                 for s in sorted(baslik.satirlar or [], key=lambda x: int(x.sira or 0))
             ]
@@ -1504,7 +1613,8 @@ class HizliSatisService:
                     continue
                 if not _hizli_satis_mi(f.aciklama):
                     continue
-                toplam = SatisFaturasiService.toplam(f.satirlar)["genel_toplam"]
+                toplam = (SatisFaturasiService.toplam(f.satirlar)["genel_toplam"]
+                          + sum(SatisFaturasiService.ek_fon_bedeli(f), Decimal("0")))
                 sonuc.append(
                     {
                         "fatura_id": int(f.id),
@@ -1852,6 +1962,7 @@ class HizliSatisService:
                 firma = (getattr(oturum, "firma_unvan", None) or "").strip()
             except Exception:
                 firma = ""
+            from database.fon_service import FonService
             from database.user_audit import display_user
 
             kasiyer = display_user(
@@ -1859,8 +1970,14 @@ class HizliSatisService:
                 or getattr(fatura, "tahsilat_alan_full_name", None),
                 getattr(fatura, "created_by_user_id", None),
             )
+            ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(fatura)
+            odenecek = _kurus(genel + ek + ek_kdv)
 
             return {
+                "fon_ek_bedel": _kurus(ek),
+                "fon_ek_bedel_kdv": _kurus(ek_kdv),
+                "fon_ek_bedeller": FonService.belge_ek_bedelleri("SATIS_FATURASI", fid, session=session),
+                "odenecek_toplam": odenecek,
                 "fatura_id": int(fatura.id),
                 "fatura_no": fatura.fatura_no,
                 "fatura_tarihi": fatura.fatura_tarihi,
@@ -1874,7 +1991,7 @@ class HizliSatisService:
                 "kdv": _kurus(toplam["kdv"]),
                 "genel_toplam": genel,
                 "tahsilat_tutari": th,
-                "kalan": _kurus(genel - th),
+                "kalan": _kurus(odenecek - th),
                 "durum": fatura.durum,
                 "satirlar": satirlar,
                 "tahsilatlar": tahsilatlar,
@@ -1906,13 +2023,15 @@ class HizliSatisService:
                 if f.durum == "İPTAL":
                     continue
                 toplam = SatisFaturasiService.toplam(f.satirlar)
+                ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(f)
                 aktif.append(
                     {
                         "fatura_id": int(f.id),
                         "fatura_no": f.fatura_no,
-                        "genel_toplam": _kurus(toplam["genel_toplam"]),
+                        # Ödenecek toplam (ek fon bedeli + KDV'si dahil): açık hesap tahsilatla tutarlı
+                        "genel_toplam": _kurus(toplam["genel_toplam"] + ek + ek_kdv),
                         "iskonto": _kurus(toplam["iskonto"]),
-                        "kdv": _kurus(toplam["kdv"]),
+                        "kdv": _kurus(toplam["kdv"] + ek_kdv),
                         "tahsilat_tutari": _kurus(getattr(f, "tahsilat_tutari", 0) or 0),
                         "tahsilat_sekli": f.tahsilat_sekli,
                         "tahsilatlar": [
@@ -1945,7 +2064,8 @@ class HizliSatisService:
                     {
                         "fatura_id": int(f.id),
                         "fatura_no": f.fatura_no,
-                        "genel_toplam": _kurus(toplam["genel_toplam"]),
+                        "genel_toplam": _kurus(toplam["genel_toplam"]
+                                               + sum(SatisFaturasiService.ek_fon_bedeli(f), Decimal("0"))),
                     }
                 )
 

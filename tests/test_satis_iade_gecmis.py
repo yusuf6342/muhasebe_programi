@@ -63,9 +63,51 @@ class IadeTemel(unittest.TestCase):
 
 
 class DurumAkisiTest(IadeTemel):
+    def _hareket_sayilari(self, fatura_no):
+        from database.models.cari import SatisHareketi
+        from database.models.stok import StokHareketi
+
+        with get_session() as s:
+            stok = len(s.scalars(select(StokHareketi).where(StokHareketi.belge_no == fatura_no)).all())
+            cari = len(s.scalars(select(SatisHareketi).where(SatisHareketi.belge_no == fatura_no)).all())
+        return stok, cari
+
+    def test_kayit_acik_onaysiz_hareket_yalniz_onayda(self):
+        f = self._fatura(date(2026, 3, 1), [_satir("5")], onayla=False)
+        self.assertEqual((f.durum, f.onaylandi), ("AÇIK", False))
+        self.assertEqual(self._hareket_sayilari(f.fatura_no), (0, 0))
+        SatisFaturasiService.onayla(f.id)
+        f = SatisFaturasiService.getir(f.id)
+        self.assertEqual((f.durum, f.onaylandi), ("AÇIK", True))
+        stok, cari = self._hareket_sayilari(f.fatura_no)
+        self.assertGreater(stok, 0)
+        self.assertGreater(cari, 0)
+        SatisFaturasiService.onay_kaldir(f.id)
+        f = SatisFaturasiService.getir(f.id)
+        self.assertEqual((f.durum, f.onaylandi), ("AÇIK", False))
+        self.assertEqual(self._hareket_sayilari(f.fatura_no), (0, 0))
+
+    def test_fatura_no_otomatik_veya_manuel_cakisma_reddedilir(self):
+        temel = {"fatura_tarihi": date(2026, 3, 1), "vade_tarihi": date(2026, 3, 1), "cari_id": self.cari_id,
+                 "depo": "ANA DEPO", "odeme_tutari": D("0"), "sales_person_id": 1}
+        oto = SatisFaturasiService.kaydet({**temel, "fatura_no": ""}, [_satir("1")])
+        self.assertTrue(oto.fatura_no)
+        manuel = SatisFaturasiService.kaydet({**temel, "fatura_no": "  MAN-2026-7  "}, [_satir("1")])
+        self.assertEqual(manuel.fatura_no, "MAN-2026-7")
+        with self.assertRaisesRegex(ValueError, "MAN-2026-7 numaralı"):
+            SatisFaturasiService.kaydet({**temel, "fatura_no": "MAN-2026-7"}, [_satir("1")])
+        # Kayıtlı fatura: boş numara eskisini korur, yeni numara yazılabilir, kendi numarası çakışma sayılmaz
+        SatisFaturasiService.kaydet({**temel, "fatura_no": ""}, [_satir("2")], manuel.id)
+        self.assertEqual(SatisFaturasiService.getir(manuel.id).fatura_no, "MAN-2026-7")
+        SatisFaturasiService.kaydet({**temel, "fatura_no": "MAN-2026-7"}, [_satir("2")], manuel.id)
+        SatisFaturasiService.kaydet({**temel, "fatura_no": "MAN-2026-8"}, [_satir("2")], manuel.id)
+        self.assertEqual(SatisFaturasiService.getir(manuel.id).fatura_no, "MAN-2026-8")
+        with self.assertRaisesRegex(ValueError, "numaralı"):
+            SatisFaturasiService.kaydet({**temel, "fatura_no": oto.fatura_no}, [_satir("2")], manuel.id)
+
     def test_taslak_onay_acik_ve_odeme_durumu_ayri(self):
         f = self._fatura(date(2026, 3, 1), [_satir("5")], onayla=False)
-        self.assertEqual(f.durum, "TASLAK")
+        self.assertEqual(f.durum, "AÇIK")
         SatisFaturasiService.onayla(f.id)
         f = SatisFaturasiService.getir(f.id)
         self.assertEqual((f.durum, f.onaylandi), ("AÇIK", True))
@@ -74,11 +116,13 @@ class DurumAkisiTest(IadeTemel):
         self.assertEqual(ozet["evrak_durumu"], "AÇIK")
         self.assertEqual(ozet["acik_tutar"], D("60.00"))
 
-    def test_basarisiz_onay_taslak_kalir(self):
+    def test_basarisiz_onay_onaysiz_kalir(self):
         f = self._fatura(date(2026, 3, 1), [_satir("3", "Koli")], onayla=False)
         with self.assertRaises(ValueError):
             SatisFaturasiService.onayla(f.id)
-        self.assertEqual(SatisFaturasiService.getir(f.id).durum, "TASLAK")
+        g = SatisFaturasiService.getir(f.id)
+        self.assertEqual((g.durum, g.onaylandi), ("AÇIK", False))
+        self.assertEqual(self._hareket_sayilari(g.fatura_no), (0, 0))
 
     def test_evrak_ve_odeme_durumu_yardimcilari(self):
         self.assertEqual(evrak_durumu("KAPALI"), "AÇIK")

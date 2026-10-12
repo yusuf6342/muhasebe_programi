@@ -28,6 +28,27 @@ from satir_ici_urun_giris import (
 from tests.test_satis_irsaliyesi_akis import _EkranTemel
 
 
+_TIK_ZAMANI = [1_000_000]
+
+
+def cift_tik(w, x: int, y: int) -> None:
+    """event generate <Double-1> kabul etmez; aynı noktada iki hızlı tık üretilir."""
+    _TIK_ZAMANI[0] += 10_000
+    t = _TIK_ZAMANI[0]
+    for i in range(2):
+        w.event_generate("<ButtonPress-1>", x=x, y=y, time=t + i * 80)
+        w.event_generate("<ButtonRelease-1>", x=x, y=y, time=t + i * 80 + 20)
+
+
+def _odak(pencere):
+    """Penceredeki son odak (paralel koşuda uygulama arka planda kalsa da focus_set sonucunu verir)."""
+    yol = str(pencere.tk.call("focus", "-lastfor", str(pencere)))
+    try:
+        return pencere.nametowidget(yol)
+    except KeyError:
+        return None
+
+
 class SatirIciYardimciTest(unittest.TestCase):
     def test_iskonto_metni_ve_cozumu(self):
         self.assertEqual(iskonto_metni({"iskonto_orani": 10, "iskonto_orani_2": 5}), "10+5")
@@ -233,6 +254,116 @@ class AlisKartSatirGirisiTest(_GirisTemel):
         self.assertEqual(d.satir_tablosu.get_children()[-1], YENI_SATIR_IID)
         d.destroy()
 
+    def test_alis_faturasi_birim_listesinde_yalniz_stok_kartinin_birimleri(self):
+        from alis_ui import AlisFaturasiDialog
+        from birim_secim_ui import GENEL_BIRIMLER
+        from database.stok_service import StokService
+        from fatura_satir_birim_service import stok_aktif_birimleri
+
+        d = AlisFaturasiDialog(self.root)
+        d.withdraw()
+        idx = d._alis_fatura_urun_ekle(("MB001", "Birim Ürün", "Adet", "0", "1", "Stok Kartı", "20", None), None)
+        kart = stok_aktif_birimleri("MB001")
+        self.assertEqual(d._alis_fatura_birimleri(idx), kart)
+        disari = [b for b in GENEL_BIRIMLER if b.casefold() not in {k.casefold() for k in kart}]
+        self.assertTrue(disari)
+        for b in disari:
+            self.assertNotIn(b, d._alis_fatura_birimleri(idx))
+
+        with patch("database.access.yazma_zorunlu"):
+            StokService.kart_birimi_ekle("MB001", "Bidon", "5")
+        self.assertEqual(d._alis_fatura_birimleri(idx), kart + ["Bidon"])
+
+        d.satirlar.append({"urun_kodu": "", "urun_adi": "Serbest", "birim": "Adet"})
+        kartsiz = d._alis_fatura_birimleri(len(d.satirlar) - 1)
+        for b in ("Adet", "Kg", "Koli", "Metre"):
+            self.assertIn(b, kartsiz)
+        d.destroy()
+
+    def test_alis_faturasi_satirda_sag_sol_ok_ile_gezinme_ve_yazma(self):
+        import time
+
+        from alis_ui import AlisFaturasiDialog
+
+        self.root.geometry("+-3000+-3000")
+        self.root.deiconify()
+        d = AlisFaturasiDialog(self.root)
+        d.geometry("1500x800+-3000+-3000")
+        idx = d._alis_fatura_urun_ekle(("MB001", "Birim Ürün", "Adet", "0", "1", "Stok Kartı", "20", None), None)
+
+        def pompala(sure=0.15):
+            bitis = time.time() + sure
+            while time.time() < bitis:
+                d.update()
+
+        def hedef():
+            kutular = getattr(d._hucre.editor, "kutular", None)
+            if not kutular:
+                return d._hucre.editor
+            odak = _odak(d)
+            return odak if odak in kutular else kutular[0]
+
+        def tus(t):
+            w = hedef()
+            w.focus_force()
+            pompala(0.05)
+            w.event_generate(t)
+            pompala()
+
+        pompala(0.3)
+        hucre = d._hucre
+        sira = [k for k in hucre.sira if hucre.duzenlenebilir_mi(idx, k) is True]
+        for kolon in ("aciklama", "miktar", "birim", "fiyat", "iskonto", "kdv"):
+            self.assertIn(kolon, sira)
+        hucre.duzenle(idx, sira[0])
+        pompala()
+        hucre.editor.delete(0, "end")
+        hucre.editor.insert(0, "Hasarlı koli")
+        for kolon in sira[1:]:
+            tus("<Right>")
+            self.assertIsNotNone(hucre.editor, f"{kolon} hücresine geçilmedi")
+            self.assertEqual(hucre._konum[1], kolon)
+            if kolon == "iskonto":
+                # üç ardışık iskonto kutusu: 1 → 2 → 3, sonra sonraki kolon
+                kutular = hucre.editor.kutular
+                self.assertEqual(len(kutular), 3)
+                for i, deger in enumerate(("10", "5")):
+                    self.assertIs(hedef(), kutular[i])
+                    kutular[i].delete(0, "end")
+                    kutular[i].insert(0, deger)
+                    tus("<Right>")
+                self.assertIs(hedef(), kutular[2])
+                self.assertEqual(hucre._konum[1], "iskonto")
+        for kolon in reversed(sira[:-1]):
+            tus("<Left>")
+            self.assertEqual(hucre._konum[1], kolon)
+            if kolon == "iskonto":
+                kutular = hucre.editor.kutular
+                self.assertIs(hedef(), kutular[2], "geri gelişte son iskonto kutusu")
+                tus("<Left>")
+                tus("<Left>")
+                self.assertIs(hedef(), kutular[0])
+        hucre.kapat()
+        s = d.satirlar[idx]
+        self.assertEqual(s["aciklama"], "Hasarlı koli")
+        self.assertEqual(Decimal(s["iskonto_orani"]), Decimal("10"))
+        self.assertEqual(Decimal(s["iskonto_orani_2"]), Decimal("5"))
+        # Editör kapalıyken seçili satırda sağ ok ilk, sol ok son hücreyi açar
+        d.satir_tablosu.selection_set(d.satir_tablosu.get_children()[idx])
+        d.satir_tablosu.focus_force()
+        pompala(0.05)
+        d.satir_tablosu.event_generate("<Right>")
+        pompala()
+        self.assertEqual(hucre._konum[1], sira[0])
+        hucre.kapat()
+        d.satir_tablosu.focus_force()
+        pompala(0.05)
+        d.satir_tablosu.event_generate("<Left>")
+        pompala()
+        self.assertEqual(hucre._konum[1], sira[-1])
+        hucre.kapat()
+        d.destroy()
+
     def test_alis_iade_kaynak_satiri_kilitli_miktar_duzenlenir(self):
         """Alış iadesi ayrı ekranda: satır düzenleme diyaloğu; kaynak bağlantısı korunur."""
         from alis_ui import AlisIadeFaturasiDialog
@@ -352,10 +483,14 @@ class EvrakUrunAramaAlanlariTest(_GirisTemel):
                         continue
 
                     satirlar = d.satirlar
-                    g.ac("barkod", self.BARKOD)
-                    g._enter()
-                    g.ac("barkod", self.BARKOD)
-                    g._enter()
+                    # İki bilinçli okutma: çift tetikleme penceresinin dışında (bkz. SatisFaturasiBarkodCiftTetiklemeTest)
+                    saat = _SahteSaat()
+                    with patch("fatura_barkod_ui.time", saat):
+                        g.ac("barkod", self.BARKOD)
+                        g._enter()
+                        saat.ileri_ms(1000)
+                        g.ac("barkod", self.BARKOD)
+                        g._enter()
                     self.assertEqual(len(satirlar), 1, "aynı barkod yeni satır açmamalı")
                     self.assertEqual(Decimal(str(satirlar[0]["miktar"])), Decimal("2"))
 
@@ -367,6 +502,205 @@ class EvrakUrunAramaAlanlariTest(_GirisTemel):
                     self.assertEqual(d.satir_tablosu.get_children()[-1] if hasattr(d, "satir_tablosu")
                                      else d.satir_tablo.get_children()[-1], YENI_SATIR_IID)
                     d.destroy()
+
+
+class _SahteSaat:
+    """``fatura_barkod_ui.time`` yerine: ``time()`` saniye döner, test elle ilerletir."""
+
+    def __init__(self, baslangic_sn: float = 1000.0):
+        self.sn = baslangic_sn
+
+    def time(self) -> float:
+        return self.sn
+
+    def ileri_ms(self, ms: float) -> None:
+        self.sn += ms / 1000.0
+
+
+class SatisFaturasiBarkodCiftTetiklemeTest(_GirisTemel):
+    """Aynı barkod: ``fatura_barkod_ui._DEBOUNCE_MS`` (90 ms) içinde ikinci okuma çift tetiklemedir.
+
+    Kural ``(simdi - son_ms) < _DEBOUNCE_MS``: 0–89 ms arası yok sayılır, tam 90 ms ve sonrası
+    ayrı okumadır. Saat sahte olduğu için sonuç makine hızına bağlı değildir.
+    """
+
+    BARKOD = EvrakUrunAramaAlanlariTest.BARKOD
+
+    def _iki_okuma(self, arada_ms: float):
+        import app
+        import fatura_barkod_ui
+
+        self.assertEqual(fatura_barkod_ui._DEBOUNCE_MS, 90)
+        saat = _SahteSaat()
+        with patch("ui_pencere.belge_penceresini_hazirla", lambda win, **_k: (win.withdraw(), {})[1]), \
+                patch("fatura_barkod_ui.time", saat):
+            d = app.SatisFaturasiDialog(self.root, cari=self._cari())
+            d.withdraw()
+            g = d._satir_ici_giris
+            g.ac("barkod", self.BARKOD)
+            g._enter()
+            saat.ileri_ms(arada_ms)
+            g.ac("barkod", self.BARKOD)
+            g._enter()
+            satirlar = [dict(s) for s in d.satirlar]
+            d.destroy()
+        return satirlar
+
+    def test_90ms_icinde_ikinci_okuma_cift_tetiklemedir_miktar_1(self):
+        for arada in (0, 40, 89):
+            with self.subTest(arada_ms=arada):
+                satirlar = self._iki_okuma(arada)
+                self.assertEqual(len(satirlar), 1)
+                self.assertEqual(Decimal(str(satirlar[0]["miktar"])), Decimal("1"))
+
+    def test_90ms_ve_sonrasi_iki_ayri_okumadir_ayni_satirda_miktar_2(self):
+        for arada in (90, 91, 500):
+            with self.subTest(arada_ms=arada):
+                satirlar = self._iki_okuma(arada)
+                self.assertEqual(len(satirlar), 1, "aynı barkod yeni satır açmamalı")
+                self.assertEqual(Decimal(str(satirlar[0]["miktar"])), Decimal("2"))
+
+
+class EvrakKlavyeOrtakTest(_GirisTemel):
+    """Muadil evraklar: stok kartı (çift tık / F2), ↑↓ satır gezinme, üçlü iskonto, üst alan Enter / ok."""
+
+    DEG = ("MB001", "Birim Ürün", "Adet", "0", "1", "Stok Kartı", "20", None)
+
+    def _pompala(self, d, sure=0.15):
+        import time
+
+        bitis = time.time() + sure
+        while time.time() < bitis:
+            d.update()
+
+    def _ac(self, yap):
+        self.root.geometry("1x1+-3000+-3000")
+        self.root.deiconify()
+        with patch("ui_pencere.belge_penceresini_hazirla", lambda win, **_k: {}):
+            d = yap()
+        d.geometry("1500x850+-3000+-3000")
+        d.deiconify()
+        self._pompala(d, 0.4)
+        return d
+
+    def _kartlar(self):
+        from alis_ui import AlisFaturasiDialog, AlisIrsaliyesiDialog, AlisSiparisiDialog
+        from satis_irsaliyesi_ui import SatisIrsaliyesiDialog
+        from satis_siparisi_ui import SatisSiparisiKarti
+        from teklif_ui import TeklifDialog
+
+        return [
+            ("Alış faturası", lambda: AlisFaturasiDialog(self.root), lambda d: d._alis_fatura_urun_ekle(self.DEG, None)),
+            ("Alış siparişi", lambda: AlisSiparisiDialog(self.root), lambda d: d._alis_urun_ekle(self.DEG, None)),
+            ("Alış irsaliyesi", lambda: AlisIrsaliyesiDialog(self.root), lambda d: d._alis_urun_ekle(self.DEG, None)),
+            ("Satış irsaliyesi", lambda: SatisIrsaliyesiDialog(self.root),
+             lambda d: d._satir_ici_giris.urun_ekle_fn(self.DEG, None)),
+            ("Alınan sipariş", lambda: SatisSiparisiKarti(self.root, cari=self._cari()),
+             lambda d: d._satir_ici_giris.urun_ekle_fn(self.DEG, None)),
+            ("Teklif", lambda: TeklifDialog(self.root), lambda d: d._teklif_urun_ekle(self.DEG, None)),
+        ]
+
+    @staticmethod
+    def _tablo(d):
+        return getattr(d, "satir_tablosu", None) or d.satir_tablo
+
+    def test_her_evrakta_f2_stok_karti_ve_ust_alan_gezinme(self):
+        from evrak_baslik_gezinme import baslik_alanlari
+
+        with patch("tkinter.messagebox.showinfo"), patch("tkinter.messagebox.showwarning"), \
+                patch("tkinter.messagebox.showerror"), patch("tkinter.messagebox.askyesno", return_value=True):
+            for ad, yap, ekle in self._kartlar():
+                with self.subTest(evrak=ad):
+                    d = self._ac(yap)
+                    try:
+                        ekle(d)
+                        self._pompala(d)
+                        tablo = self._tablo(d)
+                        tablo.selection_set(veri_iidleri(tablo)[0])
+                        tablo.focus_force()
+                        self._pompala(d)
+                        with patch("stok_ui.StokKartiDialog") as kart, patch.object(d, "kaydet") as kayit:
+                            tablo.event_generate("<F2>")
+                            self._pompala(d)
+                        kart.assert_called_once()
+                        self.assertEqual(kart.call_args.args[1].stok_kodu, "MB001")
+                        kayit.assert_not_called()
+
+                        alanlar = baslik_alanlari(d)
+                        self.assertGreaterEqual(len(alanlar), 2, alanlar)
+                        ilk, ikinci = alanlar[0], alanlar[1]
+                        ilk.focus_force()
+                        self._pompala(d, 0.05)
+                        ilk.event_generate("<Down>")
+                        self._pompala(d)
+                        self.assertIs(_odak(d), ikinci)
+                        ikinci.event_generate("<Up>")
+                        self._pompala(d)
+                        self.assertIs(_odak(d), ilk)
+                        son = alanlar[-1]
+                        son.focus_force()
+                        self._pompala(d, 0.05)
+                        son.event_generate("<Return>")
+                        self._pompala(d, 0.3)
+                        odak = _odak(d)
+                        self.assertTrue(str(odak).startswith(str(tablo)), f"{ad}: son alandan sonra odak {odak}")
+                    finally:
+                        d.destroy()
+
+    def test_alis_faturasi_ok_satir_gezinme_uclu_iskonto_ve_cift_tik(self):
+        from alis_ui import AlisFaturasiDialog
+
+        d = self._ac(lambda: AlisFaturasiDialog(self.root))
+        try:
+            i0 = d._alis_fatura_urun_ekle(self.DEG, None)
+            d._satir_ici_giris.son_islem = "secim"
+            d.satirlar.append(dict(d.satirlar[i0], miktar=Decimal("4")))
+            d._satir_listesini_yenile()
+            self._pompala(d, 0.3)
+            hucre = d._hucre
+            hucre.duzenle(0, "miktar")
+            self._pompala(d)
+            hucre.editor.delete(0, "end")
+            hucre.editor.insert(0, "3")
+            hucre.editor.focus_force()
+            self._pompala(d, 0.05)
+            hucre.editor.event_generate("<Down>")
+            self._pompala(d)
+            self.assertEqual(Decimal(d.satirlar[0]["miktar"]), Decimal("3"))
+            self.assertEqual(hucre._konum, (1, "miktar"))
+            hucre.editor.focus_force()
+            self._pompala(d, 0.05)
+            hucre.editor.event_generate("<Up>")
+            self._pompala(d)
+            self.assertEqual(hucre._konum, (0, "miktar"))
+            # Üçlü iskonto: Enter ile 1 → 2 → 3, toplam yeniden hesaplanır
+            hucre.duzenle(0, "iskonto")
+            self._pompala(d)
+            kutular = hucre.editor.kutular
+            for kutu, deger in zip(kutular, ("10", "5", "2")):
+                kutu.delete(0, "end")
+                kutu.insert(0, deger)
+                kutu.focus_force()
+                self._pompala(d, 0.05)
+                kutu.event_generate("<Return>")
+                self._pompala(d)
+            s = d.satirlar[0]
+            self.assertEqual(
+                (Decimal(s["iskonto_orani"]), Decimal(s["iskonto_orani_2"]), Decimal(s["iskonto_orani_3"])),
+                (Decimal("10"), Decimal("5"), Decimal("2")),
+            )
+            self.assertNotEqual(hucre._konum[1] if hucre.editor else None, "iskonto")
+            hucre.kapat()
+            # Ürün adı hücresine çift tık stok kartını açar
+            tablo = d.satir_tablosu
+            bb = tablo.bbox(veri_iidleri(tablo)[0], "ad")
+            self.assertTrue(bb)
+            with patch("stok_ui.StokKartiDialog") as kart:
+                cift_tik(tablo, bb[0] + bb[2] // 2, bb[1] + bb[3] // 2)
+                self._pompala(d)
+            kart.assert_called_once()
+        finally:
+            d.destroy()
 
 
 class CiktiGirisSatiriTest(_GirisTemel):

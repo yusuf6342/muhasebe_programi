@@ -1,0 +1,39 @@
+﻿Cin Muhasebe - Evo Devir Deneme
+================================
+
+Bu kurulum, Evo Bulut'tan 06.10.2026 devir tarihiyle aktarılan "Evo Devir Deneme" (EVODEVIR)
+firmasını incelemek içindir. Bilgisayardaki diğer Cin Muhasebe kurulumlarından ayrıdır:
+
+  Program klasörü : %LOCALAPPDATA%\Programs\CinMuhasebeEvoDevir
+  Veri klasörü    : %LOCALAPPDATA%\CinMuhasebeEvoDevir\data
+  Kısayol         : "Cin Muhasebe - Evo Devir Deneme" (masaüstü ve Başlat menüsü)
+
+Cin Muhasebe (Test) ve gerçek Ray Mobilya verisine dokunmaz. Yönetici yetkisi gerekmez.
+
+KURULUM
+1. CinMuhasebe_EvoDevir_Kurulum_*.exe dosyasını çalıştırın ve adımları izleyin.
+2. Firma verisi yalnızca veri klasörü boşsa kurulur. Yeniden kurulumda veya güncellemede
+   mevcut veri korunur; programı kaldırmak veri klasörünü silmez.
+
+İLK GİRİŞ
+1. "Cin Muhasebe - Evo Devir Deneme" kısayolunu açın.
+2. Giriş ekranında "İlk kurulum — yönetici girişi" kutusunda geçici yönetici parolası görünür.
+   Kullanıcı adı: admin. "Kopyala" ile panoya alabilir ya da "Şifre alanına yaz" düğmesini kullanabilirsiniz.
+3. "Giriş Yap"tan sonra program sizden yeni bir şifre belirlemenizi ister; bu adım atlanamaz.
+   Yeni şifre kaydedilince geçici parola geçersiz olur ve parola dosyası silinir.
+4. Firma olarak "Evo Devir Deneme" açılır. Alt durum çubuğunda "Veri:" yolunun yukarıdaki
+   veri klasörü olduğunu kontrol edin.
+
+BİLİNMESİ GEREKENLER
+- Yalnız 06.10.2026 tarihli açılış bakiyeleri vardır; geçmiş Evo hareketleri evrak olarak aktarılmadı.
+- Kasa devir bakiyeleri Evo'nun 06.10.2026 tarihli bakiyesidir ve kasa kartının "Açılış" alanındadır
+  (ayrıca açılış hareketi yoktur): NAKİT KASA -361.194,99 TL, YÇ KASA 1.190.375,53 TL. Eksi bakiye
+  kaynakta olduğu gibi korundu. Kasa kartındaki Açılış tutarını değiştirmeyin; sonraki kasa
+  işlemleri bu tutarın üzerine işlenir.
+- Kredi ödeme planları, çek/senetler, KMH / kredi kartı limitleri ve POS komisyonları Evo'da yoktu.
+  Bakiyeleri aktarıldı; ayrıntıları devir şablonuyla ayrıca eklenecek. Bu ayrıntılar beklenirken
+  program kullanılabilir.
+- Devir tarihinden önceki kredi ve çek/senetleri kredi/çek ekranlarından normal kayıt olarak
+  GİRMEYİN: aynı borç ikinci kez yazılır. Şablonla eklenen ayrıntılar bakiyeyi değiştirmez.
+- Şablonla eklenen kredilerin taksitleri "Taksiti öde" ile normal ödenir; "Ödeme hesabı" kutusundan
+  ödemenin yapılacağı mevduat/KMH/kasa hesabını seçin. Ödeme kredi borcunu anapara kadar düşürür.

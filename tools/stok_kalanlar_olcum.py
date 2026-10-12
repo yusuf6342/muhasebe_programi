@@ -4,9 +4,9 @@
    * Önce (eski davranış): sorgu + tablo doldurma ana thread'de → arayüz bu süre boyunca donar.
    * Sonra: ``arka_plan_rapor`` + ``tabloyu_parcali_doldur``; ana thread'de 10 ms'lik sayaç çalışır,
      iki tık arası en uzun boşluk = arayüzün en uzun donma süresi.
-   Sonuç: inceleme\\stoklar\\stk013_performans.json
+   Sonuç: inceleme\\stoklar\\stk013_performans_<db>_<zaman>.json
 2. Stok uyarıları yeniden sınıflandırma (Tükendi / Stok girişi yok / Kritik): önce/sonra sayıları,
-   geçmiş olay kayıtlarının korunduğu, yeni bildirim sayısı. Sonuç: inceleme\\stoklar\\stok_uyari_siniflandirma.json
+   geçmiş olay kayıtlarının korunduğu, yeni bildirim sayısı. Sonuç: inceleme\\stoklar\\stok_uyari_siniflandirma_<db>_<zaman>.json
 
 Kullanım: .venv\\Scripts\\python.exe tools\\stok_kalanlar_olcum.py --db KOPYA_VEYA_GERCEK [--sadece rapor|uyari]
 """
@@ -24,6 +24,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
+
 STK013 = ROOT / "inceleme" / "stoklar" / "stk013_performans.json"
 UYARI = ROOT / "inceleme" / "stoklar" / "stok_uyari_siniflandirma.json"
 
@@ -234,17 +237,19 @@ def main() -> int:
     _bagla(kopya)
     ortak = {"kaynak": str(a.db), "kopya": str(kopya), "zaman": datetime.now().isoformat(timespec="seconds")}
     if a.sadece in (None, "rapor"):
-        STK013.write_text(json.dumps({**ortak, "raporlar": rapor_olcumu(),
+        stk013 = benzersiz_rapor_yolu(STK013.parent, STK013.stem, a.db, STK013.suffix)
+        stk013.write_text(json.dumps({**ortak, "raporlar": rapor_olcumu(),
                                       "aciklama": ("once_arayuz_donma_sn: eski senkron akışta arayüzün donduğu süre "
                                                    "(sorgu + tablo doldurma). sonra_en_uzun_arayuz_donmasi_sn: arka "
                                                    "plan + parçalı doldurmada ana thread'in en uzun cevapsız kaldığı "
                                                    "süre (10 ms sayaç tıkları arası).")},
                                      ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-        print("Rapor:", STK013)
+        print("Rapor:", stk013)
     if a.sadece in (None, "uyari"):
-        UYARI.write_text(json.dumps({**ortak, **uyari_siniflandir()}, ensure_ascii=False, indent=2, default=str),
-                         encoding="utf-8")
-        print("Rapor:", UYARI)
+        sonuc = {**ortak, **uyari_siniflandir()}
+        uyari = benzersiz_rapor_yolu(UYARI.parent, UYARI.stem, a.db, UYARI.suffix)
+        uyari.write_text(json.dumps(sonuc, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        print("Rapor:", uyari)
     return 0
 
 

@@ -40,6 +40,17 @@ def _finans_menu_isaretle(app):
         pass
 
 
+def _odeme_hesabi_kutusu(parent, *, kredi_id=None, taksit_id=None, secili_id=None):
+    """(combobox, {etiket: hesap_id}); seçili yoksa kredinin varsayılan ödeme hesabı."""
+    secenekler = BankaKrediService.odeme_hesap_secenekleri(kredi_id=kredi_id, taksit_id=taksit_id)
+    harita = {s["etiket"]: s["id"] for s in secenekler}
+    kutu = ttk.Combobox(parent, values=list(harita), state="readonly", width=52)
+    etiketler = list(harita)
+    if etiketler:
+        kutu.set(next((e for e, hid in harita.items() if hid == secili_id), etiketler[0]))
+    return kutu, harita
+
+
 def _oturum_banner(parent):
     frm = ttk.Frame(parent)
     frm.pack(fill="x", pady=(4, 8))
@@ -319,7 +330,8 @@ class KrediDetayPenceresi(tk.Toplevel):
         ).pack(side="left", padx=12, pady=10)
         tk.Label(
             ust,
-            text=f"  {detay.get('belge_no', '')}  |  Kalan: {_para(detay.get('kalan_anapara'))}",
+            text=f"  {detay.get('belge_no', '')}  |  "
+            f"Kalan: {_para((detay.get('bakiye_ozeti') or {}).get('kalan_anapara'))}",
             bg=_NAVY,
             fg=_YELLOW,
             font=("Segoe UI", 10),
@@ -339,6 +351,14 @@ class KrediDetayPenceresi(tk.Toplevel):
         )
         for metin, komut in islemler:
             ttk.Button(arac, text=metin, command=komut).pack(side="left", padx=2)
+
+        hesap_satiri = ttk.Frame(self)
+        hesap_satiri.pack(fill="x", padx=8)
+        ttk.Label(hesap_satiri, text="Ödeme hesabı:").pack(side="left")
+        self._hesap_kutu, self._hesap_map = _odeme_hesabi_kutusu(
+            hesap_satiri, kredi_id=self.kredi_id, secili_id=getattr(self, "_secili_hesap_id", None)
+        )
+        self._hesap_kutu.pack(side="left", padx=6)
 
         kolonlar = (
             ("no", "No", 40),
@@ -383,8 +403,7 @@ class KrediDetayPenceresi(tk.Toplevel):
                     _para(t.get("bsmv")),
                     _para(t.get("kkdf")),
                     _para(
-                        Decimal(str(t.get("masraf") or 0))
-                        + Decimal(str(t.get("komisyon") or 0))
+                        Decimal(str(t.get("komisyon") or 0))
                         + Decimal(str(t.get("sigorta") or 0))
                         + Decimal(str(t.get("dosya_masrafi") or 0))
                         + Decimal(str(t.get("diger_masraflar") or 0))
@@ -400,6 +419,10 @@ class KrediDetayPenceresi(tk.Toplevel):
     def _secili_taksit(self):
         s = self.tablo.selection()
         return int(s[0]) if s else None
+
+    def _odeme_hesabi(self):
+        self._secili_hesap_id = self._hesap_map.get(self._hesap_kutu.get())
+        return self._secili_hesap_id
 
     def _plan(self):
         messagebox.showinfo(
@@ -431,7 +454,7 @@ class KrediDetayPenceresi(tk.Toplevel):
         if not tid:
             messagebox.showinfo("Seçim", "Ödenecek taksiti seçin.")
             return
-        KrediTaksitOdemePenceresi(self, tid, yenile_cb=self._yukle)
+        KrediTaksitOdemePenceresi(self, tid, yenile_cb=self._yukle, banka_hesap_id=self._odeme_hesabi())
 
     def _kismi(self):
         tid = self._secili_taksit()
@@ -442,7 +465,9 @@ class KrediDetayPenceresi(tk.Toplevel):
         if not tutar:
             return
         try:
-            BankaKrediService.kisimi_ode(tid, tutar, dagitim="ONCE_MASRAF")
+            BankaKrediService.kisimi_ode(
+                tid, tutar, banka_hesap_id=self._odeme_hesabi(), dagitim="ONCE_MASRAF"
+            )
             messagebox.showinfo("Tamam", "Kısmi ödeme kaydedildi.")
             self._yukle()
             if self.yenile_cb:
@@ -455,7 +480,7 @@ class KrediDetayPenceresi(tk.Toplevel):
         if not tutar:
             return
         try:
-            BankaKrediService.ara_ode(self.kredi_id, tutar)
+            BankaKrediService.ara_ode(self.kredi_id, tutar, banka_hesap_id=self._odeme_hesabi())
             messagebox.showinfo("Tamam", "Ara ödeme kaydedildi.")
             self._yukle()
             if self.yenile_cb:
@@ -475,7 +500,7 @@ class KrediDetayPenceresi(tk.Toplevel):
                 f"Toplam kapama: {_para(ozet.get('toplam'))}\n\nDevam edilsin mi?",
             ):
                 return
-            BankaKrediService.erken_kapat(self.kredi_id)
+            BankaKrediService.erken_kapat(self.kredi_id, banka_hesap_id=self._odeme_hesabi())
             messagebox.showinfo("Tamam", "Erken kapama tamamlandı.")
             self._yukle()
             if self.yenile_cb:
@@ -529,13 +554,14 @@ class KrediDetayPenceresi(tk.Toplevel):
 class KrediTaksitOdemePenceresi(tk.Toplevel):
     """Kurumsal taksit ödeme — tek banka çıkışı önizlemesi."""
 
-    def __init__(self, parent, taksit_id, yenile_cb=None):
+    def __init__(self, parent, taksit_id, yenile_cb=None, banka_hesap_id=None):
         super().__init__(parent)
         self.taksit_id = int(taksit_id)
         self.yenile_cb = yenile_cb
+        self.banka_hesap_id = banka_hesap_id
         self._kilidi = False
         self.title("Kredi Taksit Ödeme")
-        self.geometry("560x720")
+        self.geometry("600x760")
         self.transient(parent)
         self.grab_set()
         try:
@@ -565,6 +591,13 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
             fg=_NAVY,
         ).pack(anchor="w", padx=14, pady=(10, 2))
         ttk.Label(self, text=f"Vade: {d.get('vade_tarihi')}").pack(anchor="w", padx=14)
+        hesap_satiri = ttk.Frame(self)
+        hesap_satiri.pack(fill="x", padx=14, pady=(6, 0))
+        ttk.Label(hesap_satiri, text="Ödeme hesabı").pack(side="left")
+        self.hesap_kutu, self.hesap_map = _odeme_hesabi_kutusu(
+            hesap_satiri, taksit_id=self.taksit_id, secili_id=self.banka_hesap_id
+        )
+        self.hesap_kutu.pack(side="left", padx=6, fill="x", expand=True)
 
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, padx=14, pady=8)
@@ -579,7 +612,8 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
             ("komisyon", "Komisyon", str(d.get("komisyon") or 0)),
             ("sigorta", "Sigorta", str(d.get("sigorta") or 0)),
             ("dosya_masrafi", "Dosya/işlem masrafı", str(d.get("dosya_masrafi") or 0)),
-            ("diger_masraflar", "Diğer masraflar", str(d.get("diger_masraflar") or d.get("masraf") or 0)),
+            ("diger_masraflar", "Diğer masraflar",
+             str((d["diger_masraflar"] if "diger_masraflar" in d else d.get("masraf")) or 0)),
             ("gecikme_faizi", "Gecikme faizi", str(d.get("gecikme_faizi") or 0)),
             ("aciklama", "Açıklama", ""),
         )
@@ -665,6 +699,7 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
             sonuc = BankaKrediService.taksit_ode(
                 taksit_id=self.taksit_id,
                 odeme_tarihi=odeme_tarihi,
+                banka_hesap_id=self.hesap_map.get(self.hesap_kutu.get()),
                 banka_dekont_no=self.vars["banka_dekont_no"].get().strip() or None,
                 aciklama=self.vars["aciklama"].get().strip() or None,
                 bilesenler={

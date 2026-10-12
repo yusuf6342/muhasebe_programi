@@ -432,11 +432,8 @@ class CariMuhasebeDialog(tk.Toplevel):
 
 
 class CariDialog(tk.Toplevel):
-    SAYISAL_TUTAR_ALANLARI = (
-        "acik_hesap_risk_limiti",
-        "cek_risk_limiti",
-        "senet_risk_limiti",
-    )
+    # Risk limitleri ve vade farkı oranları RiskLimitPaneli üzerinden (cari_risk_service) kaydedilir.
+    SAYISAL_TUTAR_ALANLARI: tuple[str, ...] = ()
     SAYISAL_GUN_ALANLARI = ("satis_vade_gunu", "alis_vade_gunu")
     MUHASEBE_ALANLARI = tuple(alan for _etiket, alan in CariMuhasebeDialog.ALANLAR)
     _acik_kartlar: "weakref.WeakSet[CariDialog]" = weakref.WeakSet()
@@ -940,9 +937,25 @@ class CariDialog(tk.Toplevel):
         tk_buton(
             btn_satir, "Muhasebe Hesap Kodları", self.muhasebe_ac, rol="ikincil"
         ).pack(side="left", padx=(0, 6))
+        risk_dugme = tk_buton(
+            btn_satir, "Risk ve Limitler / Vade Farkı", lambda: self._detay_panel_ac("risk"), rol="vurgu"
+        )
+        risk_dugme.pack(side="left", padx=(0, 6))
+        self._detay_butonlari["risk"] = risk_dugme
 
         self._detay_icerik = tk.Frame(cerceve, bg=BEYAZ)
         self._detay_paneller = {}
+
+        from cari_risk_ui import RiskLimitPaneli
+
+        risk_panel = tk.Frame(self._detay_icerik, bg=BEYAZ)
+        self.risk_paneli = RiskLimitPaneli(
+            risk_panel,
+            cari_id_getir=lambda: getattr(self.cari, "id", None) if self.cari else None,
+            on_degisim=self._risk_alanlari_degisti,
+        )
+        self.risk_paneli.pack(fill="both", expand=True)
+        self._detay_paneller["risk"] = risk_panel
 
         adres_panel = tk.Frame(self._detay_icerik, bg=BEYAZ)
         self._adres_sekmelerini_olustur(adres_panel)
@@ -971,6 +984,18 @@ class CariDialog(tk.Toplevel):
         self._detay_aktif = anahtar
         if anahtar == "yetkili":
             self.yetkili_ozetini_guncelle()
+        elif anahtar == "risk":
+            self.risk_paneli.yenile()
+
+    def _risk_alanlari_degisti(self):
+        if getattr(self, "_snapshot", None) is None:
+            return
+        self._kirli = self._form_snapshot() != self._snapshot
+        self._baslik_rozetlerini_guncelle()
+
+    def risk_panelini_ac(self, _e=None):
+        if self._detay_aktif != "risk":
+            self._detay_panel_ac("risk")
 
     def _yetkili_panelini_olustur(self, parent):
         from cari_yetkili_ui import YetkiliPanel
@@ -1074,14 +1099,12 @@ class CariDialog(tk.Toplevel):
         self.ozet_kartlari = getattr(self, "ozet_kartlari", {}) or {}
         satis_listeler = ("",) + tuple(SATIS_FIYAT_ADLARI)
         alis_listeler = ("",) + tuple(ALIŞ_FIYAT_ADLARI)
-        # Risk limiti (açık hesap) kaldırıldı; çek/senet + kullanılabilir risk kaldı.
+        # Limitler "Risk ve Limitler / Vade Farkı" panelinde; burada yalnız özet.
         alanlar = (
             ("Satış listesi", "satis_fiyat_listesi", "combobox", satis_listeler),
             ("Alış listesi", "alis_fiyat_listesi", "combobox", alis_listeler),
             ("Satış vade", "satis_vade_gunu", "entry", None),
             ("Alış vade", "alis_vade_gunu", "entry", None),
-            ("Çek risk", "cek_risk_limiti", "entry", None),
-            ("Senet risk", "senet_risk_limiti", "entry", None),
         )
         for etiket, alan, tur, degerler_liste in alanlar:
             sag = self._form_satiri(parent, etiket, etiket_genislik=11)
@@ -1092,7 +1115,14 @@ class CariDialog(tk.Toplevel):
             w.pack(fill="x")
             self.degerler[alan] = w
 
-        self._yan_yana_metrik(parent, "kullanilabilir_risk", "Kullanılabilir risk", 14)
+        self._yan_yana_metrik(parent, "toplam_risk", "Toplam risk", 14)
+        self._yan_yana_metrik(parent, "risk_durumu", "Risk durumu", 14)
+        self._yan_yana_metrik(parent, "kullanilabilir_risk", "Açık hesap kalan", 14)
+        for anahtar in ("toplam_risk", "risk_durumu", "kullanilabilir_risk"):
+            kart = self.ozet_kartlari[anahtar]
+            for w in (kart["frame"], kart["deger"]):
+                w.configure(cursor="hand2")
+                w.bind("<Button-1>", self.risk_panelini_ac, add="+")
 
     def _bakiye_ozet_paneli(self, parent):
         """Üçüncü üst panel: Toplam borç’tan başlayan borç / alacak özeti."""
@@ -1620,6 +1650,9 @@ class CariDialog(tk.Toplevel):
             otomatik_kod = CariService.sonraki_kod(self.cari_turu)
             self.degerler["cari_kodu"].insert(0, otomatik_kod)
         self.degerler["cari_kodu"].configure(state="readonly")
+        if getattr(self, "risk_paneli", None) is not None:
+            self.risk_paneli.doldur(self.cari)
+            self.risk_paneli.duzenlenebilir(True)
         self._telefon_butonlarini_guncelle()
 
     def _widget_deger(self, alan: str) -> str:
@@ -1646,6 +1679,8 @@ class CariDialog(tk.Toplevel):
         for a in sorted(self.muhasebe.keys()):
             parcalar.append(f"muh.{a}={self.muhasebe.get(a) or ''}")
         parcalar.append(f"uyari={getattr(self, 'uyari_notu', '') or ''}")
+        if getattr(self, "risk_paneli", None) is not None:
+            parcalar.append(f"risk={self.risk_paneli.snapshot()}")
         return "\n".join(parcalar)
 
     def _kirli_izlemeyi_bagla(self):
@@ -1709,8 +1744,16 @@ class CariDialog(tk.Toplevel):
         aktif = bool(self.degerler.get("aktif").get()) if "aktif" in self.degerler else True
         if not aktif:
             mesajlar.append("Kart pasif — satışa kapalı kabul edilir.")
+        risk_asimi = []
         if metrik:
-            if (metrik.get("risk_durum") or "") in ("uyari", "engel") or (
+            satirlar = (metrik.get("risk_ozeti") or {}).get("satirlar") or {}
+            risk_asimi = [s for s in satirlar.values() if s.get("durum") == "ASILDI"]
+            if risk_asimi:
+                mesajlar.append(
+                    "Risk limiti aşıldı: "
+                    + ", ".join(f"{s['etiket']} (aşım {para_goster(s['asim'])})" for s in risk_asimi)
+                )
+            elif (metrik.get("risk_durum") or "") in ("uyari", "engel") or (
                 metrik.get("kullanilabilir_risk") is not None
                 and Decimal(str(metrik.get("kullanilabilir_risk"))) < 0
             ):
@@ -1724,7 +1767,9 @@ class CariDialog(tk.Toplevel):
                 self._uyari_bandi.pack(fill="x", padx=12, pady=(6, 0), after=self._ust_son)
             if not aktif:
                 rozet(self._uyari_rozet_satiri, "Satışa kapalı", bg=UYARI).pack(side="left", padx=(0, 6))
-            if metrik and metrik.get("kullanilabilir_risk") is not None:
+            if risk_asimi:
+                rozet(self._uyari_rozet_satiri, "Risk aşımı", bg=UYARI).pack(side="left", padx=(0, 6))
+            elif metrik and metrik.get("kullanilabilir_risk") is not None:
                 kalan = Decimal(str(metrik["kullanilabilir_risk"]))
                 if kalan < 0:
                     rozet(self._uyari_rozet_satiri, "Risk aşımı", bg=UYARI).pack(side="left", padx=(0, 6))
@@ -1838,6 +1883,32 @@ class CariDialog(tk.Toplevel):
                 text=etiket if self.tedarikci_modu else f"{etiket} · {durum}"
             )
 
+        risk = metrik.get("risk_ozeti") or {}
+        if "toplam_risk" in self.ozet_kartlari:
+            toplam = (risk.get("satirlar") or {}).get("TOPLAM")
+            self.ozet_kartlari["toplam_risk"]["deger"].configure(
+                text=para_goster(toplam["risk"]) if toplam else "—", fg=LACIVERT
+            )
+        if "risk_durumu" in self.ozet_kartlari:
+            from cari_risk_ui import DURUM_RENK
+
+            satirlar = risk.get("satirlar") or {}
+            limitli = [s for s in satirlar.values() if s.get("limitli") and s.get("uygula")]
+            if not limitli:
+                metin, renk = "Limit tanımlı değil", IKINCIL
+            else:
+                asan = [s for s in limitli if s.get("durum") == "ASILDI"]
+                dolu = [s for s in limitli if s.get("durum") == "DOLU"]
+                hedef = asan or dolu or limitli
+                if asan:
+                    metin = f"Limit aşıldı ({', '.join(s['etiket'] for s in asan)})"
+                elif dolu:
+                    metin = f"Limit dolu ({', '.join(s['etiket'] for s in dolu)})"
+                else:
+                    metin = "Limit içinde"
+                renk = DURUM_RENK.get(hedef[0].get("durum"), LACIVERT)
+            self.ozet_kartlari["risk_durumu"]["deger"].configure(text=metin, fg=renk)
+
         if "kullanilabilir_risk" in self.ozet_kartlari:
             kalan = metrik.get("kullanilabilir_risk")
             if kalan is None:
@@ -1868,61 +1939,19 @@ class CariDialog(tk.Toplevel):
                 )
                 self.ozet_kartlari["son_islem"]["alt"].configure(text="")
 
-        odenen = float(metrik.get("odenen_ortalama_valor_gun") or 0)
         bvalor = float(metrik.get("bakiye_ortalama_valor_gun") or 0)
         valor_etiket = metrik.get("valor_turu_etiket") or "Valör Yok"
-        valor_tarih = metrik.get("ortalama_valor_tarihi")
-        yon = metrik.get("bakiye_yonu")
-        if self.tedarikci_modu:
-            yon_yazi = etiket
-        elif yon == "BORCLU":
-            yon_yazi = "Borçlu"
-        elif yon == "ALACAKLI":
-            yon_yazi = "Alacaklı"
-        elif yon == "KAPALI":
-            yon_yazi = "Kapalı"
-        else:
-            yon_yazi = durum if durum and durum != "Bakiye yok" else (
-                "Borçlu" if bakiye > 0 else ("Alacaklı" if bakiye < 0 else "Kapalı")
-            )
-        sebep = metrik.get("ortalama_valor_sebep")
         uyari = metrik.get("ortalama_valor_uyari")
         if "Toplam borç" in self.ozet_degerleri:
-            self.ozet_degerleri["Toplam borç"].configure(
-                text=para_goster(metrik.get("toplam_borc") or 0)
-            )
-            self.ozet_degerleri["Toplam alacak"].configure(
-                text=para_goster(metrik.get("toplam_alacak") or 0)
-            )
-            if "Kalan Bakiye" in self.ozet_degerleri:
-                self.ozet_degerleri["Kalan Bakiye"].configure(
-                    text=para_goster(abs(bakiye)), fg=renk
-                )
-            if "Bakiye yönü" in self.ozet_degerleri:
-                self.ozet_degerleri["Bakiye yönü"].configure(text=yon_yazi, fg=renk)
-            elif "Bakiye durumu" in self.ozet_degerleri:
-                self.ozet_degerleri["Bakiye durumu"].configure(text=yon_yazi, fg=renk)
-            self.ozet_degerleri["Ortalama borç kapatma süresi"].configure(text=f"{odenen:.1f} gün")
-            if "Ortalama Valör" in self.ozet_degerleri:
-                self.ozet_degerleri["Ortalama Valör"].configure(text=valor_etiket)
-            if "Ortalama Valör Tarihi" in self.ozet_degerleri:
-                if valor_tarih is not None:
-                    self.ozet_degerleri["Ortalama Valör Tarihi"].configure(
-                        text=tarih_goster(valor_tarih)
-                    )
-                else:
-                    self.ozet_degerleri["Ortalama Valör Tarihi"].configure(
-                        text=sebep or "—"
-                    )
-            if "Ortalama Valör Gün Sayısı" in self.ozet_degerleri:
-                if valor_tarih is not None or (bvalor and metrik.get("valor_turu") != "YOK"):
-                    self.ozet_degerleri["Ortalama Valör Gün Sayısı"].configure(
-                        text=f"{bvalor:.1f} gün"
-                    )
-                else:
-                    self.ozet_degerleri["Ortalama Valör Gün Sayısı"].configure(
-                        text=sebep or "0 gün"
-                    )
+            from cari_borc_alacak_ozet import ozet_metinleri
+
+            for baslik, (metin, satir_renk) in ozet_metinleri(
+                metrik, tedarikci_modu=self.tedarikci_modu
+            ).items():
+                if baslik == "Bakiye yönü" and baslik not in self.ozet_degerleri:
+                    baslik = "Bakiye durumu"
+                if baslik in self.ozet_degerleri:
+                    self.ozet_degerleri[baslik].configure(text=metin, fg=satir_renk)
             if uyari and "Ortalama Valör" in self.ozet_degerleri:
                 ToolTip(self.ozet_degerleri["Ortalama Valör"], uyari)
             # Eski etiket uyumu
@@ -2790,6 +2819,8 @@ class CariDialog(tk.Toplevel):
         def _ok(metrik):
             try:
                 hareketler = (metrik or {}).get("hareketler") or []
+                if getattr(self, "risk_paneli", None) is not None:
+                    self.risk_paneli.risk_goster((metrik or {}).get("risk_ozeti"))
                 self._ozet_kartlarini_guncelle(metrik)
                 self._uyari_bandini_guncelle(metrik)
                 self._hareketler_cache = hareketler
@@ -3023,27 +3054,18 @@ class CariDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showerror("Vergi no", str(hata), parent=self)
             return False
-        tutar_etiketleri = {
-            "acik_hesap_risk_limiti": "Açık hesap risk limiti",
-            "cek_risk_limiti": "Çek risk limiti",
-            "senet_risk_limiti": "Senet risk limiti",
-        }
-        for alan in self.SAYISAL_TUTAR_ALANLARI:
-            if alan not in veriler:
-                continue
-            ham = veriler.get(alan)
-            if not ham:
-                veriler[alan] = None
-                continue
+        if getattr(self, "risk_paneli", None) is not None:
+            from database.cari_risk_service import kart_alanlarini_dogrula
+
+            risk_verileri = self.risk_paneli.degerler()
             try:
-                veriler[alan] = Decimal(str(ham).replace(".", "").replace(",", "."))
-            except Exception:
-                messagebox.showwarning(
-                    "Geçersiz tutar",
-                    f"{tutar_etiketleri[alan]} geçerli bir sayı olmalıdır.",
-                    parent=self,
-                )
+                kart_alanlarini_dogrula(dict(risk_verileri))
+            except ValueError as hata:
+                messagebox.showwarning("Risk ve Limitler", str(hata), parent=self)
+                if self._detay_aktif != "risk":
+                    self._detay_panel_ac("risk")
                 return False
+            veriler.update(risk_verileri)
         gun_etiketleri = {
             "satis_vade_gunu": "Satış vade günü",
             "alis_vade_gunu": "Alış vade günü",

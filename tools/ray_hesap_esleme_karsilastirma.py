@@ -3,7 +3,9 @@
 Gerçek DB'ye yazmaz: dosya ``mode=ro`` ile açılır, SQLite backup API ile TEMP kopyaya alınır,
 tüm sorgular kopyada çalışır. Hiçbir eşleştirme seçilmez/değiştirilmez.
 
-    python tools/ray_hesap_esleme_karsilastirma.py [--db yol] [--cikti inceleme/muhasebelestirme/Ray_Hesap_Esleme_Karsilastirma]
+    python tools/ray_hesap_esleme_karsilastirma.py [--db yol] [--cikti uzantısız_yol]
+
+Varsayılan çıktı: ``inceleme/muhasebelestirme/Ray_Hesap_Esleme_Karsilastirma_<db>_<zaman>.json/.md`` (ezmez).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from database.tdhp_hesap_plani import fis_icin_alt_hesap_mi  # noqa: E402
+from tools.rapor_adi import benzersiz_kok  # noqa: E402
 
 VARSAYILAN_DB = Path(r"C:\Users\cigde\AppData\Local\MuhasebeProgrami\data\muhasebe.db")
 KASA_ADAYLARI = ("100.01.0001", "100.01.0002")
@@ -94,9 +97,12 @@ def hesap_ozet(c, h: dict, firma_id: int) -> dict:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--db", type=Path, default=VARSAYILAN_DB)
-    p.add_argument("--cikti", type=Path,
-                   default=ROOT / "inceleme" / "muhasebelestirme" / "Ray_Hesap_Esleme_Karsilastirma")
+    p.add_argument("--cikti", type=Path, help="uzantısız rapor yolu (varsayılan: inceleme\\muhasebelestirme altında "
+                                              "DB adı ve zaman damgalı, ezmeyen ad)")
     a = p.parse_args()
+    if a.cikti is None:
+        a.cikti = benzersiz_kok(ROOT / "inceleme" / "muhasebelestirme", "Ray_Hesap_Esleme_Karsilastirma", a.db,
+                                (".json", ".md"))
     kopya = kopya_al(a.db)
     c = sqlite3.connect(kopya)
     c.row_factory = sqlite3.Row

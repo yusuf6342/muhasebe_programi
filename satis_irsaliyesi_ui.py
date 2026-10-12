@@ -189,6 +189,9 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self._satir_alani()
         self._notlar_ve_toplam()
         self._kisayollar()
+        from evrak_baslik_gezinme import baslik_gezinme_kur
+
+        baslik_gezinme_kur(self, self._baslik_kaplari, son_hedef=self._satir_ici_giris.odakla)
 
         from ui_pencere import belge_penceresini_hazirla
 
@@ -344,6 +347,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
 
     def _baslik_alanlari(self):
         frame = self._panel("Belge ve Müşteri")
+        self._baslik_kaplari = [frame]
         self._girdi(frame, 0, 0, "İrsaliye No", "irsaliye_no", YENI_NO_METNI, width=20)
         self._girdi(
             frame, 0, 1, "İrsaliye Tarihi", "irsaliye_tarihi", date.today().strftime("%d.%m.%Y"),
@@ -373,6 +377,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
 
     def _sevk_adres_alanlari(self):
         frame = self._panel("Teslimat / Sevk Bilgileri")
+        self._baslik_kaplari.append(frame)
         self._girdi(frame, 0, 0, "Teslimat Adresi", "sevk_adresi", width=40, colspan=3)
         self._girdi(frame, 1, 0, "İl", "sevk_il", width=16)
         self._girdi(frame, 1, 1, "İlçe", "sevk_ilce", width=16)
@@ -719,9 +724,9 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         if zorunlu_birim:
             return [zorunlu_birim]
         try:
-            from fatura_satir_birim_service import stok_aktif_birimleri
+            from birim_secim_ui import evrak_birim_secenekleri
 
-            return stok_aktif_birimleri(kod) or ["Adet"]
+            return evrak_birim_secenekleri(kod) or ["Adet"]
         except Exception:
             return ["Adet"]
 
@@ -843,6 +848,10 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
                 return
             if s.get("siparis_satiri_id"):
                 raise ValueError("Siparişten aktarılan satırın birimi değiştirilemez.")
+            from birim_secim_ui import kart_birimini_hazirla
+
+            if not kart_birimini_hazirla(self, s.get("urun_kodu") or "", birim):
+                return
             yeni["birim"] = birim
             fiyat = self._cari_fiyati(s.get("urun_kodu") or "", birim)
             if fiyat is not None:
@@ -924,7 +933,10 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         def _secildi(fiyat):
             self.satir_hucre_uygula(idx, "fiyat", _sayi(fiyat.tutar))
 
-        dialog = PriceSelectionDialog(self, kod, on_select=_secildi, fiyat_turu="satis")
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=_secildi, fiyat_turu="satis",
+            kdv_orani=lambda: self.satirlar[idx].get("kdv_orani"),
+        )
         self.wait_window(dialog)
         return "break"
 

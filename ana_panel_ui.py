@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal
@@ -65,6 +66,25 @@ MODUL_KARTLARI: tuple[tuple[str, str, str, str], ...] = (
     ("Raporlar", "raporlar", "R", "Satış, stok, finans ve özet raporlara hızlı erişim."),
 )
 
+# Sol menüde aşağı açılan gruplar: ana anahtar -> (etiket, alt anahtar, yetki kodları)
+MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+    # Satışlar: anahtar, uygulamadaki mevcut ekranın metot adıdır. Listeler Satışlar ekranında açılır;
+    # SATIS_PENCERELERI ayrı pencere (Toplevel) açar, ekran değiştirmez.
+    "satislar": (
+        ("Satış Faturaları", "satis_faturalari_goster", ("satis_goruntuleme", "goruntuleme")),
+        ("Alınan Siparişler", "satis_siparisleri_goster", ("satis_goruntuleme", "goruntuleme")),
+        ("Müşteri Kartları", "musteri_karti_ac", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
+                                                  "goruntuleme")),
+    ),
+    "satin_alma": (
+        ("Alış Faturası", "alis_faturasi_yeni", ("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")),
+        ("Alış Siparişi", "alis_siparisi_yeni", ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
+        ("Satın Alma Talepleri", "satin_alma_talebi_yeni",
+         ("alis_talep_duzenleme", "alis_talep_goruntuleme", "alis_talep_onay", "alis_duzenleme")),
+    ),
+}
+SATIS_PENCERELERI = frozenset({"musteri_karti_ac"})
+
 HIZLI_ISLEMLER: tuple[tuple[str, str], ...] = (
     ("Yeni Satış", "yeni_satis"),
     ("Yeni Tahsilat", "yeni_tahsilat"),
@@ -90,6 +110,7 @@ class SolMenuDugme(tk.Frame):
         simge: str,
         vurgulu: bool,
         komut: Callable[[], None],
+        girinti: int = 0,
         **kwargs,
     ):
         super().__init__(parent, bg=LACIVERT, highlightthickness=0, **kwargs)
@@ -116,16 +137,17 @@ class SolMenuDugme(tk.Frame):
             width=2,
             anchor="center",
         )
-        self.lbl_simge.pack(side="left", padx=(8, 4), pady=8)
+        dikey = 5 if girinti else 8
+        self.lbl_simge.pack(side="left", padx=(8 + girinti, 4), pady=dikey)
         self.lbl_text = tk.Label(
             self.inner,
             text=etiket,
-            font=FONT_MENU_BOLD if vurgulu else FONT_MENU,
+            font=FONT_MENU_BOLD if vurgulu else (FONT_ALT if girinti else FONT_MENU),
             fg=KOYU_LACIVERT if vurgulu else METIN_ACIK,
             bg=SARI if vurgulu else LACIVERT,
             anchor="w",
         )
-        self.lbl_text.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=8)
+        self.lbl_text.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=dikey)
 
         for w in (self, self.inner, self.lbl_simge, self.lbl_text, self.accent):
             w.bind("<Enter>", self._on_enter)
@@ -225,6 +247,89 @@ class SolMenuDugme(tk.Frame):
         self.accent.configure(bg=acc if (self._aktif or self.vurgulu) else bg)
         self.lbl_simge.configure(bg=bg, fg=simge_fg)
         self.lbl_text.configure(bg=bg, fg=fg)
+        ok = getattr(self, "lbl_ok", None)
+        if ok is not None:
+            ok.configure(bg=bg, fg=simge_fg if not self._aktif else KOYU_LACIVERT)
+
+
+class SolMenuGrup(SolMenuDugme):
+    """Alt öğeleri olan menü satırı: başlığın tamamı grubu açar/kapatır; açarken ana ekranı da gösterir."""
+
+    def __init__(self, parent, *, alt_ogeler: list[tuple[str, str, Callable[[], None]]], acik: bool = False,
+                 **kwargs):
+        super().__init__(parent, **kwargs)
+        self.acik = acik
+        self.alt_cerceve = tk.Frame(parent, bg=LACIVERT, highlightthickness=0)
+        self.alt_dugmeler: dict[str, SolMenuDugme] = {}
+        for etiket, anahtar, komut in alt_ogeler:
+            d = SolMenuDugme(self.alt_cerceve, etiket=etiket, anahtar=anahtar, simge="›", vurgulu=False,
+                             komut=komut, girinti=18)
+            d.pack(fill="x", pady=0)
+            self.alt_dugmeler[anahtar] = d
+        self.lbl_ok = tk.Label(self.inner, text="", font=FONT_MENU, fg=METIN_ACIK, bg=LACIVERT, width=2,
+                               cursor="hand2", anchor="center")
+        self.lbl_ok.pack(side="right", padx=(0, 6), before=self.lbl_text)
+        self.lbl_ok.bind("<Button-1>", self._on_click)
+        self.lbl_ok.bind("<Enter>", self._on_enter)
+        self.lbl_ok.bind("<Leave>", self._on_leave)
+        self.bind("<Right>", lambda _e: self.ac_kapat(True) or "break")
+        self.bind("<Left>", lambda _e: self.ac_kapat(False) or "break")
+        self._ok_guncelle()
+        self._yenile_renk()
+
+    def _ok_tik(self, _e=None):
+        self.ac_kapat(not self.acik)
+        return "break"
+
+    def _on_click(self, _e=None):
+        acilacak = not self.acik
+        self.ac_kapat(acilacak)
+        if acilacak and self._komut:
+            self._komut()
+        return "break"
+
+    def _ok_guncelle(self) -> None:
+        self.lbl_ok.configure(text="▾" if self.acik else "▸")
+
+    def ac_kapat(self, acik: bool) -> None:
+        self.acik = bool(acik)
+        self._ok_guncelle()
+        if self.acik and self.winfo_manager():
+            self.alt_cerceve.pack(fill="x", after=self)
+        else:
+            self.alt_cerceve.pack_forget()
+
+    def pack(self, *args, **kwargs):  # noqa: D401 — yetki yeniden paketlemesinde alt öğeler başlığı izler
+        sonuc = super().pack(*args, **kwargs)
+        if self.acik:
+            self.alt_cerceve.pack(fill="x", after=self)
+        return sonuc
+
+    pack_configure = pack
+
+    def pack_forget(self):
+        self.alt_cerceve.pack_forget()
+        return super().pack_forget()
+
+    def alt_gorunurluk(self, gorunur: dict[str, bool]) -> None:
+        for d in self.alt_dugmeler.values():
+            d.pack_forget()
+        for anahtar, d in self.alt_dugmeler.items():
+            if gorunur.get(anahtar, True):
+                d.pack(fill="x", pady=0)
+
+    def alt_secili(self, anahtar: str | None) -> None:
+        for k, d in self.alt_dugmeler.items():
+            d.set_aktif(k == anahtar)
+
+
+def _alt_baslik() -> str:
+    from branding import _aktif_firma_unvani, ray_firmasi_mi
+
+    if ray_firmasi_mi():
+        return "Ray Mobilya Aksesuarları yönetim ekranı"
+    unvan = _aktif_firma_unvani()
+    return f"{unvan} yönetim ekranı" if unvan else "Yönetim ekranı"
 
 
 def logo_yukle(parent, *, max_w: int = 120, max_h: int = 40):
@@ -426,7 +531,7 @@ class AnaPanelKabuk:
         ).pack(anchor="w")
         tk.Label(
             sol_h,
-            text="Ray Mobilya Aksesuarları yönetim ekranı",
+            text=_alt_baslik(),
             bg=BEYAZ,
             fg=PASIF,
             font=FONT_ALT,
@@ -541,9 +646,11 @@ class AnaPanelKabuk:
         logo_kutu = tk.Frame(ust_logo, bg=KOYU_LACIVERT)
         logo_kutu.pack(expand=True)
         logo_yukle(logo_kutu).pack(side="left", padx=(12, 8), pady=12)
+        from branding import firma_basligi
+
         tk.Label(
             logo_kutu,
-            text=FIRMA_ADI,
+            text=firma_basligi(FIRMA_ADI),
             bg=KOYU_LACIVERT,
             fg=BEYAZ,
             font=FONT_SIDEBAR,
@@ -565,19 +672,45 @@ class AnaPanelKabuk:
         menu_scroll.pack(side="right", fill="y")
 
         app.menu_dugmeleri = {}
+        app.menu_gruplari = {}
         self._menu_sirasi = []
+        self._alt_secili: str | None = None
         for etiket, anahtar, simge, vurgulu in MENU_OGELERI:
-            dugme = SolMenuDugme(
-                menu_ic,
+            ortak = dict(
                 etiket=etiket,
                 anahtar=anahtar,
                 simge=simge,
                 vurgulu=vurgulu,
                 komut=lambda a=anahtar: app.sayfa_goster(a, ust_duzey=True),
             )
+            alt = MENU_ALT_OGELERI.get(anahtar)
+            if alt:
+                dugme = SolMenuGrup(
+                    menu_ic,
+                    alt_ogeler=[(e, k, lambda k=k: self.alt_menu_ac(k)) for e, k, _y in alt],
+                    acik=False,
+                    **ortak,
+                )
+                app.menu_gruplari[anahtar] = dugme
+            else:
+                dugme = SolMenuDugme(menu_ic, **ortak)
             dugme.pack(fill="x", pady=1, padx=0)
             app.menu_dugmeleri[anahtar] = dugme
             self._menu_sirasi.append(anahtar)
+
+        def tekerlek(e):
+            if menu_ic.winfo_reqheight() > menu_canvas.winfo_height():
+                menu_canvas.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+            return "break"
+
+        def tekerlek_bagla(w):
+            w.bind("<MouseWheel>", tekerlek, add="+")
+            for c in w.winfo_children():
+                tekerlek_bagla(c)
+
+        tekerlek_bagla(menu_canvas)
+        tekerlek_bagla(menu_ic)
+        self.alt_menu_yetki_guncelle()
         if not getattr(app, "_stok_uyari_rozet_dongusu", False):
             app._stok_uyari_rozet_dongusu = True
             app.after(4000, lambda: stok_uyari_rozet_dongusu(app))
@@ -731,6 +864,89 @@ class AnaPanelKabuk:
                 dugme.set_aktif(False)
             else:
                 dugme.set_aktif(False)
+        self._alt_secili = None
+        for grup in getattr(self.app, "menu_gruplari", {}).values():
+            grup.alt_secili(None)
+
+    def _alt_oge_isaretle(self, alt_anahtar: str) -> None:
+        for grup in getattr(self.app, "menu_gruplari", {}).values():
+            if alt_anahtar in grup.alt_dugmeler:
+                for k, dugme in self.app.menu_dugmeleri.items():
+                    if k != "hizli_satis":
+                        dugme.set_aktif(False)
+                grup.alt_secili(alt_anahtar)
+        self._alt_secili = alt_anahtar
+
+    def alt_menu_ac(self, alt_anahtar: str) -> None:
+        """Sol menü alt öğesi: Satın Alma hub kartlarıyla / Satışlar liste ekranlarıyla aynı komutu çalıştırır."""
+        import satin_alma_ui
+
+        if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI["satislar"]):
+            self._satis_listesi_ac(alt_anahtar)
+            return
+        komut = getattr(satin_alma_ui, alt_anahtar, None)
+        if not callable(komut):
+            return
+        self._alt_oge_isaretle(alt_anahtar)
+        try:
+            komut(self.app)
+        except Exception as hata:  # noqa: BLE001
+            satin_alma_ui.acilis_hatasi_goster(self.app, "Satın Alma", hata)
+
+    def _satis_listesi_ac(self, metot: str) -> None:
+        """Mevcut satış liste ekranını Satışlar ekranında açar (ekran kapalıysa önce onu açar)."""
+        import satin_alma_ui
+
+        app = self.app
+        liste = getattr(app, metot, None)
+        if not callable(liste):
+            return
+        etiket = next(e for e, k, _y in MENU_ALT_OGELERI["satislar"] if k == metot)
+
+        def ciz():
+            try:
+                liste()
+            except Exception as hata:  # noqa: BLE001
+                satin_alma_ui.acilis_hatasi_goster(app, etiket, hata)
+                return
+            self._alt_oge_isaretle(metot)
+
+        if metot in SATIS_PENCERELERI:
+            self._alt_oge_isaretle(metot)
+            try:
+                liste()
+            except Exception as hata:  # noqa: BLE001
+                satin_alma_ui.acilis_hatasi_goster(app, etiket, hata)
+            return
+        yon = getattr(app, "_ekran_yoneticisi", None)
+        if yon is None or yon.aktif_anahtar() == "satislar":
+            app.nav_ac(ciz)
+            return
+        app.sayfa_goster("satislar", ust_duzey=True)
+        bitis = time.monotonic() + 10
+
+        def bekle():
+            if yon.aktif_anahtar() == "satislar" and not getattr(app, "_busy_pending", False):
+                app.nav_ac(ciz)
+            elif time.monotonic() < bitis:
+                app.after(50, bekle)
+
+        app.after(20, bekle)
+
+    def alt_menu_yetki_guncelle(self) -> None:
+        """Yetkisi olmayan kullanıcıya ilgili alt menü gösterilmez."""
+        try:
+            from database.access import yetki_var
+        except Exception:
+            return
+        for anahtar, grup in getattr(self.app, "menu_gruplari", {}).items():
+            gorunur = {}
+            for _e, k, yetkiler in MENU_ALT_OGELERI.get(anahtar, ()):
+                try:
+                    gorunur[k] = bool(yetki_var(*yetkiler))
+                except Exception:
+                    gorunur[k] = False
+            grup.alt_gorunurluk(gorunur)
 
 
 def stok_uyari_rozeti_guncelle(app, sayi: dict | None = None) -> None:
@@ -761,8 +977,25 @@ def stok_uyari_rozet_dongusu(app) -> None:
         pass
 
 
+def eski_giris_istendi() -> bool:
+    """Geri dönüş anahtarı: CIN_ESKI_GIRIS=1 ise yeni GİRİŞ paneli yerine eski ekran açılır."""
+    import os
+
+    return os.environ.get("CIN_ESKI_GIRIS", "").strip() in ("1", "evet", "true")
+
+
 def giris_dashboard_goster(app) -> None:
-    """Ana sayfa (giriş) dashboard içeriği."""
+    """Ana sayfa (giriş): yeni özet paneli; geri dönüş anahtarı açıksa eski ekran."""
+    if eski_giris_istendi():
+        eski_giris_dashboard_goster(app)
+        return
+    from giris_paneli_ui import giris_paneli_goster
+
+    giris_paneli_goster(app)
+
+
+def eski_giris_dashboard_goster(app) -> None:
+    """Önceki giriş ekranı (modül kartları, hızlı işlemler, son işlemler)."""
     for w in app.icerik.winfo_children():
         w.destroy()
 
@@ -810,6 +1043,12 @@ def giris_dashboard_goster(app) -> None:
         ozet_baslik, text="Günün Özeti", bg=ACIK_BG, fg=LACIVERT, font=("Segoe UI", 12, "bold")
     ).pack(side="left")
     tk.Frame(ozet_baslik, bg=SARI, height=2, width=48).pack(side="left", padx=10, pady=8)
+    if not eski_giris_istendi():
+        tk.Button(
+            ozet_baslik, text="Yeni giriş ekranı", command=lambda: giris_dashboard_goster(app), bg=SARI,
+            fg=KOYU_LACIVERT, activebackground=SARI_HOVER, relief="flat", bd=0, padx=12, pady=4, font=FONT_ALT,
+            cursor="hand2",
+        ).pack(side="right")
 
     kartlar_f = tk.Frame(pad, bg=ACIK_BG)
     kartlar_f.pack(fill="x", pady=(10, 18))
@@ -1126,6 +1365,7 @@ def raporlar_menusu_goster(app) -> None:
         ("SATIŞ RAPORLARI", getattr(app, "satis_raporlari_goster", None)),
         ("SATIN ALMA RAPORLARI", getattr(app, "alis_raporlari_goster", None)),
         ("STOK RAPORLARI", getattr(app, "stok_raporlari_goster", None)),
+        ("KDV RAPORU", lambda: __import__("kdv_raporu_ui").kdv_raporu_goster(app, "raporlar")),
         ("DÖVİZ KURLARI", lambda: doviz_kur_yonetimi_goster(app)),
         ("DÖVİZ BAZINDA RAPORLAR", lambda: doviz_raporlari_goster(app)),
         ("ÖZET TABLOLAR", lambda: app.sayfa_goster("ozet_tablolar")),

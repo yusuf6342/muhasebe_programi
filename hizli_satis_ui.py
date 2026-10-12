@@ -22,12 +22,14 @@ from hizli_satis_cikti_ui import a4_yazdir, basari_dialog_goster, fis_yazdir, pd
 from hizli_satis_gun_sonu_ui import HizliSatisGunSonuDialog
 from hizli_satis_iptal_ui import HizliSatisIptalIadeDialog
 from hizli_satis_log import islem_yaz
+from cari_arama_alani import CariAramaAlani
 from hizli_satis_musteri import (
     IZIN_ACIK_HESAP,
     IZIN_IPTAL,
     PERAKENDE_MUSTERI_UNVAN,
     FiyatDegisiklikGunlugu,
     acik_hesap_risk_degerlendir,
+    cari_ozet_coz,
     cari_ozet_dict,
     fiyat_degistirme_izinli,
     fiyat_listesi_coz,
@@ -38,6 +40,7 @@ from hizli_satis_musteri import (
 from hizli_satis_sepet import HizliSatisSepet, KDV_ORANLARI, VARSAYILAN_KDV
 from hizli_satis_tahsilat_ui import HizliSatisTahsilatDialog
 from hizli_satis_urun_panel_ui import HizliSatisUrunPanel
+from stok_arama_alani import StokAramaAlani
 from urun_sec_ui import UrunSecDialog
 
 # Talimat renkleri: sarı / koyu gri; tamamla yeşil; iptal kırmızı; beklet turuncu
@@ -69,6 +72,34 @@ def _para_parse(metin: str) -> Decimal:
     elif "," in ham:
         ham = ham.replace(",", ".")
     return Decimal(ham)
+
+
+SEPET_SUTUNLARI = ("sıra", "kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "toplam")
+
+
+def _hedef_metni_coz(metin: str) -> Decimal | None:
+    """Yeni Toplam girişi: boş/eksik → None (hesap yok); negatif / sayısal olmayan → ValueError."""
+    ham = (metin or "").replace("TL", "").replace("tl", "").strip()
+    if not ham or ham in ("-", "+") or ham[-1] in ",.":
+        return None
+    if ham.startswith("-"):
+        raise ValueError("Yeni toplam negatif olamaz.")
+    try:
+        deger = _para_parse(ham)
+    except Exception as exc:
+        raise ValueError("Yeni toplam sayısal bir tutar olmalıdır.") from exc
+    if not deger.is_finite():
+        raise ValueError("Yeni toplam sayısal bir tutar olmalıdır.")
+    return deger.quantize(Decimal("0.01"))
+
+
+def _fiyat_metni(tutar) -> str:
+    """Birim fiyat (en çok 4 ondalık, en az 2) — 1.234,5678 / 12,50."""
+    d = Decimal(str(tutar)).quantize(Decimal("0.0001"))
+    metin = f"{d:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    tam, _, kesir = metin.partition(",")
+    kesir = kesir.rstrip("0")
+    return f"{tam},{kesir.ljust(2, '0')}"
 
 
 def _miktar_goster(miktar: Decimal) -> str:
@@ -223,6 +254,12 @@ def _pencere_ac(app) -> None:
         except tk.TclError:
             pass
     app._hizli_satis_pencere = HizliSatisPencere(app)
+
+
+class HizliSatisStokArama(StokAramaAlani):
+    """Kasada Enter en iyi eşleşmeyi sepete atsın diye ilk sonuç seçili gelir."""
+
+    ILK_SONUC_SECILI = True
 
 
 class HizliSatisPencere(tk.Toplevel):
@@ -398,7 +435,14 @@ class HizliSatisPencere(tk.Toplevel):
         )
         self.arama_entry = ttk.Entry(ust, width=28)
         self.arama_entry.grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        self.arama_entry.bind("<Return>", self._manuel_arama_ac)
+        self._urun_arama = HizliSatisStokArama(
+            self,
+            self.arama_entry,
+            on_secim=self._stok_karti_secildi,
+            secili_ad=lambda: "",
+        )
+        self.arama_entry.bind("<Return>", self._urun_arama_enter)
+        self.arama_entry.bind("<KP_Enter>", self._urun_arama_enter)
         ttk.Button(ust, text="Ara (F1)", command=self._manuel_arama_ac).grid(
             row=0, column=4, padx=(0, 12)
         )
@@ -409,22 +453,52 @@ class HizliSatisPencere(tk.Toplevel):
         self.musteri_entry = ttk.Entry(ust, width=28)
         self.musteri_entry.grid(row=0, column=6, sticky="ew")
         self.musteri_entry.insert(0, PERAKENDE_MUSTERI_UNVAN)
-        self.musteri_entry.configure(state="readonly")
+        self._musteri_arama = CariAramaAlani(
+            self,
+            self.musteri_entry,
+            cari_turu="Müşteri",
+            on_secim=self._musteri_aramadan_secildi,
+            on_temizle=lambda: None,
+            secili_ad=self._musteri_gorunen_metin,
+            kayit_adi="Müşteri",
+        )
+        self.musteri_entry.bind(
+            "<FocusIn>", lambda _e: self.musteri_entry.selection_range(0, "end"), add="+"
+        )
+        self.musteri_entry.bind(
+            "<FocusOut>", lambda _e: self.after(250, self._musteri_metin_geri_yukle), add="+"
+        )
         ttk.Button(ust, text="Seç (F2)", command=self._musteri_sec_ac).grid(
             row=0, column=7, padx=(6, 0)
         )
         ust.columnconfigure(6, weight=1)
 
+        # Müşteri adının altı: bakiye · valör (sol) | fiyat listesi (sağ)
+        musteri_alt = tk.Frame(ust, bg=ACIK_GRI)
+        musteri_alt.grid(row=1, column=6, columnspan=2, sticky="ew", pady=(6, 0))
+        self.bakiye_lbl = tk.Label(
+            musteri_alt, text="", bg=ACIK_GRI, fg=KOYU_GRI, font=("Segoe UI", 9, "bold"), anchor="w"
+        )
+        self.bakiye_lbl.pack(side="left")
+        self.valor_lbl = tk.Label(
+            musteri_alt, text="", bg=ACIK_GRI, fg=KOYU_GRI, font=("Segoe UI", 9), anchor="w"
+        )
+        self.valor_lbl.pack(side="left", padx=(10, 0))
+        self._bakiye_seq = 0
+
         self.fiyat_grup_lbl = ttk.Label(
-            ust,
+            musteri_alt,
             text="Fiyat: SATIŞ FİYATI 1",
             style="HsDurum.TLabel",
         )
-        self.fiyat_grup_lbl.grid(row=1, column=5, columnspan=3, sticky="e", pady=(6, 0))
+        self.fiyat_grup_lbl.pack(side="right")
 
         self.durum_lbl = ttk.Label(
             ust,
-            text="Barkod okutun, grup seçin veya F1 ile arayın. F2: müşteri.",
+            text=(
+                "Barkod okutun, grup seçin veya ürün / müşteri adından 2 harf yazın. "
+                "F1: ara · F2: müşteri."
+            ),
             style="HsDurum.TLabel",
         )
         self.durum_lbl.grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
@@ -480,7 +554,7 @@ class HizliSatisPencere(tk.Toplevel):
         sag.rowconfigure(0, weight=1)
         sag.columnconfigure(0, weight=1)
 
-        sutunlar = ("sıra", "kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "toplam")
+        sutunlar = SEPET_SUTUNLARI
         self.sepet = ttk.Treeview(sag, columns=sutunlar, show="headings", height=12, selectmode="browse")
         basliklar = {
             "sıra": "Sıra",
@@ -512,7 +586,14 @@ class HizliSatisPencere(tk.Toplevel):
         self.sepet.grid(row=0, column=0, sticky="nsew")
         dikey.grid(row=0, column=1, sticky="ns")
         self.sepet.bind("<Delete>", self._satir_sil)
-        self.sepet.bind("<Double-1>", self._miktar_dialog)
+        self.sepet.bind("<Double-1>", self._sepet_cift_tik)
+        self.sepet.bind("<Button-1>", self._sepet_tik, add="+")
+        self.sepet.bind("<Button-3>", self._sepet_sag_tik)
+        self.sepet.bind("<Left>", lambda _e: self._sepet_sutun_kaydir(-1))
+        self.sepet.bind("<Right>", lambda _e: self._sepet_sutun_kaydir(1))
+        self.sepet.bind("<Return>", self._sepet_enter)
+        self._sepet_basliklar = dict(basliklar)
+        self._sepet_odak_sutun: str | None = None
 
         dugmeler = tk.Frame(sag, bg=ACIK_GRI)
         dugmeler.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -524,6 +605,7 @@ class HizliSatisPencere(tk.Toplevel):
         )
         ttk.Button(dugmeler, text="Sil (Del)", command=self._satir_sil).pack(side="left", padx=8)
         ttk.Button(dugmeler, text="Fiyat", command=self._fiyat_dialog).pack(side="left", padx=4)
+        ttk.Button(dugmeler, text="Birim", command=self._birim_sec).pack(side="left", padx=4)
         ttk.Button(dugmeler, text="İsk %", command=self._iskonto_dialog).pack(side="left", padx=4)
         ttk.Button(dugmeler, text="KDV %", command=self._kdv_dialog).pack(side="left", padx=4)
 
@@ -570,12 +652,23 @@ class HizliSatisPencere(tk.Toplevel):
         self.hedef_toplam_entry.bind("<Return>", self._hedef_toplam_uygula)
         self.hedef_toplam_entry.bind("<FocusIn>", self._hedef_toplam_odak)
         self.hedef_toplam_entry.bind("<FocusOut>", self._hedef_toplam_odak_cikti)
+        self._hedef_canli_is = None
+        self.hedef_toplam_var.trace_add("write", self._hedef_toplam_yazildi)
         ttk.Button(
             toplam_satir,
             text="Uygula",
             width=8,
             command=self._hedef_toplam_uygula,
         ).pack(side="left", padx=(6, 0))
+        self.duzeltme_lbl = tk.Label(
+            sag, text="", bg=ACIK_GRI, fg="#6B7280", font=("Segoe UI", 8), anchor="e"
+        )
+        self.duzeltme_lbl.grid(row=4, column=0, columnspan=2, sticky="e")
+        self.odenecek_lbl = tk.Label(
+            sag, text="", bg=ACIK_GRI, fg="#1F4E79", font=("Segoe UI", 12, "bold"), anchor="e"
+        )
+        self.odenecek_lbl.grid(row=5, column=0, columnspan=2, sticky="e")
+        self._ek_fon_bedeli = {"tutar": Decimal("0"), "kdv": Decimal("0"), "fonlar": [], "eksik_ayar": ""}
 
         # —— Alt: beklet / çağır / iptal / gün sonu / tahsilat / tamamla ——
         alt = tk.Frame(kok, bg=KOYU_GRI, pady=6)
@@ -714,8 +807,9 @@ class HizliSatisPencere(tk.Toplevel):
         tk.Label(
             kok,
             text=(
-                "Aşama 8 — fiş/PDF · gün sonu · Esc: kapat · F1: ara · F2: müşteri · "
-                "F8: beklet · F9: çağır · F10/F12: ödeme · İPTAL / GÜN SONU"
+                "Esc: kapat · F1: ara · F2: müşteri · F8: beklet · F9: çağır · F10/F12: ödeme · "
+                "Sepette ←/→ hücre · Fiyat hücresi F10/sağ tık: fiyat listesi · "
+                "Ürün hücresi F10/sağ tık: stok hareketleri · Birim hücresi çift tık: birim"
             ),
             bg=KOYU_GRI,
             fg=SARİ,
@@ -732,16 +826,29 @@ class HizliSatisPencere(tk.Toplevel):
         self.bind("<F7>", lambda _e: self._satir_sil())
         self.bind("<F8>", lambda _e: self._beklet())
         self.bind("<F9>", lambda _e: self._geri_cagir_ac())
-        self.bind("<F10>", lambda _e: self._odeme_al())
+        self.bind("<F10>", self._f10_tusu)
         self.bind("<F12>", lambda _e: self._odeme_al())
-        self.bind("<Delete>", self._satir_sil)
-        self.bind("<plus>", lambda _e: self._miktar_delta(1))
-        self.bind("<KP_Add>", lambda _e: self._miktar_delta(1))
-        self.bind("<minus>", lambda _e: self._miktar_delta(-1))
-        self.bind("<KP_Subtract>", lambda _e: self._miktar_delta(-1))
-        # Numpad / ana klavye +/− bazı sistemlerde farklı
-        self.bind("<KeyPress-plus>", lambda _e: self._miktar_delta(1))
-        self.bind("<KeyPress-minus>", lambda _e: self._miktar_delta(-1))
+        # Ürün / müşteri kutusuna yazarken Delete, + ve − metni düzenler; sepete dokunmaz
+        self.bind("<Delete>", lambda e: None if self._arama_alaninda() else self._satir_sil(e))
+        for tus, delta in (
+            ("<plus>", 1),
+            ("<KP_Add>", 1),
+            ("<minus>", -1),
+            ("<KP_Subtract>", -1),
+            # Numpad / ana klavye +/− bazı sistemlerde farklı
+            ("<KeyPress-plus>", 1),
+            ("<KeyPress-minus>", -1),
+        ):
+            self.bind(
+                tus, lambda _e, d=delta: None if self._arama_alaninda() else self._miktar_delta(d)
+            )
+
+    def _arama_alaninda(self) -> bool:
+        try:
+            odak = self.focus_get()
+        except (tk.TclError, KeyError):
+            return False
+        return odak is not None and odak in (self.arama_entry, self.musteri_entry)
 
     # —— Müşteri / fiyat grubu ——
 
@@ -759,16 +866,44 @@ class HizliSatisPencere(tk.Toplevel):
         if getattr(self, "urun_panel", None) is not None:
             self.urun_panel.fiyat_adi = liste
 
-    def _musteri_alani_goster(self) -> None:
+    def _musteri_gorunen_metin(self) -> str:
         cari = self.secili_cari or {}
         metin = cari.get("unvan") or PERAKENDE_MUSTERI_UNVAN
         kod = cari.get("cari_kodu") or ""
-        if kod:
-            metin = f"{kod} — {metin}"
-        self.musteri_entry.configure(state="normal")
+        return f"{kod} — {metin}" if kod else metin
+
+    def _musteri_alani_goster(self) -> None:
         self.musteri_entry.delete(0, "end")
-        self.musteri_entry.insert(0, metin)
-        self.musteri_entry.configure(state="readonly")
+        self.musteri_entry.insert(0, self._musteri_gorunen_metin())
+
+    def _musteri_metin_geri_yukle(self) -> None:
+        """Listeden seçim yapılmadan çıkılırsa kutu seçili müşteriyi göstermeye döner."""
+        try:
+            if not self.musteri_entry.winfo_exists() or self._musteri_arama.acik_mi():
+                return
+            if self.focus_get() is self.musteri_entry:
+                return
+        except (tk.TclError, KeyError):
+            return
+        if self.musteri_entry.get().strip() != self._musteri_gorunen_metin():
+            self._musteri_alani_goster()
+
+    def _musteri_aramadan_secildi(self, cari) -> None:
+        try:
+            ozet = cari_ozet_coz(int(cari.id))
+        except Exception as exc:
+            messagebox.showerror("Müşteri", f"Müşteri bilgisi alınamadı:\n{exc}", parent=self)
+            ozet = None
+        if not ozet or not self._musteri_uygula(ozet, risk_kontrol=True, uyari_goster=True):
+            self._musteri_alani_goster()
+        else:
+            try:
+                from cari_kart_ui import cari_uyari_goster
+
+                cari_uyari_goster(self, cari)
+            except Exception:
+                pass
+        self.after_idle(self._barkod_odak)
 
     def _varsayilan_musteri_yukle(self) -> None:
         try:
@@ -795,6 +930,7 @@ class HizliSatisPencere(tk.Toplevel):
                 "bakiye": Decimal("0"),
             }
             self._musteri_alani_goster()
+            self._bakiye_valor_yenile()
             self._fiyat_grup_etiket_guncelle()
             self.durum_lbl.configure(
                 text="Varsayılan perakende cari bulunamadı — görünen ad kullanılıyor."
@@ -873,6 +1009,7 @@ class HizliSatisPencere(tk.Toplevel):
 
         self.secili_cari = ozet
         self._musteri_alani_goster()
+        self._bakiye_valor_yenile()
         self._fiyat_grup_etiket_guncelle()
         self._sepet_fiyatlari_yenile()
         if getattr(self, "urun_panel", None) is not None:
@@ -889,12 +1026,14 @@ class HizliSatisPencere(tk.Toplevel):
     def _sepet_fiyatlari_yenile(self) -> None:
         """Seçili fiyat listesine göre sepet satır birim fiyatlarını günceller."""
         liste = self._aktif_fiyat_listesi()
-        for satir in self.sepet_model.satirlar:
+        for i, satir in enumerate(self.sepet_model.satirlar):
             try:
-                yeni = StokService.satis_fiyati_adi_ile(satir.stok_kodu, liste)
+                yeni = self._satir_liste_fiyati(satir, liste)
             except Exception:
                 continue
-            eski = satir.birim_fiyat
+            if yeni is None:
+                continue
+            eski = satir.referans_fiyat
             if Decimal(str(eski)) != Decimal(str(yeni)):
                 self.fiyat_gunlugu.ekle(
                     stok_kodu=satir.stok_kodu,
@@ -904,8 +1043,25 @@ class HizliSatisPencere(tk.Toplevel):
                     kullanici=getattr(oturum, "kullanici_adi", None),
                     not_=f"müşteri/fiyat listesi → {liste}",
                 )
-                satir.birim_fiyat = Decimal(str(yeni))
+                self.sepet_model.fiyat_ayarla(i, Decimal(str(yeni)))
         self._sepet_yenile()
+
+    @staticmethod
+    def _satir_liste_fiyati(satir, liste: str) -> Decimal | None:
+        """Satır biriminde liste fiyatı; ana birimde mevcut kural (kart fiyatı)."""
+        from types import SimpleNamespace
+
+        from database.stok_service import birim_anahtari
+        from fatura_satir_birim_service import _stok_yukle, birim_satis_fiyati_tl
+
+        stok = _stok_yukle(satir.stok_kodu)
+        ana = (getattr(stok, "birim", None) or satir.birim or "Adet") if stok else satir.birim
+        if stok is None or birim_anahtari(satir.birim) == birim_anahtari(ana):
+            return StokService.satis_fiyati_adi_ile(satir.stok_kodu, liste)
+        from database.hizli_satis_satir_service import fiyat_adi_normalle
+
+        musteri = SimpleNamespace(satis_fiyat_listesi=fiyat_adi_normalle(liste), musteri_grubu=None)
+        return birim_satis_fiyati_tl(satir.stok_kodu, satir.birim, musteri=musteri)
 
     # —— Barkod / arama ——
 
@@ -937,6 +1093,12 @@ class HizliSatisPencere(tk.Toplevel):
             else:
                 self._barkod_odak()
             return "break"
+        if bulunan.get("birim_hatasi"):
+            _uyari_sesi()
+            self.durum_lbl.configure(text=f"Birim tanımsız: {barkod}")
+            messagebox.showwarning("Birim", bulunan["birim_hatasi"], parent=self)
+            self._barkod_odak()
+            return "break"
 
         self._sepete_ekle_kayit(bulunan)
         self.durum_lbl.configure(
@@ -951,9 +1113,44 @@ class HizliSatisPencere(tk.Toplevel):
         return "break"
 
     def _manuel_arama_ac(self, _event=None):
+        self._urun_arama.kapat()
         sorgu = self.arama_entry.get().strip()
         UrunSecDialog(self, query=sorgu, on_select=self._urun_secildi)
         return "break"
+
+    def _urun_arama_enter(self, event=None):
+        if self._urun_arama._enter(event) == "break":
+            return "break"
+        return self._manuel_arama_ac()
+
+    def _stok_karti_secildi(self, stok) -> None:
+        """Yazarken açılan listeden seçilen stok kartını sepete ekler."""
+        kod = (stok.stok_kodu or "").strip()
+        ad = stok.stok_adi or kod
+        try:
+            mevcut = sum(
+                (Decimal(str(lot.kalan_miktar or 0)) for lot in (stok.lotlar or [])), Decimal("0")
+            )
+        except Exception:
+            mevcut = Decimal("0")
+        self._sepete_ekle_kayit(
+            {
+                "stok_id": int(stok.id),
+                "stok_kodu": kod,
+                "stok_adi": ad,
+                "birim": (stok.birim or "Adet").strip() or "Adet",
+                "miktar": Decimal("1"),
+                "birim_fiyat": StokService.satis_fiyati_1(kod),
+                "carpan": Decimal("1"),
+                "barkod": None,
+                "mevcut_stok": mevcut,
+            }
+        )
+        self.arama_entry.delete(0, "end")
+        self.durum_lbl.configure(
+            text=f"{kod} — {ad} sepete eklendi  |  Stok: {_miktar_goster(mevcut)}"
+        )
+        self.after_idle(self._barkod_odak)
 
     def _urun_secildi(self, degerler) -> None:
         # UrunSecDialog: (kod, ad, birim, stok, fiyat, kaynak)
@@ -1085,10 +1282,84 @@ class HizliSatisPencere(tk.Toplevel):
                 f"Ara: {_para(toplam['ara_toplam'])}  |  "
                 f"İsk: {_para(toplam['iskonto'])}  |  "
                 f"KDV: {_para(toplam['kdv'])}"
+                + self._fon_onizleme_metni(toplam["genel_toplam"])
             )
         )
-        self.toplam_lbl.configure(text=f"GENEL TOPLAM  {_para(toplam['genel_toplam'])}")
+        # Genel Toplam = referans; Yeni Toplam = son satış tutarı (cariye işlenen)
+        self.toplam_lbl.configure(text=f"GENEL TOPLAM  {_para(toplam['referans_toplam'])}")
         self._hedef_toplam_alani_yaz(toplam["genel_toplam"])
+        fark = toplam["genel_toplam"] - toplam["referans_toplam"]
+        try:
+            self.duzeltme_lbl.configure(
+                text=(
+                    f"Yeni Toplam düzeltmesi: {_para(fark)} — satır fiyatları referanstan dağıtıldı"
+                    if self.sepet_model.duzeltme_aktif
+                    else ""
+                )
+            )
+        except (tk.TclError, AttributeError):
+            pass
+        self._ek_fon_bedeli_yenile(toplam["genel_toplam"])
+        if self.sepet_model.son_degisiklik_duzeltme_kaldirdi:
+            self.sepet_model.son_degisiklik_duzeltme_kaldirdi = False
+            self.durum_lbl.configure(
+                text=(
+                    "Sepet değişti — önceki Yeni Toplam düzeltmesi kaldırıldı; "
+                    "Genel Toplam yeniden hesaplandı."
+                )
+            )
+
+    def _sepet_fon_satirlari(self) -> list[dict]:
+        return [
+            {"urun_kodu": s.stok_kodu, "miktar": s.miktar, "birim_fiyat": s.birim_fiyat,
+             "iskonto_orani": s.iskonto_orani, "kdv_orani": s.kdv_orani, "birim_carpani": s.carpan}
+            for s in self.sepet_model.satirlar
+        ]
+
+    def _ek_fon_bedeli_yenile(self, yeni_toplam) -> None:
+        """Faturaya ek fon bedeli: Yeni Toplam ürün toplamıdır; Ödenecek = ürün + bedel + bedel KDV'si."""
+        bos = {"tutar": Decimal("0"), "kdv": Decimal("0"), "fonlar": [], "eksik_ayar": ""}
+        ozet = HizliSatisService.ek_fon_bedeli_onizleme(self._sepet_fon_satirlari(), yeni_toplam) \
+            if len(self.sepet_model) else bos
+        self._ek_fon_bedeli = ozet
+        lbl = getattr(self, "odenecek_lbl", None)
+        if lbl is None:
+            return
+        try:
+            if ozet["tutar"] > 0:
+                odenecek = Decimal(str(yeni_toplam)) + ozet["tutar"] + ozet["kdv"]
+                lbl.configure(text=(f"Ek fon bedeli: {_para(ozet['tutar'])}  ·  KDV: {_para(ozet['kdv'])}  ·  "
+                                    f"ÖDENECEK TOPLAM  {_para(odenecek)} TL"), fg="#1F4E79")
+            elif ozet["eksik_ayar"]:
+                lbl.configure(text=f"Ek fon bedeli ayarı eksik: {ozet['eksik_ayar']}", fg="#B00020")
+            else:
+                lbl.configure(text="")
+            if ozet["eksik_ayar"] and ozet["tutar"] > 0:
+                lbl.configure(text=lbl.cget("text") + f"  ·  Ayar eksik: {ozet['eksik_ayar']}", fg="#B00020")
+        except tk.TclError:
+            pass
+
+    def _odenecek_toplam(self) -> Decimal:
+        urun = self.sepet_model.toplamlar()["genel_toplam"]
+        ek = getattr(self, "_ek_fon_bedeli", None) or {}
+        return urun + (ek.get("tutar") or Decimal("0")) + (ek.get("kdv") or Decimal("0"))
+
+    def _fon_onizleme_metni(self, yeni_toplam) -> str:
+        """Taslak sepet için fon payı önizlemesi; kalıcı kayıt oluşturmaz, fişe yazdırılmaz."""
+        if not len(self.sepet_model):
+            return ""
+        try:
+            from database.fon_service import FonService
+
+            paylar = FonService.belge_onizleme([
+                {"urun_kodu": s.stok_kodu, "miktar": s.miktar, "birim_fiyat": s.birim_fiyat,
+                 "iskonto_orani": s.iskonto_orani, "kdv_orani": s.kdv_orani, "birim_carpani": s.carpan}
+                for s in self.sepet_model.satirlar
+            ], yeni_toplam)
+        except Exception:  # noqa: BLE001
+            return ""
+        toplam = sum((p["tutar"] for p in paylar), Decimal("0"))
+        return f"  |  Fon payı (iç takip): {_para(toplam)}" if toplam > 0 else ""
 
     def _hedef_toplam_alani_yaz(self, tutar) -> None:
         entry = getattr(self, "hedef_toplam_entry", None)
@@ -1107,65 +1378,792 @@ class HizliSatisPencere(tk.Toplevel):
     def _hedef_toplam_odak(self, _event=None):
         self._hedef_toplam_duzenleniyor = True
 
-    def _hedef_toplam_odak_cikti(self, _event=None):
-        self._hedef_toplam_duzenleniyor = False
-        mevcut = self.sepet_model.toplamlar()["genel_toplam"]
-        try:
-            yazilan = Decimal(
-                str(_para_parse(self.hedef_toplam_var.get()))
-            ).quantize(Decimal("0.01"))
-        except Exception:
-            self._hedef_toplam_alani_yaz(mevcut)
+    def _hedef_canli_iptal(self) -> None:
+        if self._hedef_canli_is is not None:
+            try:
+                self.after_cancel(self._hedef_canli_is)
+            except tk.TclError:
+                pass
+            self._hedef_canli_is = None
+
+    def _hedef_toplam_yazildi(self, *_args) -> None:
+        """Yazarken geçerli tutarı kısa bekleme sonrası otomatik uygular."""
+        if not getattr(self, "_hedef_toplam_duzenleniyor", False):
             return
-        if yazilan != mevcut:
-            self._hedef_toplam_uygula()
-        else:
-            self._hedef_toplam_alani_yaz(mevcut)
-
-    def _hedef_toplam_uygula(self, _event=None):
-        """Yeni toplam alanını sepet birim fiyatlarına orantılı yansıtır."""
-        if not self.sepet_model.satirlar:
-            messagebox.showwarning(
-                "Yeni toplam",
-                "Önce sepete ürün ekleyin.",
-                parent=self,
-            )
-            self._hedef_toplam_alani_yaz(Decimal("0"))
-            return "break"
+        self._hedef_canli_iptal()
         try:
-            hedef = Decimal(str(_para_parse(self.hedef_toplam_var.get()))).quantize(
-                Decimal("0.01")
-            )
-        except Exception:
-            messagebox.showerror("Yeni toplam", "Geçersiz tutar.", parent=self)
-            self._hedef_toplam_alani_yaz(self.sepet_model.toplamlar()["genel_toplam"])
-            return "break"
-        if hedef < 0:
-            messagebox.showwarning(
-                "Yeni toplam",
-                "Toplam negatif olamaz.",
-                parent=self,
-            )
-            self._hedef_toplam_alani_yaz(self.sepet_model.toplamlar()["genel_toplam"])
-            return "break"
+            self._hedef_canli_is = self.after(700, self._hedef_canli_uygula)
+        except tk.TclError:
+            self._hedef_canli_is = None
 
-        mevcut = self.sepet_model.toplamlar()["genel_toplam"]
-        if hedef == mevcut:
-            self._hedef_toplam_duzenleniyor = False
-            self._hedef_toplam_alani_yaz(mevcut)
-            return "break"
-
+    def _hedef_canli_uygula(self) -> None:
+        self._hedef_canli_is = None
+        if not getattr(self, "_hedef_toplam_duzenleniyor", False) or not self.sepet_model.satirlar:
+            return
+        try:
+            hedef = _hedef_metni_coz(self.hedef_toplam_var.get())
+        except ValueError as hata:
+            self.durum_lbl.configure(text=f"Yeni Toplam: {hata}")
+            return
+        if hedef is None or hedef == self.sepet_model.toplamlar()["genel_toplam"]:
+            return
         try:
             self.sepet_model.hedef_toplam_uygula(hedef)
         except ValueError as hata:
-            messagebox.showerror("Yeni toplam", str(hata), parent=self)
+            self.durum_lbl.configure(text=f"Yeni Toplam uygulanamadı: {hata}")
+            return
+        self._sepet_yenile()
+
+    def _hedef_toplam_odak_cikti(self, _event=None):
+        self._hedef_canli_iptal()
+        self._hedef_toplam_duzenleniyor = False
+        mevcut = self.sepet_model.toplamlar()["genel_toplam"]
+        try:
+            yazilan = _hedef_metni_coz(self.hedef_toplam_var.get())
+        except ValueError as hata:
+            self.durum_lbl.configure(text=f"Yeni Toplam reddedildi: {hata}")
+            self._hedef_toplam_alani_yaz(mevcut)
+            return
+        if yazilan is None or yazilan == mevcut:
+            self._hedef_toplam_alani_yaz(mevcut)
+            return
+        self._hedef_toplam_uygula(odak_barkoda=False)
+
+    def _hedef_toplam_uygula(self, _event=None, *, odak_barkoda: bool = True):
+        """Yeni Toplamı referans satır tutarlarına orantılı dağıtır (Genel Toplam sabit)."""
+        self._hedef_canli_iptal()
+        if not self.sepet_model.satirlar:
+            messagebox.showwarning("Yeni toplam", "Önce sepete ürün ekleyin.", parent=self)
+            self._hedef_toplam_duzenleniyor = False
+            self._hedef_toplam_alani_yaz(Decimal("0"))
+            return "break"
+        mevcut = self.sepet_model.toplamlar()["genel_toplam"]
+        try:
+            hedef = _hedef_metni_coz(self.hedef_toplam_var.get())
+        except ValueError as hata:
+            messagebox.showwarning("Yeni toplam", str(hata), parent=self)
             self._hedef_toplam_duzenleniyor = False
             self._hedef_toplam_alani_yaz(mevcut)
             return "break"
-
+        if hedef is None:
+            messagebox.showwarning("Yeni toplam", "Geçerli bir tutar girin.", parent=self)
+            self._hedef_toplam_duzenleniyor = False
+            self._hedef_toplam_alani_yaz(mevcut)
+            return "break"
+        if hedef != mevcut:
+            try:
+                self.sepet_model.hedef_toplam_uygula(hedef)
+            except ValueError as hata:
+                messagebox.showerror("Yeni toplam", str(hata), parent=self)
+                self._hedef_toplam_duzenleniyor = False
+                self._hedef_toplam_alani_yaz(mevcut)
+                return "break"
         self._hedef_toplam_duzenleniyor = False
         self._sepet_yenile()
-        self._barkod_odak()
+        if odak_barkoda:
+            self._barkod_odak()
+        return "break"
+
+    # —— Müşteri bakiye / valör (Cari kart ile aynı kaynak) ——
+
+    def _bakiye_etiketleri(self, bakiye: str, valor: str, renk: str) -> None:
+        try:
+            self.bakiye_lbl.configure(text=bakiye, fg=renk)
+            self.valor_lbl.configure(text=valor, fg=KIRMIZI if renk == KIRMIZI else KOYU_GRI)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _bakiye_valor_yenile(self) -> None:
+        """Seçili müşterinin bakiye + valörünü arka planda yükler; geç gelen eski sonuç yazılmaz."""
+        import queue
+        import threading
+
+        self._bakiye_seq = getattr(self, "_bakiye_seq", 0) + 1
+        seq = self._bakiye_seq
+        cari_id = int((self.secili_cari or {}).get("id") or 0)
+        if cari_id <= 0:
+            self._bakiye_etiketleri("", "", KOYU_GRI)
+            return
+        self._bakiye_etiketleri("Bakiye yükleniyor…", "", "#6B7280")
+        kutu: queue.Queue = queue.Queue(maxsize=1)
+
+        def isci() -> None:
+            try:
+                kutu.put(("ok", CariService.kart_ozet_metrikleri(cari_id)))
+            except Exception as exc:  # noqa: BLE001
+                kutu.put(("hata", str(exc)))
+
+        threading.Thread(target=isci, daemon=True).start()
+        try:
+            self.after(60, lambda: self._bakiye_valor_bekle(seq, cari_id, kutu))
+        except tk.TclError:
+            pass
+
+    def _bakiye_valor_bekle(self, seq: int, cari_id: int, kutu) -> None:
+        import queue
+
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if seq != self._bakiye_seq:
+            return
+        try:
+            durum, veri = kutu.get_nowait()
+        except queue.Empty:
+            try:
+                self.after(80, lambda: self._bakiye_valor_bekle(seq, cari_id, kutu))
+            except tk.TclError:
+                pass
+            return
+        if int((self.secili_cari or {}).get("id") or 0) != cari_id:
+            return
+        if durum != "ok" or veri is None:
+            neden = veri if durum != "ok" else "cari kaydı bulunamadı"
+            self._bakiye_etiketleri("Bakiye/valör alınamadı", f"({str(neden)[:80]})", KIRMIZI)
+            return
+        from cari_borc_alacak_ozet import kisa_bakiye_valor_metni
+
+        bakiye_metni, valor_metni, renk = kisa_bakiye_valor_metni(veri)
+        self._bakiye_etiketleri(bakiye_metni, valor_metni, renk)
+        if self.secili_cari is not None and veri.get("bakiye") is not None:
+            self.secili_cari["bakiye"] = veri.get("bakiye")
+
+    # —— Sepet hücre hedefleme (sağ tık / F10 / ←→) ——
+
+    def _sepet_hucre(self, event) -> tuple[int | None, str | None]:
+        try:
+            satir = self.sepet.identify_row(event.y)
+            kolon = self.sepet.identify_column(event.x)
+        except tk.TclError:
+            return None, None
+        idx = int(satir) if str(satir).strip().isdigit() else None
+        try:
+            sutun = SEPET_SUTUNLARI[int(str(kolon).lstrip("#")) - 1]
+        except (ValueError, IndexError):
+            sutun = None
+        return idx, sutun
+
+    def _sepet_odak_ayarla(self, sutun: str | None) -> None:
+        self._sepet_odak_sutun = sutun
+        for c, baslik in self._sepet_basliklar.items():
+            try:
+                self.sepet.heading(c, text=f"▸{baslik}" if c == sutun else baslik)
+            except tk.TclError:
+                pass
+
+    def _sepet_tik(self, event):
+        try:
+            if self.sepet.identify_region(event.x, event.y) != "cell":
+                return None
+        except tk.TclError:
+            return None
+        _idx, sutun = self._sepet_hucre(event)
+        if sutun:
+            self._sepet_odak_ayarla(sutun)
+        return None
+
+    def _sepet_sutun_kaydir(self, yon: int):
+        mevcut = self._sepet_odak_sutun if self._sepet_odak_sutun in SEPET_SUTUNLARI else "ad"
+        i = SEPET_SUTUNLARI.index(mevcut)
+        if self._sepet_odak_sutun is not None:
+            i = max(0, min(len(SEPET_SUTUNLARI) - 1, i + yon))
+        self._sepet_odak_ayarla(SEPET_SUTUNLARI[i])
+        return "break"
+
+    def _sepet_satiri_sec(self, idx: int) -> None:
+        iid = str(idx)
+        try:
+            self.sepet.selection_set(iid)
+            self.sepet.focus(iid)
+            self.sepet.see(iid)
+        except tk.TclError:
+            pass
+
+    def _sepet_odaga_don(self, idx: int | None) -> None:
+        """Satır diyaloğu kapanınca odak hedef satıra döner."""
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if idx is None or not (0 <= idx < len(self.sepet_model.satirlar)):
+            self._barkod_odak()
+            return
+        self._sepet_satiri_sec(idx)
+        try:
+            self.sepet.focus_set()
+        except tk.TclError:
+            pass
+
+    def _gecerli_satir(self, idx: int | None, baslik: str) -> int | None:
+        if idx is None:
+            idx = self._secili_index()
+        if idx is None or not (0 <= idx < len(self.sepet_model.satirlar)):
+            messagebox.showinfo(baslik, "Önce bir sepet satırı seçin.", parent=self)
+            return None
+        return idx
+
+    def _sepet_sag_tik(self, event):
+        idx, sutun = self._sepet_hucre(event)
+        if idx is None or sutun is None:
+            return "break"
+        self._sepet_satiri_sec(idx)
+        self._sepet_odak_ayarla(sutun)
+        if sutun == "fiyat":
+            self._fiyat_listesi_ac(idx, event)
+        elif sutun == "ad":
+            self._stok_hareketleri_ac(idx)
+        elif sutun == "birim":
+            self._birim_sec(idx, event)
+        return "break"
+
+    def _sepet_cift_tik(self, event):
+        idx, sutun = self._sepet_hucre(event)
+        if sutun == "birim" and idx is not None:
+            self._sepet_satiri_sec(idx)
+            self._birim_sec(idx, event)
+            return "break"
+        return self._miktar_dialog(event)
+
+    def _sepet_enter(self, _event=None):
+        idx = self._secili_index()
+        if idx is None:
+            return "break"
+        if self._sepet_odak_sutun == "birim":
+            self._birim_sec(idx)
+        else:
+            self._miktar_dialog()
+        return "break"
+
+    def _f10_tusu(self, _event=None):
+        """Fiyat hücresinde fiyat listesi, ürün hücresinde hareketler; aksi halde ödeme."""
+        try:
+            odak = self.focus_get()
+        except (tk.TclError, KeyError):
+            odak = None
+        if odak is self.sepet:
+            idx = self._secili_index()
+            if idx is not None and 0 <= idx < len(self.sepet_model.satirlar):
+                if self._sepet_odak_sutun == "fiyat":
+                    self._fiyat_listesi_ac(idx)
+                    return "break"
+                if self._sepet_odak_sutun == "ad":
+                    self._stok_hareketleri_ac(idx)
+                    return "break"
+        return self._odeme_al()
+
+    # —— Satır birimi ——
+
+    def _birim_sec(self, idx: int | None = None, event=None):
+        idx = self._gecerli_satir(idx, "Birim")
+        if idx is None:
+            return "break"
+        satir = self.sepet_model.satirlar[idx]
+        from database.hizli_satis_satir_service import birim_degisimi_hesapla, satis_birim_secenekleri
+        from database.stok_service import birim_anahtari
+
+        try:
+            secenekler = satis_birim_secenekleri(satir.stok_kodu)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Birim", f"Birimler alınamadı:\n{exc}", parent=self)
+            return "break"
+        if not secenekler:
+            messagebox.showwarning("Birim", "Stok kartı bulunamadı; birim listelenemedi.", parent=self)
+            return "break"
+        ana = next((s["birim"] for s in secenekler if s["ana"]), satir.birim)
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Birim — {satir.stok_kodu}")
+        dialog.transient(self)
+        dialog.grab_set()
+        ttk.Label(dialog, text=f"{satir.stok_kodu} — {satir.stok_adi}").pack(
+            padx=10, pady=(10, 4), anchor="w"
+        )
+        liste = tk.Listbox(
+            dialog,
+            height=min(8, max(3, len(secenekler))),
+            exportselection=False,
+            font=("Segoe UI", 10),
+        )
+        liste.pack(fill="both", expand=True, padx=10)
+        for i, s in enumerate(secenekler):
+            if not s["kullanilabilir"]:
+                metin = f"{s['birim']}  — {s['sebep']}"
+            elif s["ana"]:
+                metin = f"{s['birim']}  (temel birim)"
+            else:
+                metin = f"{s['birim']}  (1 {s['birim']} = {_miktar_goster(s['carpan'])} {ana})"
+            liste.insert("end", metin)
+            if not s["kullanilabilir"]:
+                liste.itemconfigure(i, foreground="#9CA3AF")
+            if birim_anahtari(s["birim"]) == birim_anahtari(satir.birim):
+                liste.selection_set(i)
+                liste.activate(i)
+                liste.see(i)
+        ttk.Label(
+            dialog,
+            text="Yalnız stok kartındaki satış birimleri · Enter: seç · Esc: vazgeç",
+        ).pack(padx=10, pady=(4, 0), anchor="w")
+
+        def kapat(_e=None):
+            dialog.destroy()
+            self._sepet_odaga_don(idx)
+            return "break"
+
+        def uygula(_e=None):
+            secim = liste.curselection()
+            if not secim:
+                return "break"
+            s = secenekler[secim[0]]
+            if not s["kullanilabilir"]:
+                messagebox.showwarning("Birim", f"«{s['birim']}» seçilemez: {s['sebep']}", parent=dialog)
+                return "break"
+            if birim_anahtari(s["birim"]) == birim_anahtari(satir.birim):
+                return kapat()
+            try:
+                sonuc = birim_degisimi_hesapla(
+                    stok_kodu=satir.stok_kodu,
+                    eski_birim=satir.birim,
+                    yeni_birim=s["birim"],
+                    miktar=satir.miktar,
+                    referans_fiyat=satir.referans_fiyat,
+                    fiyat_adi=satir.fiyat_adi or self._aktif_fiyat_listesi(),
+                )
+                eski = f"{_miktar_goster(satir.miktar)} {satir.birim} × {satir.referans_fiyat}"
+                self.sepet_model.birim_uygula(
+                    idx,
+                    birim=sonuc["birim"],
+                    miktar=sonuc["miktar"],
+                    birim_fiyat=sonuc["birim_fiyat"],
+                    carpan=sonuc["carpan"],
+                )
+            except ValueError as hata:
+                messagebox.showwarning("Birim", str(hata), parent=dialog)
+                return "break"
+            self.fiyat_gunlugu.ekle(
+                stok_kodu=satir.stok_kodu,
+                alan="birim",
+                eski=eski,
+                yeni=f"{_miktar_goster(sonuc['miktar'])} {sonuc['birim']} × {sonuc['birim_fiyat']}",
+                kullanici=getattr(oturum, "kullanici_adi", None),
+                not_="satır birimi",
+            )
+            dialog.destroy()
+            kaldirildi = self.sepet_model.son_degisiklik_duzeltme_kaldirdi
+            self._sepet_yenile(secili=idx)
+            self.durum_lbl.configure(
+                text=(
+                    f"{satir.stok_kodu}: birim {sonuc['birim']} · {_miktar_goster(sonuc['miktar'])} "
+                    f"{sonuc['birim']} = {_miktar_goster(sonuc['temel_miktar'])} {ana} stoktan düşer"
+                    + (" · önceki Yeni Toplam düzeltmesi kaldırıldı" if kaldirildi else "")
+                )
+            )
+            self._sepet_odaga_don(idx)
+            return "break"
+
+        liste.bind("<Return>", uygula)
+        liste.bind("<KP_Enter>", uygula)
+        liste.bind("<Double-1>", uygula)
+        dialog.bind("<Escape>", kapat)
+        dialog.protocol("WM_DELETE_WINDOW", kapat)
+        dugmeler = ttk.Frame(dialog)
+        dugmeler.pack(pady=8)
+        ttk.Button(dugmeler, text="Seç", command=uygula).pack(side="left", padx=4)
+        ttk.Button(dugmeler, text="Vazgeç", command=kapat).pack(side="left", padx=4)
+        _dialog_hucre_altina(
+            dialog, self.sepet, item=str(idx), column="birim", event=event, width=380,
+            height=150 + 20 * min(8, max(3, len(secenekler))),
+        )
+        liste.focus_set()
+        return "break"
+
+    # —— Fiyat listesi (fiyat hücresi) ——
+
+    def _fiyat_kdv_cozumle(self, secenek: dict, satir, parent) -> tuple[Decimal | None, str]:
+        """Satıra yazılacak KDV hariç fiyat; KDV durumu kayıtsızsa kullanıcıya sorulur (varsayım yok)."""
+        from database.hizli_satis_satir_service import kdv_dahilden_net
+
+        if not secenek.get("kdv_onay_gerekli"):
+            return secenek["uygulanacak"], secenek["kdv"]
+        ham = secenek.get("uygulanacak_ham", secenek["uygulanacak"])
+        oran = satir.kdv_orani.normalize()
+        net = kdv_dahilden_net(ham, satir.kdv_orani)
+        cevap = messagebox.askyesnocancel(
+            "KDV durumu belirtilmemiş",
+            f"«{secenek['fiyat_adi']}» fiyatının KDV dahil mi hariç mi olduğu stok kartında kayıtlı değil.\n\n"
+            f"Evet: KDV hariç — satıra {_fiyat_metni(ham)} TL yazılır, %{oran:f} KDV üstüne eklenir.\n"
+            f"Hayır: KDV dahil — KDV ayrıştırılır, satıra {_fiyat_metni(net)} TL yazılır.\n"
+            "İptal: Fiyat uygulanmaz.",
+            parent=parent,
+        )
+        if cevap is None:
+            return None, ""
+        if cevap:
+            return ham, "KDV hariç (kullanıcı onayı)"
+        return net, f"KDV dahil → net %{oran:f} (kullanıcı onayı)"
+
+    def _fiyat_listesi_ac(self, idx: int | None = None, event=None):
+        idx = self._gecerli_satir(idx, "Fiyat listesi")
+        if idx is None:
+            return "break"
+        satir = self.sepet_model.satirlar[idx]
+        from database.fiyatli_stok_ekstresi_service import FiyatliStokEkstreService
+        from database.hizli_satis_satir_service import fiyat_secenekleri
+
+        izin = fiyat_degistirme_izinli()
+        try:
+            secenekler = fiyat_secenekleri(
+                satir.stok_kodu,
+                satir.birim,
+                fiyat_degistirme_izni=izin,
+                maliyet_izni=FiyatliStokEkstreService.maliyet_gorunsun_mu(),
+                aktif_liste=self._aktif_fiyat_listesi(),
+                satir_kdv_orani=satir.kdv_orani,
+            )
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Fiyat listesi", f"Fiyatlar alınamadı:\n{exc}", parent=self)
+            return "break"
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Fiyat Listesi — {satir.stok_kodu}")
+        dialog.transient(self)
+        dialog.grab_set()
+        ttk.Label(
+            dialog,
+            text=(
+                f"{satir.stok_kodu} — {satir.stok_adi}  ·  Satır birimi: {satir.birim}  ·  "
+                f"Satırdaki fiyat: {_fiyat_metni(satir.birim_fiyat)} TL"
+            ),
+        ).pack(padx=10, pady=(10, 2), anchor="w")
+        if not izin:
+            tk.Label(
+                dialog,
+                text="Satır fiyatı değiştirme yetkiniz yok — liste yalnızca görüntülenir.",
+                fg=KIRMIZI,
+            ).pack(padx=10, anchor="w")
+
+        kolonlar = ("ad", "tutar", "birim", "pb", "kdv", "satira", "not")
+        tree = ttk.Treeview(dialog, columns=kolonlar, show="headings", height=8, selectmode="browse")
+        for c, baslik, gen, hiza in (
+            ("ad", "Fiyat Türü", 150, "w"),
+            ("tutar", "Tutar", 90, "e"),
+            ("birim", "Birim", 60, "center"),
+            ("pb", "Para Birimi", 70, "center"),
+            ("kdv", "KDV", 70, "center"),
+            ("satira", f"Satıra (TL/{satir.birim})", 120, "e"),
+            ("not", "Not", 260, "w"),
+        ):
+            tree.heading(c, text=baslik)
+            tree.column(c, width=gen, anchor=hiza)
+        tree.tag_configure("pasif", foreground="#9CA3AF")
+        tree.tag_configure("musteri", font=("Segoe UI", 9, "bold"))
+        tree.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        ilk_secilecek = None
+        for i, s in enumerate(secenekler):
+            if s["kullanilabilir"]:
+                notu = s["kaynak"] + (" · müşteri fiyat listesi" if s["aktif_liste"] else "")
+                if s.get("kdv_onay_gerekli"):
+                    notu += " · KDV dahil/hariç seçimde sorulur"
+            else:
+                notu = s["sebep"]
+            etiketler = []
+            if not s["kullanilabilir"]:
+                etiketler.append("pasif")
+            if s["aktif_liste"]:
+                etiketler.append("musteri")
+            tree.insert(
+                "",
+                "end",
+                iid=str(i),
+                values=(
+                    s["fiyat_adi"],
+                    _fiyat_metni(s["tutar"]) if s["tutar"] is not None else "—",
+                    s["birim"],
+                    s["para_birimi"],
+                    s["kdv"],
+                    _fiyat_metni(s["uygulanacak"]) if s["uygulanacak"] is not None else "—",
+                    notu,
+                ),
+                tags=tuple(etiketler),
+            )
+            if s["kullanilabilir"] and (ilk_secilecek is None or s["aktif_liste"]):
+                ilk_secilecek = i
+        alt_bilgi = ttk.Label(
+            dialog,
+            text=(
+                "Bu stok kartında kayıtlı fiyat yok."
+                if not secenekler
+                else f"Satır fiyatı KDV hariç yazılır, satır KDV'si (%{satir.kdv_orani.normalize():f}) "
+                "üstüne eklenir. KDV dahil fiyat ayrıştırılır; KDV durumu belirtilmemiş fiyatta "
+                "seçim sırasında sorulur. Seçim yalnız bu satırı değiştirir, stok kartı fiyatı değişmez."
+            ),
+        )
+        alt_bilgi.pack(padx=10, pady=(4, 0), anchor="w")
+        if ilk_secilecek is not None:
+            tree.selection_set(str(ilk_secilecek))
+            tree.focus(str(ilk_secilecek))
+            tree.see(str(ilk_secilecek))
+
+        def kapat(_e=None):
+            dialog.destroy()
+            self._sepet_odaga_don(idx)
+            return "break"
+
+        def uygula(_e=None):
+            secim = tree.selection()
+            if not secim:
+                return "break"
+            s = secenekler[int(secim[0])]
+            if not s["kullanilabilir"]:
+                messagebox.showwarning("Fiyat listesi", f"Seçilemez: {s['sebep']}", parent=dialog)
+                return "break"
+            yeni, kdv_notu = self._fiyat_kdv_cozumle(s, satir, dialog)
+            if yeni is None:
+                return "break"
+            eski = satir.birim_fiyat
+            self.sepet_model.fiyat_ayarla(idx, yeni)
+            satir.fiyat_adi = s["fiyat_adi"]
+            self.fiyat_gunlugu.ekle(
+                stok_kodu=satir.stok_kodu,
+                alan="birim_fiyat",
+                eski=eski,
+                yeni=yeni,
+                kullanici=getattr(oturum, "kullanici_adi", None),
+                not_=f"fiyat listesi → {s['fiyat_adi']} ({s['para_birimi']}, {kdv_notu})",
+            )
+            dialog.destroy()
+            kaldirildi = self.sepet_model.son_degisiklik_duzeltme_kaldirdi
+            self._sepet_yenile(secili=idx)
+            self.durum_lbl.configure(
+                text=(
+                    f"{satir.stok_kodu}: {s['fiyat_adi']} uygulandı ({_fiyat_metni(yeni)} TL/"
+                    f"{satir.birim}, {kdv_notu})"
+                    + (" · önceki Yeni Toplam düzeltmesi kaldırıldı" if kaldirildi else "")
+                )
+            )
+            self._sepet_odaga_don(idx)
+            return "break"
+
+        tree.bind("<Return>", uygula)
+        tree.bind("<KP_Enter>", uygula)
+        tree.bind("<Double-1>", uygula)
+        dialog.bind("<Escape>", kapat)
+        dialog.protocol("WM_DELETE_WINDOW", kapat)
+        dugmeler = ttk.Frame(dialog)
+        dugmeler.pack(pady=8)
+        ttk.Button(dugmeler, text="Uygula", command=uygula).pack(side="left", padx=4)
+        ttk.Button(dugmeler, text="Vazgeç", command=kapat).pack(side="left", padx=4)
+        _dialog_hucre_altina(
+            dialog, self.sepet, item=str(idx), column="fiyat", event=event, width=860, height=330
+        )
+        tree.focus_set()
+        return "break"
+
+    # —— Stok hareketleri (ürün hücresi) ——
+
+    def _stok_hareketleri_ac(self, idx: int | None = None):
+        idx = self._gecerli_satir(idx, "Stok hareketleri")
+        if idx is None:
+            return "break"
+        satir = self.sepet_model.satirlar[idx]
+        cari = dict(self.secili_cari or {})
+        cari_id = int(cari.get("id") or 0) or None
+        cari_adi = cari.get("unvan") or ""
+        from database.hizli_satis_satir_service import hareket_donem_secenekleri, stok_hareketleri
+
+        win = tk.Toplevel(self)
+        win.title(f"Stok Hareketleri — {satir.stok_kodu}")
+        win.transient(self)
+        win.grab_set()
+        win.geometry("1060x470")
+        filtre_lbl = ttk.Label(win, text="", font=("Segoe UI", 10, "bold"))
+        filtre_lbl.pack(padx=10, pady=(10, 4), anchor="w")
+
+        try:
+            donemler = hareket_donem_secenekleri()
+        except Exception:  # noqa: BLE001
+            donemler = []
+        ozel_etiket = "Özel tarih aralığı"
+        donem_satiri = ttk.Frame(win)
+        donem_satiri.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(donem_satiri, text="Dönem:").pack(side="left")
+        donem_var = tk.StringVar(value=donemler[0]["etiket"] if donemler else ozel_etiket)
+        donem_cb = ttk.Combobox(
+            donem_satiri,
+            textvariable=donem_var,
+            values=[d["etiket"] for d in donemler] + [ozel_etiket],
+            state="readonly",
+            width=42,
+        )
+        donem_cb.pack(side="left", padx=(4, 10))
+        ttk.Label(donem_satiri, text="Başlangıç:").pack(side="left")
+        bas_var = tk.StringVar()
+        bas_ent = ttk.Entry(donem_satiri, textvariable=bas_var, width=11)
+        bas_ent.pack(side="left", padx=(4, 8))
+        ttk.Label(donem_satiri, text="Bitiş:").pack(side="left")
+        bit_var = tk.StringVar()
+        bit_ent = ttk.Entry(donem_satiri, textvariable=bit_var, width=11)
+        bit_ent.pack(side="left", padx=(4, 8))
+
+        def _donem_tarihleri_yaz(_e=None):
+            secili = next((d for d in donemler if d["etiket"] == donem_var.get()), None)
+            if secili is not None:
+                bas_var.set(secili["baslangic"].strftime("%d.%m.%Y"))
+                bit_var.set(secili["bitis"].strftime("%d.%m.%Y"))
+                yukle()
+
+        def _tarih_oku(metin: str, alan: str):
+            from datetime import datetime as _dt
+
+            if not (metin or "").strip():
+                return None  # servis aktif döneme düşer
+            try:
+                return _dt.strptime((metin or "").strip(), "%d.%m.%Y").date()
+            except ValueError as exc:
+                raise ValueError(f"{alan} tarihi GG.AA.YYYY biçiminde olmalı.") from exc
+
+        def _aralik_uygula(_e=None):
+            donem_var.set(ozel_etiket)
+            yukle()
+            return "break"
+
+        donem_cb.bind("<<ComboboxSelected>>", _donem_tarihleri_yaz)
+        bas_ent.bind("<Return>", _aralik_uygula)
+        bit_ent.bind("<Return>", _aralik_uygula)
+        ttk.Button(donem_satiri, text="Aralığı Uygula", command=_aralik_uygula).pack(side="left")
+        if donemler:
+            bas_var.set(donemler[0]["baslangic"].strftime("%d.%m.%Y"))
+            bit_var.set(donemler[0]["bitis"].strftime("%d.%m.%Y"))
+        kolonlar = (
+            "tarih", "saat", "belge", "tur", "cari", "yon", "miktar", "birim", "fiyat", "tutar", "pb",
+        )
+        cerceve = ttk.Frame(win)
+        cerceve.pack(fill="both", expand=True, padx=10)
+        tree = ttk.Treeview(cerceve, columns=kolonlar, show="headings", selectmode="browse")
+        for c, baslik, gen, hiza in (
+            ("tarih", "Tarih", 80, "center"),
+            ("saat", "Saat", 50, "center"),
+            ("belge", "Belge No", 110, "w"),
+            ("tur", "Belge Türü", 120, "w"),
+            ("cari", "Müşteri / Cari", 220, "w"),
+            ("yon", "Giriş/Çıkış", 75, "center"),
+            ("miktar", "Miktar", 70, "e"),
+            ("birim", "Birim", 60, "center"),
+            ("fiyat", "Birim Fiyat", 90, "e"),
+            ("tutar", "Tutar", 95, "e"),
+            ("pb", "PB", 40, "center"),
+        ):
+            tree.heading(c, text=baslik)
+            tree.column(c, width=gen, anchor=hiza)
+        kaydirma = ttk.Scrollbar(cerceve, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=kaydirma.set)
+        tree.pack(side="left", fill="both", expand=True)
+        kaydirma.pack(side="right", fill="y")
+        alt_lbl = tk.Label(win, text="", anchor="w", justify="left", fg="#374151")
+        alt_lbl.pack(fill="x", padx=10, pady=(4, 0))
+        durum = {"tum": False}
+
+        dugmeler = ttk.Frame(win)
+        dugmeler.pack(fill="x", padx=10, pady=8)
+
+        def yukle() -> None:
+            tree.delete(*tree.get_children())
+            tum = durum["tum"]
+            btn_tum.configure(state="disabled" if tum else "normal")
+            btn_musteri.configure(state="normal" if (tum and cari_id) else "disabled")
+            if tum:
+                filtre_lbl.configure(text=f"Filtre: Stok = {satir.stok_kodu} — {satir.stok_adi} (tüm cariler)")
+            else:
+                filtre_lbl.configure(
+                    text=f"Filtre: Müşteri = {cari_adi or '—'}  ·  Stok = {satir.stok_kodu} — {satir.stok_adi}"
+                )
+            if not tum and not cari_id:
+                alt_lbl.configure(
+                    text=(
+                        "Müşteri seçilmedi — müşteriye ait hareketler için önce müşteri seçin (F2). "
+                        "Tüm carilerin hareketleri için «Bu stokun tüm hareketleri»ni kullanın."
+                    ),
+                    fg=KIRMIZI,
+                )
+                return
+            try:
+                baslangic = _tarih_oku(bas_var.get(), "Başlangıç")
+                bitis = _tarih_oku(bit_var.get(), "Bitiş")
+            except ValueError as exc:
+                alt_lbl.configure(text=str(exc), fg=KIRMIZI)
+                return
+            try:
+                win.configure(cursor="watch")
+                win.update_idletasks()
+                sonuc = stok_hareketleri(
+                    int(satir.stok_id),
+                    cari_id=None if tum else cari_id,
+                    baslangic=baslangic,
+                    bitis=bitis,
+                )
+            except Exception as exc:  # noqa: BLE001
+                alt_lbl.configure(text=f"Hareketler alınamadı: {exc}", fg=KIRMIZI)
+                return
+            finally:
+                try:
+                    win.configure(cursor="")
+                except tk.TclError:
+                    pass
+            yon_metni = {"giris": "Giriş", "cikis": "Çıkış"}
+            for r in sonuc["satirlar"]:
+                tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        r["tarih"].strftime("%d.%m.%Y") if r.get("tarih") else "",
+                        r.get("saat") or "",
+                        r.get("belge_no") or "",
+                        r.get("belge_turu") or "",
+                        r.get("cari") or "",
+                        yon_metni.get(r.get("yon"), "—"),
+                        _miktar_goster(r["miktar"]) if r.get("miktar") is not None else "",
+                        r.get("birim") or "",
+                        _fiyat_metni(r["birim_fiyat"]) if r.get("birim_fiyat") is not None else (r.get("fiyat_notu") or "—"),
+                        _para_alani_metni(r["tutar"]) if r.get("tutar") is not None else "—",
+                        r.get("para_birimi") or "",
+                    ),
+                )
+            donem = f"{sonuc['baslangic'].strftime('%d.%m.%Y')}–{sonuc['bitis'].strftime('%d.%m.%Y')}"
+            if not sonuc["satirlar"]:
+                metin = f"Bu filtrede hareket yok (dönem {donem})."
+            else:
+                metin = (
+                    f"{sonuc['toplam_kayit']} hareket · dönem {donem} · yeniden eskiye · "
+                    "fiyat/tutar belge satırından, iskonto sonrası KDV hariç TL · salt okunur"
+                )
+                if sonuc["kesildi"]:
+                    metin += f" · en yeni {len(sonuc['satirlar'])} kayıt gösteriliyor"
+            alt_lbl.configure(text=metin, fg="#374151")
+
+        def tumunu_goster():
+            durum["tum"] = True
+            yukle()
+
+        def musteriye_don():
+            durum["tum"] = False
+            yukle()
+
+        def kapat(_e=None):
+            win.destroy()
+            self._sepet_odaga_don(idx)
+            return "break"
+
+        btn_tum = ttk.Button(dugmeler, text="Bu stokun tüm hareketleri", command=tumunu_goster)
+        btn_tum.pack(side="left")
+        btn_musteri = ttk.Button(dugmeler, text="Yalnız seçili müşteri", command=musteriye_don)
+        btn_musteri.pack(side="left", padx=6)
+        ttk.Button(dugmeler, text="Kapat", command=kapat).pack(side="right")
+        win.bind("<Escape>", kapat)
+        win.protocol("WM_DELETE_WINDOW", kapat)
+        yukle()
+        tree.focus_set()
         return "break"
 
     def _miktar_delta(self, delta: int | float | Decimal, _event=None):
@@ -1509,7 +2507,11 @@ class HizliSatisPencere(tk.Toplevel):
                 carpan=s.get("carpan") or 1,
                 barkod=s.get("barkod"),
                 birlestir=False,
+                referans_birim_fiyat=s.get("referans_birim_fiyat"),
+                geri_yukleme=True,
             )
+        if yeni.duzeltme_aktif:
+            yeni.hedef_toplam = yeni.toplamlar()["genel_toplam"]
 
         self.sepet_model = yeni
         self.fiyat_gunlugu.temizle()
@@ -1524,6 +2526,7 @@ class HizliSatisPencere(tk.Toplevel):
                     # Beklenen fiyatları koru — müşteri değişiminde fiyat yenileme yok
                     self.secili_cari = ozet
                     self._musteri_alani_goster()
+                    self._bakiye_valor_yenile()
                     self._fiyat_grup_etiket_guncelle()
                 else:
                     self._varsayilan_musteri_yukle()
@@ -1581,10 +2584,20 @@ class HizliSatisPencere(tk.Toplevel):
             )
             return "break"
 
+        self._ek_fon_bedeli_yenile(toplam)
+        eksik = (self._ek_fon_bedeli or {}).get("eksik_ayar")
+        if eksik:
+            messagebox.showerror(
+                "Ek fon bedeli",
+                "Faturaya ek fon bedeli hesaplanamıyor; Finans → Fon Yönetimi → Fon Tanımları'nda "
+                f"ayarı tamamlayın: {eksik}.",
+                parent=self,
+            )
+            return "break"
         token = HizliSatisService.yeni_idempotency_token()
         dlg = HizliSatisTahsilatDialog(
             self,
-            genel_toplam=toplam,
+            genel_toplam=self._odenecek_toplam(),
             musteri_unvan=cari.get("unvan") or "",
             musteri_bakiye=cari.get("bakiye"),
             risk_limiti=cari.get("acik_hesap_risk_limiti"),
@@ -1656,6 +2669,7 @@ class HizliSatisPencere(tk.Toplevel):
         self.fiyat_gunlugu.temizle()
         self.odeme_niyeti = None
         self._sepet_yenile()
+        self._bakiye_valor_yenile()
         if getattr(self, "urun_panel", None) is not None:
             try:
                 self.urun_panel.kartlari_yenile()
@@ -1709,6 +2723,7 @@ class HizliSatisPencere(tk.Toplevel):
                     self.urun_panel.kartlari_yenile()
                 except Exception:
                     pass
+            self._bakiye_valor_yenile()
             self.durum_lbl.configure(
                 text=(
                     f"İptal/iade: {_sonuc.get('fatura_no') or _sonuc.get('iade_no') or ''}"

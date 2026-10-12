@@ -165,7 +165,7 @@ class AlisIrsaliyesiService:
             irsaliye.siparis_id = veriler.get("siparis_id")
             irsaliye.aciklama = veriler.get("aciklama")
             irsaliye.ayrintili_notlar = veriler.get("ayrintili_notlar")
-            from database.stok_service import StokService
+            from database.stok_service import StokService, birim_anahtari
 
             StokService.belge_birimlerini_dogrula(session, satir_verileri, "Alış irsaliyesi")
             for veri in satir_verileri:
@@ -177,6 +177,12 @@ class AlisIrsaliyesiService:
                         raise ValueError("Bağlı sipariş satırı bulunamadı.")
                     if siparis_satiri.siparis.durum == "TASLAK":
                         raise ValueError("Taslak sipariş irsaliyeye çevrilemez; önce siparişi kesinleştirin.")
+                    siparis_birim = (siparis_satiri.birim or "Adet").strip() or "Adet"
+                    if birim_anahtari(veri.get("birim") or "Adet") != birim_anahtari(siparis_birim):
+                        raise ValueError(
+                            f"{veri['urun_kodu']}: siparişten aktarılan satırın birimi "
+                            f"sipariş birimiyle aynı olmalıdır ({siparis_birim})."
+                        )
                     acik = siparis_satiri.miktar - siparis_satiri.irsaliyelenen_miktar
                     if miktar > acik:
                         raise ValueError("İrsaliye miktarı siparişin açık miktarından büyük olamaz.")

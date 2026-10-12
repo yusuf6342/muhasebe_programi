@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from database.database import Base, _aktif_engine_bagla, company_db, get_session
@@ -292,6 +292,52 @@ class StokGrubuHiyerarsiTest(unittest.TestCase):
             g = s.get(StokGrubu, st.ana_grup_id)
             self.assertEqual(g.ad, "Eski Grup")
             self.assertEqual(g.seviye, SEVIYE_ANA)
+
+    def test_09b_migration_turkce_ad_tekrar_calisinca_kopya_uretmez(self):
+        with get_session() as s:
+            s.add_all(
+                [
+                    StokKarti(stok_kodu="TR1", stok_adi="A", birim="Adet", aktif=True,
+                              rapor_grubu="VİDA GRUBU"),
+                    StokKarti(stok_kodu="TR2", stok_adi="B", birim="Adet", aktif=True,
+                              rapor_grubu="KİMYASAL VE TUTKAL GRUBU / Silikon"),
+                    StokKarti(stok_kodu="TR3", stok_adi="C", birim="Adet", aktif=True,
+                              rapor_grubu="KONSİNYE ÜRÜNLER"),
+                ]
+            )
+            s.commit()
+        StokGrupService.migration_rapor_grubundan()
+        with get_session() as s:
+            ilk = s.scalar(select(func.count()).select_from(StokGrubu))
+        for _ in range(3):
+            rapor = StokGrupService.migration_rapor_grubundan()
+            self.assertEqual(rapor["olusan_ana_grup"], 0)
+            self.assertEqual(rapor["eslesen_stok"], 0)
+        with get_session() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(StokGrubu)), ilk)
+            for kod, ad in (("TR1", "VİDA GRUBU"), ("TR2", "KİMYASAL VE TUTKAL GRUBU"),
+                            ("TR3", "KONSİNYE ÜRÜNLER")):
+                st = s.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+                self.assertIsNotNone(st.ana_grup_id, kod)
+                self.assertEqual(s.get(StokGrubu, st.ana_grup_id).ad, ad)
+            vida = s.scalars(
+                select(StokGrubu).where(StokGrubu.seviye == SEVIYE_ANA, StokGrubu.ad == "VİDA GRUBU")
+            ).all()
+            self.assertEqual(len(vida), 1)
+
+    def test_09c_migration_farkli_ust_altindaki_ayni_ad_ana_grup_sayilmaz(self):
+        ana = StokGrupService.ekle(seviye=SEVIYE_ANA, kod="ÜST", ad="ÜST GRUP")
+        tali = StokGrupService.ekle(seviye=SEVIYE_TALI, kod="ŞİŞE", ad="ŞİŞE GRUBU", parent_id=ana["id"])
+        with get_session() as s:
+            s.add(StokKarti(stok_kodu="TR9", stok_adi="X", birim="Adet", aktif=True,
+                            rapor_grubu="ŞİŞE GRUBU"))
+            s.commit()
+        StokGrupService.migration_rapor_grubundan()
+        StokGrupService.migration_rapor_grubundan()
+        with get_session() as s:
+            ayni = s.scalars(select(StokGrubu).where(StokGrubu.ad == "ŞİŞE GRUBU")).all()
+            self.assertEqual(sorted(g.seviye for g in ayni), [1, 2])
+            self.assertEqual(s.get(StokGrubu, tali["id"]).parent_id, ana["id"])
 
     def test_10_filtre_kapsam(self):
         a = StokGrupService.ekle(seviye=SEVIYE_ANA, kod="F", ad="FiltreAna")

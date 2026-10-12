@@ -556,7 +556,7 @@ def kalan_siparisler(
                         "fatura_kalani": kalanlar["fatura_kalani"],
                         "birim_fiyat": satir.birim_satis_fiyati,
                         "kalan_tutar": tutar["genel"],
-                        "para_birimi": "TRY",
+                        "para_birimi": (getattr(siparis, "para_birimi", None) or "TRY").upper(),
                         "durum": rapor_d,
                         "fatura_nolari": ", ".join(fatura_nos),
                     }

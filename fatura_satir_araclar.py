@@ -161,6 +161,7 @@ def satir_sil(dialog, *, neden: str = "") -> None:
     if not messagebox.askyesno("Satır sil", mesaj, parent=dialog):
         return
     silinen = [deepcopy(dialog.satirlar[i]) for i in idxs]
+    _referans_dagitimini_kaldir(dialog)
     for i in reversed(idxs):
         dialog.satirlar.pop(i)
     _audit_satir_sil(dialog, silinen, neden=neden or "kullanici_sil")
@@ -213,8 +214,9 @@ def satir_cogalt(dialog) -> None:
     birim = (yeni.get("birim") or "Adet").strip()
     try:
         yeni["temel_miktar"] = str(temel_miktar(Decimal("1"), birim, kod))
-    except Exception:
-        yeni["temel_miktar"] = "1"
+    except ValueError as hata:
+        messagebox.showwarning("Çoğalt", str(hata), parent=dialog)
+        return
     # Stok kontrolü — iki satır toplamı (stok girişi yapan belgede gerekmez)
     if not getattr(dialog, "STOK_GIRIS_BELGESI", False):
         try:
@@ -237,9 +239,21 @@ def satir_cogalt(dialog) -> None:
         except Exception:
             pass
     insert_at = idx + 1
+    if _referans_dagitimini_kaldir(dialog):
+        yeni["birim_satis_fiyati"] = kaynak.get("birim_satis_fiyati")
+        if "birim_fiyat" in kaynak:
+            yeni["birim_fiyat"] = kaynak.get("birim_fiyat")
+    yeni.pop("referans_birim_fiyat", None)
     dialog.satirlar.insert(insert_at, yeni)
     _yenile(dialog, secim=[insert_at])
     _bos_mesaj_guncelle(dialog)
+
+
+def _referans_dagitimini_kaldir(dialog) -> bool:
+    """Fiyatlara dağıtılmış faturada satır eklenip silinince eski Net düzeltmesi taşınmaz."""
+    from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
+
+    return uzlasma_etkisini_kaldir(dialog, yalniz_referansli=True)
 
 
 def satir_uste_tasi(dialog) -> None:
@@ -300,6 +314,14 @@ def fiyati_yenile(dialog) -> None:
             musteri = dialog._secili_musteri()
         except Exception:
             pass
+    if any(dialog.satirlar[i].get("manuel_fiyat") for i in idxs) and not messagebox.askyesno(
+        "Fiyatı Yenile",
+        "Seçili satırlardan bazılarının fiyatı elle girilmiş.\nFiyat listesindeki fiyatla değiştirilsin mi?",
+        parent=dialog,
+    ):
+        return
+    from database.fiyat_kaynagi_service import satis_kdv_haric
+
     for idx in idxs:
         satir = dialog.satirlar[idx]
         kod = (satir.get("urun_kodu") or "").strip()
@@ -311,9 +333,15 @@ def fiyati_yenile(dialog) -> None:
                 kurlar = {pb: Decimal(str(satir.get("kur") or 0).replace(",", "."))}
             except Exception:
                 kurlar = None
-        fiyat = birim_satis_fiyati_tl(kod, birim, musteri=musteri, kurlar=kurlar)
-        if fiyat is None:
+        try:
+            fiyat = birim_satis_fiyati_tl(kod, birim, musteri=musteri, kurlar=kurlar)
+        except ValueError as hata:
+            messagebox.showwarning("Fiyat", str(hata), parent=dialog)
             continue
+        if fiyat is None:
+            messagebox.showwarning("Fiyat", f"{kod}: fiyat listesinde geçerli satış fiyatı yok.", parent=dialog)
+            continue
+        fiyat, _not = satis_kdv_haric(kod, fiyat, satir.get("kdv_orani"), musteri=musteri)
         satir["birim_satis_fiyati"] = str(fiyat)
         satir["manuel_fiyat"] = False
         satir.pop("manuel_fiyat_birim", None)
@@ -343,9 +371,9 @@ def _coklu_iskonto_duzenle(dialog) -> None:
     if idx is None:
         messagebox.showinfo("İskonto", "Önce bir satır seçin.", parent=dialog)
         return
-    from fatura_satir_hucre_edit import iskonto_yuzde_hucre
+    from fatura_satir_hucre_edit import iskonto_penceresi_ac
 
-    iskonto_yuzde_hucre(dialog, idx=idx)
+    iskonto_penceresi_ac(dialog, idx=idx)
 
 
 def satir_aciklama_gir(dialog) -> None:
@@ -483,7 +511,6 @@ def _bos_mesaj_guncelle(dialog) -> None:
 
 def satir_islemleri_doldur(dialog, menu: tk.Menu) -> None:
     """«Satır İşlemleri» menüsü: tablo satırlarına uygulanan işlemlerin tek listesi."""
-    menu.add_command(label="Satırı Düzenle (F2)", command=lambda: satir_duzenle(dialog))
     menu.add_command(label="Satırı Çoğalt (Ctrl+D)", command=lambda: satir_cogalt(dialog))
     menu.add_command(label="Üste Taşı (Alt+↑)", command=lambda: satir_uste_tasi(dialog))
     menu.add_command(label="Alta Taşı (Alt+↓)", command=lambda: satir_alta_tasi(dialog))

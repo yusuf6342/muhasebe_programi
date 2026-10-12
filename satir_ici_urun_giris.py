@@ -203,6 +203,47 @@ def urun_ara(
     }
 
 
+def ilk_urunler(
+    *,
+    limit: int = SAYFA,
+    depo_ad: str | None = None,
+    sadece_stokta: bool = False,
+) -> dict[str, Any]:
+    """Boş arama: ada göre ilk ürünler (liste tıklayınca/↓ ile açılır)."""
+    from sqlalchemy import or_, select
+    from sqlalchemy.orm import selectinload
+
+    from database.database import get_session
+    from database.models.stok import Depo, StokKarti, StokLotu
+
+    limit = max(1, min(int(limit), AZAMI_SONUC))
+    with get_session() as session:
+        kosullar = [
+            or_(StokKarti.is_deleted.is_(False), StokKarti.is_deleted.is_(None)),
+            StokKarti.aktif.is_(True),
+        ]
+        if sadece_stokta:
+            stoklu = select(StokLotu.stok_id).where(StokLotu.kalan_miktar > 0)
+            if depo_ad:
+                depo = session.scalar(select(Depo).where(Depo.ad == depo_ad.strip()))
+                if depo is not None:
+                    stoklu = stoklu.where(StokLotu.depo_id == depo.id)
+            kosullar.append(StokKarti.id.in_(stoklu.distinct()))
+        stoklar = session.scalars(
+            select(StokKarti)
+            .where(*kosullar)
+            .options(
+                selectinload(StokKarti.fiyatlar),
+                selectinload(StokKarti.lotlar),
+                selectinload(StokKarti.barkodlar),
+            )
+            .order_by(StokKarti.stok_adi)
+            .limit(limit)
+        ).all()
+        urunler = [stok_ozeti(s) for s in stoklar]
+    return {"urunler": urunler, "toplam": len(urunler), "barkod_tam": False, "mesaj": ""}
+
+
 def alis_birim_fiyati(kod: str, birim: str | None = None) -> Decimal:
     """Son alış fiyatı (ana birim) seçilen birime çevrilmiş; satış fiyatı asla kullanılmaz."""
     from database.stok_service import StokService
@@ -407,6 +448,8 @@ class SatirHucreDuzenleyici:
         tablo.bind("<F2>", self._f2, add="+")
         tablo.bind("<Return>", self._enter_tablo, add="+")
         tablo.bind("<KP_Enter>", self._enter_tablo, add="+")
+        tablo.bind("<Right>", lambda _e: self._ok_tablo(geri=False), add="+")
+        tablo.bind("<Left>", lambda _e: self._ok_tablo(geri=True), add="+")
         tablo.bind("<Button-1>", self._tek_tik, add="+")
 
     # -- durum
@@ -456,9 +499,32 @@ class SatirHucreDuzenleyici:
             return
         self.duzenle(idx, kolon, sessiz=True)
 
+    def _urun_hucresi(self, event) -> int | None:
+        """Ürün adı / kodu / barkod hücresi (düzenlenemiyorsa) → satır indeksi."""
+        from satir_klavye import urun_kolonlari
+
+        try:
+            if self.tablo.identify_region(event.x, event.y) != "cell":
+                return None
+        except tk.TclError:
+            return None
+        idx = satir_indeksi(self.tablo, self.tablo.identify_row(event.y))
+        kolon = _kolon_adi(self.tablo, event.x)
+        if idx is None or kolon not in urun_kolonlari(self.dialog):
+            return None
+        if kolon in self.alanlar and self.duzenlenebilir_mi(idx, kolon) is True:
+            return None
+        return idx
+
     def _cift_tik(self, event):
         self._cift_engel = True
         self.dialog.after(260, lambda: setattr(self, "_cift_engel", False))
+        stok_idx = self._urun_hucresi(event)
+        if stok_idx is not None:
+            from satir_klavye import satir_stok_karti_ac
+
+            satir_stok_karti_ac(self.dialog, stok_idx)
+            return "break"
         hucre = self._hucre(event)
         if hucre is None:
             return None
@@ -466,19 +532,73 @@ class SatirHucreDuzenleyici:
         return "break"
 
     def _f2(self, _e=None):
+        """F2: seçili satırın bağlı stok kartı."""
         idx = satir_indeksi(self.tablo, (self.tablo.selection() or (None,))[0])
         if idx is not None:
-            self.ilk_alana(idx)
+            from satir_klavye import satir_stok_karti_ac
+
+            if self.acik_mi() and not self.bekleyeni_uygula():
+                return "break"
+            satir_stok_karti_ac(self.dialog, idx)
         return "break"
 
+    def _secili_indeks(self) -> int | None:
+        try:
+            return satir_indeksi(self.tablo, (self.tablo.selection() or (None,))[0])
+        except tk.TclError:
+            return None
+
     def _enter_tablo(self, _e=None):
-        if self.acik_mi():
+        idx = self._secili_indeks()
+        if self.acik_mi() and not self.bekleyeni_uygula():
             return "break"
-        idx = satir_indeksi(self.tablo, (self.tablo.selection() or (None,))[0])
         if idx is None:
             return None
         self.ilk_alana(idx)
         return "break"
+
+    def _ok_tablo(self, *, geri: bool):
+        """Seçili satırda sağ ok ilk, sol ok son düzenlenebilir hücreyi açar (açık editör önce yazılır)."""
+        idx = self._secili_indeks()
+        if self.acik_mi() and not self.bekleyeni_uygula():
+            return "break"
+        if idx is None:
+            return None
+        sira = reversed(self.sira) if geri else self.sira
+        for kolon in sira:
+            if self.duzenlenebilir_mi(idx, kolon) is True:
+                self.dialog.after_idle(lambda k=kolon: self.duzenle(idx, k))
+                break
+        return "break"
+
+    def _ok(self, yon: int):
+        from satir_klavye import ok_ile_gec
+
+        if self.editor is None or not ok_ile_gec(self.editor, yon):
+            return None
+        return self._kaydet(ilerle=True, geri=yon < 0)
+
+    def _satir_gec(self, idx: int, kolon: str, yon: int) -> None:
+        """↑/↓ sonrası: aynı kolonda önceki/sonraki satır; son satırdan aşağı giriş satırı."""
+        hedef = idx + (1 if yon > 0 else -1)
+        n = self.satir_sayisi()
+        if hedef >= n:
+            if self.bitince is not None:
+                self.dialog.after_idle(self.bitince)
+            return
+        hedef = max(0, hedef)
+        if hedef != idx and self.duzenlenebilir_mi(hedef, kolon) is True:
+            self.dialog.after_idle(lambda: self.duzenle(hedef, kolon))
+            return
+        iids = veri_iidleri(self.tablo)
+        if 0 <= hedef < len(iids):
+            try:
+                self.tablo.selection_set(iids[hedef])
+                self.tablo.focus(iids[hedef])
+                self.tablo.see(iids[hedef])
+                self.tablo.focus_set()
+            except tk.TclError:
+                pass
 
     # -- düzenleme
     def ilk_alana(self, idx: int) -> None:
@@ -487,7 +607,7 @@ class SatirHucreDuzenleyici:
                 self.dialog.after_idle(lambda k=kolon: self.duzenle(idx, k))
                 return
 
-    def duzenle(self, idx: int, kolon: str, *, sessiz: bool = False) -> None:
+    def duzenle(self, idx: int, kolon: str, *, sessiz: bool = False, geri: bool = False) -> None:
         izin = self.duzenlenebilir_mi(idx, kolon)
         if izin is not True:
             if isinstance(izin, str) and izin and not sessiz:
@@ -521,6 +641,29 @@ class SatirHucreDuzenleyici:
             except tk.TclError:
                 baslangic = ""
         self._var = tk.StringVar(value=baslangic)
+        if alan.tur == "iskonto3":
+            from satir_klavye import UcluIskontoEditor, iskonto_birlestir, iskonto_parcalari
+
+            def _bitir(degerler, hareket):
+                self._var.set(iskonto_birlestir(degerler))
+                self._kaydet(
+                    ilerle=hareket in ("ileri", "geri"),
+                    geri=hareket == "geri",
+                    satir_yon={"yukari": -1, "asagi": 1}.get(hareket, 0),
+                )
+                return self.editor is None
+
+            ed = UcluIskontoEditor(
+                self.tablo, (x, y, w, h), iskonto_parcalari(baslangic),
+                on_bitir=_bitir, on_iptal=self._iptal,
+            )
+            for kutu in ed.kutular:
+                kutu.bind("<FocusOut>", self._odak_cikti, add="+")
+            if geri:
+                ed.kutu_odakla(len(ed.kutular) - 1)
+            self.editor = ed
+            self._konum = (idx, kolon)
+            return
         if alan.tur == "secim":
             degerler = list(alan.secenekler(idx) if alan.secenekler else [])
             if baslangic and baslangic not in degerler:
@@ -537,7 +680,7 @@ class SatirHucreDuzenleyici:
             )
         ed.place(x=x, y=y, width=max(w, 70), height=max(h, 24))
         ed.focus_set()
-        if isinstance(ed, ttk.Entry) and not isinstance(ed, ttk.Combobox):
+        if str(ed.cget("state")) != "readonly":
             ed.selection_range(0, "end")
         ed.bind("<Return>", lambda _e: self._kaydet(ilerle=True))
         ed.bind("<KP_Enter>", lambda _e: self._kaydet(ilerle=True))
@@ -545,21 +688,31 @@ class SatirHucreDuzenleyici:
         ed.bind("<Shift-Tab>", lambda _e: self._kaydet(ilerle=True, geri=True))
         ed.bind("<Shift-Return>", lambda _e: self._kaydet(ilerle=True, geri=True))
         ed.bind("<Escape>", lambda _e: self._iptal())
+        ed.bind("<Right>", lambda _e: self._ok(1))
+        ed.bind("<Left>", lambda _e: self._ok(-1))
+        ed.bind("<Up>", lambda _e: self._kaydet(ilerle=False, satir_yon=-1))
+        ed.bind("<Down>", lambda _e: self._kaydet(ilerle=False, satir_yon=1))
+        if isinstance(ed, ttk.Combobox):
+            from satir_klavye import combobox_listesini_ac
+
+            ed.bind("<Alt-Down>", lambda _e: (combobox_listesini_ac(ed), "break")[1])
         ed.bind("<FocusOut>", self._odak_cikti)
         self.editor = ed
         self._konum = (idx, kolon)
 
     def _odak_cikti(self, _e=None):
+        editor = self.editor
+
         def _kontrol():
-            if self.editor is None:
+            # Bu arada başka hücre açıldıysa yeni editöre dokunulmaz
+            if self.editor is None or self.editor is not editor:
                 return
+            # Mesaj kutusu / başka uygulama odağı almışsa pencerenin son odağı hâlâ editördür
             try:
-                odak = self.dialog.focus_get()
-            except (tk.TclError, KeyError):
-                odak = None
-            if odak is self.editor:
+                odak = str(self.dialog.tk.call("focus", "-lastfor", str(self.dialog)))
+            except tk.TclError:
                 return
-            if odak is not None and str(odak).startswith(str(self.editor)):
+            if not odak or odak.startswith(str(self.editor)):
                 return
             self.bekleyeni_uygula()
 
@@ -587,7 +740,7 @@ class SatirHucreDuzenleyici:
             return True
         return self._kaydet(ilerle=False, sessiz_kapat=True) != "hata"
 
-    def _kaydet(self, *, ilerle: bool, geri: bool = False, sessiz_kapat: bool = False):
+    def _kaydet(self, *, ilerle: bool, geri: bool = False, sessiz_kapat: bool = False, satir_yon: int = 0):
         if self._isleniyor or self.editor is None or self._konum is None:
             return "break"
         idx, kolon = self._konum
@@ -609,7 +762,9 @@ class SatirHucreDuzenleyici:
             self.kapat()
         finally:
             self._isleniyor = False
-        if ilerle:
+        if satir_yon:
+            self._satir_gec(idx, kolon, satir_yon)
+        elif ilerle:
             self.ilerle(idx, kolon, geri=geri)
         return "break"
 
@@ -623,7 +778,7 @@ class SatirHucreDuzenleyici:
         j = i + adim
         while 0 <= j < len(self.sira):
             if self.duzenlenebilir_mi(idx, self.sira[j]) is True:
-                self.dialog.after_idle(lambda k=self.sira[j]: self.duzenle(idx, k))
+                self.dialog.after_idle(lambda k=self.sira[j]: self.duzenle(idx, k, geri=geri))
                 return
             j += adim
         if not geri and self.bitince is not None:
@@ -659,10 +814,17 @@ class SatirIciUrunGirisi:
         satir_menusu: Callable[[int], list[tuple[str, Callable[[], None]]]] | None = None,
         yer_tutucu: str = _YER_TUTUCU,
         ilk_rol: str = "ad",
+        fiyat_gecmisi: Callable[[int], None] | None = None,
+        fiyat_kolonu: str | None = None,
+        kisa_urun: bool = False,
     ):
         self.dialog = dialog
+        self.fiyat_gecmisi = fiyat_gecmisi
+        self.fiyat_kolonu = fiyat_kolonu
+        self.kisa_urun = kisa_urun
         self.tablo = tablo
         self.urun_ekle_fn = urun_ekle
+        self.urun_kolonlari = tuple(k for k in kolonlar.values() if k)
         self.kolonlar = {r: k for r, k in kolonlar.items() if r in ROLLER and k}
         if "barkod" not in self.kolonlar and kolonlar.get("kod"):
             self.kolonlar = {"barkod": kolonlar["kod"], **self.kolonlar}
@@ -702,6 +864,8 @@ class SatirIciUrunGirisi:
         self._isleniyor = False
         self._onbellek: dict[tuple, tuple[float, dict]] = {}
         self._son_ekleme: tuple[str, float] = ("", 0.0)
+        self._ekleme_sayaci = 0
+        self._modal_acik = False
         # Kart geri çağrısı için: "barkod" okutmada aynı satır birleşebilir, "secim"de yeni satır
         self.son_islem = "secim"
         self._bag_etiket = f"SatirIciGiris{id(self)}"
@@ -832,6 +996,7 @@ class SatirIciUrunGirisi:
         e.bind("<ISO_Left_Tab>", lambda _e: self._rol_gec(-1))
         e.bind("<F10>", self._f10)
         e.bind("<Button-3>", self._editor_sag_tik)
+        e.bind("<Button-1>", lambda _e: self.dialog.after_idle(self.liste_ac), add="+")
         e.bind("<FocusOut>", self._odak_cikti)
 
     def _yeniden_yerlestir(self, odakla: bool = False) -> None:
@@ -908,9 +1073,24 @@ class SatirIciUrunGirisi:
             if self.acik_mi() and self._hedef_idx is None and not self._var.get().strip():
                 self.kapat()
             return None
+        if not self._hucre_editorlerini_birak():
+            return "break"
         kolon = _kolon_adi(self.tablo, event.x)
         self.ac(self.kolon_rol.get(kolon))
+        if self._rol == "ad":
+            self.dialog.after_idle(self.liste_ac)
         return "break"
+
+    def _hucre_editorlerini_birak(self) -> bool:
+        """Giriş satırına geçmeden önce dolu satırdaki açık hücre editörünün değeri yazılır."""
+        hucre = getattr(self.dialog, "_hucre", None)
+        if hucre is not None and hucre.acik_mi() and not hucre.bekleyeni_uygula():
+            return False
+        if getattr(self.dialog, "_satir_hucre_editor", None) is not None:
+            from fatura_satir_hucre_edit import editoru_birak
+
+            return editoru_birak(self.dialog)
+        return True
 
     def _tablo_asagi(self, _e=None):
         try:
@@ -935,12 +1115,19 @@ class SatirIciUrunGirisi:
             self._menu_goster(event, None)
             return "break"
         idx = satir_indeksi(self.tablo, iid)
-        if idx is not None and self.satir_menusu is not None:
+        if idx is not None and (self.satir_menusu is not None or self.fiyat_gecmisi is not None):
             try:
                 self.tablo.selection_set(iid)
                 self.tablo.focus(iid)
             except tk.TclError:
                 pass
+            if (
+                self.fiyat_gecmisi is not None
+                and self.fiyat_kolonu
+                and _kolon_adi(self.tablo, event.x) == self.fiyat_kolonu
+            ):
+                self.fiyat_gecmisi(idx)
+                return "break"
             self._menu_goster(event, idx)
             return "break"
         return None
@@ -960,10 +1147,17 @@ class SatirIciUrunGirisi:
                     label="Ürünü Değiştir…", command=lambda: self.urun_degistir_baslat(idx), state=durum
                 )
             menu.add_command(label="Stok Kartını Aç", command=lambda: self.stok_karti_ac(idx))
+        if self.kisa_urun and idx is None:
+            menu.add_command(
+                label="Yeni Ürün Ekle (kısa)", command=self.yeni_kayit_ekle,
+                state=durum if self._stok_yetkisi() else "disabled",
+            )
         menu.add_command(
             label="Yeni Stok Kartı", command=self.yeni_stok_karti,
             state=durum if self._stok_yetkisi() else "disabled",
         )
+        if idx is not None and self.fiyat_gecmisi is not None:
+            menu.add_command(label="Geçmiş Alış Fiyatları…", command=lambda: self.fiyat_gecmisi(idx))
         if idx is None and self.manuel_ekle_fn is not None:
             menu.add_command(
                 label="Manuel Kalem Ekle…",
@@ -993,6 +1187,12 @@ class SatirIciUrunGirisi:
         self._iptal_debounce()
         if self._rol == "barkod":
             self._popup_kapat()
+            # Okuyucu Enter'ı gecikmeden önce gönderir; elle yazılan ad gecikmeden sonra ada geçer
+            if len(metin) >= MIN_ARAMA_HARF and not metin.isdigit() and self._rol_gorunur("ad"):
+                self._after = self.dialog.after(DEBOUNCE_MS, lambda: self._barkoddan_ada(metin))
+            return
+        if not metin and self._popup is not None:
+            self._after = self.dialog.after(DEBOUNCE_MS, lambda: self._arama_baslat(""))
             return
         if len(metin) < MIN_ARAMA_HARF:
             self._seq += 1
@@ -1000,6 +1200,24 @@ class SatirIciUrunGirisi:
             self._popup_kapat()
             return
         self._after = self.dialog.after(DEBOUNCE_MS, lambda: self._arama_baslat(metin))
+
+    def _barkoddan_ada(self, metin: str) -> None:
+        self._after = None
+        if self.entry is None or self._rol != "barkod" or self._var.get().strip() != metin:
+            return
+        self._rol = "ad"
+        self._yeniden_yerlestir(odakla=True)
+        self._arama_baslat(metin)
+
+    def liste_ac(self) -> None:
+        """Ürün adı kutusunda listeyi aç: boşsa ilk ürünler, yazılmışsa arama sonucu."""
+        if self.entry is None or self._rol != "ad" or self._popup is not None or self.kilitli():
+            return
+        metin = self._var.get().strip()
+        if metin and len(metin) < MIN_ARAMA_HARF:
+            return
+        self._iptal_debounce()
+        self._arama_baslat(metin)
 
     def _iptal_debounce(self):
         if self._after is not None:
@@ -1033,7 +1251,7 @@ class SatirIciUrunGirisi:
         alis_fn = self.alis_fiyati if self.fiyat_turu == "alis" and self.fiyat_goster() else None
 
         def _is():
-            sonuc = urun_ara(metin, limit=limit, **parametre)
+            sonuc = urun_ara(metin, limit=limit, **parametre) if metin else ilk_urunler(limit=limit, **parametre)
             if alis_fn is not None:
                 for u in sonuc["urunler"]:
                     try:
@@ -1048,6 +1266,7 @@ class SatirIciUrunGirisi:
 
         def _hata(exc):
             if seq == self._seq:
+                self._sonuclar, self._sonuc_metin, self._secili = [], "", -1
                 self._popup_goster([], mesaj=f"Arama hatası: {exc}")
 
         from ui_bg import arka_planda
@@ -1064,33 +1283,55 @@ class SatirIciUrunGirisi:
         self._sonuc_metin = metin
         self._sonuclar = list(sonuc.get("urunler") or [])
         self._toplam = int(sonuc.get("toplam") or len(self._sonuclar))
-        self._secili = 0 if self._sonuclar else -1
-        self._popup_goster(self._sonuclar, mesaj=None if self._sonuclar else "Eşleşen ürün bulunamadı.")
+        self._secili = 0 if self._son_indeks() >= 0 else -1
+        self._popup_goster(self._sonuclar, mesaj=None if self._sonuclar else self._bulunamadi_metni())
+
+    def _bulunamadi_metni(self) -> str:
+        return "Ürün bulunamadı." if self.kisa_urun else "Eşleşen ürün bulunamadı."
 
     def onbellegi_temizle(self) -> None:
         self._onbellek.clear()
 
+    def _yeni_kayit_satiri(self) -> bool:
+        return self._stok_yetkisi()
+
+    def _son_indeks(self) -> int:
+        """Listede seçilebilecek son satır (sonuçlar + «Yeni Kayıt Ekle»)."""
+        return len(self._sonuclar) - (0 if self._yeni_kayit_satiri() else 1)
+
     def _asagi(self, _e=None):
         if self._popup is None:
             metin = self._var.get().strip()
-            if len(metin) >= MIN_ARAMA_HARF and self._rol != "barkod":
+            if self._rol == "ad" and (not metin or len(metin) >= MIN_ARAMA_HARF):
                 self._iptal_debounce()
                 self._arama_baslat(metin)
             return "break"
-        if self._sonuclar:
-            self._secili = min(self._secili + 1, len(self._sonuclar) - 1)
+        if self._son_indeks() >= 0:
+            self._secili = min(self._secili + 1, self._son_indeks())
             self._secim_gorsel()
         return "break"
 
     def _yukari(self, _e=None):
-        if self._popup is not None and self._sonuclar:
+        if self._popup is not None and self._son_indeks() >= 0:
             self._secili = max(self._secili - 1, 0)
             self._secim_gorsel()
+        elif self._popup is None and self._hedef_idx is None and not self._var.get().strip():
+            # Boş giriş satırında ↑: son ürün satırına çık
+            iids = veri_iidleri(self.tablo)
+            if iids:
+                self.kapat()
+                try:
+                    self.tablo.selection_set(iids[-1])
+                    self.tablo.focus(iids[-1])
+                    self.tablo.see(iids[-1])
+                    self.tablo.focus_set()
+                except tk.TclError:
+                    pass
         return "break"
 
     def _sayfa_asagi(self, _e=None):
-        if self._popup is not None and self._sonuclar:
-            self._secili = min(self._secili + 10, len(self._sonuclar) - 1)
+        if self._popup is not None and self._son_indeks() >= 0:
+            self._secili = min(self._secili + 10, self._son_indeks())
             self._secim_gorsel()
         return "break"
 
@@ -1129,7 +1370,7 @@ class SatirIciUrunGirisi:
 
     def _odak_cikti(self, _e=None):
         def _kontrol():
-            if self.entry is None or self._rol is None:
+            if self.entry is None or self._rol is None or self._modal_acik:
                 return
             try:
                 odak = self.dialog.focus_get()
@@ -1150,13 +1391,8 @@ class SatirIciUrunGirisi:
         if self._isleniyor:
             return "break"
         metin = self._var.get().strip()
-        if (
-            self._popup is not None
-            and self._sonuclar
-            and 0 <= self._secili < len(self._sonuclar)
-            and self._sonuc_metin == metin
-        ):
-            self._sec(self._sonuclar[self._secili])
+        if self._popup is not None and self._sonuc_metin == metin and 0 <= self._secili <= self._son_indeks():
+            self._liste_satiri_sec(self._secili)
             return "break"
         if not metin:
             return "break"
@@ -1195,8 +1431,8 @@ class SatirIciUrunGirisi:
         self._sonuc_metin = metin
         self._sonuclar = urunler
         self._toplam = sonuc["toplam"]
-        self._secili = 0 if urunler else -1
-        self._popup_goster(urunler, mesaj=None if urunler else "Eşleşen ürün bulunamadı.")
+        self._secili = 0 if self._son_indeks() >= 0 else -1
+        self._popup_goster(urunler, mesaj=None if urunler else self._bulunamadi_metni())
 
     def _barkod(self, metin: str) -> None:
         if self._hedef_idx is not None:
@@ -1280,6 +1516,53 @@ class SatirIciUrunGirisi:
         self._iptal_debounce()
         self._urun_uygula(urun_degerleri(ozet))
 
+    def _liste_satiri_sec(self, indeks: int) -> None:
+        if 0 <= indeks < len(self._sonuclar):
+            self._sec(self._sonuclar[indeks])
+        elif indeks == len(self._sonuclar) and self._yeni_kayit_satiri():
+            self.yeni_kayit_ekle()
+
+    def yeni_kayit_ekle(self):
+        """Listedeki «Yeni Kayıt Ekle»: yazılan adla hızlı stok kartı; kaydedilen ürün satıra girer."""
+        self._iptal_debounce()
+        self._popup_kapat()
+        if self.kisa_urun:
+            return self.kisa_urun_ac()
+        return self.yeni_stok_karti(satira_ekle=True)
+
+    def kisa_urun_ac(self):
+        """Satırın altında kısa yeni ürün paneli; kaydedilen kart aynı satıra girer."""
+        if self.kilitli():
+            return None
+        if not self._stok_yetkisi():
+            messagebox.showwarning("Yetki", "Stok kartı oluşturma yetkiniz yok.", parent=self.dialog)
+            return None
+        from kisa_urun_paneli import kisa_urun_paneli_ac
+
+        metin = self._var.get().strip() if self.entry is not None else ""
+        self._popup_kapat()
+        onceki = self._ekleme_sayaci
+        self._modal_acik = True
+        try:
+            stok = kisa_urun_paneli_ac(
+                self.dialog, metin, cipa=self.entry or self.tablo, ayrintili=self._ayrintili_karttan,
+            )
+        finally:
+            self._modal_acik = False
+        self.onbellegi_temizle()
+        if stok is not None and self._ekleme_sayaci == onceki:
+            self.stoktan_ekle(stok)
+        elif stok is None and self._rol is not None:
+            self._yeniden_yerlestir(odakla=True)
+        return stok
+
+    def _ayrintili_karttan(self, metin: str):
+        """Kısa panelden «Ayrıntılı Stok Kartı»: mevcut hızlı stok kartını açar."""
+        from hizli_stok_karti_ui import hizli_stok_karti_ac
+
+        barkod = metin if metin.isdigit() and len(metin) >= 8 else None
+        return hizli_stok_karti_ac(self.dialog, barkod=barkod, urun_adi=None if barkod else (metin or None))
+
     def _urun_uygula(self, degerler: tuple, *, odak: bool = True) -> int | None:
         """Seçilen ürünü hedef satıra (dolu satır değişimi) veya giriş satırına yazar."""
         simdi = time.monotonic()
@@ -1291,6 +1574,7 @@ class SatirIciUrunGirisi:
         if hedef is not None:
             self.kapat()
             if self.urun_degistir_fn is not None and self.urun_degistir_fn(hedef, degerler):
+                self._ekleme_sayaci += 1
                 if self.miktara_git is not None:
                     self.dialog.after_idle(lambda: self.miktara_git(hedef))
             return hedef
@@ -1303,6 +1587,7 @@ class SatirIciUrunGirisi:
             return None
         if idx is None or idx < 0:
             return None
+        self._ekleme_sayaci += 1
         if konum is not None:
             self._ekleme_konumu = konum + 1
         if odak:
@@ -1401,10 +1686,11 @@ class SatirIciUrunGirisi:
         except Exception:
             return True
 
-    def yeni_stok_karti(self):
+    def yeni_stok_karti(self, *, satira_ekle: bool = False):
         """Hızlı stok kartını açar; kaydedilen kartı döner (iptalde None).
 
-        ``yeni_stok_eklendi`` verilmişse ve kart satıra eklenmeden kaydedildiyse çağrılır.
+        Kart satıra eklenmeden kaydedildiyse ``yeni_stok_eklendi`` (yoksa ``satira_ekle``
+        iken ``stoktan_ekle``) ile ürün çalışılan satıra yazılır.
         """
         if self.kilitli():
             return None
@@ -1418,14 +1704,20 @@ class SatirIciUrunGirisi:
         self._popup_kapat()
         barkod = metin if rol == "barkod" else None
         ad = metin if rol not in (None, "barkod") else None
-        satirlar = getattr(self.dialog, "satirlar", None)
-        onceki = len(satirlar) if satirlar is not None else None
-        stok = hizli_stok_karti_ac(self.dialog, barkod=barkod, urun_adi=ad)
+        onceki = self._ekleme_sayaci
+        self._modal_acik = True
+        try:
+            stok = hizli_stok_karti_ac(self.dialog, barkod=barkod, urun_adi=ad)
+        finally:
+            self._modal_acik = False
         self.onbellegi_temizle()
-        if stok is not None and self.yeni_stok_eklendi is not None:
-            simdi = len(getattr(self.dialog, "satirlar", None) or [])
-            if onceki is None or simdi == onceki:
+        if stok is not None and self._ekleme_sayaci == onceki:
+            if self.yeni_stok_eklendi is not None:
                 self.yeni_stok_eklendi(stok)
+            elif satira_ekle:
+                self.stoktan_ekle(stok)
+        elif stok is None and self._rol is not None:
+            self._yeniden_yerlestir(odakla=True)
         return stok
 
     def stoktan_ekle(self, stok, fiyat_hint: Any = None) -> int | None:
@@ -1442,24 +1734,9 @@ class SatirIciUrunGirisi:
         return self._urun_uygula(urun_degerleri(ozet, kaynak=kaynak))
 
     def stok_karti_ac(self, idx: int) -> None:
-        satirlar = getattr(self.dialog, "satirlar", None) or []
-        if not (0 <= idx < len(satirlar)):
-            return
-        kod = (satirlar[idx].get("urun_kodu") or "").strip()
-        if not kod or satirlar[idx].get("is_manual_item") or satirlar[idx].get("manuel"):
-            messagebox.showinfo("Stok", "Bu satır bir stok kartına bağlı değil.", parent=self.dialog)
-            return
-        try:
-            from database.stok_service import StokService
-            from stok_ui import StokKartiDialog
+        from satir_klavye import satir_stok_karti_ac
 
-            stok = next((s for s in StokService.stoklari_ara(kod) if (s.stok_kodu or "").strip() == kod), None)
-            if stok is None:
-                messagebox.showinfo("Stok", "Stok kartı bulunamadı.", parent=self.dialog)
-                return
-            StokKartiDialog(self.dialog, stok)
-        except Exception as exc:
-            messagebox.showerror("Stok", str(exc), parent=self.dialog)
+        satir_stok_karti_ac(self.dialog, idx)
 
     def _manuel(self, metin: str) -> None:
         if self.manuel_ekle_fn is None:
@@ -1488,7 +1765,7 @@ class SatirIciUrunGirisi:
     def _pop_kolonlar(self) -> list[tuple[str, str, int, str]]:
         kol = [("kod", "Ürün Kodu", 110, "w"), ("ad", "Ürün Adı", 300, "w"), ("birim", "Birim", 60, "center")]
         if self.stok_goster():
-            kol.append(("stok", "Stok", 70, "e"))
+            kol.append(("stok", "Kalan", 70, "e"))
         if self.fiyat_goster() and self.fiyat_turu == "satis":
             kol.append(("fiyat", "Satış Fiyatı", 90, "e"))
         elif self.fiyat_goster() and self.fiyat_turu == "alis":
@@ -1531,13 +1808,9 @@ class SatirIciUrunGirisi:
                 alt, text="Manuel kalem", relief="flat", bg="#EDE9FE", font=("Segoe UI", 8),
                 command=lambda: self._manuel(self._var.get().strip()),
             )
-            self._pop_yeni = tk.Button(
-                alt, text="Yeni Stok Kartı", relief="flat", bg="#DCFCE7", font=("Segoe UI", 8),
-                command=self.yeni_stok_karti,
-            )
             tree.tag_configure("cift", background="#F8FAFC")
             tree.tag_configure("stok_yok", foreground="#B91C1C")
-            tree.bind("<Double-1>", lambda _e: self._pop_tik_sec())
+            tree.tag_configure("yeni_kayit", foreground="#15803D", background="#F0FDF4", font=("Segoe UI", 9, "bold"))
             tree.bind("<ButtonRelease-1>", self._pop_tik)
             self._popup, self._pop_tree, self._pop_durum = pop, tree, durum
         tree = self._pop_tree
@@ -1557,21 +1830,30 @@ class SatirIciUrunGirisi:
             if self.stok_goster() and Decimal(str(u.get("stok") or 0)) <= 0:
                 etiket.append("stok_yok")
             tree.insert("", "end", iid=str(i), values=[satir[k] for k in kolon_ids], tags=tuple(etiket))
-        bilgi = "↑↓ seç · Enter ekle · Esc kapat · F10 stok listesi"
+        if self._yeni_kayit_satiri():
+            metin = self._var.get().strip()
+            yeni = {k: "" for k in kolon_ids}
+            if self.kisa_urun:
+                yeni["kod"] = "➕ Yeni Ürün Ekle"
+                yeni["ad"] = f"«{metin}» için kısa ürün kartı aç" if metin else "Kısa ürün kartı aç"
+            else:
+                yeni["kod"] = "➕ Yeni Kayıt Ekle"
+                yeni["ad"] = f"«{metin}» adıyla yeni ürün kartı" if metin else "Yeni ürün kartı aç"
+            tree.insert("", "end", iid=str(len(urunler)), values=[yeni[k] for k in kolon_ids], tags=("yeni_kayit",))
+        bilgi = "↑↓ seç · Enter/tık ekle · Esc kapat · F10 stok listesi"
         if mesaj:
             bilgi = mesaj
+        elif not self._sonuc_metin and urunler:
+            bilgi = f"İlk {len(urunler)} ürün — aramak için yazın · " + bilgi
         elif self._toplam > len(urunler):
             bilgi = f"{len(urunler)} / {self._toplam} sonuç · " + bilgi
         self._pop_durum.configure(text=bilgi)
-        for b in (self._pop_daha, self._pop_manuel, self._pop_yeni):
+        for b in (self._pop_daha, self._pop_manuel):
             b.pack_forget()
         if self._toplam > len(urunler) and len(urunler) < AZAMI_SONUC:
             self._pop_daha.pack(side="right", padx=2, pady=1)
-        if not urunler:
-            if self._stok_yetkisi():
-                self._pop_yeni.pack(side="right", padx=2, pady=1)
-            if self.manuel_ekle_fn is not None and self._hedef_idx is None:
-                self._pop_manuel.pack(side="right", padx=2, pady=1)
+        if not urunler and self.manuel_ekle_fn is not None and self._hedef_idx is None:
+            self._pop_manuel.pack(side="right", padx=2, pady=1)
         self._secim_gorsel()
         self._popup_konum()
         try:
@@ -1612,15 +1894,16 @@ class SatirIciUrunGirisi:
     def _pop_tik(self, event):
         if self._pop_tree is None:
             return
-        row = self._pop_tree.identify_row(event.y)
-        if row:
-            self._secili = int(row)
+        try:
+            bolge = self._pop_tree.identify_region(event.x, event.y)
+        except tk.TclError:
+            bolge = ""
+        row = self._pop_tree.identify_row(event.y) if bolge in ("cell", "tree") else ""
         if self.entry is not None:
             self.entry.focus_set()
-
-    def _pop_tik_sec(self):
-        if 0 <= self._secili < len(self._sonuclar):
-            self._sec(self._sonuclar[self._secili])
+        if row:
+            self._secili = int(row)
+            self._liste_satiri_sec(self._secili)
 
     def _daha_fazla(self):
         metin = self._var.get().strip()

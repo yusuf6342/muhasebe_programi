@@ -146,9 +146,11 @@ def tk_buton(
         "tehlike": (UYARI, BEYAZ, "#B91C1C"),
         "ara": (LACIVERT_ORTA, BEYAZ, LACIVERT),
         "yeni": (SARI, LACIVERT, SARI_HOVER),
+        "kaydet_3d": ("#C62828", BEYAZ, "#8E0000"),
     }
     bg, fg, active = stiller.get(rol, stiller["kaydet"])
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
+    kabartma = rol == "kaydet_3d"
     btn = tk.Button(
         parent,
         text=metin,
@@ -157,11 +159,11 @@ def tk_buton(
         fg=fg,
         activebackground=active,
         activeforeground=fg,
-        relief="flat",
-        bd=0,
-        padx=12,
+        relief="raised" if kabartma else "flat",
+        bd=3 if kabartma else 0,
+        padx=18 if kabartma else 12,
         pady=6,
-        font=font(10, "bold", root),
+        font=font(11 if kabartma else 10, "bold", root),
         cursor="hand2" if state == "normal" else "arrow",
         state=state,
         highlightthickness=1 if rol == "ikincil" else 0,

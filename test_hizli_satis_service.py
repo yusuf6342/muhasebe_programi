@@ -91,6 +91,7 @@ class HizliSatisServiceTest(unittest.TestCase):
                 cari_turu="MÜŞTERİ",
                 aktif=True,
                 acik_hesap_risk_limiti=Decimal("10000"),
+                acik_hesap_limit_uygula=True,
             )
             s.add(cari)
             stok = StokKarti(stok_kodu="HS001", stok_adi="Test Ürün", birim="Adet", aktif=True)

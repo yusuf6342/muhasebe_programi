@@ -216,6 +216,7 @@ def build_from_satirlar(
     duzenleme_tarihi: str = "",
     kaynak_siparis_olusturan: str = "",
     satis_personeli: str = "",
+    fon_ek_bedeller: list[dict] | None = None,
 ) -> InvoicePrintViewModel:
     from database.satis_faturasi_service import SatisFaturasiService
 
@@ -261,8 +262,27 @@ def build_from_satirlar(
             "Lütfen faturayı kontrol edin."
         )
 
+    ek_satirlar = []
+    ek_toplam = ek_kdv = Decimal("0")
+    for e in fon_ek_bedeller or []:
+        tutar, kdv_e = _d(e.get("tutar")), _d(e.get("kdv"))
+        if tutar <= 0:
+            continue
+        oran = e.get("oran")
+        oran_metni = f" %{_d(oran).normalize():f}".replace(".", ",") if oran is not None else ""
+        ek_satirlar.append({
+            "etiket": f"Ek fon bedeli — {e.get('fon_ad') or e.get('fon_kod')}{oran_metni}",
+            "matrah": _para(_d(e.get("matrah")), "TRY"),
+            "tutar": _para(tutar, "TRY"),
+            "kdv_etiket": f"Ek fon bedeli KDV %{_d(e.get('kdv_orani')).normalize():f}".replace(".", ","),
+            "kdv": _para(kdv_e, "TRY"),
+        })
+        ek_toplam += tutar
+        ek_kdv += kdv_e
+    # Satır tutarları TL birim fiyatından gelir; ek bedel de TL saklanır (aynı birimde toplanır)
+    odenecek = (genel + ek_toplam + ek_kdv).quantize(_KURUS, rounding=ROUND_HALF_UP)
     tahsil = _d(tahsilat_tutari).quantize(_KURUS, rounding=ROUND_HALF_UP)
-    kalan = (genel - tahsil).quantize(_KURUS, rounding=ROUND_HALF_UP)
+    kalan = (odenecek - tahsil).quantize(_KURUS, rounding=ROUND_HALF_UP)
     branding = load_company_branding()
     logo_uri = None
     if ayarlar.get("logo_goster", True):
@@ -333,8 +353,14 @@ def build_from_satirlar(
         genel_goster=_para(genel, pb),
         tahsil_goster=_para(tahsil, pb),
         kalan_goster=_para(kalan, pb),
+        ek_bedel_satirlari=ek_satirlar,
+        ek_bedel_toplam=ek_toplam,
+        ek_bedel_kdv=ek_kdv,
+        ek_bedel_kdv_goster=_para(ek_kdv, "TRY") if ek_satirlar else "",
+        odenecek_toplam=odenecek,
+        odenecek_goster=_para(odenecek, pb) if ek_satirlar else "",
         kdv_dokum=_kdv_dokum(satirlar_dict, pb) if ayarlar.get("kdv_dokum_goster", True) else [],
-        yaziyla_toplam=amount_to_words(genel, pb) if ayarlar.get("yaziyla_toplam_goster", True) else "",
+        yaziyla_toplam=amount_to_words(odenecek, pb) if ayarlar.get("yaziyla_toplam_goster", True) else "",
         notlar=(aciklama or "").strip(),
         banka_satirlari=banka,
         alt_bilgi=str(branding.get("alt_bilgi") or "") if ayarlar.get("alt_bilgi_goster", True) else "",
@@ -346,7 +372,7 @@ def build_from_satirlar(
         ayarlar=ayarlar,
     )
     if pb not in ("TRY", "TL") and kur:
-        vm.tl_karsilik = (genel * _d(kur)).quantize(_KURUS, rounding=ROUND_HALF_UP)
+        vm.tl_karsilik = (odenecek * _d(kur)).quantize(_KURUS, rounding=ROUND_HALF_UP)
         vm.tl_goster = _para(vm.tl_karsilik, "TRY")
     vm.sayfalar = calculate_page_breaks(satir_modelleri, ayarlar)
     return vm
@@ -415,7 +441,10 @@ def build_invoice_print_model(
     )
     duzenleme = format_dt(f.updated_at or f.olusturma_tarihi)
     satis_personeli = (getattr(f, "sales_person_full_name", None) or "").strip()
+    from database.fon_service import FonService
+
     return build_from_satirlar(
+        fon_ek_bedeller=FonService.belge_ek_bedelleri("SATIS_FATURASI", int(f.id)),
         fatura_id=int(f.id),
         fatura_no=f.fatura_no,
         fatura_tarihi=f.fatura_tarihi,
@@ -624,6 +653,8 @@ def build_from_kart(kart, *, template_id: str | None = None) -> InvoicePrintView
     onaylandi = bool(getattr(kart, "_print_onaylandi", onaylandi))
 
     vm = build_from_satirlar(
+        # Kart ekranı ek bedel önizlemesini hesaplar (kayıtsız taslakta da baskıda görünür)
+        fon_ek_bedeller=None if alis else getattr(kart, "_fon_ek_bedel_satirlari", None),
         fatura_id=int(fatura_id) if fatura_id else None,
         fatura_no=fatura_no,
         fatura_tarihi=tarih,

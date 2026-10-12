@@ -268,6 +268,11 @@ def calistir(rapor_yolu: str | Path, bootstrap, *, kayit_dene: bool = False) -> 
         _dene("Müşteri ekstresi: TL / USD karşılığı", lambda: _ekstre_denetimi(app, "rapor_musteri_ekstresi"))
         _dene("Tedarikçi ekstresi: TL / USD karşılığı", lambda: _ekstre_denetimi(app, "rapor_tedarikci_ekstresi"))
         _satin_alma_menuleri(app, _dene)
+        _dene("Raporlar menüsü", lambda: _rapor_menusu(app))
+        _dene("Stok raporları menüsü", lambda: _stok_raporlari(app))
+        _dene("Stok yatırım verimliliği (hesapla)", lambda: _stok_verimlilik(app))
+        _dene("KDV raporu (hesapla)", lambda: _kdv_raporu(app))
+        _dene("Rapor PDF çıktısı", lambda: _pdf_denetimi(app, rapor.parent))
         if kayit_dene:
             if db.DB_DIR_KAYNAGI != "MUHASEBE_DB_DIR":
                 basarisiz += 1
@@ -408,6 +413,62 @@ def _satin_alma_menuleri(app, dene) -> None:
     dene("Satın Alma → MASRAF DAĞITIMI kartı (liste görünür)", liste("MASRAF DAĞITIMI"))
     dene("Satın Alma → SATIN ALMA TALEP LİSTESİ kartı (liste görünür)", liste("SATIN ALMA TALEP LİSTESİ"))
     dene("Satın Alma → SATIN ALMA TALEPLERİ kartı (form)", lambda: _kart_tikla_pencere(app, "SATIN ALMA TALEPLERİ"))
+
+
+def _rapor_menusu(app):
+    from ana_panel_ui import raporlar_menusu_goster
+
+    raporlar_menusu_goster(app)
+    app.update()
+    return None
+
+
+def _stok_raporlari(app):
+    from stok_rapor_ui import stok_raporlari_menusu_goster
+
+    stok_raporlari_menusu_goster(app)
+    app.update()
+    return None
+
+
+def _stok_verimlilik(app):
+    import stok_raporlari_ui
+
+    ekran = stok_raporlari_ui.yatirim_verimliligi_goster(app, otomatik=False)
+    if ekran is None:
+        raise RuntimeError("Stok yatırım verimliliği açılmadı")
+    ekran.raporla(senkron=True)
+    if "toplam" not in (ekran.sonuc or {}):
+        raise RuntimeError("Stok yatırım verimliliği hesaplanmadı")
+    return None
+
+
+def _kdv_raporu(app):
+    import kdv_raporu_ui
+
+    ekran = kdv_raporu_ui.kdv_raporu_goster(app, "raporlar", otomatik=False)
+    if ekran is None:
+        raise RuntimeError("KDV raporu açılmadı")
+    ekran.raporla(senkron=True)
+    if "toplamlar" not in (ekran.sonuc or {}):
+        raise RuntimeError("KDV raporu hesaplanmadı")
+    app._ekran_testi_rapor = ekran
+    return None
+
+
+def _pdf_denetimi(app, klasor: Path):
+    """Rapor HTML'inden PDF (yazdırma / PDF altyapısı: Edge / Chrome başsız)."""
+    from invoice_print.pdf_service import html_metnini_pdfe_cevir
+
+    ekran = getattr(app, "_ekran_testi_rapor", None)
+    hedef = Path(klasor) / "ekran_testi_rapor.pdf"
+    if ekran is not None:
+        ekran.pdf_yaz(str(hedef))
+    else:
+        html_metnini_pdfe_cevir("<html><body>Cin Muhasebe PDF denemesi</body></html>", hedef, belge_adi="Rapor")
+    if not hedef.is_file() or hedef.read_bytes()[:4] != b"%PDF":
+        raise RuntimeError("PDF oluşmadı")
+    return None
 
 
 def _ekran_testi_kayitlari() -> dict:

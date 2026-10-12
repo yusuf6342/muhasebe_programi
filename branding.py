@@ -13,7 +13,7 @@ from typing import Callable
 APP_NAME = "Cin Muhasebe"
 APP_NAME_COMPACT = "CinMuhasebe"
 APP_TAGLINE = "Güvenli ve Düzenli İşletme Yönetimi"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.2"
 APP_USER_MODEL_ID = "CinMuhasebe.Desktop"
 APP_DESCRIPTION = "Cin Muhasebe Programı"
 
@@ -40,6 +40,30 @@ COLOR_MUTED = "#4A5568"
 _log = logging.getLogger("cin_muhasebe.branding")
 _image_cache: dict[str, tk.PhotoImage] = {}
 _toplevel_hook_installed = False
+
+
+def _aktif_firma_unvani() -> str:
+    try:
+        from database.session_manager import oturum
+
+        return oturum.firma_unvan or ""
+    except Exception:
+        return ""
+
+
+def ray_firmasi_mi(unvan: str | None = None) -> bool:
+    """Ray Mobilya'ya özgü varsayılanlar (iletişim, başlık, slogan) yalnız o firmada kullanılır;
+    başka kurulumlara firma bilgisi sızmamalı."""
+    metin = _aktif_firma_unvani() if unvan is None else unvan
+    return "ray mobilya" in metin.translate(str.maketrans("İIı", "iii")).lower()
+
+
+def firma_basligi(ray_basligi: str) -> str:
+    """Ana panel başlığı: Ray firmasında mevcut başlık, diğer firmalarda aktif firmanın unvanı."""
+    unvan = _aktif_firma_unvani()
+    if ray_firmasi_mi(unvan):
+        return ray_basligi
+    return (unvan or APP_NAME).replace("i", "İ").replace("ı", "I").upper()
 
 
 def project_root() -> Path:

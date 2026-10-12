@@ -282,6 +282,15 @@ def stoktan_satir_sablonu(
 
         kdv = satir_kdv_belirle(kaynak_kdv=kdv_orani)
 
+    if birim_fiyat is None and stok is not None:
+        from database.fiyat_kaynagi_service import satis_kdv_haric
+
+        fiyat, _kdv_notu = satis_kdv_haric(kod, fiyat, kdv if kdv not in (None, "") else None, musteri=musteri)
+        if fiyat <= 0:
+            from fiyat_kaynagi_ui import fiyat_yok_bildir
+
+            fiyat_yok_bildir(dialog, kod, f"{kod}: fiyat listesinde geçerli satış fiyatı yok; birim fiyatı girin.")
+
     iskonto1 = Decimal("0")
     if stok is not None:
         iskonto1 = _d(getattr(stok, "iskonto_1", 0), Decimal("0"))

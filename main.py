@@ -69,6 +69,14 @@ from database.models.cek_senet import CekSenetEvrak, CekSenetHareket
 from database.models.deleted_record import DeletedRecordLog  # noqa: F401
 from database.models.doviz import DovizKuru
 from database.models.stok_uyari import StokIhtiyac, StokUyariAyari  # noqa: F401
+from database.models.fon import (  # noqa: F401
+    Fon,
+    FonBelgeOrani,
+    FonHareketi,
+    FonOranGecmisi,
+    FonParaHareketi,
+    StokFonOrani,
+)
 from database.models.genel_muhasebe import (
     HesapPlani,
     MuhasebeFisi,
@@ -163,6 +171,13 @@ def _sema_adimlari(progress) -> None:
     Base.metadata.create_all(db.engine)
 
     progress(40, "Şemalar güncelleniyor...")
+    # Eski firma DB'lerinde is_deleted kolonları yok; perakende cari hazırlığı bu kolonları sorgular
+    try:
+        from database.deleted_record_service import AuditDeleteService
+
+        AuditDeleteService.schema_hazirla()
+    except Exception as e:
+        print("Silinen kayıtlar şema uyarısı:", e)
     cari_kart_schemasini_guncelle()
     musteri_gruplarini_hazirla()
 
@@ -263,8 +278,13 @@ def main():
         gecici.withdraw()
         try:
             secim = test_ilk_acilis_sor(gecici)
+        except tk.TclError:
+            secim = None
         finally:
-            gecici.destroy()
+            try:
+                gecici.destroy()
+            except tk.TclError:
+                pass
         if secim is None:
             return
         _ORNEK_VERI_ISTENDI = bool(secim)
@@ -276,8 +296,13 @@ def main():
         gecici.withdraw()
         try:
             devam = messagebox.askyesno(APP_NAME, veri_uyarisi, icon="warning", parent=gecici)
+        except tk.TclError:
+            devam = False
         finally:
-            gecici.destroy()
+            try:
+                gecici.destroy()
+            except tk.TclError:
+                pass
         if not devam:
             return
 

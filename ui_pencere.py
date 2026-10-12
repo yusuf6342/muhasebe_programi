@@ -61,9 +61,14 @@ def belge_penceresini_hazirla(
     - maximize=True → state('zoomed'); başarısızsa iş alanına geometry
     """
     try:
-        win.update_idletasks()
+        zaten_buyuk = maximize and str(win.state()) == "zoomed"
     except tk.TclError:
-        pass
+        zaten_buyuk = False
+    if not zaten_buyuk:
+        try:
+            win.update_idletasks()
+        except tk.TclError:
+            pass
 
     x, y, aw, ah = calisma_alani(win)
     # Min boyutları iş alanına göre sınırla (bileşenler bozulmasın ama sığsın)
@@ -84,7 +89,10 @@ def belge_penceresini_hazirla(
     gy = y + max(0, (ah - gh) // 2)
 
     zoomed = False
-    if maximize:
+    if zaten_buyuk:
+        # Tekrar küçültüp büyütmek pencereyi gözle görülür şekilde yeniden çizer
+        zoomed = True
+    elif maximize:
         try:
             # Önce iş alanına yerleştir, sonra maximize (Windows zoomed = work area)
             win.geometry(f"{gw}x{gh}+{gx}+{gy}")

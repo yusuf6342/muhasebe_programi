@@ -334,6 +334,11 @@ def fatura_barkod_isle(dialog, ham_barkod: str | None = None) -> str:
                 teknik=sonuc.get("mesaj") or "Satışa kapalı.",
             )
             return "break"
+        if durum == "birim_hatasi":
+            _ses_hata()
+            _durum_yaz(dialog, sonuc["mesaj"], hata=True)
+            _panel_bildirim(dialog, barcode=kod, teknik=sonuc["mesaj"])
+            return "break"
         if durum == "coklu":
             kayit = _coklu_sec(dialog, sonuc.get("liste") or [])
             if not kayit:
@@ -636,6 +641,10 @@ def _satira_uygula(dialog, kayit: dict, *, okutulan_barkod: str) -> int | None:
             _barkod_odak(dialog)
             return None
 
+    from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
+
+    # Fiyatlara dağıtılmış faturada sepet değişti: eski Net düzeltmesi taşınmaz
+    uzlasma_etkisini_kaldir(dialog, yalniz_referansli=True)
     if hedef_idx is not None:
         mevcut = dialog.satirlar[hedef_idx]
         yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle

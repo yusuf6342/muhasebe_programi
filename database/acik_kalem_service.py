@@ -74,6 +74,88 @@ ODEME_KAPANDI = "Kapandı"
 ODEME_DURUMLARI = (ODEME_ODENMEDI, ODEME_KISMEN, ODEME_KAPANDI)
 
 
+DAGITIM_FIFO = "Otomatik FIFO"
+DAGITIM_SECILI = "Seçilen Belgeler"
+KALEM_ACIK = "Açık"
+KALEM_KISMEN = "Kısmen Kapalı"
+KALEM_KAPALI = "Kapalı"
+
+
+def _onizleme_sirasi(k: dict) -> tuple:
+    return (k.get("tarih") or date.min, k.get("evrak_no") or "", int(k.get("hareket_id") or 0))
+
+
+def dagitim_onizleme(kalemler: list[dict], tutar, secili: Iterable[int] = (), *,
+                     artani_fifo: bool = False, sabit: dict | None = None) -> dict:
+    """Tahsilatın açık kalemlere dağıtım önerisi (kayıt yapmaz).
+
+    Seçim yoksa tüm kalemlere belge tarihine göre FIFO; seçim varsa yalnız seçilenlere aynı FIFO
+    sırasıyla (tıklama sırası önemsiz). Her satırda kapanacak = min(açık, kalan dağıtılabilir).
+    Seçili kalemlerden artan tutar, ``artani_fifo`` açıkça istenmedikçe avans olarak kalır.
+    ``sabit`` {hareket_id: tutar}: kayıtlı belgenin dağıtımı aynen kullanılır (seçili kalemler için).
+    """
+    tutar = _kurus(tutar) if _kurus(tutar) > 0 else Decimal("0.00")
+    secili_set = {int(i) for i in secili}
+    sirali = sorted(kalemler, key=_onizleme_sirasi)
+    mod = DAGITIM_SECILI if secili_set else DAGITIM_FIFO
+    kalan = tutar
+    paylar: dict[int, Decimal] = {}
+
+    def _dagit(adaylar):
+        nonlocal kalan
+        for k in adaylar:
+            if kalan <= 0:
+                break
+            acik = _kurus(k.get("kalan"))
+            pay = min(acik, kalan)
+            if pay > 0:
+                hid = int(k["hareket_id"])
+                paylar[hid] = paylar.get(hid, Decimal("0")) + pay
+                kalan -= pay
+
+    if secili_set and sabit:
+        for k in sirali:
+            hid = int(k["hareket_id"])
+            if hid not in secili_set or kalan <= 0:
+                continue
+            pay = min(_kurus(k.get("kalan")), _kurus(sabit.get(hid, 0)), kalan)
+            if pay > 0:
+                paylar[hid] = pay
+                kalan -= pay
+        if artani_fifo:
+            _dagit([k for k in sirali if int(k["hareket_id"]) not in secili_set])
+    elif secili_set:
+        _dagit([k for k in sirali if int(k["hareket_id"]) in secili_set])
+        if artani_fifo:
+            _dagit([k for k in sirali if int(k["hareket_id"]) not in secili_set])
+    else:
+        _dagit(sirali)
+    satirlar = {}
+    for k in sirali:
+        hid = int(k["hareket_id"])
+        acik = _kurus(k.get("kalan"))
+        pay = _kurus(paylar.get(hid, 0))
+        sonra = acik - pay
+        if pay > 0:
+            durum = KALEM_KAPALI if sonra <= TOLERANS else KALEM_KISMEN
+        else:
+            durum = KALEM_KISMEN if _kurus(k.get("kapanan")) > 0 else KALEM_ACIK
+        satirlar[hid] = {"kapanacak": pay, "sonra": sonra, "durum": durum}
+    secilen_toplam = _kurus(sum((_kurus(k.get("kalan")) for k in sirali
+                                 if int(k["hareket_id"]) in secili_set), Decimal("0")))
+    dagitilan = _kurus(sum(paylar.values(), Decimal("0")))
+    return {
+        "mod": mod,
+        "tutar": tutar,
+        "secilen_toplam": secilen_toplam,
+        "dagitilan": dagitilan,
+        "artan": _kurus(tutar - dagitilan),
+        "satirlar": satirlar,
+        "dagitim": [(int(k["hareket_id"]), satirlar[int(k["hareket_id"])]["kapanacak"]) for k in sirali
+                    if satirlar[int(k["hareket_id"])]["kapanacak"] > 0],
+    }
+
+
 def _kullanici() -> tuple[int | None, str | None]:
     try:
         from database.session_manager import oturum
@@ -224,6 +306,26 @@ class AcikKalemService:
             if AcikKalemService._kalan_guncelle(session, hareket, eski, _kurus(eski + miktar)):
                 return
         raise AcikKalemDegisti(f"{hareket.belge_no} kalemi eşzamanlı güncelleniyor; tekrar deneyin.")
+
+    @staticmethod
+    def beklenen_dogrula(session, cari_id: int, beklenen: dict | None) -> None:
+        """Ekran açıldıktan sonra seçilen kalemlerin açık tutarı değiştiyse kaydı durdurur.
+
+        Eski önizleme sessizce kaydedilmez; kullanıcı güncel dağıtımı görüp yeniden onaylar.
+        """
+        if not beklenen:
+            return
+        session.flush()
+        for hid, tutar in beklenen.items():
+            h = session.get(SatisHareketi, int(hid))
+            if h is None or int(h.cari_id) != int(cari_id):
+                raise AcikKalemDegisti("Seçilen açık kalem bulunamadı; liste yenilenmeli.")
+            guncel = AcikKalemService._guncel_kalan(session, h)
+            if abs(guncel - _kurus(tutar)) > TOLERANS:
+                raise AcikKalemDegisti(
+                    f"{h.belge_no} belgesinin açık tutarı ekran açıldıktan sonra değişti "
+                    f"({_kurus(tutar)} → {guncel})."
+                )
 
     # --- Belge senkronu (fatura tahsil/ödeme tutarı) ---
     @staticmethod
@@ -706,33 +808,119 @@ class AcikKalemService:
         return vade or hareket.satis_tarihi
 
     @staticmethod
-    def secim_listesi(session, cari_id: int, *, para_birimi: str = "TRY") -> list[dict]:
-        """Tahsilat/Ödeme seçim penceresi satırları (açık belge kalemleri, FIFO sıralı)."""
-        satirlar = []
-        for h in AcikKalemService.acik_kalemler(session, cari_id, yon="BORC", para_birimi=para_birimi):
-            ilk = _kurus(h.satis_tutari)
-            kalan = _kurus(h.kalan_acik_tutar)
-            satirlar.append(
-                {
-                    "hareket_id": int(h.id),
-                    "tarih": h.satis_tarihi,
-                    "tur": AcikKalemService._evrak_turu(session, h),
-                    "evrak_no": h.belge_no or "",
-                    "ilk_tutar": ilk,
-                    "kapanan": max(Decimal("0"), ilk - kalan),
-                    "kalan": kalan,
-                    "vade": AcikKalemService._vade(session, h),
-                    "para_birimi": para_anahtari(h),
-                }
-            )
-        return satirlar
+    def belge_tahsisleri(session, cari_id: int, belge_no: str | None) -> dict:
+        """Kaynak belgenin aktif tahsisleri.
+
+        ``dogrudan``: belgenin kendi kapattıkları {hareket_id: tutar}; ``yontem``: {hareket_id: {"MANUEL","FIFO"}};
+        ``tum``: geri almada açılacak toplam (belge avansının sonradan kapattıkları dahil).
+        """
+        sonuc = {"dogrudan": {}, "yontem": {}, "tum": {}}
+        if not belge_no or not AcikKalemService._tablo_var(session):
+            return sonuc
+        session.flush()
+        for k in session.scalars(
+            select(CariKapatma).where(
+                CariKapatma.cari_id == int(cari_id),
+                CariKapatma.kaynak_belge_no == belge_no,
+                CariKapatma.iptal.is_(False),
+            ).order_by(CariKapatma.id)
+        ).all():
+            hid = int(k.hedef_hareket_id)
+            tutar = _d(k.tutar)
+            sonuc["tum"][hid] = _kurus(sonuc["tum"].get(hid, Decimal("0")) + tutar)
+            if k.kaynak_hareket_id is None:
+                sonuc["dogrudan"][hid] = _kurus(sonuc["dogrudan"].get(hid, Decimal("0")) + tutar)
+                sonuc["yontem"].setdefault(hid, set()).add((k.yontem or "FIFO").upper())
+        return sonuc
 
     @staticmethod
-    def secim_listesi_getir(cari_id: int, *, para_birimi: str = "TRY") -> list[dict]:
+    def _secim_satiri(session, h: SatisHareketi, geri: Decimal = Decimal("0"), kayitli: Decimal = Decimal("0")):
+        ilk = _kurus(h.satis_tutari)
+        kalan = _kurus(_d(h.kalan_acik_tutar) + geri)
+        return {
+            "hareket_id": int(h.id),
+            "tarih": h.satis_tarihi,
+            "tur": AcikKalemService._evrak_turu(session, h),
+            "evrak_no": h.belge_no or "",
+            "ilk_tutar": ilk,
+            "kapanan": max(Decimal("0"), ilk - kalan),
+            "kalan": kalan,
+            "vade": AcikKalemService._vade(session, h),
+            "para_birimi": para_anahtari(h),
+            "kayitli_dagitim": _kurus(kayitli),
+        }
+
+    @staticmethod
+    def secim_listesi(session, cari_id: int, *, para_birimi: str = "TRY",
+                      haric_belge_no: str | None = None) -> list[dict]:
+        """Tahsilat/Ödeme seçim penceresi satırları (açık belge kalemleri, FIFO sıralı).
+
+        ``haric_belge_no`` (kayıtlı makbuz düzenlemesi): o belgenin tahsisleri geri alınmış gibi gösterilir;
+        yalnız o belgeyle kapanmış kalemler de listeye girer. Kayıtta servis aynı geri almayı yapar.
+        """
+        tahsis = AcikKalemService.belge_tahsisleri(session, cari_id, haric_belge_no)
+        tum, dogrudan = tahsis["tum"], tahsis["dogrudan"]
+        satirlar = []
+        gorulen = set()
+        for h in AcikKalemService.acik_kalemler(session, cari_id, yon="BORC", para_birimi=para_birimi):
+            gorulen.add(int(h.id))
+            satirlar.append(AcikKalemService._secim_satiri(
+                session, h, tum.get(int(h.id), Decimal("0")), dogrudan.get(int(h.id), Decimal("0"))))
+        pb = (para_birimi or "TRY").upper()
+        for hid, geri in tum.items():
+            if hid in gorulen or geri <= 0:
+                continue
+            h = session.get(SatisHareketi, hid)
+            if h is None or int(h.cari_id) != int(cari_id) or _d(h.satis_tutari) <= 0 or para_anahtari(h) != pb:
+                continue
+            satirlar.append(AcikKalemService._secim_satiri(session, h, geri, dogrudan.get(hid, Decimal("0"))))
+        satirlar.sort(key=lambda s: (s["tarih"] or date.min, s["evrak_no"], s["hareket_id"]))
+        return [s for s in satirlar if s["kalan"] > 0]
+
+    @staticmethod
+    def secim_listesi_getir(cari_id: int, *, para_birimi: str = "TRY", haric_belge_no: str | None = None) -> list[dict]:
         from database.database import get_session
 
         with get_session() as session:
-            return AcikKalemService.secim_listesi(session, int(cari_id), para_birimi=para_birimi)
+            return AcikKalemService.secim_listesi(session, int(cari_id), para_birimi=para_birimi,
+                                                  haric_belge_no=haric_belge_no)
+
+    @staticmethod
+    def belge_secim_durumu(cari_id: int, belge_no: str, *, para_birimi: str = "TRY") -> dict:
+        """Kayıtlı belgenin düzenleme ekranına yüklenecek kapatma seçimi.
+
+        ``secili``: kullanıcının seçtiği (MANUEL) kalemler; boşsa belge otomatik FIFO ile kaydedilmiştir.
+        ``dagitim``: seçili kalemlere kayıtlı tutarlar; ``fazla``: seçim dışı kısım FIFO mu avans mı.
+        ``kalemler``: belge geri alınmış gibi açık tutarlar (``beklenen`` doğrulaması bunlarla yapılır).
+        """
+        from database.database import get_session
+
+        with get_session() as session:
+            tahsis = AcikKalemService.belge_tahsisleri(session, int(cari_id), belge_no)
+            kalemler = AcikKalemService.secim_listesi(session, int(cari_id), para_birimi=para_birimi,
+                                                      haric_belge_no=belge_no)
+        listede = {int(k["hareket_id"]) for k in kalemler}
+        secili = [hid for hid, y in tahsis["yontem"].items() if "MANUEL" in y and hid in listede]
+        fifo_var = any("FIFO" in y for y in tahsis["yontem"].values())
+        return {
+            "kalemler": kalemler,
+            "secili": secili,
+            "dagitim": {hid: tahsis["dogrudan"][hid] for hid in secili},
+            "fazla": "FIFO" if (fifo_var or not secili) else "AVANS",
+        }
+
+    @staticmethod
+    def diger_para_kalemleri(cari_id: int, *, para_birimi: str = "TRY") -> dict[str, int]:
+        """Seçim listesine girmeyen (başka para birimli) açık kalem sayıları: {para_birimi: adet}."""
+        from database.database import get_session
+
+        sonuc: dict[str, int] = {}
+        with get_session() as session:
+            for h in AcikKalemService.acik_kalemler(session, int(cari_id), yon="BORC", para_birimi=None):
+                pb = para_anahtari(h)
+                if pb != (para_birimi or "TRY").upper():
+                    sonuc[pb] = sonuc.get(pb, 0) + 1
+        return sonuc
 
     @staticmethod
     def acik_kalem_raporu(session, cari_id: int | None = None, *, bugun: date | None = None) -> list[dict]:

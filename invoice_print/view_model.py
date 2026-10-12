@@ -107,6 +107,13 @@ class InvoicePrintViewModel:
     tahsil_goster: str = ""
     kalan_goster: str = ""
     tl_goster: str = ""
+    # Faturaya ek fon bedeli (fon başına satır) ve ödenecek toplam = genel + bedel + bedel KDV'si
+    ek_bedel_satirlari: list[dict[str, str]] = field(default_factory=list)
+    ek_bedel_toplam: Decimal = Decimal("0")
+    ek_bedel_kdv: Decimal = Decimal("0")
+    ek_bedel_kdv_goster: str = ""
+    odenecek_toplam: Decimal = Decimal("0")
+    odenecek_goster: str = ""
     kdv_dokum: list[InvoicePrintKdvSatir] = field(default_factory=list)
     yaziyla_toplam: str = ""
     # Not / banka

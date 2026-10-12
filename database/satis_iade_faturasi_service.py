@@ -17,6 +17,7 @@ from database.models.satis_iade_faturasi import SatisIadeFaturasi, SatisIadeFatu
 from database.models.stok import Depo, StokHareketi, StokKarti, StokLotu
 from database.satis_faturasi_service import SatisFaturasiService
 from database.satis_siparisi_service import decimal
+from database.stok_service import birim_anahtari
 
 
 class SatisIadeFaturasiService:
@@ -70,6 +71,22 @@ class SatisIadeFaturasiService:
             return Decimal(str(miktar or 0))
 
     @staticmethod
+    def _kayitli_carpan(satir) -> Decimal | None:
+        try:
+            c = Decimal(str(getattr(satir, "birim_carpani", None) or 0))
+        except Exception:
+            return None
+        return c if c > 0 else None
+
+    @staticmethod
+    def _satir_temel(satir) -> Decimal:
+        """Kaydedilmiş satırın temel miktarı: satırda saklanan katsayı (kart sonradan değişmiş olabilir)."""
+        c = SatisIadeFaturasiService._kayitli_carpan(satir)
+        if c is not None:
+            return Decimal(str(satir.miktar or 0)) * c
+        return SatisIadeFaturasiService._temel(satir.miktar, satir.birim, satir.urun_kodu)
+
+    @staticmethod
     def _onceki_iadeler(session, satir_idleri: list[int], haric_iade_id=None) -> dict[int, list[dict]]:
         """Satış satırı → bu satıra bağlı (iptal olmayan) iade satırları."""
         if not satir_idleri:
@@ -91,7 +108,7 @@ class SatisIadeFaturasiService:
                 "tarih": iade.iade_tarihi,
                 "miktar": Decimal(str(satir.miktar or 0)),
                 "birim": satir.birim,
-                "temel_miktar": SatisIadeFaturasiService._temel(satir.miktar, satir.birim, satir.urun_kodu),
+                "temel_miktar": SatisIadeFaturasiService._satir_temel(satir),
             })
         return sonuc
 
@@ -142,7 +159,7 @@ class SatisIadeFaturasiService:
                 )
                 kdv = Decimal(str(satir.kdv_orani or 0))
                 net_fiyat = (net_toplam / miktar) if miktar else Decimal("0")
-                satilan_temel = SatisIadeFaturasiService._temel(miktar, satir.birim, urun_kodu)
+                satilan_temel = SatisIadeFaturasiService._satir_temel(satir)
                 onceki = iadeler.get(int(satir.id), [])
                 iade_temel = sum((i["temel_miktar"] for i in onceki), Decimal("0"))
                 kalan_temel = max(Decimal("0"), satilan_temel - iade_temel)
@@ -165,6 +182,7 @@ class SatisIadeFaturasiService:
                     ),
                     "fifo_birim_maliyeti": satir.fifo_birim_maliyeti,
                     "satir_id": satir.id,
+                    "birim_carpani": SatisIadeFaturasiService._kayitli_carpan(satir),
                     "satilan_temel": satilan_temel,
                     "iade_edilen_temel": iade_temel,
                     "kalan_iade_temel": kalan_temel,
@@ -204,10 +222,16 @@ class SatisIadeFaturasiService:
                 f"Birim farkı: satış {kaynak['birim']} ile yapılmış, iade {birim} olarak giriliyor "
                 "(miktar stok temel birimine çevrilerek karşılaştırıldı)."
             )
-        istenen = SatisIadeFaturasiService._temel(satir.get("miktar") or 0, birim, kod)
+        def _istenen(d: dict) -> Decimal:
+            b = d.get("birim") or "Adet"
+            if kaynak.get("birim_carpani") and birim_anahtari(b) == birim_anahtari(kaynak["birim"] or "Adet"):
+                return Decimal(str(d.get("miktar") or 0)) * kaynak["birim_carpani"]
+            return SatisIadeFaturasiService._temel(d.get("miktar") or 0, b, kod)
+
+        istenen = _istenen(satir)
         ayni_kaynak = sum(
             (
-                SatisIadeFaturasiService._temel(d.get("miktar") or 0, d.get("birim") or "Adet", kod)
+                _istenen(d)
                 for d in diger_satirlar
                 if d is not satir and d.get("kaynak_fatura_satiri_id")
                 and int(d["kaynak_fatura_satiri_id"]) == int(kaynak_id)
@@ -251,8 +275,10 @@ class SatisIadeFaturasiService:
         verilen = veri.get("fifo_birim_maliyeti")
         if verilen not in (None, "", 0, "0"):
             return decimal(verilen, "FIFO maliyet", Decimal("0")), kaynak
-        if kaynak is not None and kaynak.fifo_birim_maliyeti is not None:
-            return Decimal(kaynak.fifo_birim_maliyeti), kaynak
+        if kaynak is not None:
+            satis_maliyeti = SatisFaturasiService.satir_birim_maliyeti(session, kaynak)
+            if satis_maliyeti is not None:
+                return Decimal(satis_maliyeti), kaynak
         from database.stok_service import StokService
         maliyetler = StokService.maliyetler(veri["urun_kodu"].strip(), depo_adi)
         return Decimal(maliyetler.get("fifo") or 0), kaynak
@@ -271,8 +297,10 @@ class SatisIadeFaturasiService:
             raise ValueError(f"{depo_adi} deposu bulunamadı.")
         miktar = decimal(miktar, "İade miktarı", Decimal("0.0001"))
         maliyet = decimal(birim_maliyet, "FIFO birim maliyet", Decimal("0"))
-        if kaynak_satiri is not None and kaynak_satiri.fifo_birim_maliyeti is not None:
-            maliyet = Decimal(kaynak_satiri.fifo_birim_maliyeti)
+        if kaynak_satiri is not None:
+            satis_maliyeti = SatisFaturasiService.satir_birim_maliyeti(session, kaynak_satiri)
+            if satis_maliyeti is not None:
+                maliyet = Decimal(satis_maliyeti)
 
         kalan = miktar
         kullanilan = []
@@ -462,11 +490,19 @@ class SatisIadeFaturasiService:
                     .where(StokKarti.stok_kodu == veri["urun_kodu"].strip())
                     .options(_sil(StokKarti.birimler))
                 )
-                carpan = (
-                    StokService.birim_carpani_kesin(kart, veri.get("birim") or kart.birim or "Adet")
-                    if kart is not None
-                    else Decimal("1")
+                iade_birim = veri.get("birim") or (kart.birim if kart is not None else None) or "Adet"
+                kaynak_carpan = (
+                    SatisIadeFaturasiService._kayitli_carpan(kaynak_satiri)
+                    if kaynak_satiri is not None
+                    and birim_anahtari(kaynak_satiri.birim or "Adet") == birim_anahtari(iade_birim)
+                    else None
                 )
+                if kaynak_carpan is not None:
+                    carpan = kaynak_carpan
+                elif kart is not None:
+                    carpan = StokService.birim_carpani_kesin(kart, iade_birim)
+                else:
+                    carpan = Decimal("1")
                 stok_sonuc = SatisIadeFaturasiService._iade_girisi(
                     session, iade.iade_no, tarih, veri["urun_kodu"].strip(), iade.depo,
                     (miktar * carpan).quantize(Decimal("0.0001")), fifo_maliyet,
@@ -496,11 +532,23 @@ class SatisIadeFaturasiService:
                 ))
 
             iade.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
-            toplam = SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
+            try:
+                session.flush()
+                from database.fon_service import FonService
+
+                # Fon iadesi cari alacaktan önce: iade edilen ek fon bedeli (kaynak oranıyla) toplama girer
+                FonService.iade_kaydedildi(session, iade)
+                session.flush()
+            except IntegrityError as hata:
+                raise ValueError("İade faturası kaydedilemedi.") from hata
+            ek_iade = SatisIadeFaturasiService.ek_fon_bedeli_toplami(iade)
+            toplam = SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"] + ek_iade
             if iade.iade_odeme_tutari > toplam:
                 raise ValueError("İade ödeme tutarı iade toplamından büyük olamaz.")
             iade.durum = "KAPALI" if iade.iade_odeme_tutari >= toplam else "AÇIK"
-            session.flush()
+            doviz_alacak = iade.doviz_ara_toplam if pb != "TRY" else Decimal("0")
+            if pb != "TRY" and ek_iade > 0 and kur > 0:
+                doviz_alacak += (ek_iade / kur).quantize(Decimal("0.01"))
 
             # Cari: iade müşteri borcunu azaltır (alacak + açık bakiyeden düşüş)
             session.add(CariIslem(
@@ -508,7 +556,7 @@ class SatisIadeFaturasiService:
                 belge_no=iade.iade_no, aciklama=iade.aciklama or "Satış iade faturası",
                 borc=Decimal("0"), alacak=toplam, hesap_adi=iade.iade_odeme_hesabi,
                 para_birimi=pb,
-                doviz_alacak=iade.doviz_ara_toplam if pb != "TRY" else Decimal("0"),
+                doviz_alacak=doviz_alacak,
                 kur=kur if pb != "TRY" else Decimal("1"),
                 borc_esasi=iade.borc_esasi or "TL_SABIT",
             ))
@@ -518,11 +566,7 @@ class SatisIadeFaturasiService:
                     session, iade.iade_no, tarih, iade.iade_odeme_tutari,
                     "SATIŞ İADE ÖDEMESİ", iade.iade_odeme_hesabi, iade.iade_odeme_sekli,
                 )
-
-            try:
-                session.flush()
-            except IntegrityError as hata:
-                raise ValueError("İade faturası kaydedilemedi.") from hata
+            session.flush()
             iid = int(iade.id)
             from database.muhasebe_entegrasyon import muhasebe_hook
 
@@ -542,7 +586,8 @@ class SatisIadeFaturasiService:
                 raise ValueError("İade faturası bulunamadı.")
             if iade.durum == "İPTAL":
                 return
-            toplam = SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
+            toplam = (SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
+                      + SatisIadeFaturasiService.ek_fon_bedeli_toplami(iade))
             CariService._aciklara_geri_al(session, iade.cari_id, toplam, iade.iade_no)
             SatisIadeFaturasiService._iade_girislerini_geri_al(session, iade.iade_no)
             session.execute(delete(FinansHareketi).where(FinansHareketi.belge_no == iade.iade_no))
@@ -552,6 +597,9 @@ class SatisIadeFaturasiService:
             AcikKalemService.belge_kalemlerini_sil(session, iade.iade_no, iade.cari_id,
                                                   neden=f"İade iptal {iade.iade_no}")
             iade.durum = "İPTAL"
+            from database.fon_service import FonService
+
+            FonService.iade_iptal_edildi(session, iade, "Satış iade iptal")
             from database.muhasebe_entegrasyon import muhasebe_hook
 
             muhasebe_hook("iptal_kaynak", "satis_iade", int(iade_id), "Satış iade iptal", session=session)
@@ -559,6 +607,12 @@ class SatisIadeFaturasiService:
         from database.deleted_record_service import ENTITY_SATIS_IADE, safe_log_cancel
 
         safe_log_cancel(ENTITY_SATIS_IADE, iade_id, note="Satış iade faturası iptal")
+
+    @staticmethod
+    def ek_fon_bedeli_toplami(iade) -> Decimal:
+        """İade edilen ek fon bedeli + KDV'si (cari alacağa ve ödeme üst sınırına dahil)."""
+        return (Decimal(str(getattr(iade, "fon_ek_bedel_tutari", 0) or 0))
+                + Decimal(str(getattr(iade, "fon_ek_bedel_kdv", 0) or 0)))
 
     @staticmethod
     def toplam(satirlar) -> dict[str, Decimal]:

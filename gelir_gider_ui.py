@@ -106,17 +106,27 @@ def giderler_menusu_goster(app):
             lambda: hizmet_faturalari_sayfasi(app, "GIDER"),
         ),
         ("GİDER FİŞİ", lambda: _gider_fisi_ac(app)),
+        ("SABİT GİDER PLANLARI", lambda: _sabit_gider_planlari_ac(app)),
         (
             "HİZMET ALIŞ (GİDER) İADE FATURASI",
             lambda: _yer_tutucu(app, "HİZMET ALIŞ (GİDER) İADE FATURASI", giderler_menusu_goster),
         ),
         ("GİDER RAPORU", lambda: _yer_tutucu(app, "GİDER RAPORU", giderler_menusu_goster)),
     )):
-        ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(
+        # Sabit gider planları ayrı pencere (Toplevel); sayfa geçmişine yazılmaz
+        dogrudan = baslik == "SABİT GİDER PLANLARI"
+        ttk.Button(alt, text=baslik, style="AltMenu.TButton",
+                   command=komut if dogrudan else (lambda c=komut: nav(c))).grid(
             row=i, column=0, sticky="ew", pady=4
         )
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: giderler_menusu_goster(app))
+
+
+def _sabit_gider_planlari_ac(app):
+    from sabit_gider_ui import sabit_gider_planlari_ac
+
+    sabit_gider_planlari_ac(app)
 
 
 def gelirler_menusu_goster(app):

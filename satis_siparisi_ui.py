@@ -139,6 +139,9 @@ class SatisSiparisiKarti(tk.Toplevel):
         self._satir_alani()
         self._aciklama_ve_toplam()
         self._kisayollar()
+        from evrak_baslik_gezinme import baslik_gezinme_kur
+
+        baslik_gezinme_kur(self, self._baslik_kaplari, son_hedef=self._satir_ici_giris.odakla)
 
         from ui_pencere import belge_penceresini_hazirla
 
@@ -263,6 +266,7 @@ class SatisSiparisiKarti(tk.Toplevel):
 
     def _baslik_alanlari(self):
         frame = self._panel("Sipariş ve Müşteri")
+        self._baslik_kaplari = [frame]
         self._girdi(frame, 0, 0, "Sipariş No", "siparis_no", YENI_NO_METNI, width=20)
         self._girdi(frame, 0, 1, "Sipariş Tarihi", "siparis_tarihi", date.today().strftime("%d.%m.%Y"), width=14, zorunlu=True)
         self._girdi(frame, 0, 2, "Termin Tarihi", "termin_tarihi", date.today().strftime("%d.%m.%Y"), width=14, zorunlu=True)
@@ -303,6 +307,7 @@ class SatisSiparisiKarti(tk.Toplevel):
 
     def _teslimat_alanlari(self):
         frame = self._panel("Teslimat ve Koşullar")
+        self._baslik_kaplari.append(frame)
         self._girdi(frame, 0, 0, "Teslimat Adresi", "teslimat_adresi", width=50, colspan=3)
         self._girdi(frame, 1, 0, "İl", "teslimat_il", width=16)
         self._girdi(frame, 1, 1, "İlçe", "teslimat_ilce", width=16)
@@ -387,7 +392,7 @@ class SatisSiparisiKarti(tk.Toplevel):
                 HucreAlani("miktar", deger=lambda i: _sayi(self.satirlar[i].get("miktar") or 0)),
                 HucreAlani("birim", "secim", secenekler=self._satir_birimleri, serbest=False),
                 HucreAlani("fiyat", deger=lambda i: _sayi(self.satirlar[i].get("birim_fiyat") or 0)),
-                HucreAlani("iskonto", "metin", deger=lambda i: _satir_iskonto_metni(self.satirlar[i])),
+                HucreAlani("iskonto", "iskonto3", deger=lambda i: _satir_iskonto_metni(self.satirlar[i])),
                 HucreAlani("kdv", "secim", secenekler=lambda _i: KDV_SECENEKLERI, serbest=True,
                            deger=lambda i: _sayi(self.satirlar[i].get("kdv_orani") or 0)),
                 HucreAlani("termin", "metin", deger=lambda i: _tarih(self.satirlar[i].get("termin"))),
@@ -718,9 +723,9 @@ class SatisSiparisiKarti(tk.Toplevel):
         if zorunlu_birim:
             return [zorunlu_birim]
         try:
-            from fatura_satir_birim_service import stok_aktif_birimleri
+            from birim_secim_ui import evrak_birim_secenekleri
 
-            return stok_aktif_birimleri(kod) or ["Adet"]
+            return evrak_birim_secenekleri(kod) or ["Adet"]
         except Exception:
             return ["Adet"]
 
@@ -774,6 +779,15 @@ class SatisSiparisiKarti(tk.Toplevel):
             kdv = ondalik(kdv_metin, Decimal("20")) if kdv_metin not in (None, "") else Decimal("20")
         except ValueError:
             kdv = Decimal("20")
+        if kaynak != HIZLI_STOK_KAYNAGI:
+            from database.fiyat_kaynagi_service import satis_kdv_haric
+
+            if fiyat not in (None, ""):
+                fiyat, _not = satis_kdv_haric(kod, fiyat, kdv, musteri=self.cari)
+            if fiyat in (None, "") or decimal(fiyat, "Fiyat", Decimal("0")) <= 0:
+                from fiyat_kaynagi_ui import fiyat_yok_bildir
+
+                fiyat_yok_bildir(self, kod, f"{kod}: fiyat listesinde geçerli satış fiyatı yok; birim fiyatı girin.")
         return {
             "urun_kodu": kod, "urun_adi": ad, "birim": birim, "miktar": Decimal("1"),
             "birim_fiyat": fiyat if fiyat is not None else Decimal("0"),
@@ -905,13 +919,32 @@ class SatisSiparisiKarti(tk.Toplevel):
                     "Sevk veya fatura edilmiş satırın birimi değiştirilemez.\n"
                     f"Bağlı evrak: {self._satir_bagli_metni(s)}"
                 )
-            yeni["birim"] = birim
             if not s.get("is_manual_item"):
+                from birim_secim_ui import kart_birimini_hazirla
+
+                if not kart_birimini_hazirla(self, s.get("urun_kodu") or "", birim):
+                    return
+            yeni_fiyat = True
+            if not s.get("is_manual_item") and s.get("fiyat_elle"):
+                from fiyat_kaynagi_ui import birim_degisiminde_yeniden_fiyat
+
+                yeni_fiyat = birim_degisiminde_yeniden_fiyat(self, {"fiyat_elle": True})
+                if yeni_fiyat is None:
+                    return
+            yeni["birim"] = birim
+            if not s.get("is_manual_item") and yeni_fiyat:
                 fiyat = self._cari_fiyati(s.get("urun_kodu") or "", birim)
                 if fiyat is not None:
+                    from database.fiyat_kaynagi_service import satis_kdv_haric
+
+                    fiyat, _not = satis_kdv_haric(s.get("urun_kodu") or "", fiyat, s.get("kdv_orani"),
+                                                  musteri=self.cari)
                     yeni["birim_fiyat"] = fiyat
+                    yeni["fiyat_elle"] = False
         elif kolon == "fiyat":
             yeni["birim_fiyat"] = decimal(metin or 0, "Birim fiyat", Decimal("0"))
+            if yeni["birim_fiyat"] != decimal(s.get("birim_fiyat") or 0, "Birim fiyat", Decimal("0")):
+                yeni["fiyat_elle"] = True
         elif kolon == "iskonto":
             yeni["iskonto_orani"], yeni["iskonto_orani_2"], yeni["iskonto_orani_3"] = iskonto_metni_coz(metin)
         elif kolon == "kdv":
@@ -969,7 +1002,31 @@ class SatisSiparisiKarti(tk.Toplevel):
             ogeler.insert(1, ("Fiyat Listesinden Seç…", lambda: self.fiyat_secimi_ac(idx=idx)))
             if not self._satir_bagli_mi(s):
                 ogeler.insert(1, ("Ürünü Değiştir…", lambda: self._satir_ici_giris.urun_degistir_baslat(idx)))
+                ogeler.insert(2, ("Fiyatı Yenile", lambda: self.fiyati_yenile(idx)))
         return ogeler
+
+    def fiyati_yenile(self, idx: int) -> None:
+        """Seçili satırın fiyatını cari fiyat listesinden yeniden getirir (elle fiyatta onay ister)."""
+        from fiyat_kaynagi_ui import fiyat_yok_bildir, yenileme_onayi
+        from database.fiyat_kaynagi_service import satis_kdv_haric
+
+        if not self._duzenlenebilir() or not (0 <= idx < len(self.satirlar)):
+            return
+        s = self.satirlar[idx]
+        if s.get("is_manual_item") or self._satir_bagli_mi(s) or not yenileme_onayi(self, s):
+            return
+        kod = s.get("urun_kodu") or ""
+        fiyat = self._cari_fiyati(kod, s.get("birim") or "Adet")
+        if fiyat is None:
+            self._fiyat_yok_bildirilen = set()
+            fiyat_yok_bildir(self, kod, f"{kod}: fiyat listesinde geçerli satış fiyatı yok.")
+            return
+        fiyat, _not = satis_kdv_haric(kod, fiyat, s.get("kdv_orani"), musteri=self.cari)
+        yeni = dict(s)
+        yeni["birim_fiyat"] = fiyat
+        yeni["fiyat_elle"] = False
+        self.satirlar[idx] = yeni
+        self.satir_listesini_yenile()
 
     def fiyat_secimi_ac(self, _event=None, idx: int | None = None):
         from app import PriceSelectionDialog
@@ -986,7 +1043,10 @@ class SatisSiparisiKarti(tk.Toplevel):
             if deger is not None:
                 self.satir_hucre_uygula(idx, "fiyat", _sayi(deger))
 
-        dialog = PriceSelectionDialog(self, kod, on_select=_secildi, fiyat_turu="satis")
+        dialog = PriceSelectionDialog(
+            self, kod, on_select=_secildi, fiyat_turu="satis",
+            kdv_orani=lambda: self.satirlar[idx].get("kdv_orani"),
+        )
         self.wait_window(dialog)
         return "break"
 

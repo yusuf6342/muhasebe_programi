@@ -507,8 +507,12 @@ class CariService:
         *,
         dagitim=None,
         fazla: str = "FIFO",
+        beklenen: dict | None = None,
     ) -> CariIslem:
-        """dagitim: [(hareket_id, tutar)] kullanıcı seçimi; yoksa FIFO. fazla: dağıtım dışı kalan FIFO/AVANS."""
+        """dagitim: [(hareket_id, tutar)] kullanıcı seçimi; yoksa FIFO. fazla: dağıtım dışı kalan FIFO/AVANS.
+
+        beklenen: {hareket_id: ekranda görülen açık tutar} — değiştiyse AcikKalemDegisti (kayıt yok).
+        """
         tutar = CariService._tutar(tutar)
         if tutar <= 0:
             raise ValueError("Tahsilat tutarı pozitif olmalıdır.")
@@ -518,6 +522,9 @@ class CariService:
             cari = session.get(Cari, cari_id)
             if cari is None:
                 raise ValueError("Cari bulunamadı.")
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.beklenen_dogrula(session, cari_id, beklenen)
             belge_no = CariService._belge_no(session, "THS")
             CariService._alacak_uygula(
                 session, cari_id, tutar, belge_no, tarih, kaynak_tur="TAHSILAT", dagitim=dagitim, fazla=fazla
@@ -549,6 +556,7 @@ class CariService:
         *,
         dagitim=None,
         fazla: str = "FIFO",
+        beklenen: dict | None = None,
     ) -> CariIslem:
         tutar = CariService._tutar(tutar)
         if tutar <= 0:
@@ -559,6 +567,9 @@ class CariService:
             cari = session.get(Cari, cari_id)
             if cari is None:
                 raise ValueError("Cari bulunamadı.")
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.beklenen_dogrula(session, cari_id, beklenen)
             belge_no = CariService._belge_no(session, "ODM")
             # Tedarikçi: ödeme borcu düşürür (alacak) + fazla ödeme kredisi.
             # Müşteri: ödeme müşteriye borç yazar (varsa avansını kapatır).
@@ -769,6 +780,69 @@ class CariService:
             session.add(islem)
             session.flush()
             return islem
+
+    @staticmethod
+    def acilis_bakiyesi_ekle(
+        cari_id: int,
+        tarih: date,
+        *,
+        tutar,
+        yon: str,
+        belge_no: str,
+        aciklama: str | None = None,
+        avans_onayli: bool = False,
+    ):
+        """Açılış bakiyesini anlamıyla yazar. ``yon`` firma defterine göre: B cari borçlu, A cari alacaklı.
+
+        Tedarikçide A (borcumuz) açık borç kalemi olur, ödemeler bunu kapatır; B yalnız ``avans_onayli``
+        ise 159 avans sayılır. Dönüş: (cari hareketi, AcilisAnlami).
+        """
+        from database.cari_acilis_anlam import AVANS_ETIKETI, acilis_anlami
+
+        with get_session() as session:
+            cari = session.get(Cari, cari_id)
+            if cari is None:
+                raise ValueError("Cari bulunamadı.")
+            cari_turu = cari.cari_turu
+        anlam = acilis_anlami(cari_turu, yon, avans_onayli=avans_onayli)
+        tutar_t = CariService._tutar(tutar)
+        if not isinstance(tutar_t, Decimal):
+            tutar_t = Decimal(str(tutar_t))
+        metin = aciklama or "Açılış / dönem devir"
+        if anlam.hesap_anahtari == "verilen_siparis_avanslari":
+            metin = f"{metin} {AVANS_ETIKETI}"
+        islem = CariService.acilis_fisi_ekle(
+            cari_id,
+            tarih,
+            borc=tutar_t if anlam.kalem_borc else Decimal("0"),
+            alacak=Decimal("0") if anlam.kalem_borc else tutar_t,
+            belge_no=belge_no,
+            aciklama=metin,
+        )
+        return islem, anlam
+
+    @staticmethod
+    def acilis_muhasebe_onizleme(cari_id: int | None = None) -> list[dict[str, Any]]:
+        """Açılış cari hareketlerinin muhasebe karşılığı. Belirsiz olan 'İnceleme gerekiyor' döner;
+        açılış hareketinden otomatik fiş üretilmez."""
+        from database.cari_acilis_anlam import kayitli_acilis_anlami
+
+        with get_session() as session:
+            q = select(CariIslem, Cari).join(Cari, Cari.id == CariIslem.cari_id).where(
+                CariIslem.islem_turu == "Açılış")
+            if cari_id is not None:
+                q = q.where(CariIslem.cari_id == int(cari_id))
+            sonuc = []
+            for islem, cari in session.execute(q.order_by(CariIslem.tarih, CariIslem.id)).all():
+                anlam = kayitli_acilis_anlami(cari.cari_turu, islem.borc, islem.alacak, islem.aciklama)
+                sonuc.append({
+                    "islem_id": int(islem.id), "cari_id": int(cari.id), "cari_kodu": cari.cari_kodu,
+                    "cari_turu": cari.cari_turu, "belge_no": islem.belge_no, "tarih": islem.tarih,
+                    "tutar": Decimal(str(islem.borc or 0)) + Decimal(str(islem.alacak or 0)),
+                    "yon": anlam.yon, "hesap_anahtari": anlam.hesap_anahtari, "hesap_kodu": anlam.hesap_kodu,
+                    "muhasebe_yonu": anlam.muhasebe_yonu, "durum": anlam.durum, "aciklama": anlam.aciklama,
+                })
+            return sonuc
 
     @staticmethod
     def islem_belge_var_mi(belge_no: str) -> bool:
@@ -1394,9 +1468,13 @@ class CariService:
     @staticmethod
     def ekle(veriler: dict[str, object]) -> Cari:
         yazma_zorunlu("cari_duzenleme", "yeni_kayit")
+        from database import cari_risk_service
+
         veriler = dict(veriler)
         cari_turu = str(veriler.get("cari_turu") or "Müşteri")
         veriler["cari_turu"] = cari_turu
+        risk_alanlari = {a: veriler.pop(a) for a in list(veriler) if a in cari_risk_service.KART_ALANLARI}
+        cari_risk_service.kart_alanlarini_dogrula(dict(risk_alanlari))
         son_hata: Exception | None = None
         for _ in range(25):
             if not (str(veriler.get("cari_kodu") or "").strip()):
@@ -1405,6 +1483,10 @@ class CariService:
                 with get_session() as session:
                     cari = Cari(**veriler)
                     session.add(cari)
+                    session.flush()
+                    cari_risk_service.kart_degisikligini_uygula(
+                        session, cari, dict(risk_alanlari), yeni_kart=True
+                    )
                     session.flush()
                     return cari
             except IntegrityError as hata:
@@ -1415,10 +1497,14 @@ class CariService:
     @staticmethod
     def guncelle(cari_id: int, veriler: dict[str, object]) -> Cari:
         yazma_zorunlu("cari_duzenleme")
+        from database import cari_risk_service
+
+        veriler = dict(veriler)
         with get_session() as session:
             cari = session.get(Cari, cari_id)
             if cari is None:
                 raise ValueError("Cari bulunamadı.")
+            cari_risk_service.kart_degisikligini_uygula(session, cari, veriler)
             for alan, deger in veriler.items():
                 setattr(cari, alan, deger)
             try:
@@ -1593,6 +1679,10 @@ class CariService:
 
     @staticmethod
     def _tutar(deger: object) -> Decimal:
+        if isinstance(deger, Decimal):
+            return deger
+        if isinstance(deger, int) and not isinstance(deger, bool):
+            return Decimal(deger)
         try:
             return Decimal(str(deger).replace(".", "").replace(",", "."))
         except (InvalidOperation, ValueError):
@@ -1934,12 +2024,18 @@ class CariService:
             )
             son = defter[0] if defter else None
             bakiye = Decimal(str(ozet.get("bakiye") or 0))
+            from database import cari_risk_service
+
             risk = acik_hesap_risk_degerlendir(
                 bakiye=bakiye if bakiye > 0 else Decimal("0"),
-                risk_limiti=getattr(cari, "acik_hesap_risk_limiti", None),
+                risk_limiti=cari_risk_service.etkin_limit(cari, cari_risk_service.TUR_ACIK),
                 ek_tutar=0,
                 acik_hesap_yetkisi=True,
             )
+            try:
+                risk_ozeti = cari_risk_service.risk_hesapla(session, cari.id)
+            except Exception:
+                risk_ozeti = None
             session.expunge(cari)
             return {
                 "cari": cari,
@@ -1960,6 +2056,7 @@ class CariService:
                 "kullanilabilir_risk": risk.get("kalan_limit"),
                 "risk_durum": risk.get("durum") or "ok",
                 "risk_mesaj": risk.get("mesaj") or "",
+                "risk_ozeti": risk_ozeti,
                 "son_islem_tarih": (son or {}).get("tarih"),
                 "son_islem_tutar": (
                     Decimal(str((son or {}).get("borc") or 0))

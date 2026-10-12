@@ -1,0 +1,4 @@
+# Cin Muhasebe - Evo devir deneme kurulumu - veri klasoru.
+# Bos olmayan ve # ile baslamayan ilk satir kullanilir; %DEGISKEN% acilir.
+# Gercek veri klasoru (%LOCALAPPDATA%\MuhasebeProgrami\data) ile karismaz.
+%LOCALAPPDATA%\CinMuhasebeEvoDevir\data

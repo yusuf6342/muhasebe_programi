@@ -236,8 +236,14 @@ def main() -> int:
         pass
     ap = argparse.ArgumentParser()
     ap.add_argument("db", nargs="?", default=str(VARSAYILAN_DB))
-    ap.add_argument("--cikti", default=str(VARSAYILAN_CIKTI))
+    ap.add_argument("--cikti", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     a = ap.parse_args()
+    if a.cikti is None:
+        sys.path.insert(0, str(ROOT))
+        from tools.rapor_adi import benzersiz_rapor_yolu
+
+        a.cikti = str(benzersiz_rapor_yolu(VARSAYILAN_CIKTI.parent, VARSAYILAN_CIKTI.stem, a.db,
+                                           VARSAYILAN_CIKTI.suffix))
     satirlar = satirlari_topla(Path(a.db))
     excel_yaz(satirlar, Path(a.cikti))
     say = defaultdict(int)

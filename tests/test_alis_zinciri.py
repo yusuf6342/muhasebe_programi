@@ -395,7 +395,8 @@ class AlisZinciriTest(unittest.TestCase):
             self.assertEqual(dlg.girdiler["fatura_no"].get(), dlg.fatura.fatura_no)
             self.assertIn(dlg.fatura.fatura_no, dlg.title())
             self.assertFalse(dlg._fatura_kirli_mi())
-            self.assertEqual(dlg._cari_ozet_etiketleri["fatura"].cget("text"), "12,00 TL")
+            self.assertIn("Toplam borç", dlg._cari_borc_alacak.degerler)
+            self.assertFalse(hasattr(dlg, "_cari_ozet_etiketleri"))
             with patch("alis_ui.messagebox.showerror") as hata:
                 self.assertTrue(dlg.kaydet(), hata.call_args)
             with get_session() as s:

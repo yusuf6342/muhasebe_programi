@@ -46,6 +46,7 @@ from database.models.genel_muhasebe import (  # noqa: E402
     MuhasebeIslemGecmisi,
 )
 from database.muhasebe_entegrasyon import hesap_uygunluk_sorunu, uygun_alt_hesaplar  # noqa: E402
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
 
 VARSAYILAN_DB = Path(r"C:\Users\cigde\AppData\Local\MuhasebeProgrami\data\muhasebe.db")
 CIKTI_KLASORU = ROOT / "inceleme" / "muhasebelestirme"
@@ -447,7 +448,7 @@ def main() -> None:
     rapor["butunluk_sonra"] = butunluk(hedef)
 
     CIKTI_KLASORU.mkdir(parents=True, exist_ok=True)
-    yol = CIKTI_KLASORU / f"ray_hesap_esleme_tamamla_{'uygulama' if a.uygula else 'kuru'}.json"
+    yol = benzersiz_rapor_yolu(CIKTI_KLASORU, f"ray_hesap_esleme_tamamla_{'uygulama' if a.uygula else 'kuru'}", a.db)
     yol.write_text(json.dumps(rapor, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
 
     plan = rapor["plan"]

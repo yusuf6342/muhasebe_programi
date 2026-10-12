@@ -164,6 +164,12 @@ def _odeme_sozleri_merkezi(app):
     OdemeSozleriMerkezDialog(app)
 
 
+def _fon_yonetimi(app):
+    from fon_ui import fon_yonetimi_goster
+
+    fon_yonetimi_goster(app)
+
+
 def finans_menusu_goster(app):
     app._icerigi_temizle()
     _finans_menu_isaretle(app)
@@ -194,6 +200,7 @@ def finans_menusu_goster(app):
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
         ("ÖDEME SÖZLERİ TAKVİMİ", lambda: _odeme_sozleri_merkezi(app)),
+        ("FON YÖNETİMİ", lambda: _fon_yonetimi(app)),
         ("EXCEL VERİ AKTARIM", lambda: _finans_excel_aktarim(app)),
         ("RAPORLAR", lambda: finans_raporlar_menusu_goster(app) if finans_raporlar_menusu_goster else None),
     )):

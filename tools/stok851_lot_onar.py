@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("MUHASEBE_DB_DIR", tempfile.mkdtemp(prefix="cin_lot_onar_"))
 
+from tools.rapor_adi import benzersiz_rapor_yolu  # noqa: E402
+
 LOCAL = Path(os.environ["LOCALAPPDATA"]) / "MuhasebeProgrami"
 VARSAYILAN_DB = LOCAL / "data" / "muhasebe.db"
 KANIT_YEDEKLERI = (
@@ -176,8 +178,10 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dry-run", action="store_true", default=True)
     g.add_argument("--uygula", action="store_true")
-    ap.add_argument("--sonuc", default=str(SONUC))
+    ap.add_argument("--sonuc", default=None, help="varsayılan: inceleme\\stoklar altında DB adı ve zaman damgalı ad")
     a = ap.parse_args()
+    if a.sonuc is None:
+        a.sonuc = str(benzersiz_rapor_yolu(SONUC.parent, SONUC.stem, a.db, SONUC.suffix))
     db = Path(a.db)
     gercek = db.resolve() == VARSAYILAN_DB.resolve()
     rapor: dict = {"zaman": datetime.now().isoformat(timespec="seconds"), "db": str(db), "gercek_db": gercek,

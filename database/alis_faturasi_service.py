@@ -16,7 +16,7 @@ from database.models.alis_siparisi import AlisSiparisi, AlisSiparisiSatiri
 from database.satis_siparisi_service import decimal
 from database.doviz_service import DovizService
 from database.models.stok import StokKarti
-from database.stok_service import BagliAlisHatasi, StokService
+from database.stok_service import BagliAlisHatasi, StokService, birim_anahtari
 
 FATURA_DURUMLARI = ("AÇIK", "KAPALI", "İPTAL")
 ODEME_SEKILLERI = ("KASA ÖDEME", "GÖNDERİLEN HAVALE", "KREDİ KARTIYLA ÖDEME")
@@ -532,6 +532,16 @@ class AlisFaturasiService:
                 iskonto_orani_2 = decimal(veri.get("iskonto_orani_2", 0), "İskonto 2", Decimal("0"))
                 iskonto_orani_3 = decimal(veri.get("iskonto_orani_3", 0), "İskonto 3", Decimal("0"))
                 irs_id, sip_id = veri.get("irsaliye_satiri_id"), veri.get("siparis_satiri_id")
+                bagli = (session.get(AlisIrsaliyesiSatiri, int(irs_id)) if irs_id
+                         else session.get(AlisSiparisiSatiri, int(sip_id)) if sip_id else None)
+                if bagli is not None:
+                    kaynak_birim = (bagli.birim or "Adet").strip() or "Adet"
+                    if birim_anahtari(veri.get("birim") or "Adet") != birim_anahtari(kaynak_birim):
+                        kaynaktan, belge = ("irsaliyeden", "irsaliye") if irs_id else ("siparişten", "sipariş")
+                        raise ValueError(
+                            f"{veri.get('urun_kodu')}: {kaynaktan} aktarılan satırın birimi "
+                            f"{belge} birimiyle aynı olmalıdır ({kaynak_birim})."
+                        )
                 if irs_id:
                     kaynak = session.get(AlisIrsaliyesiSatiri, int(irs_id))
                     if not kaynak or miktar > kaynak.miktar - kaynak.faturalanan_miktar:

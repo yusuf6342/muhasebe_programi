@@ -1,7 +1,12 @@
 """Satış Kâr Analizi — dönemsel kârlılık, sıfır maliyet, zararına satış, karşılaştırma.
 
 Maliyet kaynakları: satış faturası satırlarında dondurulmuş alanlar
-(FIFO / son alış / ortalama / ağırlıklı ortalama). Tahmini maliyet üretilmez.
+(FIFO / son alış / ortalama / ağırlıklı ortalama); irsaliyeli satışta FIFO irsaliye çıkışından.
+Tahmini maliyet üretilmez; sıfır/eksik maliyet kâra katılmaz.
+
+Gerçekleşen satış: onaylı ve iptal edilmemiş fatura. Fatura geneli indirim/masraf ve yuvarlama
+muhasebe fişiyle aynı matraha (Net − KDV) göre satırlara oransal dağıtılır. Kaynağa bağlı iade
+kaynak satış satırının maliyetiyle ters çevrilir.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
 from database.models.satis_iade_faturasi import SatisIadeFaturasi
 from database.models.stok import StokKarti
 from database.satis_faturasi_service import SatisFaturasiService
+from database.satis_maliyet_motoru import GECMIS_YONTEMLER, MaliyetMotoru, satis_belge_nolari
 from database.turkce_normalize import turkce_normalize
 
 MALIYET_YONTEMLERI = (
@@ -29,17 +35,25 @@ MALIYET_YONTEMLERI = (
     "SON ALIŞ FİYATI",
     "ORTALAMA ALIŞ FİYATI",
     "AĞIRLIKLI ORTALAMA ALIŞ FİYATI",
+    *GECMIS_YONTEMLER,
 )
 
+# Geçmiş hareketten hesaplanan yöntemlerde satır alanı yalnız yedek bilgidir; maliyeti motor verir.
 _MALIYET_ALAN = {
     "FIFO": "fifo_birim_maliyeti",
     "SON ALIŞ FİYATI": "son_alis_birim_maliyeti",
     "ORTALAMA ALIŞ FİYATI": "ortalama_birim_maliyeti",
     "AĞIRLIKLI ORTALAMA ALIŞ FİYATI": "agirlikli_ortalama_birim_maliyeti",
+    **{y: "fifo_birim_maliyeti" for y in GECMIS_YONTEMLER},
 }
 
 SIFIR = Decimal("0")
 YUZ = Decimal("100")
+
+_EK_ALANLAR = frozenset({
+    "satir_id", "sube_id", "kanal", "ana_grup", "tali_grup", "alt_grup", "para_birimi", "kur",
+    "kur_tarihi", "kur_kaynagi", "kaynak_belge_no", "kaynak_bagli",
+})
 
 
 def _d(v) -> Decimal:
@@ -105,6 +119,10 @@ class KarAnalizFiltre:
     iadeleri_dahil: bool = True
     sifir_maliyeti_kar_haric: bool = False
     personel: str | None = None
+    sube_id: int | None = None
+    kanal: str | None = None  # None | "hizli" | "fatura"
+    stok_grup_id: int | None = None  # ana, tali veya alt grup
+    urun_kodu: str | None = None  # birebir ürün kodu (ayrıntı inişi)
 
 
 @dataclass
@@ -134,9 +152,25 @@ class SatirAnaliz:
     maliyet_uzeri_kar: Decimal | None
     maliyet_yontemi: str
     maliyet_kaynagi: str
-    maliyet_kodu: str | None  # None | ZERO_COST | NULL_COST | ...
+    maliyet_kodu: str | None  # None | ZERO_COST | NULL_COST | UNIT_UNDEFINED (birim kartta tanımsız) | ...
     durum: str  # karli | dusuk_marj | basa_bas | zararina | maliyeti_belirsiz | bedelsiz
     personel: str
+    satir_id: int | None = None
+    sube_id: int | None = None
+    kanal: str = ""
+    ana_grup: str = ""
+    tali_grup: str = ""
+    alt_grup: str = ""
+    temel_miktar: Decimal | None = None  # stok temel biriminde (çevrim yoksa None)
+    temel_birim: str = ""
+    belge_duzeltme: Decimal = SIFIR  # fatura geneli indirim(−)/masraf(+)/yuvarlama payı, KDV hariç
+    para_birimi: str = "TRY"
+    kur: Decimal | None = None
+    kur_tarihi: date | None = None
+    kur_kaynagi: str = ""
+    maliyet_durumu: str = ""  # Kesin | Eksik | Kaynaksız iade
+    kaynak_belge_no: str = ""
+    kaynak_bagli: bool | None = None
 
 
 @dataclass
@@ -195,6 +229,10 @@ class SatisKarAnalizService:
                 iadeleri_dahil=filtre.iadeleri_dahil,
                 sifir_maliyeti_kar_haric=filtre.sifir_maliyeti_kar_haric,
                 personel=filtre.personel,
+                sube_id=filtre.sube_id,
+                kanal=filtre.kanal,
+                stok_grup_id=filtre.stok_grup_id,
+                urun_kodu=filtre.urun_kodu,
             )
             kars_satir = SatisKarAnalizService._satirlari_yukle(kars_filtre)
             kars = SatisKarAnalizService._derle(kars_filtre, kars_satir)
@@ -205,7 +243,93 @@ class SatisKarAnalizService:
         return sonuc
 
     @staticmethod
+    def belge_duzeltme_paylari(fatura) -> dict[int, Decimal]:
+        """Fatura geneli indirim/masraf/yuvarlama farkının satırlara KDV hariç oransal payı.
+
+        Hedef matrah muhasebe fişiyle aynıdır: ürün Net'i − KDV (Net satır toplamından farklıysa).
+        Son satır kuruş artığını alır. Fark yoksa boş sözlük. Anahtar: ``id(satir)``.
+        """
+        satirlar = list(getattr(fatura, "satirlar", None) or [])
+        if not satirlar:
+            return {}
+        netler: list[tuple[Any, Decimal]] = []
+        for s in satirlar:
+            _b, _i, n = satir_brut_iskonto_net(
+                abs(_d(s.miktar)), _d(s.birim_fiyat),
+                getattr(s, "iskonto_orani", 0) or 0,
+                getattr(s, "iskonto_orani_2", 0) or 0,
+                getattr(s, "iskonto_orani_3", 0) or 0,
+            )
+            netler.append((s, n))
+        toplam = SatisFaturasiService.toplam(satirlar)
+        satir_genel = _d(toplam["genel_toplam"])
+        urun_net = _d(SatisFaturasiService.urun_net_toplam(fatura))
+        if _q2(urun_net) == _q2(satir_genel):
+            return {}
+        kdv = _d(getattr(fatura, "tl_kdv", None))
+        if kdv <= 0:
+            kdv = _d(toplam["kdv"])
+        hedef = urun_net - kdv
+        satir_matrah = sum((n for _s, n in netler), SIFIR)
+        fark = _q2(hedef - satir_matrah)
+        if fark == 0 or satir_matrah == 0:
+            return {}
+        paylar: dict[int, Decimal] = {}
+        dagitilan = SIFIR
+        for i, (s, n) in enumerate(netler):
+            if i == len(netler) - 1:
+                pay = fark - dagitilan
+            else:
+                pay = _q2(fark * n / satir_matrah)
+                dagitilan += pay
+            paylar[id(s)] = pay
+        return paylar
+
+    @staticmethod
+    def _grup_adlari(session) -> dict[int, str]:
+        try:
+            from database.models.stok import StokGrubu
+
+            return {int(g.id): g.ad or "" for g in session.scalars(select(StokGrubu)).all()}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _stok_meta(stok: StokKarti | None, grup_ad: dict[int, str]) -> dict[str, str]:
+        if stok is None:
+            return {"ana_grup": "", "tali_grup": "", "alt_grup": ""}
+
+        def ad(alan):
+            gid = getattr(stok, alan, None)
+            return grup_ad.get(int(gid), "") if gid else ""
+
+        return {"ana_grup": ad("ana_grup_id"), "tali_grup": ad("tali_grup_id"), "alt_grup": ad("alt_grup_id")}
+
+    @staticmethod
+    def _stok_uygun(stok: StokKarti | None, satir, filtre: KarAnalizFiltre, urun_f, marka_f, grup_f) -> bool:
+        if filtre.urun_kodu and (satir.urun_kodu or "").strip() != filtre.urun_kodu.strip():
+            return False
+        if urun_f and urun_f not in turkce_normalize(satir.urun_kodu or "") and urun_f not in turkce_normalize(
+            satir.urun_adi or ""
+        ):
+            return False
+        if marka_f and marka_f not in turkce_normalize((stok.marka if stok else "") or ""):
+            return False
+        if grup_f and grup_f not in turkce_normalize((stok.rapor_grubu if stok else "") or ""):
+            return False
+        if filtre.stok_grup_id:
+            gid = int(filtre.stok_grup_id)
+            if stok is None or gid not in {
+                getattr(stok, "ana_grup_id", None), getattr(stok, "tali_grup_id", None),
+                getattr(stok, "alt_grup_id", None),
+            }:
+                return False
+        return True
+
+    @staticmethod
     def _satirlari_yukle(filtre: KarAnalizFiltre) -> list[SatirAnaliz]:
+        from database.hizli_satis_service import _hizli_satis_mi
+
         alan = _MALIYET_ALAN[filtre.maliyet_yontemi]
         urun_f = turkce_normalize((filtre.urun or "").strip())
         depo_f = turkce_normalize((filtre.depo or "").strip())
@@ -213,6 +337,7 @@ class SatisKarAnalizService:
         grup_f = turkce_normalize((filtre.rapor_grubu or "").strip())
         mgrup_f = turkce_normalize((filtre.musteri_grubu or "").strip())
         personel_f = turkce_normalize((filtre.personel or "").strip())
+        kanal_f = (filtre.kanal or "").strip().casefold()
 
         out: list[SatirAnaliz] = []
         with get_session() as session:
@@ -220,6 +345,13 @@ class SatisKarAnalizService:
                 s.stok_kodu: s
                 for s in session.scalars(select(StokKarti)).all()
             }
+            grup_ad = SatisKarAnalizService._grup_adlari(session)
+            motor = None
+            if filtre.maliyet_yontemi in GECMIS_YONTEMLER:
+                import calendar
+
+                ay_sonu = filtre.bitis.replace(day=calendar.monthrange(filtre.bitis.year, filtre.bitis.month)[1])
+                motor = MaliyetMotoru(session, bitis=ay_sonu)
 
             fq = (
                 select(SatisFaturasi)
@@ -227,6 +359,7 @@ class SatisKarAnalizService:
                     SatisFaturasi.fatura_tarihi >= filtre.baslangic,
                     SatisFaturasi.fatura_tarihi <= filtre.bitis,
                     SatisFaturasi.durum != "İPTAL",
+                    SatisFaturasi.onaylandi.is_(True),
                     or_(SatisFaturasi.is_deleted.is_(False), SatisFaturasi.is_deleted.is_(None)),
                 )
                 .options(
@@ -236,10 +369,17 @@ class SatisKarAnalizService:
             )
             if filtre.cari_id:
                 fq = fq.where(SatisFaturasi.cari_id == int(filtre.cari_id))
+            if filtre.sube_id:
+                fq = fq.where(SatisFaturasi.sube_id == int(filtre.sube_id))
             faturalar = list(session.scalars(fq).all())
 
             for fatura in faturalar:
                 if depo_f and depo_f not in turkce_normalize(fatura.depo or ""):
+                    continue
+                kanal = "Hızlı Satış" if _hizli_satis_mi(fatura.aciklama) else "Fatura"
+                if kanal_f == "hizli" and kanal != "Hızlı Satış":
+                    continue
+                if kanal_f == "fatura" and kanal != "Fatura":
                     continue
                 personel = (
                     getattr(fatura, "sales_person_full_name", None)
@@ -253,18 +393,32 @@ class SatisKarAnalizService:
                 mgrup = (cari.musteri_grubu if cari else "") or ""
                 if mgrup_f and mgrup_f not in turkce_normalize(mgrup):
                     continue
+                paylar = SatisKarAnalizService.belge_duzeltme_paylari(fatura)
+                kur_bilgi = {
+                    "para_birimi": (fatura.para_birimi or "TRY").upper(),
+                    "kur": _d(fatura.kur) if fatura.kur is not None else None,
+                    "kur_tarihi": fatura.kur_tarihi,
+                    "kur_kaynagi": fatura.kur_kaynagi or "",
+                }
                 for satir in fatura.satirlar:
-                    if urun_f and urun_f not in turkce_normalize(satir.urun_kodu or "") and urun_f not in turkce_normalize((
-                        satir.urun_adi or ""
-                    )):
-                        continue
                     stok = stok_map.get(satir.urun_kodu)
-                    marka = (stok.marka if stok else "") or ""
-                    rgrup = (stok.rapor_grubu if stok else "") or ""
-                    if marka_f and marka_f not in turkce_normalize(marka):
+                    if not SatisKarAnalizService._stok_uygun(stok, satir, filtre, urun_f, marka_f, grup_f):
                         continue
-                    if grup_f and grup_f not in turkce_normalize(rgrup):
-                        continue
+                    if motor is not None:
+                        mb, kaynak = motor.birim_maliyet(
+                            filtre.maliyet_yontemi, stok, fatura.fatura_tarihi,
+                            satis_belge_nolari(session, fatura, satir))
+                    elif alan == "fifo_birim_maliyeti":
+                        mb = SatisFaturasiService.satir_birim_maliyeti(session, satir)
+                        kaynak = (
+                            "irsaliye çıkış maliyeti"
+                            if getattr(satir, "irsaliye_satiri_id", None)
+                            and not (_d(satir.fifo_birim_maliyeti) > 0)
+                            else "satır FIFO maliyeti"
+                        )
+                    else:
+                        mb = getattr(satir, alan, None)
+                        kaynak = f"satır.{alan}"
                     out.append(
                         SatisKarAnalizService._satir_analiz(
                             belge_turu="SATIS",
@@ -280,10 +434,19 @@ class SatisKarAnalizService:
                             dusuk_esik=filtre.dusuk_marj_esigi,
                             personel=personel,
                             isaret=1,
+                            belge_duzeltme=paylar.get(id(satir), SIFIR),
+                            maliyet=(mb, kaynak),
+                            ek={
+                                "satir_id": satir.id,
+                                "sube_id": fatura.sube_id,
+                                "kanal": kanal,
+                                **SatisKarAnalizService._stok_meta(stok, grup_ad),
+                                **kur_bilgi,
+                            },
                         )
                     )
 
-            if filtre.iadeleri_dahil:
+            if filtre.iadeleri_dahil and kanal_f != "hizli":
                 iq = (
                     select(SatisIadeFaturasi)
                     .where(
@@ -299,15 +462,17 @@ class SatisKarAnalizService:
                 )
                 if filtre.cari_id:
                     iq = iq.where(SatisIadeFaturasi.cari_id == int(filtre.cari_id))
+                if filtre.sube_id:
+                    iq = iq.where(SatisIadeFaturasi.sube_id == int(filtre.sube_id))
                 for iade in session.scalars(iq).all():
                     if depo_f and depo_f not in turkce_normalize(iade.depo or ""):
                         continue
-                    kaynak = getattr(iade, "kaynak_fatura", None)
+                    kaynak_fatura = getattr(iade, "kaynak_fatura", None)
                     personel = ""
-                    if kaynak is not None:
+                    if kaynak_fatura is not None:
                         personel = (
-                            getattr(kaynak, "sales_person_full_name", None)
-                            or getattr(kaynak, "created_by_full_name", None)
+                            getattr(kaynak_fatura, "sales_person_full_name", None)
+                            or getattr(kaynak_fatura, "created_by_full_name", None)
                             or ""
                         )
                     if personel_f and personel_f not in turkce_normalize(personel):
@@ -316,19 +481,44 @@ class SatisKarAnalizService:
                     mgrup = (cari.musteri_grubu if cari else "") or ""
                     if mgrup_f and mgrup_f not in turkce_normalize(mgrup):
                         continue
+                    kur_bilgi = {
+                        "para_birimi": (iade.para_birimi or "TRY").upper(),
+                        "kur": _d(iade.kur) if iade.kur is not None else None,
+                        "kur_tarihi": iade.kur_tarihi,
+                        "kur_kaynagi": iade.kur_kaynagi or "",
+                    }
                     for satir in iade.satirlar:
-                        if urun_f and urun_f not in turkce_normalize(satir.urun_kodu or "") and urun_f not in turkce_normalize((
-                            satir.urun_adi or ""
-                        )):
-                            continue
                         stok = stok_map.get(satir.urun_kodu)
-                        marka = (stok.marka if stok else "") or ""
-                        rgrup = (stok.rapor_grubu if stok else "") or ""
-                        if marka_f and marka_f not in turkce_normalize(marka):
+                        if not SatisKarAnalizService._stok_uygun(stok, satir, filtre, urun_f, marka_f, grup_f):
                             continue
-                        if grup_f and grup_f not in turkce_normalize(rgrup):
-                            continue
-                        # İade: satış ve maliyeti ters çevir (negatif miktar/tutar)
+                        kaynak_satir = None
+                        if getattr(satir, "kaynak_fatura_satiri_id", None):
+                            kaynak_satir = session.get(SatisFaturasiSatiri, int(satir.kaynak_fatura_satiri_id))
+                        kaynak_no = kaynak_fatura.fatura_no if kaynak_fatura is not None else ""
+                        if kaynak_satir is not None:
+                            kf = session.get(SatisFaturasi, int(kaynak_satir.fatura_id))
+                            if motor is not None:
+                                mb, ham = motor.birim_maliyet(
+                                    filtre.maliyet_yontemi, stok,
+                                    kf.fatura_tarihi if kf is not None else iade.iade_tarihi,
+                                    satis_belge_nolari(session, kf, kaynak_satir))
+                                kaynak = (f"kaynak satış satırı maliyeti (ters çevrildi): {ham}"
+                                          if mb is not None else ham)
+                            else:
+                                if alan == "fifo_birim_maliyeti":
+                                    mb = SatisFaturasiService.satir_birim_maliyeti(session, kaynak_satir)
+                                else:
+                                    mb = getattr(kaynak_satir, alan, None)
+                                kaynak = "kaynak satış satırı maliyeti (ters çevrildi)"
+                            if not kaynak_no:
+                                kaynak_no = kf.fatura_no if kf is not None else ""
+                        elif motor is not None:
+                            mb, ham = motor.birim_maliyet(filtre.maliyet_yontemi, stok, iade.iade_tarihi,
+                                                          (iade.iade_no,), giris=True)
+                            kaynak = f"kaynaksız iade — iade tarihindeki {ham}" if mb is not None else ham
+                        else:
+                            mb = getattr(satir, "fifo_birim_maliyeti", None)
+                            kaynak = "kaynaksız iade — iade anı FIFO maliyeti"
                         out.append(
                             SatisKarAnalizService._satir_analiz(
                                 belge_turu="IADE",
@@ -344,6 +534,16 @@ class SatisKarAnalizService:
                                 dusuk_esik=filtre.dusuk_marj_esigi,
                                 personel=personel,
                                 isaret=-1,
+                                maliyet=(mb, kaynak),
+                                ek={
+                                    "satir_id": satir.id,
+                                    "sube_id": iade.sube_id,
+                                    "kanal": "İade",
+                                    "kaynak_belge_no": kaynak_no or "",
+                                    "kaynak_bagli": kaynak_satir is not None,
+                                    **SatisKarAnalizService._stok_meta(stok, grup_ad),
+                                    **kur_bilgi,
+                                },
                             )
                         )
         return out
@@ -364,18 +564,27 @@ class SatisKarAnalizService:
         dusuk_esik: Decimal,
         personel: str,
         isaret: int,
+        belge_duzeltme: Decimal = SIFIR,
+        maliyet: tuple[Any, str] | None = None,
+        ek: dict[str, Any] | None = None,
     ) -> SatirAnaliz:
+        ek = dict(ek or {})
         miktar = _d(satir.miktar) * isaret
         fiyat = _d(satir.birim_fiyat)
         i1 = getattr(satir, "iskonto_orani", 0) or 0
         i2 = getattr(satir, "iskonto_orani_2", 0) or 0
         i3 = getattr(satir, "iskonto_orani_3", 0) or 0
         brut, iskonto, net = satir_brut_iskonto_net(abs(_d(satir.miktar)), fiyat, i1, i2, i3)
+        duzeltme = _q2(_d(belge_duzeltme)) * isaret
         brut *= isaret
         iskonto *= isaret
-        net *= isaret
+        net = net * isaret + duzeltme
 
-        ham_maliyet = getattr(satir, alan, None)
+        if maliyet is None:
+            ham_maliyet, maliyet_kaynagi = getattr(satir, alan, None), f"satır.{alan}"
+        else:
+            ham_maliyet, maliyet_kaynagi = maliyet
+        hizmet = "hizmet" in str(getattr(stok, "kart_turu", "") or "").casefold()
         maliyet_kodu = None
         birim_maliyet: Decimal | None
         if ham_maliyet is None:
@@ -386,8 +595,26 @@ class SatisKarAnalizService:
             if birim_maliyet < 0:
                 maliyet_kodu = "INVALID_COST"
                 birim_maliyet = None
-            elif birim_maliyet == 0:
+            elif birim_maliyet == 0 and not hizmet:
+                # Sıfır maliyet tam kâr gösterir; eksik maliyet olarak işaretlenir, kâra katılmaz.
                 maliyet_kodu = "ZERO_COST"
+                birim_maliyet = None
+
+        temel_birim = (getattr(stok, "birim", None) or "Adet") if stok is not None else ""
+        carpan = getattr(satir, "birim_carpani", None)
+        if carpan in (None, "") or _d(carpan) <= 0:
+            if stok is not None:
+                from database.stok_service import StokService
+
+                carpan = StokService.birim_carpani_bul(
+                    stok, getattr(satir, "birim", None), getattr(stok, "birim", None) or "Adet"
+                )
+            else:
+                carpan = Decimal("1")
+        if carpan is None and birim_maliyet is not None:
+            maliyet_kodu = "UNIT_UNDEFINED"
+            birim_maliyet = None
+        temel_miktar = (miktar * _d(carpan)) if carpan is not None and stok is not None else None
 
         if birim_maliyet is None:
             toplam_maliyet = None
@@ -396,18 +623,6 @@ class SatisKarAnalizService:
             maliyet_uzeri = None
             durum = "maliyeti_belirsiz"
         else:
-            # Birim maliyet temel birim başına; belge birimi katsayısıyla temel miktara çevrilir
-            carpan = getattr(satir, "birim_carpani", None)
-            if carpan in (None, "") or _d(carpan) <= 0:
-                from database.stok_service import StokService
-
-                carpan = (
-                    StokService.birim_carpani(
-                        stok, getattr(satir, "birim", None), getattr(stok, "birim", None) or "Adet"
-                    )
-                    if stok is not None
-                    else Decimal("1")
-                )
             toplam_maliyet = _q2(abs(_d(satir.miktar)) * _d(carpan) * birim_maliyet * isaret)
             brut_kar = _q2(net - toplam_maliyet)
             kar_marji = _oran(brut_kar, net) if net != 0 else None
@@ -422,6 +637,13 @@ class SatisKarAnalizService:
                 durum = "dusuk_marj"
             else:
                 durum = "karli"
+
+        if birim_maliyet is None:
+            maliyet_durumu = "Eksik"
+        elif ek.get("kaynak_bagli") is False:
+            maliyet_durumu = "Kaynaksız iade"
+        else:
+            maliyet_durumu = "Kesin"
 
         return SatirAnaliz(
             belge_turu=belge_turu,
@@ -448,10 +670,15 @@ class SatisKarAnalizService:
             kar_marji=kar_marji,
             maliyet_uzeri_kar=maliyet_uzeri,
             maliyet_yontemi=yontem,
-            maliyet_kaynagi=f"satır.{alan}",
+            maliyet_kaynagi=maliyet_kaynagi,
             maliyet_kodu=maliyet_kodu,
             durum=durum,
             personel=personel,
+            temel_miktar=temel_miktar,
+            temel_birim=temel_birim,
+            belge_duzeltme=duzeltme,
+            maliyet_durumu=maliyet_durumu,
+            **{k: v for k, v in ek.items() if k in _EK_ALANLAR},
         )
 
     @staticmethod
@@ -472,6 +699,7 @@ class SatisKarAnalizService:
                 "NULL_COST",
                 "INVALID_COST",
                 "ZERO_COST",
+                "UNIT_UNDEFINED",
             }:
                 continue
             if filtre.min_marj is not None and (s.kar_marji is None or s.kar_marji < filtre.min_marj):
@@ -491,6 +719,7 @@ class SatisKarAnalizService:
         iade_tutar = SIFIR
         guvenilir_kar = SIFIR
         guvenilir_net = SIFIR
+        maliyetli_net = SIFIR
         zarar_toplam = SIFIR
         zarar_adet = 0
         sifir_adet = 0
@@ -512,6 +741,7 @@ class SatisKarAnalizService:
                 else:
                     maliyet += s.toplam_maliyet
                     kar += s.brut_kar
+                    maliyetli_net += s.net_satis
                     if not s.maliyet_kodu:
                         guvenilir_kar += s.brut_kar
                         guvenilir_net += s.net_satis
@@ -536,7 +766,10 @@ class SatisKarAnalizService:
             "net_satis": _q2(net),
             "maliyet": _q2(maliyet),
             "brut_kar": _q2(kar),
-            "kar_marji": _oran(kar, net),
+            # Marj yalnız maliyeti bilinen satışlar üzerinden; eksik maliyetli satış kâra katılmaz.
+            "kar_marji": _oran(kar, maliyetli_net),
+            "maliyetli_net": _q2(maliyetli_net),
+            "kar_eksik": maliyetli_net != net,
             "maliyet_uzeri_kar": _oran(kar, maliyet),
             "net_miktar": miktar,
             "belge_sayisi": len({(s.belge_turu, s.belge_id) for s in filtrelenmis}),
@@ -571,7 +804,9 @@ class SatisKarAnalizService:
                     "urun_adi": s.urun_adi,
                     "marka": s.marka,
                     "rapor_grubu": s.rapor_grubu,
-                    "birim": s.birim,
+                    "birim": s.temel_birim or s.birim,
+                    "birim_cevrimsiz": False,
+                    "maliyetli_net": SIFIR,
                     "miktar": SIFIR,
                     "iade_miktar": SIFIR,
                     "brut": SIFIR,
@@ -586,9 +821,14 @@ class SatisKarAnalizService:
                     "eksik": 0,
                 },
             )
-            u["miktar"] += s.miktar if s.belge_turu == "SATIS" else SIFIR
+            if s.temel_miktar is not None:
+                mik_s = s.temel_miktar
+            else:
+                mik_s = s.miktar
+                u["birim_cevrimsiz"] = True
+            u["miktar"] += mik_s if s.belge_turu == "SATIS" else SIFIR
             if s.belge_turu == "IADE":
-                u["iade_miktar"] += abs(s.miktar)
+                u["iade_miktar"] += abs(mik_s)
                 u["iade_tutar"] += abs(s.net_satis)
             u["brut"] += s.brut_satis
             u["iskonto"] += s.iskonto
@@ -596,6 +836,7 @@ class SatisKarAnalizService:
             if s.toplam_maliyet is not None and s.brut_kar is not None:
                 u["maliyet"] += s.toplam_maliyet
                 u["kar"] += s.brut_kar
+                u["maliyetli_net"] += s.net_satis
             else:
                 u["eksik"] += 1
             u["belge"].add((s.belge_turu, s.belge_id))
@@ -616,12 +857,14 @@ class SatisKarAnalizService:
                     "kar": SIFIR,
                     "belge": set(),
                     "iade": SIFIR,
+                    "maliyetli_net": SIFIR,
                 },
             )
             m["net"] += s.net_satis
             if s.toplam_maliyet is not None and s.brut_kar is not None:
                 m["maliyet"] += s.toplam_maliyet
                 m["kar"] += s.brut_kar
+                m["maliyetli_net"] += s.net_satis
             m["belge"].add((s.belge_turu, s.belge_id))
             if s.belge_turu == "IADE":
                 m["iade"] += abs(s.net_satis)
@@ -639,6 +882,7 @@ class SatisKarAnalizService:
                     "net": SIFIR,
                     "maliyet": SIFIR,
                     "kar": SIFIR,
+                    "maliyetli_net": SIFIR,
                     "personel": s.personel,
                 },
             )
@@ -646,6 +890,7 @@ class SatisKarAnalizService:
             if s.toplam_maliyet is not None and s.brut_kar is not None:
                 b["maliyet"] += s.toplam_maliyet
                 b["kar"] += s.brut_kar
+                b["maliyetli_net"] += s.net_satis
 
             g = gunluk[s.tarih]
             g["net"] += s.net_satis
@@ -661,7 +906,7 @@ class SatisKarAnalizService:
                 {
                     **{k: v for k, v in u.items() if k not in {"belge", "musteri"}},
                     "net_miktar": mik,
-                    "kar_marji": _oran(u["kar"], net_u),
+                    "kar_marji": _oran(u["kar"], u["maliyetli_net"]),
                     "maliyet_uzeri_kar": _oran(u["kar"], u["maliyet"]),
                     "ort_fiyat": (net_u / mik) if mik else None,
                     "ort_maliyet": (u["maliyet"] / mik) if mik else None,
@@ -678,7 +923,7 @@ class SatisKarAnalizService:
             musteri_list.append(
                 {
                     **{k: v for k, v in m.items() if k != "belge"},
-                    "kar_marji": _oran(m["kar"], m["net"]),
+                    "kar_marji": _oran(m["kar"], m["maliyetli_net"]),
                     "belge_sayisi": len(m["belge"]),
                     "ort_sepet": (m["net"] / len(m["belge"])) if m["belge"] else SIFIR,
                 }
@@ -688,7 +933,7 @@ class SatisKarAnalizService:
 
         belge_list = list(belge.values())
         for b in belge_list:
-            b["kar_marji"] = _oran(b["kar"], b["net"])
+            b["kar_marji"] = _oran(b["kar"], b["maliyetli_net"])
         belge_list.sort(key=lambda x: x["tarih"], reverse=True)
         sonuc.belgeler = belge_list
 
@@ -707,7 +952,8 @@ class SatisKarAnalizService:
         if o.get("sifir_satir"):
             bulgular.append(
                 f"{o['sifir_satir']} satırda / {o['sifir_urun']} üründe maliyet bulunamadığı için "
-                f"{o['sifir_satis']} TL satışın kârı güvenilir değil."
+                f"{o['sifir_satis']} TL satışın kârı hesaplanamadı (kâr eksik). Marj yalnız maliyeti bilinen "
+                f"{o.get('maliyetli_net')} TL satış üzerinden hesaplanır."
             )
         if o.get("zarar_adet"):
             bulgular.append(

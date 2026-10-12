@@ -96,13 +96,28 @@ def font(size: int, weight: str = "normal", root: tk.Misc | None = None) -> tupl
     return (aile, size)
 
 
+_STIL_ISARET = "::fatura_tema_uygulanan"
+
+
 def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> ttk.Style:
+    """Fatura stillerini kaydeder; aynı temada ikinci kez uygulamaz.
+
+    Her ``theme_use`` / ``style configure`` açık tüm ttk pencerelerini yeniden yerleştirir;
+    büyük fatura ekranı açıkken (ör. tahsilat makbuzu açılırken) bu saniyeler sürer.
+    """
     stil = stil or ttk.Style(root)
+    hedef = None
     try:
-        if "clam" in stil.theme_names():
-            stil.theme_use("clam")
-        elif "vista" in stil.theme_names():
-            stil.theme_use("vista")
+        adlar = stil.theme_names()
+        hedef = "clam" if "clam" in adlar else ("vista" if "vista" in adlar else None)
+        mevcut = stil.theme_use()
+        if hedef and mevcut == hedef:
+            if str(stil.tk.call("info", "exists", _STIL_ISARET)) == "1" and stil.tk.globalgetvar(
+                _STIL_ISARET
+            ) == hedef:
+                return stil
+        elif hedef:
+            stil.theme_use(hedef)
     except tk.TclError:
         pass
 
@@ -226,6 +241,11 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         background=[("active", BASARI_HOVER), ("!disabled", BASARI)],
         foreground=[("!disabled", BEYAZ)],
     )
+    if hedef:
+        try:
+            stil.tk.globalsetvar(_STIL_ISARET, hedef)
+        except tk.TclError:
+            pass
     return stil
 
 

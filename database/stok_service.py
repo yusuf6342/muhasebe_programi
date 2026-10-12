@@ -18,6 +18,7 @@ from database.models.stok import (
     DepoTransferFisiSatiri,
     StokBarkod,
     StokBirim,
+    StokBirimKisaKod,
     StokFiyati,
     StokFiyatGecmisi,
     StokHareketi,
@@ -273,6 +274,14 @@ class BirimDonusumHatasi(ValueError):
         self.urun_kodlari = list(dict.fromkeys(urun_kodlari or []))
 
 
+class BirimZatenVar(ValueError):
+    """Eklenmek istenen birim, harf/boşluk farkıyla zaten tanımlı."""
+
+    def __init__(self, mevcut_ad: str):
+        super().__init__(f"«{mevcut_ad}» birimi zaten tanımlı; yeni kayıt açılmadı.")
+        self.mevcut_ad = mevcut_ad
+
+
 class BagliAlisHatasi(ValueError):
     """Alış lotundan çıkış yapılmış; düzenleme/iptal stok ve maliyet bütünlüğünü bozar."""
 
@@ -369,8 +378,8 @@ class StokService:
         return StokService.birim_carpani(stok, getattr(satir, "birim", None), stok.birim or "Adet")
 
     @staticmethod
-    def birim_carpani(stok_veya_birimler, birim_adi, ana_birim="Adet") -> Decimal:
-        """1 kaynak birim = kaç temel birim. Bilinmeyen birim → 1."""
+    def birim_carpani_bul(stok_veya_birimler, birim_adi, ana_birim="Adet") -> Decimal | None:
+        """1 kaynak birim = kaç temel birim; kartta tanımsız / pasif / katsayısız birimde None."""
         hedef = birim_anahtari(birim_adi)
         if hasattr(stok_veya_birimler, "birim"):
             ana = (getattr(stok_veya_birimler, "birim", None) or ana_birim or "Adet").strip()
@@ -381,27 +390,44 @@ class StokService:
         if not hedef or hedef == birim_anahtari(ana):
             return Decimal("1")
         for b in birimler:
-            if isinstance(b, dict):
-                ad = birim_anahtari(b.get("birim_adi"))
-                if ad == hedef:
-                    c = Decimal(str(b.get("carpan") or 1))
-                    return c if c > 0 else Decimal("1")
-            else:
-                ad = birim_anahtari(getattr(b, "birim_adi", None))
-                if ad == hedef:
-                    if getattr(b, "aktif", True) is False:
-                        continue
-                    c = Decimal(str(getattr(b, "carpan", 1) or 1))
-                    return c if c > 0 else Decimal("1")
-        return Decimal("1")
+            al = b.get if isinstance(b, dict) else (lambda k, d=None, _b=b: getattr(_b, k, d))
+            if birim_anahtari(al("birim_adi")) != hedef or al("aktif", True) is False:
+                continue
+            c = Decimal(str(al("carpan") or 0))
+            if c > 0:
+                return c
+        return None
+
+    @staticmethod
+    def birim_carpani(stok_veya_birimler, birim_adi, ana_birim="Adet") -> Decimal:
+        """1 kaynak birim = kaç temel birim. Bilinmeyen birim → 1.
+
+        Yalnız geçmiş kayıtların okunması içindir (o kayıtlar bu kuralla işlendi). Yeni işlemde
+        ``birim_carpani_kesin`` / ``temel_miktara_cevir`` kullanılır; tanımsız birim sessizce 1 sayılmaz.
+        """
+        c = StokService.birim_carpani_bul(stok_veya_birimler, birim_adi, ana_birim)
+        return c if c is not None else Decimal("1")
+
+    @staticmethod
+    def _birim_carpani_zorunlu(stok_veya_birimler, birim_adi, ana_birim="Adet") -> Decimal:
+        c = StokService.birim_carpani_bul(stok_veya_birimler, birim_adi, ana_birim)
+        if c is not None:
+            return c
+        kod = getattr(stok_veya_birimler, "stok_kodu", "") or ""
+        ana = (getattr(stok_veya_birimler, "birim", None) or ana_birim or "Adet").strip() or "Adet"
+        raise BirimDonusumHatasi(
+            (f"{kod}: " if kod else "")
+            + f"«{(birim_adi or '').strip()}» birimi için dönüşüm tanımlı değil (temel birim: {ana}); "
+            f"katsayı 1 kabul edilmez. {BIRIM_TANIMLAMA_YOLU} ekranında katsayı tanımlayın.",
+            [kod] if kod else [],
+        )
 
     @staticmethod
     def temel_miktara_cevir(miktar, birim_adi, stok_veya_birimler, ana_birim="Adet") -> Decimal:
-        """Evrak miktarını temel stok birimine çevirir (Decimal)."""
+        """Evrak miktarını temel stok birimine çevirir; tanımsız birimde ``BirimDonusumHatasi``."""
         m = Decimal(str(miktar or 0))
-        return (m * StokService.birim_carpani(stok_veya_birimler, birim_adi, ana_birim)).quantize(
-            Decimal("0.000001")
-        )
+        c = StokService._birim_carpani_zorunlu(stok_veya_birimler, birim_adi, ana_birim)
+        return (m * c).quantize(Decimal("0.000001"))
 
     @staticmethod
     def birim_fiyati_getir(
@@ -430,6 +456,8 @@ class StokService:
                 hedef_kayit = b
                 break
 
+        if hedef_kayit is None and birim_adi and birim_anahtari(birim_adi) != birim_anahtari(ana):
+            return None
         if birim_anahtari(birim_adi) == birim_anahtari(ana) or hedef_kayit is None:
             if alis:
                 v = ana_map.get("ALIŞ FİYATI")
@@ -474,9 +502,9 @@ class StokService:
 
     @staticmethod
     def birim_donusum_onizleme(miktar, kaynak_birim, hedef_birim, stok_veya_birimler, ana_birim="Adet"):
-        """Kaynak→hedef ve kaynak→temel önizleme."""
-        kaynak_c = StokService.birim_carpani(stok_veya_birimler, kaynak_birim, ana_birim)
-        hedef_c = StokService.birim_carpani(stok_veya_birimler, hedef_birim, ana_birim)
+        """Kaynak→hedef ve kaynak→temel önizleme; tanımsız birimde ``BirimDonusumHatasi``."""
+        kaynak_c = StokService._birim_carpani_zorunlu(stok_veya_birimler, kaynak_birim, ana_birim)
+        hedef_c = StokService._birim_carpani_zorunlu(stok_veya_birimler, hedef_birim, ana_birim)
         m = Decimal(str(miktar or 0))
         temel = m * kaynak_c
         hedef_miktar = (temel / hedef_c) if hedef_c > 0 else Decimal("0")
@@ -507,13 +535,15 @@ class StokService:
             baslangic = {
                 "rapor_grubu": ("GENEL", "HAMMADDE", "MAMUL", "SARF"),
                 "renk": ("BEYAZ", "SİYAH", "GRİ", "MAVİ", "KIRMIZI", "YEŞİL"),
+                "birim": ("Adet",),
             }
             for tur, degerler in baslangic.items():
+                mevcut = {
+                    birim_anahtari(a)
+                    for a in session.scalars(select(StokSecenek.ad).where(StokSecenek.tur == tur))
+                }
                 for ad in degerler:
-                    mevcut = session.scalar(
-                        select(StokSecenek).where(StokSecenek.tur == tur, StokSecenek.ad == ad)
-                    )
-                    if not mevcut:
+                    if birim_anahtari(ad) not in mevcut:
                         session.add(StokSecenek(tur=tur, ad=ad))
 
     @staticmethod
@@ -790,6 +820,52 @@ class StokService:
             return ad
 
     @staticmethod
+    def birim_listesi(sabitler=()) -> list[str]:
+        """Genel birim listesi: Adet başta, sabitler + kayıtlı birimler; harf/boşluk farkı tekrarı yok."""
+        sonuc, gorulen = [], set()
+        for ad in ("Adet", *sabitler, *StokService.secenekleri_listele("birim")):
+            temiz = " ".join(str(ad or "").split())
+            if temiz and birim_anahtari(temiz) not in gorulen:
+                gorulen.add(birim_anahtari(temiz))
+                sonuc.append(temiz)
+        return sonuc
+
+    @staticmethod
+    def birim_kisa_kodlari() -> dict[str, str]:
+        """birim_anahtari(ad) → kısa kod (tablo henüz yoksa boş)."""
+        with get_session() as session:
+            StokBirimKisaKod.__table__.create(bind=session.connection(), checkfirst=True)
+            return {birim_anahtari(k.birim_adi): k.kisa_kod for k in session.scalars(select(StokBirimKisaKod))}
+
+    @staticmethod
+    def birim_tanimi_ekle(ad, kisa_kod=None, sabitler=()) -> str:
+        """Genel listeye yeni birim ekler; aynı ad (harf/boşluk farkı dahil) veya kısa kod varsa ValueError.
+
+        Dönüşüm katsayısı burada tanımlanmaz; stok kartında kullanıcıdan alınır.
+        """
+        ad = " ".join(str(ad or "").split())
+        kisa = " ".join(str(kisa_kod or "").split())
+        if not ad:
+            raise ValueError("Birim adı boş olamaz.")
+        if len(ad) > 30:
+            raise ValueError("Birim adı en fazla 30 karakter olabilir.")
+        if len(kisa) > 10:
+            raise ValueError("Kısa kod en fazla 10 karakter olabilir.")
+        anahtar = birim_anahtari(ad)
+        for mevcut in StokService.birim_listesi(sabitler):
+            if birim_anahtari(mevcut) == anahtar:
+                raise BirimZatenVar(mevcut)
+        with get_session() as session:
+            StokBirimKisaKod.__table__.create(bind=session.connection(), checkfirst=True)
+            if kisa:
+                for k in session.scalars(select(StokBirimKisaKod)):
+                    if birim_anahtari(k.kisa_kod) == birim_anahtari(kisa):
+                        raise ValueError(f"«{kisa}» kısa kodu «{k.birim_adi}» biriminde kullanılıyor.")
+                session.add(StokBirimKisaKod(birim_adi=ad, kisa_kod=kisa))
+            session.add(StokSecenek(tur="birim", ad=ad))
+        return ad
+
+    @staticmethod
     def raf_omru_secenekleri():
         """Kayıtlı raf ömrü tarihlerini gg.aa.yyyy listesi olarak döndürür."""
         with get_session() as session:
@@ -1011,6 +1087,40 @@ class StokService:
             }
 
     @staticmethod
+    def kart_birimi_ekle(stok_kodu: str, birim_adi: str, carpan) -> Decimal:
+        """Evrak satırında seçilen, kartta tanımsız birimi kullanıcının verdiği katsayıyla karta ekler.
+
+        Kartta pasif / katsayısız aynı birim varsa yeni satır açılmaz; o kayıt bu katsayıyla etkinleşir.
+        """
+        ad = (birim_adi or "").strip()
+        if not ad:
+            raise ValueError("Birim adı boş olamaz.")
+        c = decimal(carpan, f"{ad} katsayısı", Decimal("0.000001"))
+        if c <= 0:
+            raise ValueError(f"«{ad}» dönüşüm katsayısı sıfırdan büyük olmalıdır.")
+        with get_session() as session:
+            stok = session.scalar(
+                select(StokKarti)
+                .where(StokKarti.stok_kodu == (stok_kodu or "").strip())
+                .options(selectinload(StokKarti.birimler))
+            )
+            if stok is None:
+                raise ValueError("Stok kartı bulunamadı.")
+            ana = (stok.birim or "Adet").strip() or "Adet"
+            if birim_anahtari(ad) == birim_anahtari(ana):
+                return Decimal("1")
+            stok_id = int(stok.id)
+            liste = StokService.birimleri_dict_listesi(stok)
+        metin = f"{c.normalize():f}"
+        mevcut = next((b for b in liste if birim_anahtari(b.get("birim_adi")) == birim_anahtari(ad)), None)
+        if mevcut is not None:
+            mevcut.update(carpan=metin, referans_birim=ana, referans_carpan=metin, aktif=True)
+        else:
+            liste.append({"birim_adi": ad, "carpan": metin, "referans_birim": ana, "aktif": True})
+        StokService.stok_birimleri_kaydet(stok_id, liste)
+        return c
+
+    @staticmethod
     def ean13_olustur(onek=EAN13_ONEK, stok_id=None, haric_barkodlar=None) -> str:
         """
         Benzersiz 13 haneli EAN-13 üretir.
@@ -1103,6 +1213,7 @@ class StokService:
           stok_id, stok_kodu, stok_adi, barkod, birim, carpan, birim_fiyat,
           miktar (okutunca eklenecek miktar; paket/koli çarpanı), mevcut_stok,
           kdv_orani (stok kartındaki seçimli KDV)
+        Barkod birimi kartta tanımsızsa carpan/miktar None, birim_hatasi nedeni taşır (1 sayılmaz).
         """
         kod = (barkod or "").strip()
         if not kod:
@@ -1117,8 +1228,8 @@ class StokService:
                 return False
             return True
 
-        def _birim_carpani(stok, birim_adi) -> Decimal:
-            return StokService.birim_carpani(stok, birim_adi)
+        def _birim_carpani(stok, birim_adi) -> Decimal | None:
+            return StokService.birim_carpani_bul(stok, birim_adi)
 
         def _barkod_fiyati(stok, barkod_kayit) -> Decimal:
             barkod_birim = (
@@ -1157,11 +1268,19 @@ class StokService:
                         break
             carpan = _birim_carpani(stok, barkod_birim)
             paket_fiyat = _barkod_fiyati(stok, barkod_kayit)
+            birim_hatasi = None
+            if carpan is None:
+                try:
+                    StokService._birim_carpani_zorunlu(stok, barkod_birim)
+                except BirimDonusumHatasi as hata:
+                    birim_hatasi = str(hata)
             # Birime özel fiyat zaten paket/koli tutarıdır — ana birime bölme
             birim_ozel = StokService.birim_fiyati_getir(
                 stok, barkod_birim, fiyat_adi="SATIŞ FİYATI 1"
             )
-            if birim_ozel is not None and birim_ozel > 0 and carpan != Decimal("1"):
+            if carpan is None:
+                birim_fiyat = paket_fiyat
+            elif birim_ozel is not None and birim_ozel > 0 and carpan != Decimal("1"):
                 # Hızlı satışta miktar = carpan (temel), birim_fiyat = temel başına
                 birim_fiyat = (birim_ozel / carpan).quantize(Decimal("0.0001"))
             elif carpan != Decimal("1") and paket_fiyat > 0:
@@ -1182,7 +1301,8 @@ class StokService:
                 "birim": (stok.birim or "Adet").strip() or "Adet",
                 "barkod_birim": barkod_birim,
                 "carpan": carpan,
-                "miktar": carpan if carpan > 0 else Decimal("1"),
+                "miktar": carpan,
+                "birim_hatasi": birim_hatasi,
                 "birim_fiyat": birim_fiyat,
                 "paket_fiyat": paket_fiyat,
                 "mevcut_stok": mevcut,
@@ -2761,7 +2881,8 @@ class StokService:
         return None
 
     @staticmethod
-    def stok_kaydi(veriler, fiyatlar, birimler=None, barkodlar=None, resimler=None):
+    def stok_kaydi(veriler, fiyatlar, birimler=None, barkodlar=None, resimler=None, kdv_durumlari=None):
+        """kdv_durumlari: {fiyat_adi: "HARIC"|"DAHIL"|None}; verilmeyen fiyatın mevcut KDV anlamı korunur."""
         yazma_zorunlu("stok_duzenleme", "yeni_kayit")
         with get_session() as session:
             stok_id = veriler.get("stok_id")
@@ -2774,6 +2895,11 @@ class StokService:
                 stok = session.scalar(
                     select(StokKarti).where(StokKarti.stok_kodu == yeni_kod)
                 )
+                if stok and veriler.get("yalniz_yeni"):
+                    raise ValueError(
+                        f"'{yeni_kod}' stok kodu «{stok.stok_adi}» kartında kullanılıyor; "
+                        "yeni kart mevcut kaydın üzerine yazılmaz. Farklı bir stok kodu girin."
+                    )
                 if stok:
                     stok = StokService._stok_yukle(session, stok_id=stok.id)
 
@@ -2907,6 +3033,12 @@ class StokService:
                     normal_fiyatlar.append(("FABRİKA FİYATI", str(fabrika)))
 
             eski_fiyatlar = {f.fiyat_adi: f.tutar for f in list(stok.fiyatlar)}
+            eski_kdv = {f.fiyat_adi: getattr(f, "kdv_durumu", None) for f in list(stok.fiyatlar)}
+            for ad, durum in (kdv_durumlari or {}).items():
+                durum = (str(durum).strip().upper() if durum else "") or None
+                if durum not in (None, "HARIC", "DAHIL"):
+                    raise ValueError(f"{ad}: KDV durumu HARIC, DAHIL veya boş olmalıdır.")
+                eski_kdv[ad] = durum
             # SQLite unique: önce sil + flush, sonra ekle (INSERT-before-DELETE hatasını önler)
             stok.fiyatlar.clear()
             session.flush()
@@ -2915,7 +3047,9 @@ class StokService:
                 if ad in yazilan:
                     continue
                 yeni = decimal(tutar, ad, Decimal("0"))
-                stok.fiyatlar.append(StokFiyati(fiyat_adi=ad, tutar=yeni, para_birimi="TL"))
+                stok.fiyatlar.append(
+                    StokFiyati(fiyat_adi=ad, tutar=yeni, para_birimi="TL", kdv_durumu=eski_kdv.get(ad))
+                )
                 yazilan.add(ad)
                 eski = eski_fiyatlar.get(ad)
                 if eski is None or Decimal(eski) != yeni:
@@ -3181,12 +3315,16 @@ class StokService:
         yeni = decimal(net_fiyat, "Alış fiyatı", Decimal("0")).quantize(Decimal("0.0001"))
         mevcut = next((f for f in stok.fiyatlar if f.fiyat_adi == "ALIŞ FİYATI"), None)
         eski = mevcut.tutar if mevcut is not None else None
+        # Kaynak alış faturası satır neti (iskonto sonrası, KDV hariç)
         if mevcut is None:
-            stok.fiyatlar.append(StokFiyati(fiyat_adi="ALIŞ FİYATI", tutar=yeni, para_birimi="TL"))
+            stok.fiyatlar.append(
+                StokFiyati(fiyat_adi="ALIŞ FİYATI", tutar=yeni, para_birimi="TL", kdv_durumu="HARIC")
+            )
         else:
             if Decimal(mevcut.tutar) == yeni:
                 return yeni
             mevcut.tutar = yeni
+            mevcut.kdv_durumu = "HARIC"
         session.add(
             StokFiyatGecmisi(
                 stok_id=stok.id,
@@ -5039,17 +5177,23 @@ class StokService:
                 if not stok:
                     continue
                 mevcut = {f.fiyat_adi: f for f in list(stok.fiyatlar)}
+                # Baz fiyatın yüzdesi: KDV anlamı bazla aynıdır (baz belirtilmemişse belirtilmemiş)
+                baz_f = mevcut.get(kayit.get("baz_adi") or baz_fiyat_adi)
+                baz_kdv = getattr(baz_f, "kdv_durumu", None) if baz_f is not None else None
                 for d in kayit["degisimler"]:
                     ad = d["fiyat_adi"]
                     yeni = d["yeni"]
                     eski_f = mevcut.get(ad)
                     eski = eski_f.tutar if eski_f else None
                     if eski_f is None:
-                        stok.fiyatlar.append(StokFiyati(fiyat_adi=ad, tutar=yeni, para_birimi="TL"))
+                        stok.fiyatlar.append(
+                            StokFiyati(fiyat_adi=ad, tutar=yeni, para_birimi="TL", kdv_durumu=baz_kdv)
+                        )
                     else:
                         if Decimal(eski_f.tutar) == yeni:
                             continue
                         eski_f.tutar = yeni
+                        eski_f.kdv_durumu = baz_kdv
                     session.add(
                         StokFiyatGecmisi(
                             stok_id=stok.id,

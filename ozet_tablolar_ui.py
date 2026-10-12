@@ -37,14 +37,14 @@ def ozet_tablolar_menusu_goster(app):
     ttk.Label(app.icerik, text="ÖZET TABLOLAR", style="Baslik.TLabel").pack(anchor="w")
     ttk.Label(
         app.icerik,
-        text="Varlık–kaynak özeti, gelir tablosu ve diğer özet tablolar.",
+        text="Dönen sermaye bilançosu, gelir tablosu ve diğer özet tablolar.",
     ).pack(anchor="w", pady=(8, 0))
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(24, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
     nav = getattr(app, "nav_ac", lambda c: c())
     for i, (baslik, komut) in enumerate((
-        ("BİLANÇO / ÖZET TABLO", lambda: _bilanco_ac(app)),
+        ("DÖNEN SERMAYE BİLANÇOSU", lambda: _bilanco_ac(app)),
         ("GELİR TABLOSU", lambda: _gelir_tablosu_ac(app)),
     )):
         ttk.Button(alt, text=baslik, style="AltMenu.TButton", command=lambda c=komut: nav(c)).grid(

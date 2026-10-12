@@ -1194,6 +1194,52 @@ class CekSenetService:
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
+    def ciro_kapanisi_kesinlestir(
+        evrak_id: int,
+        *,
+        aciklama: str | None = None,
+        kullanici: str | None = None,
+    ) -> dict[str, Any]:
+        """Ciro edilen evrakın üçüncü kişide ödendiği doğrulandı: ciro riski kapanır.
+
+        Yalnız durum ve hareket izi yazılır; cari, kasa/banka veya muhasebe hareketi oluşmaz
+        (ciro anında cari etkileri zaten işlendi).
+        """
+        from database.models.cek_senet import DURUM_KAPANDI
+
+        CekSenetService.schema_hazirla()
+        not_metin = (aciklama or "").strip()
+        if not not_metin:
+            raise ValueError("Ciro kapanışını doğrulayan açıklamayı girin (ör. lehtar ödemeyi teyit etti).")
+        with get_session() as session:
+            evrak = CekSenetService._evrak_yukle(session, evrak_id)
+            if evrak.islem_yonu != ISLEM_YONU_ALINAN or evrak.durum != DURUM_CIRO_EDILDI:
+                raise ValueError(
+                    f"Yalnız ciro edilmiş alınan evrakın kapanışı kesinleştirilebilir "
+                    f"(durum: {_durum_etiket(evrak.durum)})."
+                )
+            onceki = evrak.durum
+            tutar = _d(evrak.kalan_tutar)
+            evrak.durum = DURUM_KAPANDI
+            evrak.bulundugu_yer = "Ciro kapanışı kesinleşti"
+            evrak.son_islem_tarihi = date.today()
+            evrak.updated_at = datetime.now()
+            evrak.updated_by = kullanici
+            evrak.version = int(evrak.version or 1) + 1
+            CekSenetService._hareket_ekle(
+                session,
+                evrak,
+                onceki_durum=onceki,
+                yeni_durum=DURUM_KAPANDI,
+                islem_turu="CIRO_KAPANIS",
+                tutar=tutar,
+                aciklama=not_metin,
+                kullanici=kullanici,
+            )
+            session.flush()
+            return CekSenetService._satir_dict(evrak)
+
+    @staticmethod
     def tahsil_et(
         evrak_id: int,
         *,

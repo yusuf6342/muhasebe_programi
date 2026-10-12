@@ -48,6 +48,10 @@ class SatisFaturasi(Base):
     genel_islem_turu: Mapped[str | None] = mapped_column(String(20), nullable=True)
     genel_islem_orani: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
     genel_islem_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Faturaya ek fon bedeli (TL) ve KDV'si; ürün Net'ine (tl_genel_toplam) eklenmez, ödenecek
+    # toplam = tl_genel_toplam + fon_ek_bedel_tutari + fon_ek_bedel_kdv
+    fon_ek_bedel_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    fon_ek_bedel_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     # Kayıt sonrası yuvarlama (durum makinesi: rounding_applied + onaylandi)
     rounding_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rounding_target_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
@@ -130,6 +134,8 @@ class SatisFaturasiSatiri(Base):
     manuel_fiyat: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Açık dağıtım kilidi — yalnızca bu bayrak Fiyatlara Dağıt dışı bırakır
     dagitima_kapali: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Hızlı Satış Yeni Toplam öncesi birim fiyat; NULL → birim_fiyat referansla aynı (eski kayıtlar)
+    referans_birim_fiyat: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
 
     fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="satirlar")
 

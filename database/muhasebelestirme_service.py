@@ -68,7 +68,7 @@ TOPLU_YETKISI = "muhasebelestirme_toplu"
 # Fiş için her durumda gereken eşleştirmeler (KDV/kasa gibi koşullu olanlar evrak anında denetlenir)
 TEMEL_ANAHTARLAR: dict[str, tuple[str, ...]] = {
     "satis_faturasi": ("musteriler", "yurtici_satislar", "hesaplanan_kdv"),
-    "satis_iade": ("musteriler", "yurtici_satislar", "hesaplanan_kdv"),
+    "satis_iade": ("musteriler", "satistan_iadeler", "hesaplanan_kdv"),
     "alis_faturasi": ("ticari_mallar", "tedarikciler", "indirilecek_kdv"),
     "alis_iade": ("ticari_mallar", "tedarikciler", "indirilecek_kdv"),
     "hizmet_faturasi": ("giderler", "tedarikciler", "indirilecek_kdv"),
@@ -1130,13 +1130,16 @@ class MuhasebelestirmeService:
         """Evrak penceresi başlığı için kısa durum metni; durum kaydı yoksa boş."""
         if not kaynak_id:
             return ""
+        from database.belge_kdv import kdv_baslik_eki
+
+        kdv_eki = kdv_baslik_eki(evrak, kaynak_id)
         try:
             d = MuhasebelestirmeService.belge_durumu(evrak, int(kaynak_id))
         except Exception:
-            return ""
+            return kdv_eki
         if d["durum"] in ("Kayıt yok", "Genel muhasebe kapalı"):
-            return ""
-        return f"  ·  Muhasebe: {d['durum']}" + (f" ({d['fis_no']})" if d.get("fis_no") else "")
+            return kdv_eki
+        return f"  ·  Muhasebe: {d['durum']}" + (f" ({d['fis_no']})" if d.get("fis_no") else "") + kdv_eki
 
     @staticmethod
     def fis_kaynagi(fis_id: int) -> dict | None:
@@ -1147,8 +1150,9 @@ class MuhasebelestirmeService:
             if fis is None or fis.firma_id != firma_id:
                 return None
             evrak = kaynak_id = None
-            if fis.kaynak_turu and fis.kaynak_turu in KAYNAK_EVRAK:
-                evrak, kaynak_id = KAYNAK_EVRAK[fis.kaynak_turu], fis.kaynak_id
+            kt = (fis.kaynak_turu or "").removeprefix("kdv_duz_")
+            if kt and kt in KAYNAK_EVRAK:
+                evrak, kaynak_id = KAYNAK_EVRAK[kt], fis.kaynak_id
             else:
                 kayit = session.scalar(select(MuhasebeBelgeDurumu).where(
                     MuhasebeBelgeDurumu.firma_id == firma_id, MuhasebeBelgeDurumu.fis_id == fis.id))

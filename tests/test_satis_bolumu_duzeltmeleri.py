@@ -68,6 +68,11 @@ class TutarBicimTest(unittest.TestCase):
 
             self.assertEqual(_decimal(servis_metni(d)), d)
 
+    def test_cari_tutar_sayi_tipini_oldugu_gibi_kabul_eder(self):
+        for d in (Decimal("1416.00"), Decimal("0.01"), Decimal("2400")):
+            self.assertEqual(CariService._tutar(d), d)
+        self.assertEqual(CariService._tutar(2400), Decimal("2400"))
+
 
 class _TemelTest(unittest.TestCase):
     def setUp(self):

@@ -164,6 +164,15 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
 
     # Yedek alınamazsa/geçiş yarıda kalırsa firma açılmaz; hata kullanıcıya gösterilir, seçim yinelenebilir
     MuhasebelestirmeService.schema_hazirla()
+    from database.cari_risk_service import schema_hazirla as cari_risk_schema_hazirla
+
+    cari_risk_schema_hazirla()
+    try:
+        from database.fon_service import FonService
+
+        FonService.schema_hazirla()
+    except Exception as hata:  # noqa: BLE001 — Fon Yönetimi açılışında yedekli geçiş yeniden denenir
+        print("Fon şema uyarısı:", hata)
     with get_system_session() as session:
         _ayar_yaz(session, "son_firma_id", str(firma.id))
         AuthService.audit(

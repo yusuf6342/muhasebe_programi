@@ -416,40 +416,41 @@ class SecimPenceresiTest(unittest.TestCase):
 
     def test_kolonlar_ve_seçimsiz_kapatma_fifo(self):
         p = self._pencere()
-        self.assertEqual(p.KOLONLAR[1:8], ("tarih", "tur", "evrak", "ilk", "kapanan", "kalan", "vade"))
+        for kolon in ("sec", "evrak", "tur", "tarih", "vade", "ilk", "kapanan", "kalan", "dagit", "sonra", "pb"):
+            self.assertIn(kolon, p.KOLONLAR)
+        self.assertEqual(p.onizleme["mod"], "Otomatik FIFO")
+        self.assertEqual(p.tablo.set("1", "dagit"), "100,00")
+        self.assertEqual(p.tablo.set("2", "sonra"), "100,00")
         p.kapat()
         self.assertIsNone(p.sonuc)
 
-    def test_coklu_secim_canli_toplam_ve_kalan_avans(self):
-        p = self._pencere()
-        p.tablo.selection_set(("2",))
-        p.secimi_degistir()
-        self.assertEqual(p.dagitim, {2: D("150.00")})
-        p.kalem_tutar.delete(0, "end")
-        p.kalem_tutar.insert(0, "60")
-        p.kalem_tutari_uygula()
-        p.tablo.selection_set(("1",))
-        p.secimi_degistir()
-        self.assertEqual(p.dagitim, {2: D("60.00"), 1: D("90.00")})
-        self.assertIn("Dağıtılmayan: 0,00", p.toplam_lbl.cget("text"))
-        p.kalem_tutar.delete(0, "end")
-        p.kalem_tutar.insert(0, "40")
-        p.kalem_tutari_uygula()
-        with patch.object(p, "_fazla_yontemi_sor", return_value="AVANS"):
-            p.uygula()
-        self.assertEqual(p.sonuc, {"dagitim": [(1, D("40.00")), (2, D("60.00"))], "fazla": "AVANS"})
+    def test_coklu_secim_fifo_sirasi_ve_artan_avans(self):
+        p = self._pencere("300")
+        p.secimi_degistir(2)
+        p.secimi_degistir(1)
+        self.assertEqual(p.tablo.set("1", "sec"), "☑ Seçili")
+        self.assertIn("secili", p.tablo.item("1", "tags"))
+        self.assertEqual(p.onizleme["mod"], "Seçilen Belgeler")
+        self.assertEqual(p.onizleme["artan"], D("50.00"))
+        p.uygula()
+        self.assertEqual(p.sonuc["dagitim"], [(1, D("100.00")), (2, D("150.00"))])
+        self.assertEqual(p.sonuc["fazla"], "AVANS")
+        self.assertEqual(p.sonuc["beklenen"], {1: D("100"), 2: D("150")})
 
-    def test_fazla_tahsis_engellenir(self):
+    def test_secim_geri_alinir_ve_vazgec(self):
+        from acik_kalem_secim_ui import VAZGEC
+
         p = self._pencere("50")
-        p.tablo.selection_set(("1",))
-        p.secimi_degistir()
-        p.kalem_tutar.delete(0, "end")
-        p.kalem_tutar.insert(0, "80")
-        with patch("acik_kalem_secim_ui.messagebox.showerror") as hata:
-            p.kalem_tutari_uygula()
-        hata.assert_called_once()
-        self.assertEqual(p.dagitim, {1: D("50.00")})
-        p.kapat()
+        p.secimi_degistir(2)
+        p.secimi_degistir(2)
+        self.assertEqual(p.tablo.set("2", "sec"), "☐")
+        self.assertNotIn("secili", p.tablo.item("2", "tags"))
+        p.tumunu_sec()
+        self.assertEqual(p.secili, {1, 2})
+        p.temizle()
+        self.assertEqual(p.secili, set())
+        p.vazgec()
+        self.assertEqual(p.sonuc, VAZGEC)
 
 
 if __name__ == "__main__":

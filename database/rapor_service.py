@@ -439,11 +439,16 @@ class RaporService:
                 raise ValueError("Cari bulunamadı.")
             faturalar = session.scalars(
                 select(SatisFaturasi)
-                .where(SatisFaturasi.cari_id == cari_id, SatisFaturasi.durum != "İPTAL")
+                .where(
+                    SatisFaturasi.cari_id == cari_id,
+                    SatisFaturasi.durum != "İPTAL",
+                    SatisFaturasi.onaylandi.is_(True),
+                )
                 .options(selectinload(SatisFaturasi.satirlar))
                 .order_by(SatisFaturasi.fatura_tarihi.desc())
             ).all()
             satirlar = []
+            carpan_cache: dict = {}
             toplam_satis = Decimal("0")
             toplam_maliyet = Decimal("0")
             for fatura in faturalar:
@@ -457,11 +462,15 @@ class RaporService:
                         and stok_filtre not in turkce_normalize(satir.urun_adi or "")
                     ):
                         continue
-                    net = satir.miktar * satir.birim_fiyat * (
-                        Decimal("1") - (satir.iskonto_orani or 0) / Decimal("100")
-                    )
-                    birim_maliyet = satir.fifo_birim_maliyeti or Decimal("0")
-                    maliyet = satir.miktar * birim_maliyet
+                    net = SatisFaturasiService._satir_net(
+                        satir.miktar, satir.birim_fiyat, satir.iskonto_orani,
+                        satir.iskonto_orani_2, satir.iskonto_orani_3,
+                    )[2]
+                    birim_maliyet = SatisFaturasiService.satir_birim_maliyeti(session, satir) or Decimal("0")
+                    ck = (satir.urun_kodu, (satir.birim or "").casefold(), getattr(satir, "birim_carpani", None))
+                    if ck not in carpan_cache:
+                        carpan_cache[ck] = StokService.satir_birim_carpani(session, satir)
+                    maliyet = satir.miktar * carpan_cache[ck] * birim_maliyet
                     kar = net - maliyet
                     marj = (kar / net * Decimal("100")) if net else Decimal("0")
                     toplam_satis += net
@@ -625,7 +634,7 @@ class RaporService:
         with get_session() as session:
             q = (
                 select(SatisFaturasi)
-                .where(SatisFaturasi.durum != "İPTAL")
+                .where(SatisFaturasi.durum != "İPTAL", SatisFaturasi.onaylandi.is_(True))
                 .options(
                     selectinload(SatisFaturasi.satirlar),
                     selectinload(SatisFaturasi.cari),
@@ -678,9 +687,10 @@ class RaporService:
                             # lot'ta tedarikçi yoksa satırı atla
                             continue
 
-                    net = satir.miktar * satir.birim_fiyat * (
-                        Decimal("1") - (satir.iskonto_orani or 0) / Decimal("100")
-                    )
+                    net = SatisFaturasiService._satir_net(
+                        satir.miktar, satir.birim_fiyat, satir.iskonto_orani,
+                        satir.iskonto_orani_2, satir.iskonto_orani_3,
+                    )[2]
                     birim_maliyet = getattr(satir, alan, None) or satir.fifo_birim_maliyeti or Decimal("0")
                     # Satır maliyeti temel birim başınadır; belge birimi Koli vb. ise katsayıyla çarp
                     ck = (satir.urun_kodu, (satir.birim or "").casefold(), getattr(satir, "birim_carpani", None))

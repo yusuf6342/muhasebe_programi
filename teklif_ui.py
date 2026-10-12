@@ -529,6 +529,7 @@ class TeklifDialog(tk.Toplevel):
         # ——— Üst: Genel | Müşteri | Ticari | Fiyat Analiz (dört eşit kolon) ———
         ust = ttk.Frame(self.icerik)
         ust.pack(fill="x", padx=10, pady=(6, 4))
+        self._baslik_kaplari = [ust]
         for _c in range(4):
             ust.columnconfigure(_c, weight=1, uniform="teklif_ust")
         ust.rowconfigure(0, weight=1)
@@ -3444,7 +3445,7 @@ class TeklifDialog(tk.Toplevel):
                 HucreAlani("birim", "secim", secenekler=self._teklif_birimleri, serbest=False),
                 HucreAlani("alis", izin=lambda _i: maliyet_izinli(), deger=self._teklif_alis_metni),
                 HucreAlani("fiyat", izin=_fiyat_izni, deger=_fiyat_metni),
-                HucreAlani("isk", "metin", deger=lambda i: iskonto_metni(self.satirlar[i])),
+                HucreAlani("isk", "iskonto3", deger=lambda i: iskonto_metni(self.satirlar[i])),
                 HucreAlani(
                     "kdv", "secim", secenekler=lambda _i: list(KDV_ORANLARI), serbest=False,
                     deger=lambda i: str(int(self._kdv_deger(self.satirlar[i].get("kdv_orani")))),
@@ -3457,6 +3458,9 @@ class TeklifDialog(tk.Toplevel):
         )
         self.satir_tablo.bind("<Delete>", lambda _e: (self._satir_sil(), "break")[1], add="+")
         self._satir_ici_giris.tabloya_ekle()
+        from evrak_baslik_gezinme import baslik_gezinme_kur
+
+        baslik_gezinme_kur(self, getattr(self, "_baslik_kaplari", None), son_hedef=self._satir_ici_giris.odakla)
 
     def _teklif_kilitli(self) -> bool:
         teklif = getattr(self, "teklif", None)
@@ -3487,9 +3491,9 @@ class TeklifDialog(tk.Toplevel):
         if self._teklif_manuel_mi(s):
             return list(manuel_birim_listesi())
         try:
-            from fatura_satir_birim_service import stok_aktif_birimleri
+            from birim_secim_ui import evrak_birim_secenekleri
 
-            return stok_aktif_birimleri(s.get("urun_kodu") or "") or [s.get("birim") or "Adet"]
+            return evrak_birim_secenekleri(s.get("urun_kodu") or "") or [s.get("birim") or "Adet"]
         except Exception:
             return [s.get("birim") or "Adet"]
 
@@ -3569,6 +3573,10 @@ class TeklifDialog(tk.Toplevel):
             if not metin:
                 raise ValueError("Birim seçin.")
             if metin != (s.get("birim") or "") and not self._teklif_manuel_mi(s):
+                from birim_secim_ui import kart_birimini_hazirla
+
+                if not kart_birimini_hazirla(self, s.get("urun_kodu") or "", metin):
+                    return
                 yeni["birim_carpani"] = stok_birim_carpani(s.get("urun_kodu"), metin)
             yeni["birim"] = metin
         elif kolon == "kdv":
@@ -3688,7 +3696,11 @@ class TeklifDialog(tk.Toplevel):
             if manuel and maliyet_izinli() and snap.birim_maliyet <= 0:
                 messagebox.showwarning("Maliyet", "Manuel ürün için maliyet fiyatı girin.", parent=self)
                 return None
-        carpan = Decimal("1") if manuel else stok_birim_carpani(kod, birim)
+        try:
+            carpan = Decimal("1") if manuel else stok_birim_carpani(kod, birim)
+        except ValueError as hata:
+            messagebox.showwarning("Birim dönüşümü", str(hata), parent=self)
+            return None
         purchase_total = (
             satir_alis_maliyeti(
                 {

@@ -277,6 +277,13 @@ class FiyatDegisiklikGunlugu:
         return len(self.kayitlar)
 
 
+def _etkin_acik_hesap_limiti(cari):
+    """Cari kartta «Limit Uygula» kapalıysa limit denetimi yoktur (None)."""
+    from database.cari_risk_service import TUR_ACIK, etkin_limit
+
+    return etkin_limit(cari, TUR_ACIK)
+
+
 def cari_ozet_dict(cari, *, bakiye=None) -> dict[str, Any]:
     """UI / sepet için serileştirilebilir cari özeti."""
     if cari is None:
@@ -288,7 +295,7 @@ def cari_ozet_dict(cari, *, bakiye=None) -> dict[str, Any]:
         "musteri_grubu": (getattr(cari, "musteri_grubu", None) or "").strip() or None,
         "satis_fiyat_listesi": (getattr(cari, "satis_fiyat_listesi", None) or "").strip()
         or None,
-        "acik_hesap_risk_limiti": getattr(cari, "acik_hesap_risk_limiti", None),
+        "acik_hesap_risk_limiti": _etkin_acik_hesap_limiti(cari),
         "bakiye": _d(bakiye) if bakiye is not None else None,
         "uyari_notu": (getattr(cari, "uyari_notu", None) or "").strip() or None,
     }
@@ -339,6 +346,25 @@ def varsayilan_cari_coz() -> dict[str, Any] | None:
 
             ozet = CariService._ozet(cari, session)
             bakiye = ozet.get("bakiye")
+        except Exception:
+            bakiye = None
+        return cari_ozet_dict(cari, bakiye=bakiye)
+
+
+def cari_ozet_coz(cari_id: int) -> dict[str, Any] | None:
+    """Arama listesinden seçilen cari için güncel bakiyeli özet; kart yoksa None."""
+    from database.database import get_session
+    from database.models.cari import Cari
+
+    with get_session() as session:
+        cari = session.get(Cari, int(cari_id))
+        if cari is None:
+            return None
+        bakiye = None
+        try:
+            from database.cari_service import CariService
+
+            bakiye = CariService._ozet(cari, session).get("bakiye")
         except Exception:
             bakiye = None
         return cari_ozet_dict(cari, bakiye=bakiye)

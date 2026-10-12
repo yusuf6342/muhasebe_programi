@@ -251,6 +251,8 @@ def barkod_ile_ara(barkod: str) -> dict[str, Any]:
                 "liste": [],
                 "mesaj": f"«{kayit.get('stok_adi')}» satışa kapalı.",
             }
+        if kayit.get("birim_hatasi"):
+            return {"durum": "birim_hatasi", "kayit": kayit, "liste": [], "mesaj": kayit["birim_hatasi"]}
         return {"durum": "ok", "kayit": kayit, "liste": [], "mesaj": ""}
     if pasifler:
         p = pasifler[0]

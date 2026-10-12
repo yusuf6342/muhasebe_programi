@@ -152,6 +152,8 @@ class HizliSatisBekleyenSatiri(Base):
     kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     carpan: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=1)
     barkod: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Yeni Toplam öncesi birim fiyat; NULL → düzeltme yok
+    referans_birim_fiyat: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
 
     bekleyen: Mapped["HizliSatisBekleyen"] = relationship(
         "HizliSatisBekleyen", back_populates="satirlar"

@@ -366,6 +366,75 @@ class SatirIslemleriTest(_UITaban):
         p.destroy()
 
 
+class KlavyeTest(_UITaban):
+    """Ürün hücresine çift tık / F2 stok kartı; üst alanlarda Enter ve ok gezinmesi."""
+
+    def _pompala(self, p, sure=0.15):
+        bitis = time.time() + sure
+        while time.time() < bitis:
+            p.update()
+
+    def test_stok_karti_ve_ust_alan_gezinme(self):
+        from evrak_baslik_gezinme import baslik_alanlari
+
+        _fid, _ks = self.alis(20, 100)
+        self.root.geometry("1x1+-3000+-3000")
+        self.root.deiconify()
+        p = self.pencere()
+        p.geometry("1400x800+-3000+-3000")
+        p.deiconify()
+        self.tedarikci_sec(p)
+        with patch("alis_iade_ui.KaynakSecDialog", _SahteKaynakSec), patch.object(p, "wait_window"):
+            p.urun_ekle("U001")
+        self._pompala(p, 0.3)
+        self.assertEqual(len(p.satirlar), 1)
+
+        # F2 (tablo odakta): stok kartı; pencere F2'si (Ürün Ekle) tetiklenmez
+        p.tablo.selection_set("0")
+        p.tablo.focus_force()
+        self._pompala(p)
+        with patch("stok_ui.StokKartiDialog") as kart, patch.object(p, "urun_ekle") as ekle:
+            p.tablo.event_generate("<F2>")
+            self._pompala(p)
+        kart.assert_called_once()
+        self.assertEqual(kart.call_args.args[1].stok_kodu, "U001")
+        ekle.assert_not_called()
+
+        # Çift tık: ürün adında stok kartı, miktarda satır düzenleme
+        bb = p.tablo.bbox("0", "ad")
+        self.assertTrue(bb)
+        with patch("stok_ui.StokKartiDialog") as kart, patch.object(p, "satir_duzenle") as duzenle:
+            x, y = bb[0] + bb[2] // 2, bb[1] + bb[3] // 2
+            for i in range(2):
+                p.tablo.event_generate("<ButtonPress-1>", x=x, y=y, time=1_000_000 + i * 80)
+                p.tablo.event_generate("<ButtonRelease-1>", x=x, y=y, time=1_000_020 + i * 80)
+            self._pompala(p)
+        kart.assert_called_once()
+        duzenle.assert_not_called()
+
+        # Üst alanlar: Enter / ↓ sonraki, ↑ önceki; son alandan Enter → Kod / Barkod kutusu
+        alanlar = baslik_alanlari(p)
+        self.assertIn(p.tarih, alanlar)
+        self.assertIn(p.tedarikci, alanlar)
+        i = alanlar.index(p.tarih)
+        p.tarih.focus_force()
+        self._pompala(p, 0.05)
+        p.tarih.event_generate("<Return>")
+        self._pompala(p)
+        self.assertIs(p.focus_get(), alanlar[i + 1])
+        alanlar[i + 1].event_generate("<Up>")
+        self._pompala(p)
+        self.assertIs(p.focus_get(), p.tarih)
+        son = alanlar[-1]
+        son.focus_force()
+        self._pompala(p, 0.05)
+        son.event_generate("<Return>")
+        self._pompala(p)
+        self.assertIs(p.focus_get(), p.kod_giris)
+        with patch("alis_iade_ui.messagebox.askyesnocancel", return_value=False):
+            p.kapat()
+
+
 class CiktiTest(_UITaban):
     def _cok_satirli_taslak(self, n=70):
         _fid, ks = self.alis(200, 77.77)

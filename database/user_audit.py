@@ -125,7 +125,7 @@ def audit_document(
                 payload_eski = json.dumps(eski, ensure_ascii=False, default=str)
 
         with get_system_session() as session:
-            AuthService.audit_log(
+            AuthService.audit(
                 session,
                 islem_turu,
                 modul=modul,

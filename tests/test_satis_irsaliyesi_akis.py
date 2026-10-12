@@ -510,7 +510,12 @@ class SatisIrsaliyesiEkranTest(_EkranTemel):
     def test_birim_secenekleri_stok_kartindan(self):
         d = self._dialog()
         d.urun_secildi(("MB001", "Birim Ürün", "Adet", "", "1"))
-        self.assertEqual(d._satir_birimleri(0), ["Adet", "Paket", "Koli"])
+        birimler = d._satir_birimleri(0)
+        # Kart birimleri başta ve kart sırasıyla; ardından kartta tanımsız genel birimler
+        # (seçilirse katsayı sorulur, tahmin edilmez).
+        self.assertEqual(birimler[:3], ["Adet", "Paket", "Koli"])
+        self.assertIn("Kg", birimler[3:])
+        self.assertEqual(len(birimler), len({b.casefold() for b in birimler}))
         self.assertEqual(d.satir_tablosu.get_children()[-1], "__yeni__")
         d.destroy()
 

@@ -89,8 +89,25 @@ CARI_ISLEM_KARTLARI: tuple[tuple[str, str, str], ...] = (
 )
 
 RAPOR_KARTLARI: tuple[tuple[str, str, str], ...] = (
+    ("YÖNETİCİ SATIŞ ÖZETİ", "Seçili ve karşılaştırma dönemi: satış, kâr, tahsilat, alacak, sipariş", "yonetici_ozet"),
+    ("MÜŞTERİ KÂRLILIĞI", "Müşteri bazında net satış, kâr, marj; sınırsız dönem karşılaştırması",
+     "musteri_karlilik"),
+    ("MÜŞTERİ BAZINDA YILLIK/AYLIK SATIŞLAR", "Müşteri × Ocak–Aralık; net satış, kâr, marj, fatura; yıl karşılaştırma",
+     "musteri_aylik"),
+    ("STOK KÂRLILIĞI", "Ürün ve grup bazında miktar, net satış, kâr, marj; dönem karşılaştırması",
+     "stok_karlilik"),
+    ("DÜŞÜK MARJLI / ZARARINA SATIŞLAR", "Hedef marj altı, zararına ve maliyeti eksik satırlar", "dusuk_marj"),
+    ("SATIŞ VE TAHSİLAT PERFORMANSI", "Satış, tahsilat, açık/vadesi geçmiş alacak, gerçekleşen gecikme",
+     "tahsilat_performans"),
+    ("SATIŞI AZALAN / DURAN MÜŞTERİLER", "Düşüş eşiği, hareketsiz gün ve geçen yıl karşılaştırması", "azalan"),
+    ("ÜRÜN SATIŞ HIZI VE STOK SERMAYESİ", "Satış hızı, yeterlilik günü, yavaş dönen ve stoksuz satılan ürünler",
+     "urun_hizi"),
+    ("İSKONTO VE İADE ANALİZİ", "Müşteri, ürün ve grup bazında iskonto ve iadeler", "iskonto_iade"),
+    ("BEKLEYEN SATIŞ SİPARİŞLERİ", "Kalan miktar, kısmi teslim, gecikme, stok yeterliliği, tahmini kâr",
+     "bekleyen_siparis"),
     ("SATIŞ KÂR ANALİZİ", "Maliyet yöntemi, marj, zararına satış ve dönem karşılaştırması", "kar_analiz"),
     ("SATIŞ RAPORLARI", "Müşteri bakiye, ekstre, tahsilat ve satış özeti", "satis_rapor"),
+    ("KDV RAPORU", "Belgelerden hesaplanan / alış KDV, oranlar, iadeler, dönem özeti", "kdv"),
     ("DÖVİZ KURLARI", "USD/EUR günlük kur yönetimi (TCMB / manuel)", "doviz_kur"),
     ("DÖVİZ BAZINDA RAPORLAR", "TL faturaların USD/EUR karşılık raporları", "doviz_rapor"),
 )
@@ -195,9 +212,28 @@ def _rapor_komutlar(app) -> dict[str, Callable]:
 
         satis_kar_analizi_goster(app)
 
+    def yonetici(ad: str) -> Callable:
+        def ac():
+            import satis_yonetici_rapor_ui as ui
+
+            getattr(ui, ad)(app)
+
+        return ac
+
     return {
+        "yonetici_ozet": yonetici("yonetici_ozeti_goster"),
+        "musteri_karlilik": yonetici("musteri_karlilik_goster"),
+        "musteri_aylik": yonetici("musteri_aylik_satis_goster"),
+        "stok_karlilik": yonetici("stok_karlilik_goster"),
+        "dusuk_marj": yonetici("dusuk_marj_goster"),
+        "tahsilat_performans": yonetici("tahsilat_performansi_goster"),
+        "azalan": yonetici("azalan_musteriler_goster"),
+        "urun_hizi": yonetici("urun_satis_hizi_goster"),
+        "iskonto_iade": yonetici("iskonto_iade_goster"),
+        "bekleyen_siparis": yonetici("bekleyen_siparisler_goster"),
         "kar_analiz": kar_analiz,
         "satis_rapor": app.satis_raporlari_goster,
+        "kdv": lambda: __import__("kdv_raporu_ui").kdv_raporu_goster(app, "satis"),
         "doviz_kur": lambda: doviz_kur_yonetimi_goster(app),
         "doviz_rapor": lambda: doviz_raporlari_goster(app),
     }
@@ -295,12 +331,12 @@ def satis_raporlar_hub_goster(app) -> None:
     hub_ust_baslik(
         kok,
         baslik="RAPORLAR",
-        alt_baslik="Satış raporları, döviz kurları ve döviz bazında analizler",
+        alt_baslik="Yönetici analizleri, kârlılık, satış raporları, döviz kurları ve döviz bazında analizler",
         app=app,
         geri_komut=lambda: satislar_hub_goster(app),
         geri_metin="← Satışlar",
     )
-    _kart_izgara(app, kok, RAPOR_KARTLARI, _rapor_komutlar(app), sutun=2)
+    _kart_izgara(app, kok, RAPOR_KARTLARI, _rapor_komutlar(app), sutun=3)
 
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: satis_raporlar_hub_goster(app))

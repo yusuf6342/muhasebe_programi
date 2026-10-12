@@ -53,6 +53,19 @@ class CariAramaAlani:
     değiştirildiğinde (eski kimlik bağlı kalmasın diye) çağrılır.
     """
 
+    KOLONLAR = (
+        ("kod", "Kod", 90, False),
+        ("unvan", "Ünvan", 300, True),
+        ("ek", "Ek Bilgi", 220, True),
+    )
+    ILK_SONUC_SECILI = True
+
+    def _sorgu(self, metin: str) -> list[Any]:
+        return cari_ara(metin, self.cari_turu)
+
+    def _satir(self, kayit) -> tuple:
+        return (kayit.cari_kodu or ""), (kayit.unvan or ""), _ek_bilgi(kayit)
+
     def __init__(
         self,
         dialog: tk.Misc,
@@ -139,10 +152,9 @@ class CariAramaAlani:
             return
         self._seq += 1
         seq = self._seq
-        tur = self.cari_turu
 
         def _is():
-            return cari_ara(metin, tur)
+            return self._sorgu(metin)
 
         def _tamam(sonuc):
             self.sonuc_uygula(seq, metin, sonuc)
@@ -177,7 +189,7 @@ class CariAramaAlani:
             return
         self._sonuc_metin = metin
         self.sonuclar = list(sonuc or [])
-        self.secili = 0 if self.sonuclar else -1
+        self.secili = 0 if self.sonuclar and self.ILK_SONUC_SECILI else -1
         self._goster(self.sonuclar, mesaj=None if self.sonuclar else f"{self.kayit_adi} bulunamadı.")
 
     # ─── liste
@@ -197,12 +209,10 @@ class CariAramaAlani:
             pass
         frm = tk.Frame(pop, bg="#0B2A4A", bd=1)
         frm.pack(fill="both", expand=True)
-        tree = ttk.Treeview(frm, columns=("kod", "unvan", "ek"), show="headings", height=8, selectmode="browse")
-        for cid, baslik, gen, uzat in (
-            ("kod", "Kod", 90, False),
-            ("unvan", "Ünvan", 300, True),
-            ("ek", "Ek Bilgi", 220, True),
-        ):
+        tree = ttk.Treeview(
+            frm, columns=tuple(k[0] for k in self.KOLONLAR), show="headings", height=8, selectmode="browse"
+        )
+        for cid, baslik, gen, uzat in self.KOLONLAR:
             tree.heading(cid, text=baslik)
             tree.column(cid, width=gen, stretch=uzat, anchor="w")
         sy = ttk.Scrollbar(frm, orient="vertical", command=tree.yview)
@@ -237,10 +247,10 @@ class CariAramaAlani:
         tree = self.tree
         assert tree is not None and self.durum is not None
         tree.delete(*tree.get_children())
-        for i, cari in enumerate(sonuclar):
+        for i, kayit in enumerate(sonuclar):
             tree.insert(
                 "", "end", iid=str(i),
-                values=((cari.cari_kodu or ""), (cari.unvan or ""), _ek_bilgi(cari)),
+                values=self._satir(kayit),
                 tags=("cift",) if i % 2 else (),
             )
         bilgi = "↑↓ gezin · Enter seç · Esc kapat · F10 tam liste"
@@ -267,6 +277,7 @@ class CariAramaAlani:
             self.popup.update_idletasks()
             yukseklik = self.popup.winfo_reqheight()
             ekran_h = self.entry.winfo_screenheight()
+            x = max(0, min(x, self.entry.winfo_screenwidth() - genislik))
             if y + yukseklik > ekran_h:
                 y = max(0, self.entry.winfo_rooty() - yukseklik)
             self.popup.geometry(f"{genislik}x{yukseklik}+{x}+{y}")
@@ -296,11 +307,16 @@ class CariAramaAlani:
                 pass
 
     # ─── klavye / fare
+    def _cozulmemis_metin(self) -> bool:
+        metin = self.metin()
+        return len(metin) >= MIN_HARF and metin != (self.secili_ad() or "").strip()
+
     def _asagi(self, _e=None):
         if not self.acik_mi():
-            if len(self.metin()) >= MIN_HARF:
-                self._iptal()
-                self.ara(self.metin())
+            if not self._cozulmemis_metin():
+                return None
+            self._iptal()
+            self.ara(self.metin())
             return "break"
         if self.sonuclar:
             self.secili = min(self.secili + 1, len(self.sonuclar) - 1)
@@ -319,6 +335,12 @@ class CariAramaAlani:
             if self._sonuc_metin == self.metin():
                 self.sec(self.secili)
                 return "break"
+        # Açık liste zaten bu metnin sonucuysa (seçim yok) Enter alana bırakılır; aynı aramayı tekrarlamaz.
+        guncel_liste = self.acik_mi() and self._sonuc_metin == self.metin()
+        if self._cozulmemis_metin() and not guncel_liste:
+            self._iptal()
+            self.ara(self.metin())
+            return "break"
         return None
 
     def _esc(self, _e=None):
