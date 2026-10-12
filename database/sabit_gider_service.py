@@ -357,13 +357,43 @@ def _evrak_bilgisi(session, belge_no: str) -> dict | None:
     if a is not None:
         return {"tur": "Alış faturası", "gecerli": (a.durum or "") != "İPTAL" and bool(a.onaylandi),
                 "tutar": _q2(a.tl_genel_toplam), "tarih": a.fatura_tarihi, "odeme": False}
+    from database.models.finans import KrediKartiOdeme
+
+    k = session.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no == bn))
+    if k is not None:
+        # Kartla ödenen gider kapanır; kart borcu ilgili ekstrede bir kez izlenir
+        return {"tur": "Kredi kartı ile ödeme", "gecerli": (k.durum or "") != "İPTAL", "tutar": _q2(k.tutar),
+                "tarih": k.tarih, "odeme": True}
     hareketler = session.scalars(select(FinansHareketi).where(FinansHareketi.belge_no == bn)).all()
+    if _cek_senet_hareketi_mi(session, hareketler):
+        # Çek / senet borcunu kapatır; takvimde evrak satırından bir kez düşülür
+        return {"tur": "Çek / senet ödemesi", "gecerli": False, "tutar": SIFIR, "tarih": None, "odeme": True,
+                "neden": f"{bn} çek / senet ödemesine ait; çek / senet borcunu kapatır, sabit gider ödemesi olarak "
+                         "bağlanamaz."}
     cikis = [h for h in hareketler if _finans_cikis_mi(h.hareket_turu)]
     if cikis:
         return {"tur": "Kasa / banka ödemesi", "gecerli": True,
                 "tutar": _q2(sum((_d(h.tutar) for h in cikis), SIFIR)), "tarih": min(h.tarih for h in cikis),
                 "odeme": True}
     return None
+
+
+CEK_SENET_HAREKET_TURLERI = frozenset({"ÇEK/SENET ÖDEME", "ÇEK/SENET ÖDEME İPTAL", "ÇEK/SENET TAHSİLAT"})
+
+
+def _cek_senet_hareketi_mi(session, hareketler) -> bool:
+    """Hareket çek / senet işlemine ait mi: türünden veya evrak hareketinin bağlı finans kaydından."""
+    from sqlalchemy import inspect
+
+    if any((h.hareket_turu or "").upper() in CEK_SENET_HAREKET_TURLERI for h in hareketler):
+        return True
+    ids = [int(h.id) for h in hareketler]
+    if not ids or not inspect(session.connection()).has_table("cek_senet_hareketleri"):
+        return False
+    from database.models.cek_senet import CekSenetHareket
+
+    return session.scalar(select(CekSenetHareket.id).where(CekSenetHareket.finans_hareket_id.in_(ids))
+                          .limit(1)) is not None
 
 
 def _finans_cikis_mi(tur: str) -> bool:
@@ -393,39 +423,57 @@ def _aktif_baglantilar(session, donem: SabitGiderDonemi, *, tarih: date | None =
 def baglanti_ekle(donem_id: int, belge_no: str, tutar, *, tarih: date | None = None, aciklama: str = "") -> int:
     """Dönemi gerçek evrakla karşılar. Ödeme evrakı kalanı azaltır; fatura bağlantısı planın yerini alır."""
     yazma_zorunlu(*YAZMA_YETKISI)
-    tutar = _q2(tutar)
-    if tutar <= 0:
-        raise ValueError("Bağlantı tutarı sıfırdan büyük olmalıdır.")
     with get_session() as session:
+        from database.gider_kart_odeme_service import evrak_karta_bagli_mi
+
+        if evrak_karta_bagli_mi(session, (belge_no or "").strip()):
+            raise ValueError(f"{belge_no} kartla gider ödemesine ait; bağlantısı kart ödemesiyle birlikte kurulur ve "
+                             "başka döneme ayrıca bağlanamaz.")
         donem = session.get(SabitGiderDonemi, int(donem_id))
         if donem is None:
             raise ValueError("Dönem bulunamadı.")
-        if donem.durum != DONEM_ACIK:
-            raise ValueError("İptal edilmiş döneme bağlantı eklenemez.")
-        bilgi = _evrak_bilgisi(session, belge_no)
-        if bilgi is None:
-            raise ValueError(f"Evrak bulunamadı: {belge_no}. Ödeme makbuzu, gider fişi, havale veya fatura no girin.")
-        if not bilgi["gecerli"]:
-            raise ValueError(f"{belge_no} ({bilgi['tur']}) iptal edilmiş veya ödeme evrakı değil.")
-        tur = BAGLANTI_ODEME if bilgi["odeme"] else BAGLANTI_BORC
-        ayni_tur = sum((_d(b.tutar) for b, _ in _aktif_baglantilar(session, donem) if b.tur == tur), SIFIR)
-        if ayni_tur + tutar > _q2(donem.tutar):
-            raise ValueError(
-                f"Bağlantı toplamı dönem tutarını aşıyor (dönem {_q2(donem.tutar)} TL, bağlı {ayni_tur} TL). "
-                "Tutar değiştiyse önce plan tutarını güncelleyin.")
-        bn = (belge_no or "").strip()
-        evrakta = sum((_d(b.tutar) for b in session.scalars(select(SabitGiderBaglanti).where(
-            SabitGiderBaglanti.belge_no == bn, SabitGiderBaglanti.iptal.is_(False))).all()), SIFIR)
-        if evrakta + tutar > bilgi["tutar"]:
-            raise ValueError(
-                f"{bn} evrakının tutarı {bilgi['tutar']} TL; daha önce {evrakta} TL dağıtılmış. "
-                "Aynı evrak dağıtılabilir tutarından fazla bağlanamaz.")
-        b = SabitGiderBaglanti(donem_id=donem.id, tur=tur, belge_no=bn, tutar=tutar,
-                               tarih=tarih or bilgi["tarih"] or date.today(), aciklama=(aciklama or "")[:300] or None,
-                               kullanici=_kullanici())
-        session.add(b)
-        session.flush()
-        return int(b.id)
+        return int(_baglanti_yaz(session, donem, belge_no, tutar, tarih=tarih, aciklama=aciklama).id)
+
+
+def _baglanti_yaz(session, donem: SabitGiderDonemi, belge_no: str, tutar, *, tarih: date | None = None,
+                  aciklama: str = "") -> SabitGiderBaglanti:
+    tutar = _q2(tutar)
+    if tutar <= 0:
+        raise ValueError("Bağlantı tutarı sıfırdan büyük olmalıdır.")
+    if donem.durum != DONEM_ACIK:
+        raise ValueError("İptal edilmiş döneme bağlantı eklenemez.")
+    bilgi = _evrak_bilgisi(session, belge_no)
+    if bilgi is None:
+        raise ValueError(f"Evrak bulunamadı: {belge_no}. Ödeme makbuzu, gider fişi, havale veya fatura no girin.")
+    if not bilgi["gecerli"]:
+        raise ValueError(bilgi.get("neden") or f"{belge_no} ({bilgi['tur']}) iptal edilmiş veya ödeme evrakı değil.")
+    tur = BAGLANTI_ODEME if bilgi["odeme"] else BAGLANTI_BORC
+    ayni_tur = sum((_d(b.tutar) for b, _ in _aktif_baglantilar(session, donem) if b.tur == tur), SIFIR)
+    if ayni_tur + tutar > _q2(donem.tutar):
+        raise ValueError(
+            f"Bağlantı toplamı dönem tutarını aşıyor (dönem {_q2(donem.tutar)} TL, bağlı {ayni_tur} TL). "
+            "Tutar değiştiyse önce plan tutarını güncelleyin.")
+    bn = (belge_no or "").strip()
+    evrakta = sum((_d(b.tutar) for b in session.scalars(select(SabitGiderBaglanti).where(
+        SabitGiderBaglanti.belge_no == bn, SabitGiderBaglanti.iptal.is_(False))).all()), SIFIR)
+    if evrakta + tutar > bilgi["tutar"]:
+        raise ValueError(
+            f"{bn} evrakının tutarı {bilgi['tutar']} TL; daha önce {evrakta} TL dağıtılmış. "
+            "Aynı evrak dağıtılabilir tutarından fazla bağlanamaz.")
+    b = SabitGiderBaglanti(donem_id=donem.id, tur=tur, belge_no=bn, tutar=tutar,
+                           tarih=tarih or bilgi["tarih"] or date.today(), aciklama=(aciklama or "")[:300] or None,
+                           kullanici=_kullanici())
+    donem.baglantilar.append(b)
+    session.add(b)
+    session.flush()
+    return b
+
+
+def _baglanti_iptal_yaz(b: SabitGiderBaglanti, neden: str) -> None:
+    if b.iptal:
+        return
+    b.iptal, b.iptal_zamani, b.iptal_kullanici = True, datetime.now(), _kullanici()
+    b.iptal_nedeni = neden.strip()[:300]
 
 
 def baglanti_iptal(baglanti_id: int, neden: str) -> None:
@@ -436,10 +484,76 @@ def baglanti_iptal(baglanti_id: int, neden: str) -> None:
         b = session.get(SabitGiderBaglanti, int(baglanti_id))
         if b is None:
             raise ValueError("Bağlantı bulunamadı.")
-        if b.iptal:
-            return
-        b.iptal, b.iptal_zamani, b.iptal_kullanici = True, datetime.now(), _kullanici()
-        b.iptal_nedeni = neden.strip()[:300]
+        from database.gider_kart_odeme_service import evrak_karta_bagli_mi
+
+        if not b.iptal and evrak_karta_bagli_mi(session, b.belge_no):
+            raise ValueError("Bu bağlantı kartla gider ödemesine ait. Gider ve kart borcu birlikte geri alınmalı: "
+                             "'Kartla Gider Ödemeleri' ekranından iptal veya banka iadesi kaydedin.")
+        _baglanti_iptal_yaz(b, neden)
+
+
+def _donem_al(session, plan_id: int, yil: int, ay: int) -> SabitGiderDonemi:
+    """Plan + yıl + ay dönemi; yoksa oluşturulur (anahtar aynı olduğundan mükerrer olmaz)."""
+    mevcut = session.scalar(select(SabitGiderDonemi).where(
+        SabitGiderDonemi.plan_id == int(plan_id), SabitGiderDonemi.yil == int(yil), SabitGiderDonemi.ay == int(ay)))
+    if mevcut is not None:
+        if mevcut.durum != DONEM_ACIK:
+            raise ValueError("Bu dönem iptal edilmiş; ödeme bağlanamaz.")
+        return mevcut
+    plan = session.get(SabitGiderPlani, int(plan_id))
+    if plan is None:
+        raise ValueError("Plan bulunamadı.")
+    if not _plan_kapsar(plan, date(int(yil), int(ay), 1)):
+        raise ValueError("Plan bu ayı kapsamıyor (durdurulmuş, iptal edilmiş veya süresi dışında).")
+    tutar, tahmini = plan_tutari(plan, int(yil), int(ay))
+    donem = SabitGiderDonemi(plan_id=plan.id, yil=int(yil), ay=int(ay), tutar=tutar, tahmini=tahmini,
+                             vade_tarihi=vade_hesapla(int(yil), int(ay), plan.odeme_gunu), durum=DONEM_ACIK)
+    session.add(donem)
+    session.flush()
+    return donem
+
+
+def donem_hazirla(plan_id: int, yil: int, ay: int) -> int:
+    """Plan + yıl + ay dönemi; yoksa ödeme anında oluşturulur (anahtar aynı olduğundan mükerrer olmaz)."""
+    yazma_zorunlu(*YAZMA_YETKISI)
+    schema_hazirla()
+    with get_session() as session:
+        return int(_donem_al(session, plan_id, yil, ay).id)
+
+
+def donem_kalani(donem_id: int) -> Decimal:
+    with get_session() as session:
+        donem = session.get(SabitGiderDonemi, int(donem_id))
+        if donem is None:
+            raise ValueError("Dönem bulunamadı.")
+        return donem_ozeti(session, donem, date.max)["kalan"]
+
+
+def gider_fisi_ile_ode(plan_id: int, yil: int, ay: int, *, finans_hesap_id: int, hizmet_id: int, tutar,
+                       tarih: date | None = None, aciklama: str = "") -> dict:
+    """Mevcut gider fişi işleviyle kasa / bankadan öder ve fişi döneme bağlar.
+
+    Bağlantı yazılamazsa fiş iptal edilir; dönem kalanı yalnız geçerli bağlantıyla azalır.
+    """
+    from database.finans_service import FinansService
+
+    yazma_zorunlu(*YAZMA_YETKISI)
+    tutar = _q2(tutar)
+    if tutar <= 0:
+        raise ValueError("Ödeme tutarı sıfırdan büyük olmalıdır.")
+    donem_id = donem_hazirla(plan_id, yil, ay)
+    kalan = donem_kalani(donem_id)
+    if tutar > kalan:
+        raise ValueError(f"Ödeme tutarı ({tutar} TL) dönemin kalanını ({kalan} TL) aşıyor.")
+    fis = FinansService.gider_fisi_kaydet({"tarih": tarih or date.today(), "tutar": tutar,
+                                           "finans_hesap_id": int(finans_hesap_id), "hizmet_id": int(hizmet_id),
+                                           "aciklama": aciklama})
+    try:
+        baglanti_ekle(donem_id, fis.belge_no, tutar, tarih=fis.tarih, aciklama="Ödeme takviminden")
+    except Exception:
+        FinansService.gider_fisi_iptal(fis.id)
+        raise
+    return {"belge_no": fis.belge_no, "tutar": tutar, "donem_id": donem_id}
 
 
 # ----------------------------------------------------------------------------- hesap

@@ -59,10 +59,14 @@ GIRIS_HAREKETLERI = (
     "POS TAHSİLAT",
     "POS → KMH AKTARIM (KMH)",
     "KK ÖDEME",  # kartla ödeme → KK borcu artar
+    "KK EKSTRE ÖDEME İPTAL",  # iptal edilen ekstre ödemesi: ödeme hesabına iade, kart borcu geri gelir
+    "KK ÖDEME DÜZELTME EK",  # kayıt düzeltmesi: açık dönem artışı / eksi düzeltmenin tersi → kart borcu artar
+    "KK GİDER",  # eski sürümde kart hesabına yazılmış gider fişi (onarımla) → KK borcu artar
     "KREDİ KULLANDIRIM",  # ana para → krediler borcu artar
     "KREDİ KULLANDIRIM (MEVDUAT)",  # ana para mevduat/KMH'ye giriş
     "TAHSİLAT MAKBUZU",
     "ÇEK/SENET TAHSİLAT",
+    "ÇEK/SENET ÖDEME İPTAL",  # iptal edilen çek/senet ödemesinin ters hareketi
 )
 
 # Bakiyeyi azaltan hareketler
@@ -85,6 +89,9 @@ CIKIS_HAREKETLERI = (
     "GİDER FİŞİ",
     "ÖDEME MAKBUZU",
     "ÇEK/SENET ÖDEME",
+    "KK İADE",  # banka iadesi → KK borcu azalır
+    "KK ÖDEME İPTAL",  # hatalı kart ödemesi kaydının ters hareketi
+    "KK ÖDEME DÜZELTME",  # kayıt düzeltmesi: eski kart kaydının ters hareketi / açık dönem azalışı
 )
 
 MEVDUAT_EVRAK_TURLERI = (
@@ -507,11 +514,12 @@ class FinansService:
     def varlik_bakiyesi(tutar, alt_tur=None, hesap=None, hesap_turu=None) -> Decimal:
         """
         Rapor / özet görünümü: varlık (+), borç hesapları (−).
-        Ham borç bakiyesi pozitif tutulsa bile burada eksi döner.
+        Ham borç bakiyesi pozitif borç tutar; burada eksi döner. Fazla ödenmiş kart (ham eksi) kart
+        alacağıdır ve artı görünür.
         """
         deger = Decimal(str(tutar or 0))
         if FinansService.borc_hesabi_mi(alt_tur=alt_tur, hesap=hesap, hesap_turu=hesap_turu):
-            return -abs(deger) if deger != 0 else Decimal("0")
+            return -deger if deger != 0 else Decimal("0")
         return deger
 
     @staticmethod
@@ -754,9 +762,16 @@ class FinansService:
     def _finans_belge_no(session, on_ek: str) -> str:
         yil = date.today().year
         like = f"{on_ek}-{yil}-%"
-        mevcut = session.scalars(
+        mevcut = list(session.scalars(
             select(FinansHareketi.belge_no).where(FinansHareketi.belge_no.like(like))
-        ).all()
+        ).all())
+        # Kartla ödenen gider fişinin ve gider kart ödemesi iadesinin kasa/banka hareketi olmayabilir
+        if on_ek == "GDF":
+            mevcut += session.scalars(select(GiderFisi.belge_no).where(GiderFisi.belge_no.like(like))).all()
+        elif on_ek == "KKO":
+            mevcut += session.scalars(
+                select(KrediKartiOdeme.belge_no).where(KrediKartiOdeme.belge_no.like(like))
+            ).all()
         sira = 1
         for no in mevcut:
             try:
@@ -1160,6 +1175,28 @@ class FinansService:
             return [h for h in hesaplar if FinansService._kby_hedef_uygun_mu(h)]
 
     @staticmethod
+    def _karta_ekstre_odemesi(session, *, kaynak, kart_hesap, ekstre_id, tarih, tutar, aciklama, dekont_no,
+                              belge_no, istek_anahtari, giris) -> str:
+        """Kasa / banka → kredi kartı hesabı: düz giriş yerine seçilen ekstrenin ödemesi (kart borcu bir kez düşer)."""
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+        from database.models.finans import KrediKartiEkstre
+
+        if belge_no:
+            raise ValueError("Kredi kartı hesabına yapılan ödeme ekstre ödemesidir; düzeltmek için ekstre "
+                             "detayından ödemeyi iptal edip yeniden girin.")
+        if not ekstre_id:
+            raise ValueError("Kredi kartı hesabına ödeme için ödenecek ekstreyi seçin.")
+        ekstre = session.get(KrediKartiEkstre, int(ekstre_id))
+        kart = session.get(KrediKartiTanimi, ekstre.kredi_karti_id) if ekstre else None
+        if kart is None or kart.banka_karti_id != kart_hesap.banka_karti_id:
+            raise ValueError("Seçilen ekstre bu kredi kartı hesabının bankasına ait değil.")
+        sonuc = KrediKartiEkstreService.odeme_yap(
+            ekstre_id=int(ekstre_id), tutar=tutar, tarih=tarih, finans_hesap_id=int(kaynak.id),
+            dekont_no=dekont_no, aciklama=aciklama, istek_anahtari=istek_anahtari, kaynak=giris,
+            bakiye_kontrol=True, session=session)
+        return sonuc["belge_no"]
+
+    @staticmethod
     def kasadan_bankaya_yatan(
         kasa_hesap_id,
         banka_hesap_id,
@@ -1168,9 +1205,12 @@ class FinansService:
         aciklama=None,
         dekont_no=None,
         belge_no=None,
+        ekstre_id=None,
+        istek_anahtari=None,
     ) -> str:
         """        yazma_zorunlu("finans_duzenleme")
-Kasadan çıkış + banka hesabına (mevduat/KMH/KK/vadeli) giriş."""
+Kasadan çıkış + banka hesabına (mevduat/KMH/vadeli) giriş. Kredi kartı hesabına yatırma ekstre ödemesidir:
+ekstre seçilir, ödeme ekstre ödeme akışıyla (kart borcu ve ekstre bir kez düşer) yazılır, KKE belge no döner."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if tarih > date.today():
             raise ValueError("İşlem tarihi gelecek olamaz.")
@@ -1204,6 +1244,11 @@ Kasadan çıkış + banka hesabına (mevduat/KMH/KK/vadeli) giriş."""
                 raise ValueError(
                     "Hedef hesap mevduat, KMH, kredi kartı veya vadeli hesap olmalıdır."
                 )
+            if (banka.alt_hesap_turu or "").upper() == "KREDI_KARTI":
+                return FinansService._karta_ekstre_odemesi(
+                    session, kaynak=kasa, kart_hesap=banka, ekstre_id=ekstre_id, tarih=tarih, tutar=tutar,
+                    aciklama=aciklama, dekont_no=dekont_no, belge_no=belge_no, istek_anahtari=istek_anahtari,
+                    giris="KASADAN_BANKAYA")
             kasa_bak = FinansService.bakiye(kasa)
             if kasa_bak < tutar:
                 raise ValueError(
@@ -1466,9 +1511,12 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         belge_turu="HAVALE",
         dekont_no=None,
         belge_no=None,
+        ekstre_id=None,
+        istek_anahtari=None,
     ) -> str:
         """        yazma_zorunlu("finans_duzenleme")
-Çıkış banka hesabından giriş banka hesabına virman (EFT / Havale)."""
+Çıkış banka hesabından giriş banka hesabına virman (EFT / Havale). Giriş hesabı kredi kartıysa ekstre
+ödemesi olarak yazılır (ekstre seçimi zorunlu, KKE belge no döner)."""
         tutar = _decimal(tutar, "Tutar", Decimal("0.01"))
         if int(kaynak_hesap_id) == int(hedef_hesap_id):
             raise ValueError("Çıkış ve giriş hesabı aynı olamaz.")
@@ -1512,6 +1560,11 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 raise ValueError(
                     "Giriş hesabı mevduat, KMH, kredi kartı veya vadeli olmalıdır."
                 )
+            if (hedef.alt_hesap_turu or "").upper() == "KREDI_KARTI":
+                return FinansService._karta_ekstre_odemesi(
+                    session, kaynak=kaynak, kart_hesap=hedef, ekstre_id=ekstre_id, tarih=tarih, tutar=tutar,
+                    aciklama=aciklama, dekont_no=dekont_no, belge_no=belge_no, istek_anahtari=istek_anahtari,
+                    giris="VIRMAN")
             FinansService.cikis_kontrol(
                 kaynak, tutar, kart=kaynak.banka_karti, hesap_etiket="Çıkış hesabı"
             )
@@ -2378,15 +2431,10 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
 
     @staticmethod
     def kredi_karti_kullanilan(kredi_karti_id) -> Decimal:
-        """Açık KK ödemelerinin toplamı (basit kullanılan limit)."""
-        with get_session() as session:
-            odemeler = session.scalars(
-                select(KrediKartiOdeme).where(
-                    KrediKartiOdeme.kredi_karti_id == int(kredi_karti_id),
-                    KrediKartiOdeme.durum == "AÇIK",
-                )
-            ).all()
-            return sum((Decimal(str(o.tutar)) for o in odemeler), Decimal("0"))
+        """Kullanılan limit = toplam kart borcu (ödenen ekstre tutarları düşülmüş, gelecek taksitler dahil)."""
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+        return KrediKartiEkstreService.kart_borc_ozeti(int(kredi_karti_id))["kullanilan"]
 
     @staticmethod
     def kredi_karti_odeme(
@@ -2439,6 +2487,10 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                 )
                 if not eski:
                     raise ValueError("Güncellenecek KK ödeme fişi bulunamadı.")
+                if (eski.kaynak_turu or "CARI") != "CARI":
+                    raise ValueError("Bu kart ödemesi bir gider ödemesine bağlı. Tutar, kart veya taksit planı "
+                                     "değişikliği 'Kartla Gider Ödemeleri' ekranından iptal / banka iadesi ile "
+                                     "yapılır; kart planı burada yeniden yazılmaz.")
                 # Taksitlerden biri ödendiyse engelle
                 if any((t.durum or "") == "ODENDI" for t in (eski.taksitler or [])):
                     raise ValueError("Ödenmiş taksiti olan fiş güncellenemez.")
@@ -2472,25 +2524,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             if kk.banka_karti_id != kart_banka.id:
                 raise ValueError("Seçilen kart bu bankaya ait değil.")
 
-            kullanilan = sum(
-                (
-                    Decimal(str(o.tutar))
-                    for o in session.scalars(
-                        select(KrediKartiOdeme).where(
-                            KrediKartiOdeme.kredi_karti_id == kk.id,
-                            KrediKartiOdeme.durum == "AÇIK",
-                        )
-                    ).all()
-                ),
-                Decimal("0"),
-            )
-            limit = Decimal(str(kk.kart_limiti or 0))
-            if limit > 0 and kullanilan + brut > limit:
-                kalan = limit - kullanilan
-                raise ValueError(
-                    f"Kart limiti yetersiz. Limit {_fmt(limit)}, "
-                    f"kullanılan {_fmt(kullanilan)}, kalan {_fmt(kalan)}."
-                )
+            from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+            KrediKartiEkstreService.limit_kontrol(session, kk, brut)
 
             belgeno = belge_no or FinansService._finans_belge_no(session, "KKO")
             tip_etiket = dict(KK_CEKIM_TURLERI).get(tur, tur)
@@ -2572,8 +2608,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
             )
             if not o:
                 raise ValueError("KK ödeme fişi bulunamadı.")
-            cari = session.get(Cari, o.cari_id)
+            cari = session.get(Cari, o.cari_id) if (o.kaynak_turu or "CARI") == "CARI" else None
             return {
+                "kaynak_turu": o.kaynak_turu or "CARI",
                 "belge_no": o.belge_no,
                 "tarih": o.tarih,
                 "vade_tarihi": o.vade_tarihi,
@@ -2624,7 +2661,9 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                     "belge_no": o.belge_no,
                     "tarih": o.tarih,
                     "vade_tarihi": o.vade_tarihi,
-                    "cari": cari_map.get(o.cari_id, ""),
+                    "cari": (cari_map.get(o.cari_id, "") if (o.kaynak_turu or "CARI") == "CARI"
+                             else "Gider ödemesi (cari yok)"),
+                    "kaynak_turu": o.kaynak_turu or "CARI",
                     "banka": banka_map.get(o.banka_karti_id, ""),
                     "kart": o.kredi_karti.kart_adi if o.kredi_karti else "",
                     "cekim_turu": dict(KK_CEKIM_TURLERI).get(o.cekim_turu, o.cekim_turu),
@@ -3028,7 +3067,7 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
 
     @staticmethod
     def gider_fisi_odeme_hesaplari():
-        """Kasa + mevduat / KMH / kredi kartı — POS ve krediler hariç."""
+        """Kasa + mevduat / KMH — POS, krediler ve kredi kartı hariç (kartla ödeme ayrı yöntemdir)."""
         with get_session() as session:
             hesaplar = list(
                 session.scalars(
@@ -3044,7 +3083,7 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
                 tur = (h.hesap_turu or "").upper()
                 if tur == "KASA":
                     sonuc.append(h)
-                elif tur == "BANKA" and alt in ("MEVDUAT", "KMH", "KREDI_KARTI"):
+                elif tur == "BANKA" and alt in ("MEVDUAT", "KMH"):
                     sonuc.append(h)
             return sonuc
 
@@ -3089,7 +3128,20 @@ Banka hesabından (mevduat/KMH/KK/vadeli) çıkış + kasaya giriş."""
     def gider_fisi_kaydet(veriler: dict) -> GiderFisi:
         """        yazma_zorunlu("finans_duzenleme")
 Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
+        with get_session() as session:
+            fis = FinansService._gider_fisi_yaz(session, veriler)
+            fis_id = fis.id
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("gider_fisi_fisi", fis_id, session=session)
+        return FinansService.gider_fisi_getir(fis_id)
+
+    @staticmethod
+    def _gider_fisi_yaz(session, veriler: dict, *, kart_hesabi: FinansHesabi | None = None) -> GiderFisi:
+        """Gider fişi satırları (muhasebe olayı hariç). ``kart_hesabi`` verilirse kartla ödenen gider:
+        kasa/banka çıkışı ve bakiye denetimi yoktur; kart borcu kart ödemesi hareketinde izlenir."""
         from database.models.hizmet import HizmetHareketi, HizmetKarti
+        from database.sube_service import SubeService
 
         tarih = veriler["tarih"]
         if isinstance(tarih, str):
@@ -3097,31 +3149,33 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         if tarih > date.today():
             raise ValueError("Tarih gelecek olamaz.")
         tutar = _decimal(veriler.get("tutar"), "Tutar", Decimal("0.01"))
-        hesap_id = int(veriler["finans_hesap_id"])
         hizmet_id = int(veriler["hizmet_id"])
         aciklama = (veriler.get("aciklama") or "").strip() or None
 
-        with get_session() as session:
-            from database.sube_service import SubeService
-
-            sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
+        sube_id = SubeService.transaction_subesi(session, veriler.get("sube_id"))
+        if kart_hesabi is not None:
+            hesap = kart_hesabi
+        else:
             hesap = session.scalar(
                 select(FinansHesabi)
-                .where(FinansHesabi.id == hesap_id)
+                .where(FinansHesabi.id == int(veriler["finans_hesap_id"]))
                 .options(selectinload(FinansHesabi.hareketler), selectinload(FinansHesabi.banka_karti))
             )
             if not hesap or not hesap.aktif:
                 raise ValueError("Ödeme hesabı bulunamadı.")
-            hizmet = session.get(HizmetKarti, hizmet_id)
-            if not hizmet or not hizmet.aktif:
-                raise ValueError("Gider hizmet kartı seçin.")
-            if (hizmet.hizmet_turu or "").upper() != "GIDER":
-                raise ValueError("Yalnızca gider hizmet kartı seçilebilir.")
+            if (hesap.alt_hesap_turu or "").upper() == "KREDI_KARTI":
+                raise ValueError("Kredi kartıyla ödenen gider için ödeme yöntemi olarak 'Kredi kartı' seçin "
+                                 "(kart, taksit planı ve ekstre dönemi girilir).")
+        hizmet = session.get(HizmetKarti, hizmet_id)
+        if not hizmet or not hizmet.aktif:
+            raise ValueError("Gider hizmet kartı seçin.")
+        if (hizmet.hizmet_turu or "").upper() != "GIDER":
+            raise ValueError("Yalnızca gider hizmet kartı seçilebilir.")
 
+        belge_no = FinansService._finans_belge_no(session, "GDF")
+        acik = aciklama or f"{hizmet.hizmet_kodu} — {hizmet.hizmet_adi}"
+        if kart_hesabi is None:
             FinansService.cikis_kontrol(hesap, tutar, kart=hesap.banka_karti)
-            belge_no = FinansService._finans_belge_no(session, "GDF")
-            acik = aciklama or f"{hizmet.hizmet_kodu} — {hizmet.hizmet_adi}"
-
             session.add(
                 FinansHareketi(
                     hesap_id=hesap.id,
@@ -3132,78 +3186,84 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     aciklama=acik,
                 )
             )
-            fis = GiderFisi(
-                belge_no=belge_no,
-                sube_id=sube_id,
-                tarih=tarih,
-                gider_turu="HIZMET",
-                tutar=tutar,
-                finans_hesap_id=hesap.id,
+        fis = GiderFisi(
+            belge_no=belge_no,
+            sube_id=sube_id,
+            tarih=tarih,
+            gider_turu="HIZMET",
+            tutar=tutar,
+            finans_hesap_id=hesap.id,
+            hizmet_id=hizmet.id,
+            aciklama=acik,
+            durum="AÇIK",
+        )
+        session.add(fis)
+        session.add(
+            HizmetHareketi(
                 hizmet_id=hizmet.id,
+                tarih=tarih,
+                hareket_turu="GİDER FİŞİ",
+                belge_no=belge_no,
+                miktar=Decimal("1"),
+                birim_fiyat=tutar,
+                kdv_orani=Decimal(str(hizmet.kdv_orani or 0)),
+                tutar=tutar,
+                isaret=-1,
+                cari_id=None,
                 aciklama=acik,
-                durum="AÇIK",
             )
-            session.add(fis)
-            session.add(
-                HizmetHareketi(
-                    hizmet_id=hizmet.id,
-                    tarih=tarih,
-                    hareket_turu="GİDER FİŞİ",
-                    belge_no=belge_no,
-                    miktar=Decimal("1"),
-                    birim_fiyat=tutar,
-                    kdv_orani=Decimal(str(hizmet.kdv_orani or 0)),
-                    tutar=tutar,
-                    isaret=-1,
-                    cari_id=None,
-                    aciklama=acik,
-                )
-            )
-            session.flush()
-            fis_id = fis.id
-            from database.muhasebe_entegrasyon import muhasebe_hook
-
-            muhasebe_hook("gider_fisi_fisi", fis_id, session=session)
-        return FinansService.gider_fisi_getir(fis_id)
+        )
+        session.flush()
+        return fis
 
     @staticmethod
     def gider_fisi_iptal(fisi_id):
         yazma_zorunlu("finans_duzenleme", "iptal")
         from database.masraf_dagitim_service import KAYNAK_GIDER_FISI, MasrafDagitimService
-        from database.models.hizmet import HizmetHareketi
 
         MasrafDagitimService.kilit_kontrol(kaynak_id=int(fisi_id), kaynak_turu=KAYNAK_GIDER_FISI)
         with get_session() as session:
             fis = session.get(GiderFisi, int(fisi_id))
             if not fis:
                 raise ValueError("Gider fişi bulunamadı.")
-            if fis.durum == "IPTAL":
-                raise ValueError("Fiş zaten iptal.")
-            if (fis.gider_turu or "") != "HIZMET":
-                raise ValueError("Bu fiş buradan iptal edilemez.")
-            session.execute(
-                delete(FinansHareketi).where(
-                    FinansHareketi.belge_no == fis.belge_no,
-                    FinansHareketi.hareket_turu == "GİDER FİŞİ",
-                )
-            )
-            session.execute(
-                delete(HizmetHareketi).where(
-                    HizmetHareketi.belge_no == fis.belge_no,
-                    HizmetHareketi.hareket_turu == "GİDER FİŞİ",
-                )
-            )
-            MasrafDagitimService.bagli_taslaklari_iptal(
-                session, kaynak_turu=KAYNAK_GIDER_FISI, kaynak_id=int(fis.id),
-                neden=f"Kaynak gider fişi {fis.belge_no} iptal edildi.",
-            )
-            fis.durum = "IPTAL"
-            session.flush()
-            from database.muhasebe_entegrasyon import muhasebe_hook
+            from database.gider_kart_odeme_service import fis_karta_bagli_mi
 
-            muhasebe_hook("gider_fisi_iptal", int(fisi_id), f"Gider fişi iptal {fis.belge_no}",
-                          session=session)
+            if fis_karta_bagli_mi(session, int(fis.id)):
+                raise ValueError("Bu gider fişi kredi kartıyla ödendi. Fiş, kart ödemesi ve taksit planı birlikte "
+                                 "'Kartla Gider Ödemeleri' ekranından iptal edilir.")
+            FinansService._gider_fisi_iptal_yaz(session, fis)
         MasrafDagitimService.sahipsiz_taslaklari_kapat()
+
+    @staticmethod
+    def _gider_fisi_iptal_yaz(session, fis: GiderFisi) -> None:
+        from database.masraf_dagitim_service import KAYNAK_GIDER_FISI, MasrafDagitimService
+        from database.models.hizmet import HizmetHareketi
+
+        if fis.durum == "IPTAL":
+            raise ValueError("Fiş zaten iptal.")
+        if (fis.gider_turu or "") != "HIZMET":
+            raise ValueError("Bu fiş buradan iptal edilemez.")
+        session.execute(
+            delete(FinansHareketi).where(
+                FinansHareketi.belge_no == fis.belge_no,
+                FinansHareketi.hareket_turu.in_(("GİDER FİŞİ", "KK GİDER")),
+            )
+        )
+        session.execute(
+            delete(HizmetHareketi).where(
+                HizmetHareketi.belge_no == fis.belge_no,
+                HizmetHareketi.hareket_turu == "GİDER FİŞİ",
+            )
+        )
+        MasrafDagitimService.bagli_taslaklari_iptal(
+            session, kaynak_turu=KAYNAK_GIDER_FISI, kaynak_id=int(fis.id),
+            neden=f"Kaynak gider fişi {fis.belge_no} iptal edildi.",
+        )
+        fis.durum = "IPTAL"
+        session.flush()
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("gider_fisi_iptal", int(fis.id), f"Gider fişi iptal {fis.belge_no}", session=session)
 
     # --- Kasa tahsilat / ödeme makbuzu ---
 
@@ -4196,24 +4256,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         n = int(s.get("taksit_sayisi") or 1)
         if n < 1 or n > KK_MAX_TAKSIT:
             raise ValueError(f"Satır {s['sira_no']}: taksit sayısı 1-{KK_MAX_TAKSIT} arasında olmalıdır.")
-        kullanilan = sum(
-            (
-                Decimal(str(o.tutar))
-                for o in session.scalars(
-                    select(KrediKartiOdeme).where(
-                        KrediKartiOdeme.kredi_karti_id == kk.id,
-                        KrediKartiOdeme.durum == "AÇIK",
-                    )
-                ).all()
-            ),
-            Decimal("0"),
-        )
-        limit = Decimal(str(kk.kart_limiti or 0))
-        if limit > 0 and kullanilan + brut > limit:
-            raise ValueError(
-                f"{kk.kart_adi}: kart limiti yetersiz. Limit {_fmt(limit)}, "
-                f"kullanılan {_fmt(kullanilan)}, kalan {_fmt(limit - kullanilan)}."
-            )
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+        try:
+            KrediKartiEkstreService.limit_kontrol(session, kk, brut)
+        except ValueError as hata:
+            raise ValueError(f"{kk.kart_adi}: {hata}") from hata
         tarih = s["tarih"]
         plan = FinansService.kk_taksit_plani(tarih, n, brut)
         session.add(

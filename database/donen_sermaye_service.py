@@ -48,7 +48,9 @@ GIDER_TARAFI_TURLERI = ("banka",)
 
 ALINAN_ELDE = ("PORTFOYDE", "BANKAYA_TAHSILE", "BANKAYA_TEMINATA", "KISMI_TAHSIL", "VADESI_GECTI")
 VERILEN_ACIK = ("PORTFOYDE", "TEDARIKCIYE_VERILDI", "KISMI_ODENDI", "VADESI_GECTI")
-KISMI_DURUMLAR = ("KISMI_TAHSIL", "KISMI_ODENDI")
+# Kalan tutarı azaltan evrak hareketleri → tam kapanış durumu
+ODEME_KAPANIS = {"ODEME": "ODENDI", "KISMI_ODEME": "ODENDI", "TAHSIL": "TAHSIL_EDILDI", "KISMI_TAHSIL": "TAHSIL_EDILDI"}
+KISMI_ADI = {"ODENDI": "KISMI_ODENDI", "TAHSIL_EDILDI": "KISMI_TAHSIL"}
 
 KAPALI_KREDI_TAKSITI = ("IPTAL", "YAPILANDIRILDI")
 KISA_VADE_AY = 12
@@ -469,20 +471,61 @@ def _kredi(b) -> tuple[dict, list[str], list[str]]:
 
 
 # ----------------------------------------------------------------------------- çek / senet
-def _evrak_durumu(e, d: date, bugun: date) -> tuple[str, Decimal]:
-    """Evrakın D sonundaki durumu ve kalan TL tutarı (durum geçmişinden)."""
-    hareketler = sorted(e.hareketler or [], key=lambda h: (h.tarih, h.id))
-    sonraki = [h for h in hareketler if h.tarih.date() > d]
-    if not sonraki or d >= bugun:
+def _evrak_durumu(e, d: date, bugun: date, odeme_gunu: dict | None = None,
+                  iptal_gunu: dict | None = None) -> tuple[str, Decimal]:
+    """Evrakın D sonundaki durumu ve kalan TL tutarı (durum geçmişinden).
+
+    Ödeme / tahsilat, kasa-banka hareketinin tarihinden (odeme_gunu) itibaren sayılır; iptal edilmişse iptal
+    gününden (iptal_gunu) itibaren sayılmaz. ODEME_IPTAL satırının kendi etkisi yoktur (çift sayım olmasın).
+    """
+    odeme_gunu, iptal_gunu = odeme_gunu or {}, iptal_gunu or {}
+
+    def odeme_mi(h) -> bool:
+        return (h.islem_turu or "").upper() in ODEME_KAPANIS
+
+    def gun(h) -> date:
+        return (odeme_gunu.get(h.id) or h.tarih.date()) if odeme_mi(h) else h.tarih.date()
+
+    hareketler = sorted(e.hareketler or [], key=lambda h: (gun(h), h.tarih, h.id))
+    sonra_degisen = any(gun(h) > d or (iptal_gunu.get(h.id) or date.min) > d for h in hareketler)
+    if not sonra_degisen or d >= bugun:
         return (e.durum or "").upper(), _d(e.kalan_tutar)
-    oncekiler = [h for h in hareketler if h.tarih.date() <= d]
-    if oncekiler:
-        durum = oncekiler[-1].yeni_durum
+    gecerli = [h for h in hareketler
+               if (h.islem_turu or "").upper() != "ODEME_IPTAL" and gun(h) <= d
+               and not (h.id in iptal_gunu and iptal_gunu[h.id] <= d)]
+    odenen = sum((_d(h.tutar) for h in gecerli if odeme_mi(h)), SIFIR)
+    kalan = max(SIFIR, _d(e.tl_tutari) - odenen)
+    if gecerli and odeme_mi(gecerli[-1]):
+        kapanis = ODEME_KAPANIS[(gecerli[-1].islem_turu or "").upper()]
+        durum = kapanis if kalan <= 0 else KISMI_ADI[kapanis]
+    elif gecerli:
+        durum = gecerli[-1].yeni_durum
+    elif hareketler:
+        ilk = hareketler[0]
+        durum = (ilk.onceki_durum or ilk.yeni_durum) if odeme_mi(ilk) else ilk.yeni_durum
     else:
-        durum = hareketler[0].yeni_durum if hareketler else e.durum
-    kismi = sum((_d(h.tutar) for h in oncekiler if (h.yeni_durum or "").upper() in KISMI_DURUMLAR), SIFIR)
-    toplam = _d(e.tl_tutari)
-    return (durum or "").upper(), max(SIFIR, toplam - kismi)
+        durum = e.durum
+    return (durum or "").upper(), kalan
+
+
+def _odeme_iptal_gunleri(s) -> tuple[dict, dict]:
+    """Ödeme/tahsilat hareketi → kasa-banka tarihi; iptal edilmiş ödeme hareketi → iptal günü."""
+    from sqlalchemy import inspect
+
+    from database.models.cek_senet import CekSenetHareket
+    from database.models.finans import FinansHareketi
+
+    odeme_gunu = dict(s.execute(
+        select(CekSenetHareket.id, FinansHareketi.tarih)
+        .join(FinansHareketi, FinansHareketi.id == CekSenetHareket.finans_hareket_id)
+        .where(CekSenetHareket.islem_turu.in_(tuple(ODEME_KAPANIS)))).all())
+    kolonlar = {k["name"] for k in inspect(s.connection()).get_columns(CekSenetHareket.__tablename__)}
+    iptal_gunu = {}
+    if {"iptal", "iptal_tarihi"} <= kolonlar:
+        for hid, zaman in s.execute(select(CekSenetHareket.id, CekSenetHareket.iptal_tarihi)
+                                    .where(CekSenetHareket.iptal.is_(True))).all():
+            iptal_gunu[hid] = zaman.date() if zaman else date.min
+    return odeme_gunu, iptal_gunu
 
 
 def _cek_senet(b) -> tuple[dict, list[str], list[str]]:
@@ -495,11 +538,12 @@ def _cek_senet(b) -> tuple[dict, list[str], list[str]]:
     tanimsiz = 0
     if not inspect(b.s.connection()).has_table(CekSenetEvrak.__tablename__):
         return toplam, ["Çek / senet modülü bu firmada kullanılmamış; çek senet kalemi yok."], []
+    odeme_gunu, iptal_gunu = _odeme_iptal_gunleri(b.s)
     for e in b.s.scalars(select(CekSenetEvrak).options(selectinload(CekSenetEvrak.hareketler))
                          .where(CekSenetEvrak.duzenleme_tarihi <= b.d)).all():
         if e.aktif is False:
             continue
-        durum, kalan = _evrak_durumu(e, b.d, b.bugun)
+        durum, kalan = _evrak_durumu(e, b.d, b.bugun, odeme_gunu, iptal_gunu)
         if kalan <= 0:
             continue
         tur, yon = (e.evrak_turu or "").upper(), (e.islem_yonu or "").upper()

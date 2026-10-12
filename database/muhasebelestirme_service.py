@@ -85,6 +85,7 @@ TEMEL_ANAHTARLAR: dict[str, tuple[str, ...]] = {
     # (eksikse evrak "İnceleme gerekiyor" kalır, açıklamada ayarın yeri yazar).
     "pos_tahsilat": (),
     "kart_odeme": (),
+    "kk_ekstre_odeme": (),
     "pos_valor_aktarimi": (),
     "cek_senet": (),
     "banka_kredi_kullandirim": (),
@@ -104,6 +105,7 @@ IPTAL_OLAYLARI = {
     "cari_virman_makbuzu_iptal": "cari_virman_makbuzu",
     "pos_tahsilat_iptal": "pos_tahsilat",
     "kart_odeme_iptal": "kart_odeme",
+    "kk_ekstre_odeme_iptal": "kk_ekstre_odeme",
     "cek_senet_iptal": "cek_senet",
     "banka_kredi_odeme_iptal": "banka_kredi_odeme",
     "kur_farki_iptal": "kur_farki",
@@ -819,9 +821,27 @@ class MuhasebelestirmeService:
             o = session.get(KrediKartiOdeme, kid)
             if o is None:
                 return None
+            if (o.kaynak_turu or "CARI") == "GIDER":
+                return {"no": o.belge_no, "tarih": o.tarih, "cari_id": None,
+                        "cari_adi": ("Kart iadesi (gider)" if o.cekim_turu == "IADE"
+                                     else "Kartla gider kayıt düzeltmesi" if o.cekim_turu == "DUZELTME"
+                                     else "Kartla gider ödemesi"),
+                        "tutar": decimal(o.tutar or 0), "para_birimi": "TRY",
+                        "iptal": (o.durum or "").upper() in ("IPTAL", "İPTAL", "DÜZELTİLDİ"), "kesin": True}
             return {"no": o.belge_no, "tarih": o.tarih, "cari_id": o.cari_id, "cari_adi": cari_adi(o.cari_id),
                     "tutar": decimal(o.tutar or 0), "para_birimi": "TRY",
                     "iptal": (o.durum or "").upper() in ("IPTAL", "İPTAL"), "kesin": True}
+        if evrak == "kk_ekstre_odeme":
+            from database.models.finans import KrediKartiEkstre, KrediKartiEkstreOdeme, KrediKartiTanimi
+
+            o = session.get(KrediKartiEkstreOdeme, kid)
+            if o is None:
+                return None
+            e = session.get(KrediKartiEkstre, o.ekstre_id)
+            kart = session.get(KrediKartiTanimi, e.kredi_karti_id) if e else None
+            return {"no": o.belge_no, "tarih": o.tarih, "cari_id": None,
+                    "cari_adi": f"{kart.kart_adi if kart else 'Kart'} ekstre ödemesi",
+                    "tutar": decimal(o.tutar or 0), "para_birimi": "TRY", "iptal": bool(o.iptal), "kesin": True}
         if evrak == "cek_senet":
             from database.models.cek_senet import CekSenetEvrak, CekSenetHareket
             from database.muhasebe_finans_ayarlari import CEK_SENET_ASAMA_ADI
@@ -1097,7 +1117,7 @@ class MuhasebelestirmeService:
         Kaynak id, evrakın kalıcı kimliğinden (havale/virman/cari tahsilat-ödeme) veya kendi tablosundan
         (POS tahsilatı, şirket kartı ödemesi) çözülür.
         """
-        from database.models.finans import FinansEvrakKimligi, KrediKartiOdeme, PosValorKaydi
+        from database.models.finans import FinansEvrakKimligi, KrediKartiEkstreOdeme, KrediKartiOdeme, PosValorKaydi
 
         nolar = sorted({str(n) for n in belge_nolari if n})
         if not nolar:
@@ -1106,6 +1126,8 @@ class MuhasebelestirmeService:
             kaynak = (PosValorKaydi.id, PosValorKaydi.belge_no, None)
         elif evrak == "kart_odeme":
             kaynak = (KrediKartiOdeme.id, KrediKartiOdeme.belge_no, None)
+        elif evrak == "kk_ekstre_odeme":
+            kaynak = (KrediKartiEkstreOdeme.id, KrediKartiEkstreOdeme.belge_no, None)
         else:
             kaynak = (FinansEvrakKimligi.id, FinansEvrakKimligi.belge_no, FinansEvrakKimligi.evrak_turu == evrak)
         try:

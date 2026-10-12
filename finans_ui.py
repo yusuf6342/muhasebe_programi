@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 import tkinter as tk
+import uuid
 from tkinter import messagebox, simpledialog, ttk
 
 from database.finans_service import FinansService
@@ -39,6 +40,23 @@ def _para(tutar):
 def _bakiye_renk(tutar):
     """Pozitif yeşil, negatif (borç) kırmızı — FinansService ile aynı kural."""
     return FinansService.bakiye_renk_kodu(tutar)
+
+
+def _kart_limit_metni(kk) -> str:
+    """Kart borcu / limit satırı (ekstre ekranı, limit kontrolü ve takvimle aynı hesap)."""
+    from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+    oz = KrediKartiEkstreService.kart_borc_ozeti(int(kk.id))
+    metin = f"Toplam kart borcu: {_para(oz['toplam_borc'])} · Kullanılan limit: {_para(oz['kullanilan'])}"
+    if not oz["limit_tanimli"]:
+        metin += " · Limit tanımsız (kontrol yapılmaz)"
+    else:
+        metin += f" · Kullanılabilir: {_para(oz['kullanilabilir'])} (limit {_para(oz['limit'])})"
+        if oz["kullanilabilir"] < 0:
+            metin += " · LİMİT AŞILDI"
+    if not oz["son_odeme_tanimli"]:
+        metin += "\nKartın son ödeme günü tanımsız: ekstreler 'Eksik bilgi' durumunda, gecikme belirlenemez."
+    return metin
 
 
 _HAREKET_FONT = ("Segoe UI", 9, "bold")
@@ -170,6 +188,12 @@ def _fon_yonetimi(app):
     fon_yonetimi_goster(app)
 
 
+def _odeme_takvimi(app):
+    from odeme_takvimi_ui import odeme_takvimi_goster
+
+    odeme_takvimi_goster(app)
+
+
 def finans_menusu_goster(app):
     app._icerigi_temizle()
     _finans_menu_isaretle(app)
@@ -198,6 +222,7 @@ def finans_menusu_goster(app):
         ("BANKALAR", lambda: bankalar_sayfasi_goster(app)),
         ("BANKA KREDİLERİ", lambda: banka_kredileri_menusu_goster(app) if banka_kredileri_menusu_goster else None),
         ("BANKA İŞLEMLERİ", lambda: banka_islemleri_menusu_goster(app)),
+        ("ÖDEME TAKVİMİ", lambda: _odeme_takvimi(app)),
         ("ÇEK / SENET İŞLEMLERİ", lambda: cek_senet_menusu_goster(app)),
         ("ÖDEME SÖZLERİ TAKVİMİ", lambda: _odeme_sozleri_merkezi(app)),
         ("FON YÖNETİMİ", lambda: _fon_yonetimi(app)),
@@ -517,8 +542,14 @@ class KasadanBankayaYatirDialog(tk.Toplevel):
         ).grid(row=row, column=3, sticky="w")
 
         row = 5
-        self.hesap_bilgi = ttk.Label(self, text="", foreground="#555")
-        self.hesap_bilgi.grid(row=row, column=1, columnspan=2, padx=12, sticky="w")
+        bilgi_c = ttk.Frame(self)
+        bilgi_c.grid(row=row, column=0, columnspan=4, padx=12, sticky="w")
+        self.hesap_bilgi = ttk.Label(bilgi_c, text="", foreground="#555")
+        self.hesap_bilgi.pack(anchor="w")
+        from kk_ekstre_ui import EkstreSecici
+
+        self.ekstre = EkstreSecici(bilgi_c)
+        self.istek_anahtari = uuid.uuid4().hex
 
         row = 6
         ttk.Label(self, text="Tutar *").grid(row=row, column=0, padx=12, pady=6, sticky="w")
@@ -651,7 +682,13 @@ class KasadanBankayaYatirDialog(tk.Toplevel):
         tip = self.ALT_ETIKET.get(alt, alt)
         self.hesap_bilgi.configure(
             text=f"{h.hesap_adi} · Tür: {tip} · Bakiye: {_para(FinansService.bakiye(h))}"
+            + (" · Kart hesabına yatırma ekstre ödemesidir; ödenecek ekstreyi seçin." if alt == "KREDI_KARTI" else "")
         )
+        if alt == "KREDI_KARTI":
+            self.ekstre.pack(anchor="w", pady=(2, 0))
+            self.ekstre.doldur(h.id)
+        else:
+            self.ekstre.pack_forget()
 
     def kaydet(self):
         try:
@@ -672,6 +709,8 @@ class KasadanBankayaYatirDialog(tk.Toplevel):
                 aciklama=self.aciklama.get().strip() or None,
                 dekont_no=self.dekont.get().strip() or None,
                 belge_no=self.belge_no,
+                ekstre_id=self.ekstre.secili_ekstre_id() if self.ekstre.winfo_manager() else None,
+                istek_anahtari=self.istek_anahtari,
             )
         except ValueError as hata:
             messagebox.showerror("Fiş", str(hata), parent=self)
@@ -1531,8 +1570,14 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
         self.giris_hesap.bind("<<ComboboxSelected>>", lambda _e: self._hesap_bilgi("giris"))
 
         row = 7
-        self.giris_bilgi = ttk.Label(self, text="", foreground="#555")
-        self.giris_bilgi.grid(row=row, column=1, columnspan=2, padx=12, sticky="w")
+        giris_c = ttk.Frame(self)
+        giris_c.grid(row=row, column=0, columnspan=4, padx=12, sticky="w")
+        self.giris_bilgi = ttk.Label(giris_c, text="", foreground="#555")
+        self.giris_bilgi.pack(anchor="w")
+        from kk_ekstre_ui import EkstreSecici
+
+        self.ekstre = EkstreSecici(giris_c)
+        self.istek_anahtari = uuid.uuid4().hex
 
         row = 8
         ttk.Label(self, text="Meblağ *").grid(row=row, column=0, padx=12, pady=6, sticky="w")
@@ -1688,9 +1733,17 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
             return
         alt = (h.alt_hesap_turu or "").upper() or "—"
         tip = self.ALT_ETIKET.get(alt, alt)
+        kart_girisi = yon == "giris" and alt == "KREDI_KARTI"
         bilgi.configure(
             text=f"{h.hesap_adi} · Tür: {tip} · Bakiye: {_para(FinansService.bakiye(h))}"
+            + (" · Kart hesabına virman ekstre ödemesidir; ödenecek ekstreyi seçin." if kart_girisi else "")
         )
+        if yon == "giris":
+            if kart_girisi:
+                self.ekstre.pack(anchor="w", pady=(2, 0))
+                self.ekstre.doldur(h.id)
+            else:
+                self.ekstre.pack_forget()
 
     def kaydet(self):
         try:
@@ -1713,6 +1766,8 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
                 belge_turu=belge_turu,
                 dekont_no=self.dekont.get().strip() or None,
                 belge_no=self.belge_no,
+                ekstre_id=self.ekstre.secili_ekstre_id() if self.ekstre.winfo_manager() else None,
+                istek_anahtari=self.istek_anahtari,
             )
         except ValueError as hata:
             messagebox.showerror("Fiş", str(hata), parent=self)
@@ -1720,7 +1775,7 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
         self.result = belge
         messagebox.showinfo(
             "Kaydedildi" if not self.belge_no else "Güncellendi",
-            f"Belge no: {belge}",
+            f"Belge no: {belge}" + (" (kart ekstre ödemesi)" if str(belge).startswith("KKE") else ""),
             parent=self,
         )
         self.destroy()
@@ -1832,6 +1887,15 @@ class BankaIslemKkOdemeDialog(tk.Toplevel):
                 self._mevcut = FinansService.kredi_karti_odeme_getir(belge_no)
             except ValueError as hata:
                 messagebox.showerror("Fiş", str(hata), parent=parent)
+                self.destroy()
+                return
+            if (self._mevcut.get("kaynak_turu") or "CARI") != "CARI":
+                messagebox.showinfo(
+                    "Fiş",
+                    f"{belge_no} kartla gider ödemesine aittir; buradan değiştirilemez. "
+                    "Giderler → Gider Fişi → 'Kartla Gider Ödemeleri' ekranından iptal veya banka iadesi kaydedin.",
+                    parent=parent,
+                )
                 self.destroy()
                 return
 
@@ -2025,15 +2089,7 @@ class BankaIslemKkOdemeDialog(tk.Toplevel):
         kk = FinansService.kredi_karti_getir(kid)
         if not kk:
             return
-        kullanilan = FinansService.kredi_karti_kullanilan(kid)
-        limit = Decimal(str(kk.kart_limiti or 0))
-        if limit > 0:
-            self.limit_lbl.configure(
-                text=f"Limit: {_para(limit)} · Kullanılan: {_para(kullanilan)} · "
-                f"Kalan: {_para(limit - kullanilan)}"
-            )
-        else:
-            self.limit_lbl.configure(text="Limit tanımlı değil (kontrol yapılmaz).")
+        self.limit_lbl.configure(text=_kart_limit_metni(kk))
 
     def _vade_yaz(self, metin):
         self.vade.configure(state="normal")
@@ -3761,7 +3817,7 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
                     kk.kart_markasi or "—",
                     maske,
                     kk.son_kullanim or "—",
-                    _para(limit) if limit else "—",
+                    _para(limit) if limit else "Limit tanımsız",
                     _para(kullanilan),
                     _para(kalan) if limit else "—",
                     kk.hesap_kesim_gunu or "—",
@@ -4189,15 +4245,7 @@ class KrediKartiOdemeDialog(tk.Toplevel):
         kk = FinansService.kredi_karti_getir(kid)
         if not kk:
             return
-        kullanilan = FinansService.kredi_karti_kullanilan(kid)
-        limit = Decimal(str(kk.kart_limiti or 0))
-        if limit > 0:
-            self.limit_lbl.configure(
-                text=f"Limit: {_para(limit)} · Kullanılan: {_para(kullanilan)} · "
-                f"Kalan: {_para(limit - kullanilan)}"
-            )
-        else:
-            self.limit_lbl.configure(text="Limit tanımlı değil (kontrol yapılmaz).")
+        self.limit_lbl.configure(text=_kart_limit_metni(kk))
 
     def _vade_ve_plan_guncelle(self):
         for item in self.plan_tablo.get_children():

@@ -417,6 +417,17 @@ class BankaKrediService:
         return veri
 
     @staticmethod
+    def taksit_kalan_bilesenleri(taksit_id) -> dict:
+        """Plan bileşenleri − geçerli ödemeler (taksit_ode'nin kalan kontrolüyle aynı hesap)."""
+        with get_session() as session:
+            taksit = session.get(BankaKrediTaksit, int(taksit_id))
+            if taksit is None:
+                raise ValueError("Taksit bulunamadı.")
+            plan = BankaKrediService.taksit_bilesenleri(taksit)
+            odenmis = BankaKrediService._odenen_bilesenler(session, taksit.id)
+            return {alan: max(SIFIR, plan.get(alan, SIFIR) - odenmis[alan]) for alan in BILESEN_ALANLARI}
+
+    @staticmethod
     def _taksit_kalan(taksit) -> Decimal:
         if (taksit.durum or "") in KAPALI_TAKSIT_DURUMLARI:
             return SIFIR

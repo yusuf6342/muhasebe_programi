@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import weakref
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 
 from database.database import get_session
 from database.models.cek_senet import (
     DURUM_BANKAYA_TAHSILE,
     DURUM_BANKAYA_TEMINATA,
     DURUM_CIRO_EDILDI,
+    DURUM_HUKUKI_TAKIP,
     DURUM_IADE,
     DURUM_IPTAL,
     DURUM_KARSILIKSIZ,
@@ -51,6 +53,11 @@ TAHSIL_EDILEBILIR = frozenset(
 ODE_EDILEBILIR = frozenset(
     {DURUM_TEDARIKCIYE_VERILDI, DURUM_KISMI_ODENDI, DURUM_PORTFOYDE}
 )
+# Vadesi geçmiş / sorunlu ama hâlâ açık firma borcu: yalnız verilen firma çeki / senedi ödenebilir.
+ODE_EDILEBILIR_ACIK_BORC = frozenset(
+    {DURUM_VADESI_GECTI, DURUM_KARSILIKSIZ, DURUM_PROTESTO, DURUM_HUKUKI_TAKIP}
+)
+FIRMA_EVRAK_TURLERI = frozenset({EVRAK_TURU_FIRMA_CEKI, EVRAK_TURU_FIRMA_SENEDI})
 IADE_EDILEBILIR = frozenset(
     {
         DURUM_PORTFOYDE,
@@ -139,6 +146,29 @@ def _durum_etiket(kod: str) -> str:
     return DURUM_ETIKETLERI.get(kod, kod or "")
 
 
+def odeme_engeli(evrak) -> str | None:
+    """Evrak ödenemiyorsa nedenini, ödenebiliyorsa None döndürür (model nesnesi veya getir() sözlüğü).
+
+    Vadenin geçmiş olması tek başına engel değildir: açık kalanı olan verilen firma çeki / senedi
+    vadesi geçmiş, karşılıksız, protestolu veya hukuki takipte olsa da ödenebilir.
+    """
+    def al(ad):
+        return evrak.get(ad) if isinstance(evrak, dict) else getattr(evrak, ad, None)
+
+    if al("islem_yonu") != ISLEM_YONU_VERILEN:
+        return "Ödeme yalnızca verilen (firma) evraklar için geçerlidir."
+    durum = al("durum")
+    if durum in ODE_EDILEBILIR:
+        pass
+    elif durum in ODE_EDILEBILIR_ACIK_BORC and al("evrak_turu") in FIRMA_EVRAK_TURLERI:
+        pass
+    else:
+        return f"Ödenemez (durum: {_durum_etiket(durum)})."
+    if _d(al("kalan_tutar")) <= 0:
+        return "Evrakın kalan tutarı yok; ödeme yapılamaz."
+    return None
+
+
 def _evrak_turu_coz(basit_tur: str, islem_yonu: str) -> str:
     """Çek/Senet + Alınan/Verilen → model evrak_turu."""
     tur = (basit_tur or "").strip().upper()
@@ -173,17 +203,61 @@ def _basit_tur(evrak_turu: str) -> str:
     return ""
 
 
+_HAZIR_MOTORLAR: "weakref.WeakSet" = weakref.WeakSet()
+GECIS_MODULU = "cek_senet"
+GECIS_SURUMU = 1
+HAREKET_IPTAL_KOLONLARI = {"iptal": "BOOLEAN NOT NULL DEFAULT 0", "iptal_tarihi": "DATETIME"}
+ODEME_ISLEMLERI = frozenset({"ODEME", "KISMI_ODEME"})
+# finans_service.GIRIS_HAREKETLERI içinde (bakiyeyi artırır); adındaki "ÖDEME" çıkış sayılmasın diye.
+ODEME_IPTAL_HAREKET_TURU = "ÇEK/SENET ÖDEME İPTAL"
+
+
+def _gecis_v1(e) -> None:
+    from database.modul_sema import eksik_kolonlari_ekle
+
+    eksik_kolonlari_ekle(e, CekSenetHareket.__tablename__, HAREKET_IPTAL_KOLONLARI)
+
+
+def _iptal_kolonu_eksik(motor) -> bool:
+    ins = inspect(motor)
+    if not ins.has_table(CekSenetHareket.__tablename__):
+        return False
+    mevcut = {c["name"] for c in ins.get_columns(CekSenetHareket.__tablename__)}
+    return any(k not in mevcut for k in HAREKET_IPTAL_KOLONLARI)
+
+
 class CekSenetService:
     @staticmethod
     def schema_hazirla() -> None:
-        """Mevcut firma DB'de çek/senet tabloları yoksa oluştur (checkfirst)."""
-        from database.database import engine
+        """Çek/senet tablolarını oluşturur; hareketlere ödeme iptali kolonlarını ekler (sürümlü, yalnız ekleyen).
+
+        Veri içeren firmada kolon eklemesi gerekiyorsa önce doğrulanmış yedek alınır (açılış geçişinde
+        alınmışsa yeniden alınmaz).
+        """
+        import database.database as veritabani
         # FK çözümlemesi için finans/cari tabloları metadata'da olmalı
         import database.models.cari  # noqa: F401
         import database.models.finans  # noqa: F401
 
+        motor = getattr(veritabani.company_db, "_engine", None) or veritabani.engine
+        if motor is None or motor in _HAZIR_MOTORLAR:
+            return
         for tablo in (CekSenetEvrak.__table__, CekSenetHareket.__table__):
-            tablo.create(engine, checkfirst=True)
+            tablo.create(motor, checkfirst=True)
+        from database.modul_sema import surum_uygula
+
+        if _iptal_kolonu_eksik(motor):
+            db_yolu = getattr(veritabani.company_db, "_db_path", None)
+            if db_yolu:
+                from database.gecis_guvenligi import guvenli_gecis, yedek_onayi
+
+                if yedek_onayi(db_yolu) is None:
+                    guvenli_gecis(db_yolu, lambda: surum_uygula(motor, GECIS_MODULU, GECIS_SURUMU, _gecis_v1),
+                                  gerekli=True, etiket="cek_senet_gecis", baglantilari_kapat=lambda: motor.dispose())
+                    _HAZIR_MOTORLAR.add(motor)
+                    return
+        surum_uygula(motor, GECIS_MODULU, GECIS_SURUMU, _gecis_v1)
+        _HAZIR_MOTORLAR.add(motor)
 
     @staticmethod
     def portfoy_no_uret(
@@ -238,6 +312,7 @@ class CekSenetService:
             "sube_kodu": evrak.sube_kodu or "",
             "hesap_no": evrak.hesap_no or "",
             "iban": evrak.iban or "",
+            "banka_hesabi_id": evrak.banka_hesabi_id,
             "cek_no": evrak.cek_no or "",
             "senet_no": evrak.senet_no or "",
             "kesideci_adi": evrak.kesideci_adi or "",
@@ -649,9 +724,13 @@ class CekSenetService:
 
     @staticmethod
     def _muhasebe_posta_engeli(session, evrak: CekSenetEvrak, *, islem: str) -> None:
-        """Düzenleme / iptal öncesi: finans postu varsa engelle."""
+        """Düzenleme / iptal öncesi: geçerli (iptal edilmemiş) finans postu varsa engelle."""
         hareketler = session.scalars(
-            select(CekSenetHareket).where(CekSenetHareket.evrak_id == evrak.id)
+            select(CekSenetHareket).where(
+                CekSenetHareket.evrak_id == evrak.id,
+                CekSenetHareket.iptal.is_(False),
+                CekSenetHareket.islem_turu != "ODEME_IPTAL",
+            )
         ).all()
         if any(h.finans_hareket_id for h in hareketler):
             raise ValueError(
@@ -1345,15 +1424,10 @@ class CekSenetService:
 
         with get_session() as session:
             evrak = CekSenetService._evrak_yukle(session, evrak_id)
-            if evrak.islem_yonu != ISLEM_YONU_VERILEN:
-                raise ValueError("Ödeme yalnızca verilen (firma) evraklar için geçerlidir.")
-            if evrak.durum not in ODE_EDILEBILIR:
-                raise ValueError(
-                    f"Ödenemez (durum: {_durum_etiket(evrak.durum)})."
-                )
+            engel = odeme_engeli(evrak)
+            if engel:
+                raise ValueError(engel)
             kalan = _d(evrak.kalan_tutar)
-            if kalan <= 0:
-                raise ValueError("Evrakın kalan tutarı yok; ödeme yapılamaz.")
 
             if tutar in (None, ""):
                 odeme = kalan
@@ -1416,6 +1490,117 @@ class CekSenetService:
             )
             session.flush()
             CekSenetService._muhasebe(session, h)
+            return CekSenetService._satir_dict(evrak)
+
+    @staticmethod
+    def odeme_iptal(
+        hareket_id: int,
+        neden: str,
+        kullanici: str | None = None,
+    ) -> dict[str, Any]:
+        """Verilen evraka yapılmış bir ödemeyi iptal eder: kalan geri artar, kasa/banka çıkışı ters hareketle kapanır.
+
+        Ödeme hareketi ve kasa/banka çıkışı silinmez; ödeme iptal işaretlenir, iptal günü tarihli ters giriş
+        (ODEME_IPTAL_HAREKET_TURU) ile ODEME_IPTAL hareketi ve ödeme fişinin ters kaydı yazılır.
+        Hepsi tek işlemdir; herhangi bir adım hata verirse hiçbir değişiklik kalmaz.
+        """
+        from database.access import yazma_zorunlu
+        from database.models.finans import FinansHareketi
+
+        yazma_zorunlu("finans_duzenleme")
+        not_metin = (neden or "").strip()
+        if not not_metin:
+            raise ValueError("Ödeme iptalinin nedenini yazın.")
+        CekSenetService.schema_hazirla()
+        with get_session() as session:
+            odeme = session.get(CekSenetHareket, int(hareket_id))
+            if odeme is None:
+                raise ValueError("Ödeme hareketi bulunamadı.")
+            if odeme.islem_turu not in ODEME_ISLEMLERI:
+                raise ValueError("Yalnız verilen çek/senet ödeme hareketi iptal edilebilir.")
+            if odeme.iptal:
+                raise ValueError("Bu ödeme zaten iptal edilmiş.")
+            if not odeme.finans_hareket_id:
+                raise ValueError("Bu ödemenin kasa/banka hareketi yok; iptal edilecek ödeme etkisi bulunamadı.")
+            evrak = CekSenetService._evrak_yukle(session, odeme.evrak_id)
+            if evrak.islem_yonu != ISLEM_YONU_VERILEN:
+                raise ValueError("Ödeme iptali yalnız verilen (firma) evrakları içindir.")
+            if evrak.durum not in (DURUM_ODENDI, DURUM_KISMI_ODENDI):
+                raise ValueError(
+                    f"Evrak durumu ödeme iptaline uygun değil (durum: {_durum_etiket(evrak.durum)})."
+                )
+            tutar = _d(odeme.tutar)
+            odenen = _d(evrak.tahsil_edilen_tutar)
+            if tutar <= 0 or tutar > odenen:
+                raise ValueError(
+                    f"Ödeme tutarı ({tutar}) evrakın ödenen tutarıyla ({odenen}) uyuşmuyor; iptal yapılmadı."
+                )
+
+            fin = session.get(FinansHareketi, int(odeme.finans_hareket_id))
+            belge = fin.belge_no if fin is not None else None
+            ters_id = None
+            if fin is not None:
+                # Ödeme çıkışı yerinde kalır (geçmiş tarihli raporlar için); iptal günü ters giriş yazılır.
+                ters = FinansHareketi(
+                    hesap_id=fin.hesap_id,
+                    tarih=max(date.today(), fin.tarih or date.today()),
+                    hareket_turu=ODEME_IPTAL_HAREKET_TURU,
+                    belge_no=fin.belge_no,
+                    tutar=_d(fin.tutar),
+                    aciklama=f"İptal: {fin.belge_no or ''} — {not_metin}"[:500],
+                )
+                session.add(ters)
+                session.flush()
+                ters_id = int(ters.id)
+
+            yeni_odenen = odenen - tutar
+            onceki = evrak.durum
+            if yeni_odenen > 0:
+                yeni_durum, yer = DURUM_KISMI_ODENDI, "Kısmi ödeme"
+            else:
+                # Son ödeme zincirinin başındaki durum (ör. vadesi geçti) geri gelir.
+                zincir_basi = session.scalars(
+                    select(CekSenetHareket)
+                    .where(
+                        CekSenetHareket.evrak_id == evrak.id,
+                        CekSenetHareket.islem_turu.in_(tuple(ODEME_ISLEMLERI)),
+                        CekSenetHareket.onceki_durum.not_in((DURUM_KISMI_ODENDI, DURUM_ODENDI)),
+                    )
+                    .order_by(CekSenetHareket.id.desc())
+                ).first()
+                yeni_durum = zincir_basi.onceki_durum if zincir_basi is not None else None
+                if yeni_durum not in (
+                    {DURUM_TEDARIKCIYE_VERILDI, DURUM_PORTFOYDE} | ODE_EDILEBILIR_ACIK_BORC
+                ):
+                    yeni_durum = DURUM_TEDARIKCIYE_VERILDI
+                yer = "Portföy" if yeni_durum == DURUM_PORTFOYDE else "Tedarikçi / Verilen"
+
+            evrak.tahsil_edilen_tutar = yeni_odenen
+            evrak.kalan_tutar = _d(evrak.tl_tutari) - yeni_odenen
+            evrak.durum = yeni_durum
+            evrak.bulundugu_yer = yer
+            evrak.son_islem_tarihi = date.today()
+            evrak.updated_at = datetime.now()
+            evrak.updated_by = kullanici
+            evrak.version = int(evrak.version or 1) + 1
+
+            odeme.iptal = True
+            odeme.iptal_tarihi = datetime.now()
+            etiket = f"[{belge}] " if belge else ""
+            CekSenetService._hareket_ekle(
+                session,
+                evrak,
+                onceki_durum=onceki,
+                yeni_durum=yeni_durum,
+                islem_turu="ODEME_IPTAL",
+                tutar=tutar,
+                aciklama=f"{etiket}Ödeme iptali (hareket #{odeme.id}): {not_metin}",
+                kullanici=kullanici,
+                ilgili_banka_kasa_id=odeme.ilgili_banka_kasa_id,
+                finans_hareket_id=ters_id,
+            )
+            session.flush()
+            CekSenetService._muhasebe_iptal(session, odeme.id, f"Çek/senet ödeme iptali: {not_metin}")
             return CekSenetService._satir_dict(evrak)
 
     @staticmethod
@@ -1589,6 +1774,11 @@ class CekSenetService:
                     "ilgili_banka_kasa_id": h.ilgili_banka_kasa_id,
                     "cari_hareket_id": h.cari_hareket_id,
                     "finans_hareket_id": h.finans_hareket_id,
+                    "iptal": bool(h.iptal),
+                    "iptal_tarihi": h.iptal_tarihi,
+                    "odeme_iptal_edilebilir": (
+                        h.islem_turu in ODEME_ISLEMLERI and not h.iptal and bool(h.finans_hareket_id)
+                    ),
                 }
                 for h in kayitlar
             ]

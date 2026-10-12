@@ -204,6 +204,9 @@ def _sema_adimlari(progress) -> None:
     from database.muhasebelestirme_service import MuhasebelestirmeService
 
     MuhasebelestirmeService.schema_hazirla()
+    from database.gider_kart_odeme_service import schema_hazirla as gider_kart_schema_hazirla
+
+    gider_kart_schema_hazirla(db.engine)
 
     progress(80, "Çek/senet ve denetim hazırlanıyor...")
     try:

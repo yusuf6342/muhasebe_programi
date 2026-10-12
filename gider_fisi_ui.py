@@ -1,4 +1,4 @@
-"""Gider fişi — cari yok, kasa/bankadan ödeme, gider hizmet kartı zorunlu."""
+"""Gider fişi — cari yok, kasa/bankadan veya kredi kartıyla (tek çekim / taksit) ödeme, gider hizmet kartı zorunlu."""
 
 from __future__ import annotations
 
@@ -66,9 +66,22 @@ class GiderFisiDialog(tk.Toplevel):
             self.girdiler,
         )
 
-        ttk.Label(form, text="Ödeme hesabı *").grid(row=1, column=0, sticky="nw", padx=4, pady=6)
+        self.form = form
+        ttk.Label(form, text="Ödeme yöntemi *").grid(row=0, column=2, sticky="e", padx=(16, 4))
+        self.yontem = tk.StringVar(value="HESAP")
+        yontem = ttk.Frame(form)
+        yontem.grid(row=0, column=3, sticky="w")
+        ttk.Radiobutton(yontem, text="Kasa / banka", value="HESAP", variable=self.yontem,
+                        command=self._yontem_degisti).pack(side="left")
+        ttk.Radiobutton(yontem, text="Kredi kartı", value="KART", variable=self.yontem,
+                        command=self._yontem_degisti).pack(side="left", padx=(8, 0))
+        self.kart_paneli = None
+
+        self.hesap_etiketi = ttk.Label(form, text="Ödeme hesabı *")
+        self.hesap_etiketi.grid(row=1, column=0, sticky="nw", padx=4, pady=6)
         hesap_cerceve = ttk.Frame(form)
-        hesap_cerceve.grid(row=1, column=1, sticky="ew", padx=4, pady=6)
+        hesap_cerceve.grid(row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=6)
+        self.hesap_cerceve = hesap_cerceve
         hesap_cerceve.columnconfigure(0, weight=1)
         self.hesap_var = tk.StringVar()
         self.hesap_combo = ttk.Combobox(
@@ -95,7 +108,7 @@ class GiderFisiDialog(tk.Toplevel):
 
         ttk.Label(form, text="Gider hizmeti *").grid(row=2, column=0, sticky="w", padx=4, pady=6)
         hz = ttk.Frame(form)
-        hz.grid(row=2, column=1, sticky="ew", padx=4, pady=6)
+        hz.grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=6)
         self.hizmet_lbl = ttk.Label(hz, text="— seçilmedi —", width=36)
         self.hizmet_lbl.pack(side="left")
         ttk.Button(hz, text="Seç", command=self.hizmet_sec).pack(side="left", padx=4)
@@ -107,7 +120,7 @@ class GiderFisiDialog(tk.Toplevel):
 
         ttk.Label(form, text="Açıklama").grid(row=4, column=0, sticky="nw", padx=4, pady=6)
         self.aciklama = ttk.Entry(form, width=42)
-        self.aciklama.grid(row=4, column=1, sticky="ew", padx=4, pady=6)
+        self.aciklama.grid(row=4, column=1, columnspan=3, sticky="ew", padx=4, pady=6)
         ttk.Label(form, text="Şube *").grid(row=5, column=0, sticky="w", padx=4, pady=6)
         from sube_ui import sube_secim_hazirla
 
@@ -119,12 +132,37 @@ class GiderFisiDialog(tk.Toplevel):
             text="Cari hesap gerekmez. Örnek: kasadan ekmek alımı → işletme gideri hizmet kartı.",
             foreground="#555",
             wraplength=420,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(12, 0))
 
         alt = ttk.Frame(self, padding=(14, 8))
         alt.pack(fill="x", side="bottom")
         ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(alt, text="Kaydet", width=12, command=self.kaydet).pack(side="right")
+
+    def _form_tutari(self):
+        return decimal(self.tutar.get(), "Tutar", Decimal("0.01"))
+
+    def _form_tarihi(self):
+        return datetime.strptime(self.girdiler["tarih"].get(), "%d.%m.%Y").date()
+
+    def _yontem_degisti(self):
+        kart = self.yontem.get() == "KART"
+        if kart and self.kart_paneli is None:
+            from gider_kart_odeme_ui import KartOdemePaneli
+
+            self.kart_paneli = KartOdemePaneli(self.form, tutar_fn=self._form_tutari, tarih_fn=self._form_tarihi)
+        if kart:
+            self.hesap_etiketi.grid_remove()
+            self.hesap_cerceve.grid_remove()
+            self.kart_paneli.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=(10, 0))
+            self.form.rowconfigure(7, weight=1)
+            self.geometry("800x820")
+        else:
+            if self.kart_paneli is not None:
+                self.kart_paneli.grid_remove()
+            self.hesap_etiketi.grid()
+            self.hesap_cerceve.grid()
+            self.geometry("620x440")
 
     def _hesap_filtrele(self, _event=None):
         metin = self.hesap_var.get().strip()
@@ -170,6 +208,9 @@ class GiderFisiDialog(tk.Toplevel):
             self._hizmet_yaz(dlg.result)
 
     def kaydet(self):
+        if self.yontem.get() == "KART":
+            self._kartla_kaydet()
+            return
         try:
             hesap = self.hesap_map.get(self.hesap_var.get())
             if not hesap:
@@ -196,6 +237,29 @@ class GiderFisiDialog(tk.Toplevel):
             f"{self.result.belge_no} — {_para(self.result.tutar)}",
             parent=self,
         )
+        self.destroy()
+
+    def _kartla_kaydet(self):
+        from database import gider_kart_odeme_service as gk
+        from gider_kart_odeme_ui import sonuc_metni
+
+        try:
+            if not self.hizmet_id:
+                raise ValueError("Gider hizmet kartı seçin.")
+            sonuc = gk.kart_ile_ode(
+                **self.kart_paneli.veri(),
+                islem_tarihi=self._form_tarihi(),
+                gider_tutari=self._form_tutari(),
+                hizmet_id=self.hizmet_id,
+                kaynak={"tur": gk.KAYNAK_GIDER_FISI},
+                aciklama=self.aciklama.get().strip(),
+                sube_id=self._sube_map.get(self.sube.get()),
+            )
+        except (ValueError, PermissionError) as hata:
+            messagebox.showerror("Gider fişi — kredi kartı", str(hata), parent=self)
+            return
+        self.result = sonuc
+        messagebox.showinfo("Kaydedildi", sonuc_metni(sonuc), parent=self)
         self.destroy()
 
 
@@ -339,6 +403,15 @@ def gider_fisleri_sayfasi(app, geri_fn=None):
         side="left", padx=8
     )
     ttk.Button(butonlar, text="Muhasebe Fişi", command=muhasebe_fisi).pack(side="left", padx=8)
+
+    def kartla_odemeler():
+        from gider_kart_odeme_ui import GiderKartOdemeleriDialog
+
+        dlg = GiderKartOdemeleriDialog(app)
+        app.wait_window(dlg)
+        yenile()
+
+    ttk.Button(butonlar, text="Kartla Gider Ödemeleri", command=kartla_odemeler).pack(side="left", padx=8)
     ttk.Button(butonlar, text="İptal Et", command=iptal).pack(side="left", padx=8)
     ttk.Button(butonlar, text="Yenile", command=yenile).pack(side="left")
     tablo.bind("<Double-1>", ac)

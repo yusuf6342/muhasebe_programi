@@ -575,6 +575,8 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
 
                 self.detay = FinansService.banka_kredi_taksit_detay(self.taksit_id)
                 self.detay["taksit_id"] = self.taksit_id
+            # Kısmen ödenmiş taksitte alanlar planın tamamıyla değil kalan tutarlarla gelir
+            self.detay.update(BankaKrediService.taksit_kalan_bilesenleri(self.taksit_id))
         except Exception as hata:
             messagebox.showerror("Hata", str(hata))
             self.destroy()

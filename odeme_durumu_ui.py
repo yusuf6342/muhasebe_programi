@@ -49,6 +49,7 @@ _DURUM_RENK = {
     DURUM_KISMI: "#d35400",
     DURUM_ODENDI: "#1e8449",
     "IPTAL": "#566573",
+    "EKSIK_BILGI": "#8a5a00",
 }
 
 _DURUM_ETIKET = {
@@ -58,6 +59,7 @@ _DURUM_ETIKET = {
     DURUM_GECIKMIS: "Gecikmiş",
     DURUM_KISMI: "Kısmen ödendi",
     DURUM_ODENDI: "Ödendi",
+    "EKSIK_BILGI": "Eksik bilgi (son ödeme günü tanımsız)",
 }
 
 

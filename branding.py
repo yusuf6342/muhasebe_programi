@@ -13,7 +13,7 @@ from typing import Callable
 APP_NAME = "Cin Muhasebe"
 APP_NAME_COMPACT = "CinMuhasebe"
 APP_TAGLINE = "Güvenli ve Düzenli İşletme Yönetimi"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_USER_MODEL_ID = "CinMuhasebe.Desktop"
 APP_DESCRIPTION = "Cin Muhasebe Programı"
 

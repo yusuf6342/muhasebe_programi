@@ -56,6 +56,7 @@ KAYNAK_CARI_VIRMAN = "cari_virman"
 KAYNAK_CARI_VIRMAN_MAKBUZU = "cari_virman_makbuzu"
 KAYNAK_POS_TAHSILAT = "pos_tahsilat"
 KAYNAK_KART_ODEME = "kart_odeme"
+KAYNAK_KK_EKSTRE_ODEME = "kk_ekstre_odeme"
 KAYNAK_POS_VALOR = "pos_valor_aktarimi"
 KAYNAK_CEK_SENET = "cek_senet_hareketi"
 KAYNAK_KREDI_KULLANDIRIM = "banka_kredi_kullandirim"
@@ -156,6 +157,13 @@ EVRAKLAR: dict[str, dict] = {
         "kaynaklar": (KAYNAK_KART_ODEME,),
         "kesinlesme": "Kaydet (düzenleme: eski fiş ters kayıt). Cari / şirket kartı borcu",
     },
+    "kk_ekstre_odeme": {
+        "ad": "Şirket kartı ekstre ödemesi (kart borcunun kasa / bankadan ödenmesi)",
+        "fn": "kk_ekstre_odeme_fisi",
+        "kaynaklar": (KAYNAK_KK_EKSTRE_ODEME,),
+        "kesinlesme": "Ödeme kaydı (ekstre, virman veya kasadan yatırma; iptal: ters kayıt). "
+                      "Şirket kartı borcu / kasa veya banka",
+    },
     "pos_valor_aktarimi": {
         "ad": "POS valör aktarımı (POS → KMH)",
         "fn": "pos_valor_aktarimi_fisi",
@@ -196,8 +204,6 @@ DESTEKLENMEYEN_EVRAKLAR: tuple[tuple[str, str], ...] = (
      "virman / havale / makbuz",
      "Muhasebe karşılığı tanımlı değil: evrak kaydedilir, 'İnceleme gerekiyor' olarak bekler. Kredi "
      "hareketleri banka kredisi evraklarından muhasebeleşir."),
-    ("Şirket kartı ekstre / taksit ödemesi (kart borcunun bankadan ödenmesi)",
-     "Fiş üreticisi yok: kart borcu (şirket kartı borcu hesabı) bu ödemelerle kapanmaz; elle fiş gerekir."),
     ("Uzun vadeli kredinin kısa vadeye aktarılması (400 → 300 sınıflandırma virmanı)",
      "Otomatik yapılmaz; '12 ay' ayrımında her taksit ödemesi kullandırımdaki sınıfından (kısa/uzun) düşülür. "
      "Ödeme planı sonradan değişirse kullandırım fişi yeniden sınıflandırılmaz."),
@@ -1137,11 +1143,12 @@ class MuhasebeEntegrasyonService:
             gider = H._hesap(anahtarlar[0], session=s)
             fh = s.get(FinansHesabi, int(fis.finans_hesap_id)) if fis.finans_hesap_id else None
             odeme = H._finans_karsiligi_ayarli(fh, s) if fh is not None else H._hesap(anahtarlar[1], session=s)
+            kartla = fh is not None and (fh.alt_hesap_turu or "").upper() == "KREDI_KARTI"
             return H._olustur(
                 kaynak_turu=KAYNAK_GIDER_FISI,
                 kaynak_id=fis_id,
                 fis_tarihi=tarih,
-                fis_turu="Tediye Fişi",
+                fis_turu="Mahsup Fişi" if kartla else "Tediye Fişi",
                 aciklama=f"Otomatik: Gider fişi {no}",
                 belge_no=no,
                 satirlar=[
@@ -1478,10 +1485,12 @@ class MuhasebeEntegrasyonService:
 
         H = MuhasebeEntegrasyonService
         ko = s.get(KrediKartiOdeme, ko_id)
-        if ko is None or (ko.durum or "").upper() in ("IPTAL", "İPTAL"):
+        if ko is None or (ko.durum or "").upper() in ("IPTAL", "İPTAL", "DÜZELTİLDİ"):
             return None
         kk_hesap = s.scalar(select(FinansHesabi).where(
             FinansHesabi.banka_karti_id == ko.banka_karti_id, FinansHesabi.alt_hesap_turu == "KREDI_KARTI"))
+        if (ko.kaynak_turu or "CARI") == "GIDER":
+            return H._plan_gider_kart_odeme(s, ko, kk_hesap)
         kart = H._finans_karsiligi_ayarli(kk_hesap, s)
         cari = H.cari_hesabi(s.get(Cari, ko.cari_id), session=s)
         tutar = decimal(ko.tutar or 0)
@@ -1489,6 +1498,90 @@ class MuhasebeEntegrasyonService:
                 "aciklama": f"Otomatik: Şirket kartıyla ödeme {ko.belge_no}", "belge_no": ko.belge_no,
                 "satirlar": [H._satir(cari, borc=tutar, aciklama=ko.belge_no),
                              H._satir(kart, alacak=tutar, aciklama=ko.belge_no)]}
+
+    @staticmethod
+    def _plan_kk_ekstre_odeme(s, odeme_id: int) -> dict | None:
+        """Ekstre ödemesi: Borç şirket kartı borcu / Alacak ödemenin çıktığı kasa veya banka."""
+        from database.models.finans import FinansHesabi, KrediKartiEkstre, KrediKartiEkstreOdeme
+
+        H = MuhasebeEntegrasyonService
+        o = s.get(KrediKartiEkstreOdeme, odeme_id)
+        if o is None or o.iptal:
+            return None
+        tutar = decimal(o.tutar or 0)
+        if tutar <= 0:
+            return None
+        kk_hesap = s.get(FinansHesabi, o.kart_hesap_id) if o.kart_hesap_id else None
+        if kk_hesap is None:
+            from database.models.finans import KrediKartiTanimi
+
+            e = s.get(KrediKartiEkstre, o.ekstre_id)
+            kart_t = s.get(KrediKartiTanimi, e.kredi_karti_id) if e else None
+            kk_hesap = s.scalar(select(FinansHesabi).where(
+                FinansHesabi.banka_karti_id == kart_t.banka_karti_id,
+                FinansHesabi.alt_hesap_turu == "KREDI_KARTI")) if kart_t else None
+        kart = H._finans_karsiligi_ayarli(kk_hesap, s)
+        odeme = H._finans_karsiligi_ayarli(s.get(FinansHesabi, o.finans_hesap_id) if o.finans_hesap_id else None, s)
+        acik = f"{o.belge_no} kart ekstre ödemesi"
+        return {"kaynak_turu": KAYNAK_KK_EKSTRE_ODEME, "fis_tarihi": o.tarih, "fis_turu": "Mahsup Fişi",
+                "aciklama": f"Otomatik: Şirket kartı ekstre ödemesi {o.belge_no}", "belge_no": o.belge_no,
+                "satirlar": [H._satir(kart, borc=tutar, aciklama=acik),
+                             H._satir(odeme, alacak=tutar, aciklama=acik)]}
+
+    @staticmethod
+    def _plan_gider_kart_odeme(s, ko, kk_hesap) -> dict | None:
+        """Kartla ödenen gider: gider tutarı gider fişinin fişindedir (gider / kart borcu).
+
+        Ana kart ödemesi yalnız finansman farkını yazar (780 diğer finansman gideri / kart borcu) — bir kez.
+        Ayrı ücret kaydının tutarı bu farkın içindedir, kendi fişi yoktur. Kayıt düzeltmesinin açık dönem kaydı
+        yalnız fark değişimini yazar (eksiyse ters yönde). Banka iadesi: kart borcu / gider (ana para) ve iade edilen
+        faiz / ücret payı için 780 alacak.
+        """
+        from database.models.finans import GiderKartIade, GiderKartOdeme
+
+        H = MuhasebeEntegrasyonService
+        gko = s.get(GiderKartOdeme, int(ko.gider_kart_odeme_id)) if ko.gider_kart_odeme_id else None
+        if gko is None:
+            return None
+        acik = f"{ko.belge_no} kartla gider ödemesi"
+        if (ko.cekim_turu or "") == "IADE":
+            tutar = abs(decimal(ko.tutar or 0))
+            if tutar <= 0:
+                return None
+            iade = s.scalar(select(GiderKartIade).where(GiderKartIade.kk_odeme_id == ko.id))
+            finansman_payi = (decimal(iade.faiz_tutari or 0) + decimal(iade.ucret_tutari or 0)) if iade else Decimal("0")
+            ana_para = tutar - finansman_payi
+            kart = H._finans_karsiligi_ayarli(kk_hesap, s)
+            satirlar = [H._satir(kart, borc=tutar, aciklama=f"{ko.belge_no} kart iadesi")]
+            if ana_para > 0:
+                gider = H._hesap(H.gider_fisi_hesaplari(int(gko.gider_fisi_id), session=s)[0], session=s)
+                satirlar.append(H._satir(gider, alacak=ana_para, aciklama=f"{ko.belge_no} kart iadesi (gider)"))
+            if finansman_payi > 0:
+                satirlar.append(H._satir(H._hesap("kredi_diger_finansman", session=s), alacak=finansman_payi,
+                                         aciklama=f"{ko.belge_no} kart iadesi (faiz / ücret)"))
+            return {"kaynak_turu": KAYNAK_KART_ODEME, "fis_tarihi": ko.tarih, "fis_turu": "Mahsup Fişi",
+                    "aciklama": f"Otomatik: Kart iadesi {ko.belge_no}", "belge_no": ko.belge_no,
+                    "satirlar": satirlar}
+        if ko.finansman_farki is not None:
+            fark = decimal(ko.finansman_farki)
+        elif int(gko.kk_odeme_id) == int(ko.id):
+            fark = decimal(gko.finansman_farki or 0)
+        else:
+            fark = Decimal("0")
+        if fark == 0:
+            return None
+        kart = H._finans_karsiligi_ayarli(kk_hesap, s)
+        finansman = H._hesap("kredi_diger_finansman", session=s)
+        if fark < 0:
+            return {"kaynak_turu": KAYNAK_KART_ODEME, "fis_tarihi": ko.tarih, "fis_turu": "Mahsup Fişi",
+                    "aciklama": f"Otomatik: Kartla gider ödemesi finansman farkı düzeltmesi {ko.belge_no}",
+                    "belge_no": ko.belge_no,
+                    "satirlar": [H._satir(kart, borc=-fark, aciklama=acik),
+                                 H._satir(finansman, alacak=-fark, aciklama=acik)]}
+        return {"kaynak_turu": KAYNAK_KART_ODEME, "fis_tarihi": ko.tarih, "fis_turu": "Mahsup Fişi",
+                "aciklama": f"Otomatik: Kartla gider ödemesi finansman farkı {ko.belge_no}", "belge_no": ko.belge_no,
+                "satirlar": [H._satir(finansman, borc=fark, aciklama=acik),
+                             H._satir(kart, alacak=fark, aciklama=acik)]}
 
     @staticmethod
     def _plan_pos_valor_aktarimi(s, pv_id: int) -> dict | None:
@@ -1778,6 +1871,12 @@ class MuhasebeEntegrasyonService:
         return MuhasebeEntegrasyonService._planli_fis("kart_odeme", ko_id, yeniden=yeniden, session=session)
 
     @staticmethod
+    def kk_ekstre_odeme_fisi(odeme_id: int, *, yeniden: bool = False, session=None) -> int | None:
+        """Borç şirket kartı borcu / Alacak kasa veya banka."""
+        return MuhasebeEntegrasyonService._planli_fis("kk_ekstre_odeme", odeme_id, yeniden=yeniden,
+                                                      session=session)
+
+    @staticmethod
     def pos_valor_aktarimi_fisi(pv_id: int, *, yeniden: bool = False, session=None) -> int | None:
         """Borç KMH hesabı / Alacak POS valör alacağı (net)."""
         return MuhasebeEntegrasyonService._planli_fis("pos_valor_aktarimi", pv_id, yeniden=yeniden, session=session)
@@ -1805,6 +1904,10 @@ class MuhasebeEntegrasyonService:
     @staticmethod
     def kart_odeme_iptal(ko_id: int, neden: str = "", *, session=None) -> None:
         MuhasebeEntegrasyonService.iptal_kaynak(KAYNAK_KART_ODEME, ko_id, neden, session=session)
+
+    @staticmethod
+    def kk_ekstre_odeme_iptal(odeme_id: int, neden: str = "", *, session=None) -> None:
+        MuhasebeEntegrasyonService.iptal_kaynak(KAYNAK_KK_EKSTRE_ODEME, odeme_id, neden, session=session)
 
     @staticmethod
     def cek_senet_iptal(hareket_id: int, neden: str = "", *, session=None) -> None:
@@ -2224,6 +2327,7 @@ def _plan_kur_farki(s, kayit_id: int) -> dict | None:
 PLANLAR: dict[str, str] = {
     "pos_tahsilat": "_plan_pos_tahsilat",
     "kart_odeme": "_plan_kart_odeme",
+    "kk_ekstre_odeme": "_plan_kk_ekstre_odeme",
     "pos_valor_aktarimi": "_plan_pos_valor_aktarimi",
     "cek_senet": "_plan_cek_senet",
     "banka_kredi_kullandirim": "_plan_banka_kredi_kullandirim",

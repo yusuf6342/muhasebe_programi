@@ -13,7 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from database.cari_service import CariService
-from database.cek_senet_service import CekSenetService
+from database.cek_senet_service import CekSenetService, odeme_engeli
 from database.finans_service import FinansService
 from database.models.cek_senet import (
     DURUM_BANKAYA_TAHSILE,
@@ -925,7 +925,7 @@ def cek_senet_islemleri_goster(app):
         if not detay:
             messagebox.showwarning("Çek/Senet", "Evrak bulunamadı.", parent=app)
             return
-        dlg = EvrakHareketlerDialog(app, detay)
+        dlg = EvrakHareketlerDialog(app, detay, on_degisti=yenile)
         app.wait_window(dlg)
 
     def _islem_dialog(dlg_cls, baslik_hata: str):
@@ -1917,6 +1917,7 @@ class _IslemDialogBase(tk.Toplevel):
         self.evrak = evrak
         self.on_kaydet = on_kaydet
         self.result = None
+        self._kilit = False
         self.title(f"{self.baslik} — {evrak.get('portfoy_no', '')}")
         self.geometry("480x320")
         self.minsize(420, 260)
@@ -1957,9 +1958,13 @@ class _IslemDialogBase(tk.Toplevel):
         return satir + 1
 
     def _kaydet(self):
+        if self._kilit:
+            return
+        self._kilit = True
         try:
             self.result = self._uygula()
         except Exception as e:
+            self._kilit = False
             messagebox.showerror(self.baslik, str(e), parent=self)
             return
         if self.on_kaydet:
@@ -2137,21 +2142,59 @@ class TahsilEtDialog(_IslemDialogBase):
         )
 
 
+def _iban_sade(iban) -> str:
+    return re.sub(r"\s+", "", str(iban or "")).upper()
+
+
+def odeme_hesabi_onerisi(evrak: dict, hesap_map: dict[str, int]) -> str | None:
+    """Evrakın kayıtlı banka hesabı, yoksa IBAN'ı eşleşen kasa/banka hesabı; eşleşme yoksa None."""
+    etiketler = {hid: et for et, hid in hesap_map.items()}
+    bid = evrak.get("banka_hesabi_id")
+    if bid and int(bid) in etiketler:
+        return etiketler[int(bid)]
+    iban = _iban_sade(evrak.get("iban"))
+    if not iban or not etiketler:
+        return None
+    from sqlalchemy import select
+
+    from database.database import get_session
+    from database.models.finans import FinansHesabi
+
+    with get_session() as s:
+        eslesen = [int(h.id) for h in s.scalars(select(FinansHesabi).where(FinansHesabi.id.in_(etiketler))).all()
+                   if _iban_sade(h.iban) == iban]
+    return etiketler[eslesen[0]] if len(eslesen) == 1 else None
+
+
+def evrak_banka_metni(evrak: dict) -> str:
+    parcalar = [evrak.get(k) or "" for k in ("banka_adi", "banka_subesi", "hesap_no")]
+    if evrak.get("iban"):
+        parcalar.append(f"IBAN {evrak['iban']}")
+    return " / ".join(p for p in parcalar if p)
+
+
 class OdeDialog(_IslemDialogBase):
     baslik = "Öde"
     onay_metin = "Öde"
 
     def _form_kur(self, form):
-        izinli = {DURUM_TEDARIKCIYE_VERILDI, DURUM_KISMI_ODENDI, DURUM_PORTFOYDE}
-        if self.evrak.get("islem_yonu") != ISLEM_YONU_VERILEN:
-            raise ValueError("Ödeme yalnızca verilen (firma) evraklar içindir.")
-        if self.evrak.get("durum") not in izinli:
-            raise ValueError(
-                f"Ödenemez.\nDurum: {self.evrak.get('durum_etiket')}\n"
-                "Verilen / kısmi ödenen evrak seçin."
-            )
-        self.geometry("500x360")
+        engel = odeme_engeli(self.evrak)
+        if engel:
+            raise ValueError(engel)
+        self.geometry("560x440")
         satir = 1
+        cari = " ".join(p for p in (self.evrak.get("cari_kodu"), self.evrak.get("cari_adi")) if p)
+        vade = _tarih(self.evrak.get("vade_tarihi"))
+        if self.evrak.get("durum") not in (DURUM_TEDARIKCIYE_VERILDI, DURUM_KISMI_ODENDI, DURUM_PORTFOYDE):
+            vade += f" ({self.evrak.get('durum_etiket') or self.evrak.get('durum')})"
+        bilgi = [f"Alacaklı: {cari or '—'}", f"Vade: {vade}"]
+        banka = evrak_banka_metni(self.evrak)
+        if banka:
+            bilgi.append(f"Evrak bankası: {banka}")
+        ttk.Label(form, text="\n".join(bilgi), wraplength=500).grid(
+            row=satir, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 6)
+        )
+        satir += 1
         kalan = float(self.evrak.get("kalan_tutar") or 0)
         ttk.Label(form, text="Ödeme tutarı *").grid(row=satir, column=0, sticky="w", padx=4, pady=4)
         self.tutar = ttk.Entry(form, width=18)
@@ -2172,9 +2215,21 @@ class OdeDialog(_IslemDialogBase):
         ttk.Combobox(
             form, textvariable=self.hesap_var, values=etiketler, state="readonly", width=36
         ).grid(row=satir, column=1, sticky="ew", padx=4, pady=4)
-        if etiketler:
-            self.hesap_var.set(etiketler[0])
+        try:
+            oneri = odeme_hesabi_onerisi(self.evrak, self._hesap_map)
+        except Exception:
+            oneri = None
         satir += 1
+        if oneri:
+            self.hesap_var.set(oneri)
+        else:
+            ttk.Label(
+                form,
+                text="Evrakın hesabı kasa/banka hesaplarıyla eşleşmedi; ödeme hesabını seçin.",
+                foreground="#a00",
+                font=("Segoe UI", 8),
+            ).grid(row=satir, column=1, sticky="w", padx=4)
+            satir += 1
         satir = self._tarih_alani_ekle(form, satir)
         self._aciklama_alani(form, satir)
 
@@ -2267,21 +2322,20 @@ class KarsiliksizDialog(_IslemDialogBase):
 
 
 class EvrakHareketlerDialog(tk.Toplevel):
-    """Seçili evrakın durum geçmişi."""
+    """Seçili evrakın durum geçmişi; verilen evrak ödemesi buradan iptal edilir."""
 
-    def __init__(self, parent, evrak: dict):
+    def __init__(self, parent, evrak: dict, on_degisti=None):
         super().__init__(parent)
+        self.evrak = evrak
+        self.on_degisti = on_degisti
+        self._kayitlar: dict[str, dict] = {}
         self.title(f"Hareketler — {evrak.get('portfoy_no', '')}")
-        self.geometry("720x360")
+        self.geometry("760x380")
         self.transient(parent)
         self.grab_set()
 
-        ttk.Label(
-            self,
-            text=f"{evrak.get('portfoy_no')}  |  {evrak.get('evrak_no')}  |  {evrak.get('durum_etiket')}",
-            font=("Segoe UI", 10, "bold"),
-            padding=10,
-        ).pack(anchor="w")
+        self.baslik = ttk.Label(self, font=("Segoe UI", 10, "bold"), padding=10)
+        self.baslik.pack(anchor="w")
 
         cerceve = ttk.Frame(self, padding=(10, 0, 10, 10))
         cerceve.pack(fill="both", expand=True)
@@ -2303,18 +2357,38 @@ class EvrakHareketlerDialog(tk.Toplevel):
         tablo.configure(yscrollcommand=y.set)
         tablo.pack(side="left", fill="both", expand=True)
         y.pack(side="right", fill="y")
+        self.tablo = tablo
 
+        alt = ttk.Frame(self, padding=(10, 0, 10, 8))
+        alt.pack(fill="x")
+        ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        self.btn_odeme_iptal = ttk.Button(alt, text="Ödemeyi İptal Et", command=self.odeme_iptal)
+        if self.evrak.get("islem_yonu") == ISLEM_YONU_VERILEN:
+            self.btn_odeme_iptal.pack(side="left")
+        tablo.bind("<<TreeviewSelect>>", lambda _e: self._buton_durumu())
+        self._doldur()
+
+    def _doldur(self) -> None:
+        self.baslik.configure(
+            text=f"{self.evrak.get('portfoy_no')}  |  {self.evrak.get('evrak_no')}  |  "
+            f"{self.evrak.get('durum_etiket')}  |  Kalan: {_para(self.evrak.get('kalan_tutar'))}"
+        )
+        self.tablo.delete(*self.tablo.get_children())
+        self._kayitlar.clear()
         try:
-            kayitlar = CekSenetService.evrak_hareketleri(int(evrak["id"]))
+            kayitlar = CekSenetService.evrak_hareketleri(int(self.evrak["id"]))
         except Exception:
             kayitlar = []
         for h in kayitlar:
-            tablo.insert(
+            iid = str(h["id"])
+            self._kayitlar[iid] = h
+            self.tablo.insert(
                 "",
                 "end",
+                iid=iid,
                 values=(
                     _tarih_saat(h["tarih"]),
-                    h["islem_turu"],
+                    h["islem_turu"] + (" (İPTAL)" if h.get("iptal") else ""),
                     h["onceki_durum"],
                     h["yeni_durum"],
                     _para(h["tutar"]) if h["tutar"] is not None else "",
@@ -2322,8 +2396,48 @@ class EvrakHareketlerDialog(tk.Toplevel):
                     h["kullanici"],
                 ),
             )
+        self._buton_durumu()
 
-        ttk.Button(self, text="Kapat", command=self.destroy).pack(pady=8)
+    def _secili_odeme(self) -> dict | None:
+        sec = self.tablo.selection()
+        h = self._kayitlar.get(sec[0]) if sec else None
+        return h if h and h.get("odeme_iptal_edilebilir") else None
+
+    def _buton_durumu(self) -> None:
+        self.btn_odeme_iptal.configure(state="normal" if self._secili_odeme() else "disabled")
+
+    def odeme_iptal(self) -> None:
+        from tkinter import simpledialog
+
+        h = self._secili_odeme()
+        if h is None:
+            messagebox.showinfo("Ödeme İptali", "İptal edilecek ödeme hareketini seçin.", parent=self)
+            return
+        neden = simpledialog.askstring(
+            "Ödeme İptali",
+            f"{_para(h['tutar'])} tutarlı ödeme iptal edilecek; kasa/banka çıkışı silinir ve kalan "
+            "borç geri artar.\nİptal nedeni:",
+            parent=self,
+        )
+        if neden is None:
+            return
+        try:
+            self.evrak = CekSenetService.odeme_iptal(int(h["id"]), neden)
+        except (ValueError, PermissionError) as e:
+            messagebox.showwarning("Ödeme İptali", str(e), parent=self)
+            return
+        self._doldur()
+        if self.on_degisti:
+            try:
+                self.on_degisti()
+            except Exception:
+                pass
+        messagebox.showinfo(
+            "Ödeme İptali",
+            f"Ödeme iptal edildi.\nYeni durum: {self.evrak.get('durum_etiket')}  |  "
+            f"Kalan: {_para(self.evrak.get('kalan_tutar'))}",
+            parent=self,
+        )
 
 
 # Geriye dönük uyumluluk

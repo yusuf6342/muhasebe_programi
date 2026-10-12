@@ -709,45 +709,27 @@ def _kredi_kalemleri(b: _Baglam) -> tuple[list[dict], Decimal, list[str]]:
 
 def _kart_kalemleri(b: _Baglam) -> tuple[list[dict], Decimal, list[str]]:
     from database.kredi_karti_ekstre_service import KrediKartiEkstreService
-    from database.models.finans import (
-        KrediKartiEkstre,
-        KrediKartiEkstreOdeme,
-        KrediKartiOdeme,
-        KrediKartiTanimi,
-    )
 
-    kartlar = {int(k.id): k for k in b.s.scalars(select(KrediKartiTanimi)).all()}
-    donem: dict[tuple[int, date], dict] = {}
-    for o in b.s.scalars(select(KrediKartiOdeme).options(selectinload(KrediKartiOdeme.taksitler))
-                         .where(KrediKartiOdeme.durum != "İPTAL", KrediKartiOdeme.tarih <= b.d)).all():
-        kart = kartlar.get(int(o.kredi_karti_id))
-        if kart is None:
-            continue
-        for t in o.taksitler or []:
-            bil = KrediKartiEkstreService.taksit_donem_bilgisi(o.tarih, t.taksit_no, kart)
-            g = donem.setdefault((int(kart.id), bil["kesim_tarihi"]), {
-                "son_odeme": bil["son_odeme_tarihi"], "toplam": SIFIR, "bekleyen": SIFIR, "belgeler": set()})
-            g["toplam"] += _d(t.tutar)
-            if (t.durum or "") != "ODENDI":
-                g["bekleyen"] += _d(t.tutar)
-            g["belgeler"].add(o.belge_no)
-    odenen: dict[tuple[int, date], Decimal] = defaultdict(lambda: SIFIR)
-    for kid, kesim, tutar in b.s.execute(
-            select(KrediKartiEkstre.kredi_karti_id, KrediKartiEkstre.kesim_tarihi, KrediKartiEkstreOdeme.tutar)
-            .join(KrediKartiEkstreOdeme, KrediKartiEkstreOdeme.ekstre_id == KrediKartiEkstre.id)
-            .where(KrediKartiEkstreOdeme.iptal.is_(False), KrediKartiEkstreOdeme.tarih <= b.d)).all():
-        odenen[(int(kid), kesim)] += _d(tutar)
+    satirlar = []
+    for kv in KrediKartiEkstreService.donem_borclari(b.s, tarih=b.d).values():
+        kart = kv["kart"]
+        for kesim, g in kv["donemler"].items():
+            if g["kalan"] > 0:
+                satirlar.append((g["son_odeme_tarihi"] or kesim, kesim, kart, g))
+        if kv["belirsiz"] > 0:
+            satirlar.append((date.max, None, kart, {"kalan": kv["belirsiz"], "son_odeme_tarihi": None,
+                                                    "satirlar": kv["belirsiz_satirlar"]}))
     kalemler, borc = [], SIFIR
-    for (kid, kesim), g in sorted(donem.items(), key=lambda x: x[1]["son_odeme"]):
-        kalan = min(g["bekleyen"], max(SIFIR, g["toplam"] - odenen.get((kid, kesim), SIFIR)))
-        if kalan <= 0:
-            continue
-        kart = kartlar[kid]
+    for _sira, kesim, kart, g in sorted(satirlar, key=lambda x: (x[0], x[2].kart_adi)):
+        kalan = g["kalan"]
         borc += kalan
-        durum = "kesime girmedi" if kesim > b.d else "ekstre"
-        kalemler.append(_kalem(TAKVIM_ADI[KK], kalan, belge_no=", ".join(sorted(g["belgeler"]))[:120],
-                               vade=g["son_odeme"], tarih=kesim, cari=kart.kart_adi,
-                               aciklama=f"Kesim {kesim:%d.%m.%Y} ({durum})"))
+        belgeler = ", ".join(sorted({d["belge_no"] for d in g["satirlar"]}))[:120]
+        if kesim is None:
+            aciklama = "Ekstre dönemi belirsiz (kartın kesim günü tanımsız)"
+        else:
+            aciklama = f"Kesim {kesim:%d.%m.%Y} ({'kesime girmedi' if kesim > b.d else 'ekstre'})"
+        kalemler.append(_kalem(TAKVIM_ADI[KK], kalan, belge_no=belgeler, vade=g["son_odeme_tarihi"], tarih=kesim,
+                               cari=kart.kart_adi, aciklama=aciklama))
     return kalemler, _q2(borc), []
 
 

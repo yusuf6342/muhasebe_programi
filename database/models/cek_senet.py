@@ -14,6 +14,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -206,6 +207,16 @@ class CekSenetHareket(Base):
     finans_hareket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     muhasebe_fisi_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     kullanici: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Ödeme iptali (CekSenetService.odeme_iptal). Ertelenmiş + sunucu varsayılanı: kolonlar henüz eklenmemiş
+    # eski firma veritabanında da hareket okuma / ekleme sorguları bu kolonlara dokunmaz.
+    iptal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0"), deferred=True
+    )
+    iptal_tarihi: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, server_default=text("NULL"), deferred=True
+    )
+
+    __mapper_args__ = {"eager_defaults": False}
 
     evrak: Mapped["CekSenetEvrak"] = relationship(
         "CekSenetEvrak", back_populates="hareketler"

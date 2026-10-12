@@ -167,6 +167,9 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
     from database.cari_risk_service import schema_hazirla as cari_risk_schema_hazirla
 
     cari_risk_schema_hazirla()
+    from database.gider_kart_odeme_service import schema_hazirla as gider_kart_schema_hazirla
+
+    gider_kart_schema_hazirla()
     try:
         from database.fon_service import FonService
 
