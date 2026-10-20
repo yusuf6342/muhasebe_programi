@@ -1,7 +1,18 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -36,6 +47,16 @@ class Cari(Base):
     vade_farki_yillik_oran: Mapped[Decimal | None] = mapped_column(Numeric(9, 4), nullable=True)
     vade_farki_donem: Mapped[str | None] = mapped_column(String(10), nullable=True)
     vade_farki_aciklama: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Genel Risk yüzdeleri (0–100); muhasebe bakiyesini değiştirmez.
+    risk_orani_ciro_cek: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), default=Decimal("100"), server_default="100", nullable=False
+    )
+    risk_orani_diger_cek: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), default=Decimal("100"), server_default="100", nullable=False
+    )
+    risk_orani_senet: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), default=Decimal("100"), server_default="100", nullable=False
+    )
     satis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
     alis_vade_gunu: Mapped[int | None] = mapped_column(Integer, nullable=True)
     muhasebe_borclu_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -106,6 +127,12 @@ class CariYetkili(Base):
     email: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
     dogum_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Yıl bilinmiyorsa yalnız gün/ay saklanır; dogum_tarihi yalnız yıl biliniyorsa dolar.
+    dogum_gun: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dogum_ay: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dogum_yili: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    departman_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gorev_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dogum_gunu_hatirlat: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     hitap: Mapped[str | None] = mapped_column(String(40), nullable=True)
     iletisim_kanali: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -130,6 +157,57 @@ class CariYetkili(Base):
     updated_by_username: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     cari: Mapped["Cari"] = relationship("Cari", back_populates="yetkililer")
+
+
+class CariYetkiliDepartman(Base):
+    """Yetkili departman tanımı (firma veritabanı kapsamında)."""
+
+    __tablename__ = "cari_yetkili_departmanlari"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ad: Mapped[str] = mapped_column(String(100), nullable=False)
+    ad_norm: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+
+
+class CariYetkiliGorev(Base):
+    """Yetkili görev tanımı; ``departman_id`` doluysa yalnız o departmanda önerilir."""
+
+    __tablename__ = "cari_yetkili_gorevleri"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ad: Mapped[str] = mapped_column(String(100), nullable=False)
+    ad_norm: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    departman_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+
+
+class CariFotograf(Base):
+    """Cari veya yetkili fotoğrafı: küçültülmüş görüntü + küçük önizleme (firma veritabanında)."""
+
+    __tablename__ = "cari_fotograflari"
+    __table_args__ = (UniqueConstraint("sahip_turu", "sahip_id", name="uq_cari_foto_sahip"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sahip_turu: Mapped[str] = mapped_column(String(10), nullable=False)
+    sahip_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    cari_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    bicim: Mapped[str] = mapped_column(String(10), nullable=False)
+    genislik: Mapped[int] = mapped_column(Integer, nullable=False)
+    yukseklik: Mapped[int] = mapped_column(Integer, nullable=False)
+    veri: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    kucuk: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    kaynak_adi: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    guncelleme: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class MusteriGrubuAyari(Base):
+    """Sistem rolündeki grup (ör. aday / perakende müşteri) → grup adı; satır yoksa varsayılan ad."""
+
+    __tablename__ = "musteri_grubu_ayarlari"
+
+    anahtar: Mapped[str] = mapped_column(String(60), primary_key=True)
+    deger: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
 class MusteriGrubu(Base):

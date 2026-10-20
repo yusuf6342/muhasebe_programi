@@ -53,3 +53,6 @@ _patch_*.py
 entegrasyon/_*_talimat.txt
 entegrasyon/_banka_*.txt
 
+
+# Yerel inceleme dosyalari
+/inceleme/

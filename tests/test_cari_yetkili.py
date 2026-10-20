@@ -101,13 +101,7 @@ class CariYetkiliCrudTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        import database.database as db
-        import database.cari_yetkili_service as svc
-        import database.search_service as ss
-
-        self._patches = []
-        for mod in (db, svc, ss):
-            self._patches.append((mod, getattr(mod, "get_session", None)))
+        from tests._oturum_yamasi import oturum_yamasi
 
         SessionLocal = self.Session
 
@@ -120,9 +114,8 @@ class CariYetkiliCrudTest(unittest.TestCase):
                 self.s.commit()
                 self.s.close()
 
-        for mod, _ in self._patches:
-            if hasattr(mod, "get_session"):
-                mod.get_session = lambda: _Ctx()
+        self._yama = oturum_yamasi(_Ctx)
+        self._yama.start()
 
         self._perm = patch("database.cari_yetkili_service.yetki_var", return_value=True)
         self._perm_z = patch("database.cari_yetkili_service.yetki_zorunlu", return_value=None)
@@ -158,9 +151,7 @@ class CariYetkiliCrudTest(unittest.TestCase):
         self._perm_z.stop()
         self._yaz.stop()
         self._audit.stop()
-        for mod, orig in self._patches:
-            if orig is not None:
-                mod.get_session = orig
+        self._yama.stop()
         self.engine.dispose()
 
     def test_coklu_yetkili_musteri_tedarikci(self):

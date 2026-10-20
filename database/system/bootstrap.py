@@ -141,7 +141,33 @@ IZINLER: list[tuple[str, str, str]] = [
     ("servis_goruntuleme", "Servis ve sistem merkezini görüntüleme", "servis"),
     ("servis_kontrol", "Servis kontrollerini çalıştırma", "servis"),
     ("servis_onarim", "Servis onarım işlemleri", "servis"),
+    ("personel_goruntuleme", "Personel görüntüleme", "personel"),
+    ("personel_duzenleme", "Personel kart / özlük düzenleme", "personel"),
+    ("personel_finans_goruntuleme", "Personel maaş / avans görüntüleme", "personel"),
+    ("personel_finans_duzenleme", "Personel maaş / avans düzenleme", "personel"),
+    ("personel_hassas_goruntuleme", "Hassas özlük (sağlık/adli) görüntüleme", "personel"),
+    ("personel_hassas_saglik", "Sağlık dosyası görüntüleme", "personel"),
+    ("personel_hassas_adli", "Adli sicil dosyası görüntüleme", "personel"),
+    ("personel_hassas_duzenleme", "Hassas özlük yükleme / güncelleme", "personel"),
+    ("personel_belge_yazdirma", "Özlük belge yazdırma", "personel"),
+    ("personel_belge_disa_aktarma", "Özlük dışa aktarma", "personel"),
+    ("personel_belge_imha", "Özlük belge imha", "personel"),
+    ("personel_sgk_goruntuleme", "SGK / beyan takibi görüntüleme", "personel"),
+    ("personel_sgk_duzenleme", "SGK / beyan takibi düzenleme", "personel"),
+    ("personel_ayar", "Personel ayarları ve mevzuat parametreleri", "personel"),
+    ("personel_performans", "Performans / kariyer düzenleme", "personel"),
+    ("personel_prim_goruntuleme", "Ücret dağıtımı / prim görüntüleme", "personel"),
+    ("personel_prim_onay", "Prim dönemi onay ve bordro aktarımı", "personel"),
 ]
+
+# Yönetici * atamasından hariç — açık izin gerekir (KVKK hassas içerik)
+HASSAS_PERSONEL_IZINLERI = frozenset({
+    "personel_hassas_goruntuleme",
+    "personel_hassas_saglik",
+    "personel_hassas_adli",
+    "personel_hassas_duzenleme",
+    "personel_belge_imha",
+})
 
 # Rol → izin kodları (* = hepsi)
 ROL_IZINLERI: dict[str, list[str] | str] = {
@@ -226,6 +252,17 @@ ROL_IZINLERI: dict[str, list[str] | str] = {
         "firma_degistirme",
         "donem_degistirme",
         "silinen_kayit_goruntuleme",
+        # Personel: finans tutarları + SGK; hassas sağlık/adli yok
+        "personel_goruntuleme",
+        "personel_duzenleme",
+        "personel_finans_goruntuleme",
+        "personel_finans_duzenleme",
+        "personel_sgk_goruntuleme",
+        "personel_sgk_duzenleme",
+        "personel_belge_yazdirma",
+        "personel_performans",
+        "personel_prim_goruntuleme",
+        "personel_prim_onay",
     ],
     "SATIS": [
         "goruntuleme",
@@ -354,7 +391,8 @@ def _rolleri_doldur(session: Session, izinler: dict[str, Permission]) -> dict[st
 
         hedef = ROL_IZINLERI.get(kod, [])
         if hedef == "*":
-            hedef_kodlari = list(izinler.keys())
+            # Teknik yönetici tek başına bütün hassas özlük içeriğine sınırsız erişmesin
+            hedef_kodlari = [k for k in izinler.keys() if k not in HASSAS_PERSONEL_IZINLERI]
         else:
             hedef_kodlari = list(hedef)  # type: ignore[arg-type]
 

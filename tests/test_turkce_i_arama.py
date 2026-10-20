@@ -129,10 +129,7 @@ class _ServisTabani(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        import database.cari_service as cari_svc
-        import database.database as db
-        import database.search_service as ss
-        import database.stok_service as stok_svc
+        from tests._oturum_yamasi import oturum_yamasi
 
         # İç içe get_session çağrıları aynı oturumu paylaşır (uygulamadaki gibi)
         self._ortak_session = None
@@ -147,10 +144,8 @@ class _ServisTabani(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-        self._patches = []
-        for mod in (db, ss, stok_svc, cari_svc):
-            self._patches.append((mod, getattr(mod, "get_session", None)))
-            mod.get_session = lambda: _Ctx()
+        self._yama = oturum_yamasi(_Ctx)
+        self._yama.start()
 
         with self.Session() as s:
             for kod, ad, barkod in self.STOKLAR:
@@ -190,9 +185,7 @@ class _ServisTabani(unittest.TestCase):
             s.commit()
 
     def tearDown(self):
-        for mod, orig in self._patches:
-            if orig is not None:
-                mod.get_session = orig
+        self._yama.stop()
         if self._ortak_session is not None:
             self._ortak_session.close()
         self.engine.dispose()

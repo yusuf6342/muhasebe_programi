@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.orm import selectinload
 
 from database.access import yetki_var, yetki_zorunlu, yazma_zorunlu
@@ -50,6 +50,59 @@ def _sonraki_dogum(dogum: date, bugun: date | None = None) -> date | None:
     return None
 
 
+def _tam_sayi(deger, ad: str) -> int | None:
+    if deger is None or (isinstance(deger, str) and not deger.strip()):
+        return None
+    try:
+        return int(str(deger).strip())
+    except ValueError:
+        raise ValueError(f"Doğum günü {ad} sayı olmalıdır.") from None
+
+
+def dogum_coz(veriler: dict[str, Any]) -> tuple[int | None, int | None, int | None, date | None]:
+    """(gün, ay, yıl, tam tarih). Yıl yoksa tam tarih üretilmez (sahte yıl yok).
+
+    ``dogum_gun``/``dogum_ay``/``dogum_yili`` ya da eski ``dogum_tarihi`` (GG.AA.YYYY) kabul edilir.
+    """
+    if any(k in veriler for k in ("dogum_gun", "dogum_ay", "dogum_yili")):
+        gun = _tam_sayi(veriler.get("dogum_gun"), "günü")
+        ay = _tam_sayi(veriler.get("dogum_ay"), "ayı")
+        yil = _tam_sayi(veriler.get("dogum_yili"), "yılı")
+    else:
+        dogum = veriler.get("dogum_tarihi")
+        if dogum in ("", None):
+            return None, None, None, None
+        if isinstance(dogum, str):
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                try:
+                    dogum = datetime.strptime(dogum.strip(), fmt).date()
+                    break
+                except ValueError:
+                    continue
+            else:
+                raise ValueError("Doğum tarihi GG.AA.YYYY biçiminde olmalıdır.")
+        gun, ay, yil = dogum.day, dogum.month, dogum.year
+    if gun is None and ay is None and yil is None:
+        return None, None, None, None
+    if gun is None or ay is None:
+        raise ValueError("Doğum günü için gün ve ay birlikte girilmelidir (yıl isteğe bağlıdır).")
+    if not 1 <= ay <= 12:
+        raise ValueError("Doğum ayı 1–12 arasında olmalıdır.")
+    try:
+        # Yıl bilinmiyorsa 29 Şubat geçerli sayılsın diye artık yılda denetlenir; saklanmaz.
+        date(yil if yil is not None else 2000, ay, gun)
+    except ValueError:
+        raise ValueError("Doğum günü geçerli bir gün/ay değil.") from None
+    tarih = None
+    if yil is not None:
+        if yil < 1900:
+            raise ValueError("Doğum yılı 1900'den küçük olamaz.")
+        tarih = date(yil, ay, gun)
+        if tarih > date.today():
+            raise ValueError("Doğum tarihi gelecekte olamaz.")
+    return gun, ay, yil, tarih
+
+
 def _dogrula(veriler: dict[str, Any], *, hassas_izinli: bool) -> dict[str, Any]:
     ad = (veriler.get("ad") or "").strip()
     soyad = (veriler.get("soyad") or "").strip()
@@ -63,23 +116,10 @@ def _dogrula(veriler: dict[str, Any], *, hassas_izinli: bool) -> dict[str, Any]:
         if tel and not _TEL_RE.match(tel):
             raise ValueError(f"{alan.replace('_', ' ').title()} biçimi geçersiz.")
         veriler[alan] = tel
-    dogum = veriler.get("dogum_tarihi")
-    if dogum in ("", None):
-        dogum = None
-    elif isinstance(dogum, str):
-        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-            try:
-                dogum = datetime.strptime(dogum.strip(), fmt).date()
-                break
-            except ValueError:
-                continue
-        else:
-            raise ValueError("Doğum tarihi GG.AA.YYYY biçiminde olmalıdır.")
-    if isinstance(dogum, date) and dogum > date.today():
-        raise ValueError("Doğum tarihi gelecekte olamaz.")
+    gun, ay, yil, dogum = dogum_coz(veriler)
     if not hassas_izinli:
         # Hassas alanları koru / temizle
-        dogum = None
+        gun = ay = yil = dogum = None
         veriler["ozel_notlar"] = None
         veriler["gorusme_notu"] = None
         veriler["pazarlama_izni"] = False
@@ -89,6 +129,12 @@ def _dogrula(veriler: dict[str, Any], *, hassas_izinli: bool) -> dict[str, Any]:
     veriler["soyad"] = soyad
     veriler["email"] = email
     veriler["dogum_tarihi"] = dogum
+    veriler["dogum_gun"] = gun
+    veriler["dogum_ay"] = ay
+    veriler["dogum_yili"] = yil
+    for alan in ("departman_id", "gorev_id"):
+        deger = veriler.get(alan)
+        veriler[alan] = int(deger) if deger not in (None, "") else None
     veriler["ad_soyad_norm"] = _norm_ad(ad, soyad)
     veriler["unvan"] = (veriler.get("unvan") or "").strip() or None
     veriler["departman"] = (veriler.get("departman") or "").strip() or None
@@ -120,6 +166,8 @@ def _ozet(y: CariYetkili, *, hassas: bool = False) -> dict[str, Any]:
         "unvan": y.unvan or "",
         "departman": y.departman or "",
         "gorev": y.gorev or "",
+        "departman_id": getattr(y, "departman_id", None),
+        "gorev_id": getattr(y, "gorev_id", None),
         "ana_yetkili": bool(y.ana_yetkili),
         "aktif": bool(y.aktif),
         "cep_telefonu": y.cep_telefonu or "",
@@ -137,6 +185,9 @@ def _ozet(y: CariYetkili, *, hassas: bool = False) -> dict[str, Any]:
     }
     if hassas:
         d["dogum_tarihi"] = y.dogum_tarihi
+        d["dogum_gun"] = getattr(y, "dogum_gun", None) or (y.dogum_tarihi.day if y.dogum_tarihi else None)
+        d["dogum_ay"] = getattr(y, "dogum_ay", None) or (y.dogum_tarihi.month if y.dogum_tarihi else None)
+        d["dogum_yili"] = getattr(y, "dogum_yili", None) or (y.dogum_tarihi.year if y.dogum_tarihi else None)
         d["yas"] = _yas(y.dogum_tarihi)
         d["ozel_notlar"] = y.ozel_notlar or ""
         d["gorusme_notu"] = y.gorusme_notu or ""
@@ -145,10 +196,65 @@ def _ozet(y: CariYetkili, *, hassas: bool = False) -> dict[str, Any]:
         d["onay_tarihi"] = y.onay_tarihi
     else:
         d["dogum_tarihi"] = None
+        d["dogum_gun"] = d["dogum_ay"] = d["dogum_yili"] = None
         d["yas"] = None
         d["ozel_notlar"] = ""
         d["gorusme_notu"] = ""
     return d
+
+
+def dogum_gunu_metni(d: dict[str, Any]) -> str:
+    """'12.05' veya '12.05.1980' (yıl bilinmiyorsa uydurulmaz)."""
+    gun, ay, yil = d.get("dogum_gun"), d.get("dogum_ay"), d.get("dogum_yili")
+    if not gun or not ay:
+        return ""
+    return f"{int(gun):02d}.{int(ay):02d}" + (f".{int(yil)}" if yil else "")
+
+
+_HASSAS_ALANLAR = (
+    "dogum_tarihi", "dogum_gun", "dogum_ay", "dogum_yili", "ozel_notlar", "gorusme_notu",
+    "pazarlama_izni", "kvkk_onayi", "onay_tarihi",
+)
+
+
+def _tanim_ad(metin) -> str:
+    return " ".join(str(metin or "").split())[:100]
+
+
+def _tanim_bul_veya_ekle(session, model, ad: str):
+    anahtar = turkce_normalize(ad)[:100]
+    kayit = session.scalar(select(model).where(model.ad_norm == anahtar))
+    if kayit is None:
+        kayit = model(ad=ad, ad_norm=anahtar, aktif=True)
+        session.add(kayit)
+        session.flush()
+    return kayit
+
+
+def _tanimlari_coz(session, veri: dict[str, Any]) -> None:
+    """Departman/görev seçimini kayıt kimliğine bağlar; metin aynı tanımı tekrar oluşturmaz."""
+    from database.models.cari import CariYetkiliDepartman, CariYetkiliGorev
+
+    dep = None
+    if veri.get("departman_id"):
+        dep = session.get(CariYetkiliDepartman, int(veri["departman_id"]))
+        if dep is None:
+            raise ValueError("Seçilen departman tanımı bulunamadı.")
+    elif _tanim_ad(veri.get("departman")):
+        dep = _tanim_bul_veya_ekle(session, CariYetkiliDepartman, _tanim_ad(veri.get("departman")))
+    gor = None
+    if veri.get("gorev_id"):
+        gor = session.get(CariYetkiliGorev, int(veri["gorev_id"]))
+        if gor is None:
+            raise ValueError("Seçilen görev tanımı bulunamadı.")
+    elif _tanim_ad(veri.get("gorev")):
+        gor = _tanim_bul_veya_ekle(session, CariYetkiliGorev, _tanim_ad(veri.get("gorev")))
+    if gor is not None and dep is not None and gor.departman_id and gor.departman_id != dep.id:
+        raise ValueError(f"«{gor.ad}» görevi «{dep.ad}» departmanına bağlı değil; görevi yeniden seçin.")
+    veri["departman_id"] = dep.id if dep is not None else None
+    veri["departman"] = dep.ad if dep is not None else None
+    veri["gorev_id"] = gor.id if gor is not None else None
+    veri["gorev"] = gor.ad if gor is not None else None
 
 
 def _kullanici_damgasi() -> dict[str, Any]:
@@ -167,9 +273,52 @@ class CariYetkiliService:
     @staticmethod
     def schema_hazirla() -> None:
         """cari_yetkililer tablosunu oluşturur (idempotent; veri silmez)."""
+        from database.cari_kart_sema import schema_hazirla as cari_kart_schema_hazirla
         from database.database import engine
 
         CariYetkili.__table__.create(engine, checkfirst=True)
+        cari_kart_schema_hazirla(engine)
+
+    @staticmethod
+    def departmanlar(ara: str = "") -> list[dict[str, Any]]:
+        """Firma departman tanımları; Türkçe harf ve büyük/küçük harf duyarsız filtre."""
+        from database.models.cari import CariYetkiliDepartman
+
+        n = turkce_normalize((ara or "").strip())
+        with get_session() as session:
+            kayitlar = session.scalars(
+                select(CariYetkiliDepartman).where(CariYetkiliDepartman.aktif.is_(True))
+            ).all()
+            sonuc = [{"id": k.id, "ad": k.ad} for k in kayitlar if not n or n in k.ad_norm]
+        return sorted(sonuc, key=lambda d: turkce_normalize(d["ad"]))
+
+    @staticmethod
+    def gorevler(departman_id: int | None = None, ara: str = "") -> list[dict[str, Any]]:
+        """Görev tanımları; departmana bağlı görevler yalnız o departman seçiliyken listelenir."""
+        from database.models.cari import CariYetkiliGorev
+
+        n = turkce_normalize((ara or "").strip())
+        with get_session() as session:
+            kayitlar = session.scalars(
+                select(CariYetkiliGorev).where(CariYetkiliGorev.aktif.is_(True))
+            ).all()
+            sonuc = [
+                {"id": k.id, "ad": k.ad, "departman_id": k.departman_id}
+                for k in kayitlar
+                if (not n or n in k.ad_norm)
+                and (k.departman_id is None or (departman_id and k.departman_id == int(departman_id)))
+            ]
+        return sorted(sonuc, key=lambda d: turkce_normalize(d["ad"]))
+
+    @staticmethod
+    def gorev_departmana_uygun(gorev_id: int | None, departman_id: int | None) -> bool:
+        if not gorev_id:
+            return True
+        from database.models.cari import CariYetkiliGorev
+
+        with get_session() as session:
+            g = session.get(CariYetkiliGorev, int(gorev_id))
+            return g is None or g.departman_id is None or g.departman_id == departman_id
 
     @staticmethod
     def kullanim_ozeti(yetkili_id: int) -> dict[str, Any]:
@@ -204,7 +353,16 @@ class CariYetkiliService:
             if not pasifler_dahil:
                 q = q.where(CariYetkili.aktif.is_(True))
             q = q.order_by(CariYetkili.ana_yetkili.desc(), CariYetkili.ad, CariYetkili.soyad)
-            return [_ozet(y, hassas=hassas) for y in session.scalars(q).all()]
+            sonuc = [_ozet(y, hassas=hassas) for y in session.scalars(q).all()]
+            from database.models.cari import CariFotograf
+
+            fotolu = set(session.scalars(select(CariFotograf.sahip_id).where(
+                CariFotograf.sahip_turu == "YETKILI",
+                CariFotograf.sahip_id.in_([d["id"] for d in sonuc] or [0]),
+            )).all()) if inspect(session.connection()).has_table(CariFotograf.__tablename__) else set()
+        for d in sonuc:
+            d["foto_var"] = d["id"] in fotolu
+        return sonuc
 
     @staticmethod
     def ana_yetkili(cari_id: int) -> dict[str, Any] | None:
@@ -234,6 +392,7 @@ class CariYetkiliService:
             )
             if ayni is not None:
                 raise ValueError("Bu ad-soyad ile yetkili zaten kayıtlı.")
+            _tanimlari_coz(session, veri)
             if veri["ana_yetkili"]:
                 for eski in session.scalars(
                     select(CariYetkili).where(
@@ -289,6 +448,10 @@ class CariYetkiliService:
             )
             if ayni is not None:
                 raise ValueError("Bu ad-soyad ile yetkili zaten kayıtlı.")
+            _tanimlari_coz(session, veri)
+            if not hassas:
+                for alan in _HASSAS_ALANLAR:
+                    veri.pop(alan, None)
             if veri["ana_yetkili"]:
                 for diger in session.scalars(
                     select(CariYetkili).where(
@@ -390,7 +553,10 @@ class CariYetkiliService:
                     CariYetkili.aktif.is_(True),
                     or_(CariYetkili.is_deleted.is_(False), CariYetkili.is_deleted.is_(None)),
                     or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)),
-                    CariYetkili.dogum_tarihi.is_not(None),
+                    or_(
+                        CariYetkili.dogum_tarihi.is_not(None),
+                        CariYetkili.dogum_gun.is_not(None) & CariYetkili.dogum_ay.is_not(None),
+                    ),
                 )
             )
             if not hatirlat_kapali_dahil:
@@ -403,7 +569,10 @@ class CariYetkiliService:
                 q = q.where(Cari.musteri_grubu == musteri_grubu)
             sonuc = []
             for yetkili, cari in session.execute(q).all():
-                sonraki = _sonraki_dogum(yetkili.dogum_tarihi, bugun)
+                if yetkili.dogum_tarihi is not None:
+                    sonraki = _sonraki_dogum(yetkili.dogum_tarihi, bugun)
+                else:
+                    sonraki = _sonraki_dogum(date(2000, yetkili.dogum_ay, yetkili.dogum_gun), bugun)
                 if sonraki is None or sonraki > bitis:
                     continue
                 sonuc.append(
@@ -419,7 +588,7 @@ class CariYetkiliService:
                         "gun_kaldi": (sonraki - bugun).days,
                         "cep_telefonu": yetkili.cep_telefonu or "",
                         "email": yetkili.email or "",
-                        "yas": _yas(yetkili.dogum_tarihi, sonraki),
+                        "yas": _yas(yetkili.dogum_tarihi, sonraki) if yetkili.dogum_tarihi else None,
                     }
                 )
             sonuc.sort(key=lambda x: (x["gun_kaldi"], x["ad_soyad"]))

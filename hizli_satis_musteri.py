@@ -324,10 +324,12 @@ def varsayilan_cari_bul(session) -> Any | None:
     )
     if cari is not None:
         return cari
-    # 3) Grup adı eşleşmesi (ilk aktif)
+    # 3) Perakende rolündeki grup (grup silinip taşındıysa yeni adı; ilk aktif)
+    from database.cari_service import CariService
+
     return session.scalar(
         select(Cari)
-        .where(Cari.musteri_grubu == PERAKENDE_MUSTERI_GRUP, *aktif)
+        .where(Cari.musteri_grubu == CariService.rol_grubu("PERAKENDE_MUSTERI", session), *aktif)
         .order_by(Cari.id)
     )
 

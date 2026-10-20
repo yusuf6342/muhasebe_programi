@@ -593,6 +593,23 @@ def cari_kart_schemasini_guncelle() -> None:
 
     cari_risk_schema_hazirla(engine)
 
+    from database.cari_kart_sema import schema_hazirla as cari_kart_schema_hazirla
+
+    cari_kart_schema_hazirla(engine)
+
+    try:
+        from database.personel_sema import schema_hazirla as personel_schema_hazirla
+
+        personel_schema_hazirla(engine)
+    except Exception:
+        logging.getLogger(__name__).exception("personel schema")
+    try:
+        from database.personel_performans_sema import schema_hazirla as personel_perf_schema
+
+        personel_perf_schema(engine)
+    except Exception:
+        logging.getLogger(__name__).exception("personel_performans schema")
+
     # İade satırına FIFO maliyet kolonu
     iade_tablo = "satis_iade_faturasi_satirlari"
     if inspect(engine).has_table(iade_tablo):
@@ -1278,11 +1295,10 @@ def musteri_gruplarini_hazirla() -> None:
         "TESİSATÇILAR",
         "DİĞER",
     )
-    mevcut_gruplar = set()
+    # Varsayılanlar yalnız ilk kurulumda eklenir; kullanıcının sildiği grup açılışta geri gelmez.
     with get_session() as session:
-        mevcut_gruplar.update(session.scalars(select(MusteriGrubu.ad)).all())
-        for grup_adi in baslangic_gruplari:
-            if grup_adi not in mevcut_gruplar:
+        if session.scalar(select(MusteriGrubu.id).limit(1)) is None:
+            for grup_adi in baslangic_gruplari:
                 session.add(MusteriGrubu(ad=grup_adi))
     perakende_cari_hazirla()
 
@@ -1295,16 +1311,21 @@ def perakende_cari_hazirla() -> None:
     """
     from database.models.cari import Cari
     from hizli_satis_musteri import (
-        PERAKENDE_MUSTERI_GRUP,
         PERAKENDE_MUSTERI_KOD,
         PERAKENDE_MUSTERI_UNVAN,
         VARSAYILAN_FIYAT_LISTESI,
         varsayilan_cari_bul,
     )
 
+    from database.cari_service import CariService
+    from database.models.cari import MusteriGrubu
+
     with get_session() as session:
         if varsayilan_cari_bul(session) is not None:
             return
+        grup = CariService.rol_grubu("PERAKENDE_MUSTERI", session)
+        if CariService._grup_bul(session, grup) is None:
+            session.add(MusteriGrubu(ad=grup))
         # Kod çakışırsa sıradaki PRK00n dene
         kod = PERAKENDE_MUSTERI_KOD
         for i in range(1, 100):
@@ -1320,7 +1341,7 @@ def perakende_cari_hazirla() -> None:
                 cari_kodu=kod,
                 unvan=PERAKENDE_MUSTERI_UNVAN,
                 cari_turu="Müşteri",
-                musteri_grubu=PERAKENDE_MUSTERI_GRUP,
+                musteri_grubu=grup,
                 satis_fiyat_listesi=VARSAYILAN_FIYAT_LISTESI,
                 aktif=True,
                 is_deleted=False,

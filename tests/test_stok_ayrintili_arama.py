@@ -27,14 +27,8 @@ class StokAyrintiliAramaTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # get_session monkeypatch
-        import database.stok_service as ss
-        import database.database as db
+        from tests._oturum_yamasi import oturum_yamasi
 
-        self._orig_get_session = ss.get_session
-        self._orig_db_get = db.get_session
-
-        engine = self.engine
         SessionLocal = self.Session
 
         class _Ctx:
@@ -45,8 +39,8 @@ class StokAyrintiliAramaTest(unittest.TestCase):
             def __exit__(self, *a):
                 self.s.close()
 
-        ss.get_session = lambda: _Ctx()
-        db.get_session = lambda: _Ctx()
+        self._yama = oturum_yamasi(_Ctx)
+        self._yama.start()
 
         with self.Session() as s:
             ornekler = [
@@ -72,11 +66,7 @@ class StokAyrintiliAramaTest(unittest.TestCase):
             s.commit()
 
     def tearDown(self):
-        import database.stok_service as ss
-        import database.database as db
-
-        ss.get_session = self._orig_get_session
-        db.get_session = self._orig_db_get
+        self._yama.stop()
         self.engine.dispose()
 
     def _adlar(self, kelimeler, yontem="and"):

@@ -24,6 +24,7 @@ ANA_MENULER = (
     "stoklar",
     "finans",
     "gelir_gider",
+    "personel",
     "ozet_tablolar",
     "genel_muhasebe",
 )
@@ -77,6 +78,7 @@ class EkranYiginiTest(unittest.TestCase):
             patch.object(app_mod.MuhasebeApp, "stoklar_menusu_goster", _sahte_ciz("stoklar")),
             patch.object(app_mod.MuhasebeApp, "finans_goster", _sahte_ciz("finans")),
             patch.object(app_mod, "gelir_gider_menusu_goster", _sahte_ciz("gelir_gider")),
+            patch.object(app_mod, "personel_menusu_goster", _sahte_ciz("personel")),
             patch.object(app_mod, "genel_muhasebe_menusu_goster", _sahte_ciz("genel_muhasebe")),
             patch.object(app_mod, "ozet_tablolar_menusu_goster", _sahte_ciz("ozet_tablolar")),
         ]

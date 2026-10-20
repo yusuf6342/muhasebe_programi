@@ -233,6 +233,7 @@ class CariKartTest(_EkranTest):
                 kart = self.kart_ui.CariDialog(self.root, cari=None, cari_turu="Müşteri")
                 kart.degerler["unvan"].insert(0, f"KİMLİK TEST {tc or 'BOŞ'}")
                 kart.degerler["tc_kimlik"].insert(0, tc)
+                kart.degerler["musteri_grubu"].set("PERAKENDE MÜŞTERİ")
                 self.assertTrue(kart.kaydet(), self.mesajlar)
                 with get_session() as s:
                     kayit = s.get(Cari, kart.cari.id)
@@ -281,8 +282,8 @@ class CariKartTest(_EkranTest):
         arama.ara()
         arama.sec(0)
         self.root.update()
-        self.assertFalse(kart.winfo_exists())
         (yeni,) = self._acik_kartlar()
+        self.assertIs(yeni, kart, "seçim aynı pencerede yüklenir; kart kapanıp açılmaz")
         self.assertEqual(yeni.cari.id, self.musteri_id)
         self.assertEqual(yeni.degerler["unvan"].get(), "ALİ ÇELİK MOBİLYA LTD")
         self.assertFalse([m for m in self.mesajlar if m[0] != "showinfo"])

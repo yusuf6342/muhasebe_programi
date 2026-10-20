@@ -39,16 +39,15 @@ def _bellek_oturumu():
 
 class OrnekVeriTest(unittest.TestCase):
     def test_idempotent_ve_hepsi_etiketli(self):
-        import database.stok_service as stok_service
         from database.models.stok import Depo, StokLotu
 
         get_session = _bellek_oturumu()
         with get_session() as s:
             s.add(Depo(kod="ANA", ad="ANA DEPO", aktif=True, varsayilan=True))
         # Açılışta oturum yokken çalışır: yetki denetimi yamalanmaz
-        with mock.patch.object(db, "get_session", get_session), mock.patch.object(
-            stok_service, "get_session", get_session
-        ):
+        from tests._oturum_yamasi import oturum_yamasi
+
+        with oturum_yamasi(get_session):
             self.assertFalse(ornek_veri.ornek_veri_var_mi())
             ilk = ornek_veri.ornek_veri_ekle()
             self.assertEqual(ilk, {"cari": len(ornek_veri.ORNEK_CARILER), "stok": len(ornek_veri.ORNEK_URUNLER)})

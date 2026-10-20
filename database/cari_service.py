@@ -21,8 +21,10 @@ from database.turkce_normalize import turkce_normalize
 class CariService:
     @staticmethod
     def _grup_anahtari(ad: str) -> str:
-        normal = unicodedata.normalize("NFKD", ad.strip())
-        return "".join(karakter for karakter in normal if not unicodedata.combining(karakter)).casefold()
+        """Ad tekilliği anahtarı: Türkçe büyük/küçük harf (İ/I/ı/i), baş-son ve çoklu boşluk duyarsız."""
+        normal = unicodedata.normalize("NFKD", turkce_normalize((ad or "").strip()))
+        sade = "".join(karakter for karakter in normal if not unicodedata.combining(karakter))
+        return " ".join(sade.split())
 
     @staticmethod
     def gruplari_listele() -> list[str]:
@@ -35,42 +37,184 @@ class CariService:
     def grup_ekle(ad: str) -> str:
         from database.models.cari import MusteriGrubu
 
-        ad = ad.strip()
+        ad = (ad or "").strip()
         if not ad:
             raise ValueError("Müşteri grup adı boş olamaz.")
+        anahtar = CariService._grup_anahtari(ad)
         with get_session() as session:
             mevcut = next(
-                (grup for grup in session.scalars(select(MusteriGrubu)) if CariService._grup_anahtari(grup.ad) == CariService._grup_anahtari(ad)),
+                (g for g in session.scalars(select(MusteriGrubu)) if CariService._grup_anahtari(g.ad) == anahtar),
                 None,
             )
             if mevcut:
-                raise ValueError("Bu müşteri grubu zaten mevcut.")
+                raise ValueError(f"Bu müşteri grubu zaten mevcut: «{mevcut.ad}».")
             session.add(MusteriGrubu(ad=ad))
             session.flush()
             return ad
 
     ADAY_MUSTERI_GRUP = "ADAY MÜŞTERİ"
+    PERAKENDE_MUSTERI_GRUP = "PERAKENDE MÜŞTERİ"
+
+    # Sistem akışlarının grup bağlantısı: rol → (varsayılan ad, açıklama). Grup silinirken hedefe taşınır.
+    GRUP_ROLLERI = {
+        "ADAY_MUSTERI": (ADAY_MUSTERI_GRUP, "Teklif ekranındaki aday müşteri grubu"),
+        "PERAKENDE_MUSTERI": (PERAKENDE_MUSTERI_GRUP, "Hızlı Satış varsayılan perakende müşteri grubu"),
+    }
+
+    @staticmethod
+    def _rol_tablosu_hazirla(session) -> None:
+        from sqlalchemy import inspect as sa_inspect
+
+        from database.models.cari import MusteriGrubuAyari
+
+        if not sa_inspect(session.connection()).has_table(MusteriGrubuAyari.__tablename__):
+            MusteriGrubuAyari.__table__.create(session.connection(), checkfirst=True)
+
+    @staticmethod
+    def _rol_ayarlari(session) -> dict[str, str]:
+        from sqlalchemy import inspect as sa_inspect
+
+        from database.models.cari import MusteriGrubuAyari
+
+        ayarlar = {rol: varsayilan for rol, (varsayilan, _a) in CariService.GRUP_ROLLERI.items()}
+        if sa_inspect(session.connection()).has_table(MusteriGrubuAyari.__tablename__):
+            for k in session.scalars(select(MusteriGrubuAyari)).all():
+                if k.anahtar in ayarlar and (k.deger or "").strip():
+                    ayarlar[k.anahtar] = k.deger.strip()
+        return ayarlar
+
+    @staticmethod
+    def rol_grubu(rol: str, session=None) -> str:
+        """Rol için geçerli grup adı (ayar yoksa varsayılan ad)."""
+        if session is not None:
+            return CariService._rol_ayarlari(session)[rol]
+        with get_session() as s:
+            return CariService._rol_ayarlari(s)[rol]
 
     @staticmethod
     def aday_musteri_grubunu_garanti() -> str:
-        """Aday Müşteri sınıfı yoksa oluşturur; varsa mevcut adı döner."""
+        """Aday müşteri rolündeki grup yoksa oluşturur; varsa mevcut adı döner."""
         from database.models.cari import MusteriGrubu
 
-        hedef = CariService.ADAY_MUSTERI_GRUP
         with get_session() as session:
-            mevcut = next(
-                (
-                    g
-                    for g in session.scalars(select(MusteriGrubu))
-                    if CariService._grup_anahtari(g.ad) == CariService._grup_anahtari(hedef)
-                ),
-                None,
-            )
+            hedef = CariService.rol_grubu("ADAY_MUSTERI", session)
+            mevcut = CariService._grup_bul(session, hedef)
             if mevcut:
                 return mevcut.ad
             session.add(MusteriGrubu(ad=hedef))
             session.flush()
             return hedef
+
+    @staticmethod
+    def _grup_bul(session, ad: str):
+        """Grup satırı: önce birebir ad (baş-son boşluk hariç), yoksa tek anahtar eşleşmesi."""
+        from database.models.cari import MusteriGrubu
+
+        gruplar = list(session.scalars(select(MusteriGrubu)).all())
+        ad = (ad or "").strip()
+        birebir = next((g for g in gruplar if (g.ad or "").strip() == ad), None)
+        if birebir is not None:
+            return birebir
+        anahtar = CariService._grup_anahtari(ad)
+        eslesen = [g for g in gruplar if CariService._grup_anahtari(g.ad) == anahtar]
+        return eslesen[0] if len(eslesen) == 1 else None
+
+    @staticmethod
+    def _grup_kartlari(session, ad: str, *, silinenler_dahil: bool = True) -> list[Cari]:
+        """Gruba bağlı kartlar: birebir aynı ad; yazımı farklı ad yalnız başka grup satırına ait değilse."""
+        from database.models.cari import MusteriGrubu
+
+        ad = (ad or "").strip()
+        anahtar = CariService._grup_anahtari(ad)
+        diger_adlar = {
+            (g or "").strip() for g in session.scalars(select(MusteriGrubu.ad)).all() if (g or "").strip() != ad
+        }
+        sorgu = select(Cari).where(Cari.musteri_grubu.is_not(None))
+        if not silinenler_dahil:
+            sorgu = sorgu.where(or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None)))
+        sonuc = []
+        for c in session.scalars(sorgu).all():
+            kart_ad = (c.musteri_grubu or "").strip()
+            if kart_ad == ad or (
+                kart_ad not in diger_adlar and CariService._grup_anahtari(kart_ad) == anahtar
+            ):
+                sonuc.append(c)
+        return sonuc
+
+    @staticmethod
+    def _grup_rolleri(session, ad: str) -> list[str]:
+        ad = (ad or "").strip()
+        return [rol for rol, deger in CariService._rol_ayarlari(session).items() if deger.strip() == ad]
+
+    @staticmethod
+    def grup_kullanimi(ad: str) -> dict[str, Any]:
+        """Grubu kullanan kart sayısı, taşınabilecek hedef gruplar ve gruba bağlı sistem rolleri."""
+        from database.models.cari import MusteriGrubu
+
+        with get_session() as session:
+            grup = CariService._grup_bul(session, ad)
+            gercek = grup.ad if grup is not None else (ad or "").strip()
+            kartlar = CariService._grup_kartlari(session, gercek, silinenler_dahil=True)
+            hedefler = [
+                g for g in session.scalars(select(MusteriGrubu.ad).order_by(MusteriGrubu.ad)).all()
+                if (g or "").strip() != gercek.strip()
+            ]
+            roller = CariService._grup_rolleri(session, gercek)
+        silinmemis = [c for c in kartlar if not c.is_deleted]
+        return {
+            "ad": gercek,
+            "cari_sayisi": len(silinmemis),
+            "silinmis_sayisi": len(kartlar) - len(silinmemis),
+            "aktif_sayisi": sum(1 for c in silinmemis if c.aktif),
+            "hedefler": hedefler,
+            "roller": [CariService.GRUP_ROLLERI[r][1] for r in roller],
+        }
+
+    @staticmethod
+    def grup_sil(ad: str, hedef: str | None = None) -> dict[str, Any]:
+        """Grubu siler; bağlı kartlar (silinmiş kartlar dahil) ve rol ayarları önce ``hedef`` gruba taşınır.
+
+        Taşıma, ayar güncellemesi ve silme tek veritabanı işlemidir; hata olursa hepsi geri alınır,
+        hiçbir kart grupsuz kalmaz.
+        """
+        yazma_zorunlu("cari_duzenleme")
+        from database.models.cari import MusteriGrubuAyari
+
+        with get_session() as session:
+            grup = CariService._grup_bul(session, ad)
+            if grup is None:
+                raise ValueError("Müşteri grubu bulunamadı.")
+            kartlar = CariService._grup_kartlari(session, grup.ad)
+            roller = CariService._grup_rolleri(session, grup.ad)
+            hedef_grup = None
+            if kartlar or roller:
+                if not (hedef or "").strip():
+                    neden = (f"{len(kartlar)} kart kullanıyor" if kartlar else "") + (
+                        ("; " if kartlar else "") + "sistem bağlantısı var" if roller else "")
+                    raise ValueError(f"«{grup.ad}» grubunu {neden}; önce taşınacak grubu seçin.")
+                hedef_grup = CariService._grup_bul(session, hedef)
+                if hedef_grup is None:
+                    raise ValueError("Hedef müşteri grubu bulunamadı.")
+                if hedef_grup.id == grup.id:
+                    raise ValueError("Kartlar silinecek grubun kendisine taşınamaz.")
+                for c in kartlar:
+                    c.musteri_grubu = hedef_grup.ad
+                if roller:
+                    CariService._rol_tablosu_hazirla(session)
+                    for rol in roller:
+                        kayit = session.get(MusteriGrubuAyari, rol)
+                        if kayit is None:
+                            session.add(MusteriGrubuAyari(anahtar=rol, deger=hedef_grup.ad))
+                        else:
+                            kayit.deger = hedef_grup.ad
+            session.delete(grup)
+            session.flush()
+            return {
+                "silinen": grup.ad,
+                "tasinan": len(kartlar),
+                "hedef": hedef_grup.ad if hedef_grup is not None else None,
+                "tasinan_roller": [CariService.GRUP_ROLLERI[r][1] for r in roller],
+            }
 
     @staticmethod
     def _arama_kontrol(arama: str) -> str:
@@ -1464,6 +1608,53 @@ class CariService:
                 if len(kod) >= 2 and kod[0].upper() == onek and kuyruk.isdigit():
                     max_no = max(max_no, int(kuyruk))
             return f"{onek}{max_no + 1:05d}"
+
+    @staticmethod
+    def dogal_kod_anahtari(kod: str | None) -> tuple:
+        """Doğal sıra: M10 > M9, M00010 > M00009; harf ve sayı parçaları ayrı karşılaştırılır."""
+        import re
+
+        parcalar = re.findall(r"\d+|\D+", (kod or "").strip().casefold())
+        return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in parcalar)
+
+    @staticmethod
+    def son_kodlar(cari_turu: str = "Müşteri", limit: int = 10) -> list[dict[str, Any]]:
+        """Kod sırasının sonundaki en fazla ``limit`` cari (en büyük kod ilk); bakiyeleriyle."""
+        from database.cari_bakiye_service import bakiye_bilgisi, liste_bakiyeleri
+
+        with get_session() as session:
+            sorgu = select(Cari.id, Cari.cari_kodu, Cari.unvan, Cari.aktif, Cari.cari_turu).where(
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None))
+            )
+            sorgu = CariService._cari_turu_filtresi(sorgu, cari_turu)
+            satirlar = list(session.execute(sorgu).all())
+        satirlar.sort(key=lambda s: CariService.dogal_kod_anahtari(s.cari_kodu), reverse=True)
+        satirlar = satirlar[: max(1, int(limit))]
+        bakiyeler = liste_bakiyeleri([s.id for s in satirlar])
+        return [
+            {
+                "id": int(s.id), "cari_kodu": s.cari_kodu or "", "unvan": s.unvan or "",
+                "aktif": bool(s.aktif),
+                **bakiye_bilgisi(bakiyeler.get(int(s.id), 0),
+                                 tedarikci_modu=(s.cari_turu or "") == "Tedarikçi"),
+            }
+            for s in satirlar
+        ]
+
+    @staticmethod
+    def secim_etiketleri(cari_turu: str | None = None) -> list[dict[str, Any]]:
+        """Seçim kutuları için hafif liste (id, kod, ünvan, tür); bakiye/özet hesaplamaz."""
+        with get_session() as session:
+            sorgu = select(Cari.id, Cari.cari_kodu, Cari.unvan, Cari.cari_turu, Cari.aktif).where(
+                or_(Cari.is_deleted.is_(False), Cari.is_deleted.is_(None))
+            )
+            if cari_turu:
+                sorgu = CariService._cari_turu_filtresi(sorgu, cari_turu)
+            return [
+                {"id": int(s.id), "cari_kodu": s.cari_kodu or "", "unvan": s.unvan or "",
+                 "cari_turu": s.cari_turu or "", "aktif": bool(s.aktif)}
+                for s in session.execute(sorgu.order_by(Cari.cari_kodu)).all()
+            ]
 
     @staticmethod
     def ekle(veriler: dict[str, object]) -> Cari:

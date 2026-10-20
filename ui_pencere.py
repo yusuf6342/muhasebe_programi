@@ -272,3 +272,72 @@ def sticky_footer_layout(
             orta.pack(side="top", fill="both", expand=True)
     except tk.TclError:
         pass
+
+
+def sarmali_yerlestir(
+    kap: tk.Frame,
+    ogeler: list[tk.Misc],
+    *,
+    padx: int = 3,
+    pady: int = 4,
+    genisleyen: tuple = (),
+    hepsi_genislesin: bool = False,
+    yasla: str = "w",
+) -> None:
+    """Öğeleri ``kap`` genişliğine sığdığı kadar yan yana dizer; sığmayanı alt satıra geçirir.
+
+    Dar ekran / yüksek ölçekte düğme ve etiketler kesilmez (yazı küçültülmez).
+    ``kap`` genişliği üst yerleşimden gelmeli (fill="x" / sticky="ew"); öğeler ``kap``'ın çocuğu olmalı.
+    """
+    from tkinter import ttk
+
+    if isinstance(kap, ttk.Frame):
+        def _satir_yap():
+            return ttk.Frame(kap)
+    else:
+        bg = kap.cget("bg")
+
+        def _satir_yap():
+            return tk.Frame(kap, bg=bg)
+    satirlar: list[tk.Misc] = []
+    son: dict[str, Any] = {"duzen": None}
+
+    def _uygula(duzen: list[list[tk.Misc]]) -> None:
+        imza = [len(s) for s in duzen]
+        if imza == son["duzen"]:
+            return
+        son["duzen"] = imza
+        for o in ogeler:
+            o.pack_forget()
+        for s in satirlar:
+            s.pack_forget()
+        while len(satirlar) < len(duzen):
+            satirlar.append(_satir_yap())
+        for i, (satir, grup) in enumerate(zip(satirlar, duzen)):
+            dolu = hepsi_genislesin or any(o in genisleyen for o in grup)
+            satir.pack(anchor=yasla, fill="x" if dolu else "none", pady=(0 if i == 0 else pady, 0))
+            for o in grup:
+                acik = hepsi_genislesin or o in genisleyen
+                o.pack(in_=satir, side="left", padx=padx, expand=acik, fill="x" if acik else "none")
+                o.lift(satir)
+
+    def _yerlestir(_e=None) -> None:
+        try:
+            gen = kap.winfo_width()
+            if gen <= 1:
+                return
+            duzen: list[list[tk.Misc]] = [[]]
+            x = 0
+            for o in ogeler:
+                rw = o.winfo_reqwidth() + 2 * padx
+                if duzen[-1] and x + rw > gen:
+                    duzen.append([])
+                    x = 0
+                duzen[-1].append(o)
+                x += rw
+            _uygula(duzen)
+        except tk.TclError:
+            pass
+
+    _uygula([list(ogeler)])
+    kap.bind("<Configure>", _yerlestir, add="+")

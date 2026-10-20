@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from database.session_manager import oturum
 from database.stok_grup_service import SEVIYE_ALT, SEVIYE_ANA, SEVIYE_TALI, StokGrupService
 from database.stok_grup_toplu_service import (
     POLITIKA_DEGISTIR,
@@ -29,6 +30,8 @@ from satis_tema import (
 def stok_grup_toplu_eslestirme_goster(app) -> None:
     app._icerigi_temizle()
     stil_uygula(root=app)
+    stil = ttk.Style(app)
+    stil.configure("StokGrupToplu.Satis.Treeview.Heading", foreground=LACIVERT, background=ACIK_BG)
     try:
         app.icerik.configure(bg=ACIK_BG)
     except tk.TclError:
@@ -40,10 +43,14 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
 
     kok = tk.Frame(app.icerik, bg=ACIK_BG)
     kok.pack(fill="both", expand=True)
-    hub_ust_baslik(
-        kok,
+    kok.columnconfigure(0, weight=1)
+    kok.rowconfigure(2, weight=1)
+    baslik_alani = tk.Frame(kok, bg=ACIK_BG)
+    baslik_alani.grid(row=0, column=0, sticky="ew")
+    baslik_bandi = hub_ust_baslik(
+        baslik_alani,
         baslik="TOPLU STOK GRUBU EŞLEŞTİRME",
-        alt_baslik="Bul → Seç → Hedef grup → Ön izle → Uygula",
+        alt_baslik="Bul → Seç → Hedef grup → Ön İzle → Gruba Aktar",
         app=app,
         geri_komut=lambda: app.sayfa_goster("stoklar"),
         geri_metin="← Stoklar",
@@ -51,7 +58,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
 
     # Sayaçlar
     sayac_fr = tk.Frame(kok, bg=ACIK_BG)
-    sayac_fr.pack(fill="x", padx=16, pady=(4, 0))
+    sayac_fr.grid(row=1, column=0, sticky="ew", padx=16, pady=(4, 0))
     sayaclar = {}
     for baslik in (
         "Toplam Sonuç",
@@ -70,17 +77,21 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         sayaclar[baslik] = deger
 
     govde = tk.Frame(kok, bg=ACIK_BG)
-    govde.pack(fill="both", expand=True, padx=16, pady=8)
+    govde.grid(row=2, column=0, sticky="nsew", padx=16, pady=4)
     govde.columnconfigure(0, weight=3)
-    govde.columnconfigure(1, weight=2)
+    govde.columnconfigure(1, weight=2, minsize=320)
     govde.rowconfigure(0, weight=1)
 
     # —— Sol: filtre + liste ——
     sol = tk.Frame(govde, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
     sol.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    sol.columnconfigure(0, weight=1)
+    sol.rowconfigure(2, weight=1)
 
     filtre = tk.Frame(sol, bg=BEYAZ)
-    filtre.pack(fill="x", padx=8, pady=8)
+    filtre.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+    for sutun in range(4):
+        filtre.columnconfigure(sutun, weight=1, uniform="filtre")
     tk.Label(filtre, text="Ara (kod/ad/barkod)", bg=BEYAZ, fg=IKINCIL).grid(row=0, column=0, sticky="w")
     arama = ttk.Entry(filtre, width=22)
     arama.grid(row=1, column=0, padx=(0, 6), sticky="ew")
@@ -90,9 +101,9 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
     ad1 = ttk.Entry(filtre, width=12)
     ad2 = ttk.Entry(filtre, width=12)
     ad3 = ttk.Entry(filtre, width=12)
-    ad1.grid(row=1, column=1, padx=2)
-    ad2.grid(row=1, column=2, padx=2)
-    ad3.grid(row=1, column=3, padx=2)
+    ad1.grid(row=1, column=1, padx=2, sticky="ew")
+    ad2.grid(row=1, column=2, padx=2, sticky="ew")
+    ad3.grid(row=1, column=3, padx=2, sticky="ew")
 
     tk.Label(filtre, text="Ana Grup", bg=BEYAZ, fg=IKINCIL).grid(row=2, column=0, sticky="w", pady=(6, 0))
     tk.Label(filtre, text="Tali Grup", bg=BEYAZ, fg=IKINCIL).grid(row=2, column=1, sticky="w", pady=(6, 0))
@@ -129,25 +140,78 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
     btn_f = tk.Frame(filtre, bg=BEYAZ)
     btn_f.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 0))
     tk_buton(btn_f, "Listele", lambda: _listele(), rol="ara").pack(side="left")
-    tk_buton(btn_f, "Filtreyi Temizle", lambda: _filtre_temizle(), rol="ikincil").pack(
+    tk_buton(btn_f, "Temizle", lambda: _filtre_temizle(), rol="ikincil").pack(
         side="left", padx=6
     )
-    tk_buton(btn_f, "Yalnız Grupsuz", lambda: _yalniz_grupsuz(), rol="yeni").pack(side="left")
+    tk_buton(btn_f, "Grupsuzlar", lambda: _yalniz_grupsuz(), rol="yeni").pack(side="left")
+    ayrinti_alanlari = [w for w in filtre.winfo_children() if 2 <= int(w.grid_info().get("row", -1)) <= 5]
+    ayrinti_durumu = {"manuel": False, "acik": None}
+
+    def _ayrinti_goster(acik):
+        if ayrinti_durumu["acik"] == acik:
+            return
+        ayrinti_durumu["acik"] = acik
+        for widget in ayrinti_alanlari:
+            widget.grid() if acik else widget.grid_remove()
+        ayrinti_btn.configure(text="Ayrıntılar ▴" if acik else "Ayrıntılar ▾")
+
+    def _ayrinti_degistir():
+        ayrinti_durumu["manuel"] = True
+        _ayrinti_goster(not ayrinti_durumu["acik"])
+
+    ayrinti_btn = tk_buton(btn_f, "Ayrıntılar ▾", _ayrinti_degistir, rol="ikincil")
+    filtre_dugmeleri = [w for w in btn_f.winfo_children() if isinstance(w, tk.Button)]
+    for widget in filtre_dugmeleri:
+        widget.pack_forget()
+    for i, widget in enumerate(filtre_dugmeleri):
+        widget.grid(row=0, column=i, sticky="ew", padx=2)
+        widget.configure(padx=6)
+        btn_f.columnconfigure(i, weight=1, uniform="filtre_dugme")
+    baslik_durumu = {"kucuk": None}
+
+    def _ekran_boyut(event):
+        kucuk = event.height < 700
+        if not ayrinti_durumu["manuel"]:
+            _ayrinti_goster(not kucuk)
+        if baslik_durumu["kucuk"] == kucuk:
+            return
+        baslik_durumu["kucuk"] = kucuk
+        sol_baslik, sag_baslik = baslik_bandi.winfo_children()
+        sol_baslik.pack_configure(pady=2 if kucuk else 16)
+        sag_baslik.pack_configure(pady=4 if kucuk else 12)
+        sol_baslik.winfo_children()[0].configure(font=font(16 if kucuk else 28, "bold", app))
+        sol_baslik.winfo_children()[1].configure(font=font(9 if kucuk else 12, root=app))
+        sol_baslik.winfo_children()[2].pack_configure(pady=(2 if kucuk else 10, 0))
+        for deger in sayaclar.values():
+            deger.configure(font=font(11 if kucuk else 14, "bold", app))
+            deger.pack_configure(pady=(0, 3 if kucuk else 6))
+        sag_alanlar = sag_baslik.winfo_children()
+        for label in sag_alanlar[1:-1]:
+            if kucuk:
+                label.pack_forget()
+            else:
+                label.pack(anchor="e", before=sag_alanlar[-1])
+
+    kok.bind("<Configure>", _ekran_boyut)
 
     sec_fr = tk.Frame(sol, bg=BEYAZ)
-    sec_fr.pack(fill="x", padx=8, pady=(0, 4))
-    tk_buton(sec_fr, "Sayfadakileri Seç", lambda: _sayfa_sec(), rol="ikincil").pack(side="left")
-    tk_buton(sec_fr, "Tüm Filtre Sonucunu Seç", lambda: _tumunu_sec(), rol="kaydet").pack(
+    sec_fr.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+    tk_buton(sec_fr, "Sayfayı Seç", lambda: _sayfa_sec(), rol="ikincil").pack(side="left")
+    tk_buton(sec_fr, "Tümünü Seç", lambda: _tumunu_sec(), rol="kaydet").pack(
         side="left", padx=6
     )
     tk_buton(sec_fr, "Seçimi Temizle", lambda: _secim_temizle(), rol="ikincil").pack(side="left")
-    sadece_secili = tk.BooleanVar(value=False)
-    ttk.Checkbutton(
-        sec_fr, text="Yalnız seçili ürünler", variable=sadece_secili, command=lambda: _listele()
-    ).pack(side="right")
+    sadece_secili = tk.BooleanVar(master=app, value=False)
+    secim_dugmeleri = [w for w in sec_fr.winfo_children() if isinstance(w, tk.Button)]
+    for widget in secim_dugmeleri:
+        widget.pack_forget()
+    for i, widget in enumerate(secim_dugmeleri):
+        widget.grid(row=0, column=i, sticky="ew", padx=2)
+        widget.configure(padx=6)
+        sec_fr.columnconfigure(i, weight=1, uniform="secim")
 
     tablo_fr = tk.Frame(sol, bg=BEYAZ)
-    tablo_fr.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+    tablo_fr.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
     kolonlar = (
         "sec",
         "kod",
@@ -165,6 +229,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         tablo_fr, columns=kolonlar, show="headings", selectmode="extended", height=16
     )
     treeview_stil(tablo)
+    tablo.configure(style="StokGrupToplu.Satis.Treeview")
     basliklar = {
         "sec": "✓",
         "kod": "Kod",
@@ -196,29 +261,48 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         tablo.column(k, width=gen[k], anchor="w" if k != "sec" else "center")
     sy = ttk.Scrollbar(tablo_fr, orient="vertical", command=tablo.yview)
     tablo.configure(yscrollcommand=sy.set)
-    tablo.pack(side="left", fill="both", expand=True)
-    sy.pack(side="right", fill="y")
+    sx = ttk.Scrollbar(tablo_fr, orient="horizontal", command=tablo.xview)
+    tablo.configure(xscrollcommand=sx.set)
+    tablo_fr.rowconfigure(0, weight=1)
+    tablo_fr.columnconfigure(0, weight=1)
+    tablo.grid(row=0, column=0, sticky="nsew")
+    sy.grid(row=0, column=1, sticky="ns")
+    sx.grid(row=1, column=0, sticky="ew")
 
     sayfa_fr = tk.Frame(sol, bg=BEYAZ)
-    sayfa_fr.pack(fill="x", padx=8, pady=(0, 8))
+    sayfa_fr.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
     sayfa_lbl = tk.Label(sayfa_fr, text="Sayfa 1", bg=BEYAZ, fg=IKINCIL)
     sayfa_lbl.pack(side="left")
     tk_buton(sayfa_fr, "◀", lambda: _sayfa(-1), rol="ikincil").pack(side="left", padx=4)
     tk_buton(sayfa_fr, "▶", lambda: _sayfa(1), rol="ikincil").pack(side="left")
+    ttk.Checkbutton(
+        sayfa_fr, text="Yalnız seçili ürünler", variable=sadece_secili, command=lambda: _listele()
+    ).pack(side="right")
 
     # —— Sağ: hedef + özet + geçmiş ——
-    sag = tk.Frame(govde, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
-    sag.grid(row=0, column=1, sticky="nsew")
+    sag_alani = tk.Frame(govde, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
+    sag_alani.grid(row=0, column=1, sticky="nsew")
+    sag_alani.rowconfigure(0, weight=1)
+    sag_alani.columnconfigure(0, weight=1)
+    sag_kaydir = tk.Canvas(sag_alani, bg=BEYAZ, highlightthickness=0, width=320)
+    sag_cubuk = ttk.Scrollbar(sag_alani, orient="vertical", command=sag_kaydir.yview)
+    sag_kaydir.configure(yscrollcommand=sag_cubuk.set)
+    sag_kaydir.grid(row=0, column=0, sticky="nsew")
+    sag_cubuk.grid(row=0, column=1, sticky="ns")
+    sag = tk.Frame(sag_kaydir, bg=BEYAZ)
+    sag_pencere = sag_kaydir.create_window((0, 0), window=sag, anchor="nw")
+    sag.bind("<Configure>", lambda _e: sag_kaydir.configure(scrollregion=sag_kaydir.bbox("all")))
+    sag_kaydir.bind("<Configure>", lambda e: sag_kaydir.itemconfigure(sag_pencere, width=e.width))
 
     tk.Label(
         sag, text="Hedef Grup", bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", app)
     ).pack(anchor="w", padx=12, pady=(10, 4))
-    h_ana = ttk.Combobox(sag, width=36)
+    h_ana = ttk.Combobox(sag, width=36, state="readonly")
     h_tali = ttk.Combobox(sag, width=36, state="disabled")
     h_alt = ttk.Combobox(sag, width=36, state="disabled")
     for lbl, w in (("Ana Grup *", h_ana), ("Tali Grup", h_tali), ("Alt Grup", h_alt)):
         tk.Label(sag, text=lbl, bg=BEYAZ, fg=IKINCIL).pack(anchor="w", padx=12)
-        w.pack(anchor="w", padx=12, pady=(0, 6))
+        w.pack(fill="x", padx=12, pady=(0, 6))
     hedef_yol_lbl = tk.Label(
         sag,
         text="Hedef: —",
@@ -234,7 +318,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
     tk.Label(
         sag, text="İşlem Politikası", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", app)
     ).pack(anchor="w", padx=12, pady=(12, 2))
-    politika = tk.StringVar(value=POLITIKA_SADECE_GRUPSUZ)
+    politika = tk.StringVar(master=app, value=POLITIKA_SADECE_GRUPSUZ)
     for metin, kod in (
         ("Yalnız grupsuz stoklar (önerilen)", POLITIKA_SADECE_GRUPSUZ),
         ("Seçilenlerin grubunu değiştir", POLITIKA_DEGISTIR),
@@ -255,12 +339,20 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
     )
     ozet_lbl.pack(anchor="w", padx=12, pady=10)
 
+    def _sag_boyut(event):
+        sag_kaydir.itemconfigure(sag_pencere, width=event.width)
+        for label in (hedef_yol_lbl, ozet_lbl):
+            label.configure(wraplength=max(100, event.width - 28))
+
+    sag_kaydir.bind("<Configure>", _sag_boyut)
+
     tk.Label(
         sag, text="Son Toplu İşlemler", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", app)
     ).pack(anchor="w", padx=12)
     gecmis = ttk.Treeview(
         sag, columns=("no", "tarih", "adet", "durum"), show="headings", height=6
     )
+    gecmis.configure(style="StokGrupToplu.Satis.Treeview")
     for k, b, w in (
         ("no", "İşlem No", 120),
         ("tarih", "Tarih", 90),
@@ -276,20 +368,30 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
 
     # Alt şerit
     alt = tk.Frame(kok, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
-    alt.pack(side="bottom", fill="x")
+    alt.grid(row=3, column=0, sticky="ew")
     alt_ic = tk.Frame(alt, bg=BEYAZ)
-    alt_ic.pack(fill="x", padx=12, pady=10)
-    tk_buton(alt_ic, "Kapat", lambda: app.sayfa_goster("stoklar"), rol="ikincil").pack(
-        side="right"
-    )
+    alt_ic.pack(fill="x", padx=12, pady=6)
+    kapat_btn = tk_buton(alt_ic, "Kapat", lambda: app.sayfa_goster("stoklar"), rol="ikincil")
     uygula_btn = tk_buton(
-        alt_ic, "Grupla Eşleştir", lambda: _uygula(), rol="kaydet"
+        alt_ic, "Gruba Aktar", lambda: _uygula(), rol="yeni", state="disabled"
     )
-    uygula_btn.pack(side="right", padx=(0, 8))
-    tk_buton(alt_ic, "Ön İzle", lambda: _onizle(), rol="ara").pack(side="right", padx=(0, 8))
-    tk_buton(alt_ic, "Seçimi Temizle", lambda: _secim_temizle(), rol="ikincil").pack(
-        side="left"
+    onizle_btn = tk_buton(alt_ic, "Ön İzle", lambda: _onizle(), rol="ikincil")
+    temizle_btn = tk_buton(alt_ic, "Seçimi Temizle", lambda: _secim_temizle(), rol="ikincil")
+    islem_durumu = tk.Label(
+        alt_ic, text="Aktarmak için ürün ve hedef grup seçip Ön İzle'ye basın.",
+        bg=BEYAZ, fg=IKINCIL, anchor="w", justify="left", font=font(9, root=app),
     )
+    islem_durumu.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+
+    def _alt_yerlesim(event):
+        sutun_sayisi = 2 if event.width < 760 else 4
+        for i in range(4):
+            alt_ic.columnconfigure(i, weight=1 if i < sutun_sayisi else 0)
+        for i, btn in enumerate((temizle_btn, onizle_btn, uygula_btn, kapat_btn)):
+            btn.grid(row=i // sutun_sayisi, column=i % sutun_sayisi, sticky="ew", padx=3, pady=2)
+        islem_durumu.configure(wraplength=max(100, event.width - 20))
+
+    alt_ic.bind("<Configure>", _alt_yerlesim)
 
     # State
     state = {
@@ -309,6 +411,13 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         "busy": False,
         "filtre_snapshot": {},
     }
+
+    def _onizleme_gecersiz(*_args):
+        state["son_onizleme"] = None
+        uygula_btn.configure(state="disabled")
+        sayaclar["Grubu Değişecek"].configure(text="—")
+        ozet_lbl.configure(text="Özet: Seçim değişti. Ön izlemeyi yenileyin.")
+        islem_durumu.configure(text=f"Seçili: {len(state['secili'])} · Aktarmak için ön izlemeyi yenileyin.")
 
     def _etiket(g):
         return g.get("etiket") or f"{g.get('kod')} — {g.get('ad')}"
@@ -368,7 +477,6 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         h_tali.configure(values=vals, state="readonly")
         h_alt.configure(values=[], state="disabled")
         _hedef_yol_guncelle()
-        state["son_onizleme"] = None
 
     def _hedef_tali_ch(_e=None):
         state["h_alt_map"].clear()
@@ -386,7 +494,6 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             state["h_alt_map"][et] = g["id"]
         h_alt.configure(values=vals, state="readonly")
         _hedef_yol_guncelle()
-        state["son_onizleme"] = None
 
     def _hedef_yol_guncelle(_e=None):
         parcalar = []
@@ -399,7 +506,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         hedef_yol_lbl.configure(
             text="Hedef: " + (" → ".join(parcalar) if parcalar else "—")
         )
-        state["son_onizleme"] = None
+        _onizleme_gecersiz()
 
     def _filtre_ana_ch(_e=None):
         state["f_tali_map"].clear()
@@ -475,7 +582,9 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         kwargs = _filtre_kwargs()
         state["filtre_snapshot"] = dict(kwargs)
         try:
-            if sadece_secili.get() and state["secili"]:
+            if sadece_secili.get() and not state["secili"]:
+                sonuc = {"satirlar": [], "toplam": 0, "gosterilen": 0}
+            elif sadece_secili.get():
                 sonuc = StokGrupTopluService.aday_listele(
                     id_listesi=sorted(state["secili"]),
                     limit=state["sayfa_boyu"],
@@ -490,6 +599,11 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
                 )
         except Exception as exc:
             messagebox.showerror("Liste", str(exc), parent=app)
+            return
+        max_sayfa = max(0, (sonuc["toplam"] - 1) // state["sayfa_boyu"])
+        if state["sayfa"] > max_sayfa:
+            state["sayfa"] = max_sayfa
+            _listele()
             return
         for i in tablo.get_children():
             tablo.delete(i)
@@ -524,9 +638,21 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             text=f"Sayfa {state['sayfa'] + 1} / {max_sayfa + 1}  ·  {sonuc['gosterilen']} satır"
         )
         _sayaclari_guncelle(sonuc["toplam"], sonuc["satirlar"])
+        gorunen_secili = len(state["secili"].intersection(state["satir_map"].values()))
+        if not state["son_onizleme"]:
+            islem_durumu.configure(
+                text=f"Seçili: {len(state['secili'])} · Bu sayfa dışında seçili: "
+                f"{len(state['secili']) - gorunen_secili} · Aktarmak için Ön İzle'ye basın."
+            )
 
-    def _toggle_secim(_event=None):
-        sec = tablo.selection()
+    def _toggle_secim(event=None):
+        if event is not None and event.keysym != "space":
+            if tablo.identify_region(event.x, event.y) != "cell" or tablo.identify_column(event.x) != "#1":
+                return
+            iid = tablo.identify_row(event.y)
+            sec = (iid,) if iid else ()
+        else:
+            sec = tablo.selection()
         for iid in sec:
             sid = state["satir_map"].get(iid)
             if sid is None:
@@ -540,8 +666,9 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
                 state["secili"].add(sid)
                 vals[0] = "☑"
             tablo.item(iid, values=vals)
-        state["son_onizleme"] = None
+        _onizleme_gecersiz()
         sayaclar["Seçili Ürün"].configure(text=str(len(state["secili"])))
+        return "break"
 
     def _sayfa_sec():
         for iid, sid in state["satir_map"].items():
@@ -551,7 +678,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             state["secili"].add(sid)
             vals[0] = "☑"
             tablo.item(iid, values=vals)
-        state["son_onizleme"] = None
+        _onizleme_gecersiz()
         sayaclar["Seçili Ürün"].configure(text=str(len(state["secili"])))
 
     def _tumunu_sec():
@@ -575,12 +702,12 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             "Seçimler sayfa değişince korunur.",
             parent=app,
         )
-        state["son_onizleme"] = None
+        _onizleme_gecersiz()
         _listele()
 
     def _secim_temizle():
         state["secili"].clear()
-        state["son_onizleme"] = None
+        _onizleme_gecersiz()
         _listele()
 
     def _filtre_temizle():
@@ -607,6 +734,9 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             _listele()
 
     def _hedef_idler():
+        for cb, key in ((h_ana, "h_ana_map"), (h_tali, "h_tali_map"), (h_alt, "h_alt_map")):
+            if cb.get().strip() and cb.get() not in state[key]:
+                raise ValueError("Hedef grup geçerli değil. Listeden yeniden seçin.")
         return (
             state["h_ana_map"].get(h_ana.get()),
             state["h_tali_map"].get(h_tali.get()),
@@ -614,14 +744,15 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         )
 
     def _onizle():
+        if state["busy"]:
+            return
         if not state["secili"]:
             messagebox.showwarning("Ön izleme", "Önce stok seçin.", parent=app)
             return
-        ana, tali, alt = _hedef_idler()
-        if not ana:
-            messagebox.showwarning("Hedef", "En az Ana Grup seçin.", parent=app)
-            return
         try:
+            ana, tali, alt = _hedef_idler()
+            if not ana:
+                raise ValueError("En az Ana Grup seçin.")
             oniz = StokGrupTopluService.onizle(
                 sorted(state["secili"]),
                 ana_id=ana,
@@ -630,6 +761,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
                 politika=politika.get(),
             )
         except Exception as exc:
+            _onizleme_gecersiz()
             messagebox.showerror("Ön izleme", str(exc), parent=app)
             return
         state["son_onizleme"] = oniz
@@ -643,6 +775,11 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             )
         )
         sayaclar["Grubu Değişecek"].configure(text=str(o["guncellenecek"]))
+        uygula_btn.configure(state="normal" if o["guncellenecek"] > 0 else "disabled")
+        islem_durumu.configure(
+            text=f"Seçili: {o['secilen']} · Değişecek: {o['guncellenecek']} · "
+            f"Atlanacak: {o['atlanacak'] + o['degismeyecek']} · Hatalı: {o['hatali'] + o['yetki_yok']}"
+        )
         # Ön izleme penceresi
         win = tk.Toplevel(app)
         win.title("Ön İzleme — Toplu Grup Eşleştirme")
@@ -650,13 +787,20 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         win.transient(app)
         fr = ttk.Frame(win, padding=8)
         fr.pack(fill="both", expand=True)
+        altb = ttk.Frame(fr)
+        altb.pack(side="bottom", fill="x")
         ttk.Label(fr, text=ozet_lbl.cget("text")).pack(anchor="w")
+        tv_fr = ttk.Frame(fr)
+        tv_fr.pack(fill="both", expand=True, pady=6)
+        tv_fr.rowconfigure(0, weight=1)
+        tv_fr.columnconfigure(0, weight=1)
         tv = ttk.Treeview(
-            fr,
+            tv_fr,
             columns=("kod", "ad", "eski", "yeni", "durum", "acik"),
             show="headings",
             height=18,
         )
+        tv.configure(style="StokGrupToplu.Satis.Treeview")
         for k, b, w in (
             ("kod", "Kod", 90),
             ("ad", "Ad", 160),
@@ -667,7 +811,12 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
         ):
             tv.heading(k, text=b)
             tv.column(k, width=w)
-        tv.pack(fill="both", expand=True, pady=6)
+        tv.grid(row=0, column=0, sticky="nsew")
+        tv_sy = ttk.Scrollbar(tv_fr, orient="vertical", command=tv.yview)
+        tv_sx = ttk.Scrollbar(tv_fr, orient="horizontal", command=tv.xview)
+        tv.configure(yscrollcommand=tv_sy.set, xscrollcommand=tv_sx.set)
+        tv_sy.grid(row=0, column=1, sticky="ns")
+        tv_sx.grid(row=1, column=0, sticky="ew")
         for s in oniz["satirlar"]:
             tv.insert(
                 "",
@@ -688,107 +837,65 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
                 sid = int(iid)
                 state["secili"].discard(sid)
                 tv.delete(iid)
-            state["son_onizleme"] = None
-            sayaclar["Seçili Ürün"].configure(text=str(len(state["secili"])))
+            _onizleme_gecersiz()
+            _listele()
             messagebox.showinfo(
                 "Seçim",
                 "Seçimden çıkarıldı. Kaydetmeden önce Ön İzle'yi yeniden çalıştırın.",
                 parent=win,
             )
 
-        altb = ttk.Frame(fr)
-        altb.pack(fill="x")
         ttk.Button(altb, text="Seçimden Çıkar", command=cikar).pack(side="left")
         ttk.Button(altb, text="Kapat", command=win.destroy).pack(side="right")
 
     def _uygula():
         if state["busy"]:
             return
-        if not state["son_onizleme"]:
-            messagebox.showwarning(
-                "Ön izleme zorunlu",
-                "Grupla Eşleştirmeden önce Ön İzle yapın.",
-                parent=app,
-            )
-            return
         oniz = state["son_onizleme"]
-        gunc = oniz["ozet"]["guncellenecek"]
-        if gunc <= 0:
-            messagebox.showinfo("Eşleştirme", "Güncellenecek stok yok.", parent=app)
+        if not oniz or oniz["ozet"]["guncellenecek"] <= 0:
+            messagebox.showwarning("Ön izleme zorunlu", "Gruba Aktar için önce güncel bir Ön İzle yapın.", parent=app)
             return
-        if politika.get() == POLITIKA_DEGISTIR:
+        state["busy"] = True
+        uygula_btn.configure(state="disabled")
+        onizle_btn.configure(state="disabled")
+        try:
+            politika_adi = {
+                POLITIKA_SADECE_GRUPSUZ: "Yalnız grupsuz stoklar",
+                POLITIKA_DEGISTIR: "Seçilenlerin grubunu değiştir",
+                POLITIKA_EKSIK_TAMAMLA: "Eksik seviyeleri tamamla",
+            }[oniz["politika"]]
             if not messagebox.askyesno(
-                "Mevcut gruplar değişecek",
-                f"{gunc} stokun mevcut grubu değiştirilecek.\n"
-                f"Hedef: {oniz['hedef_yol']}\n\nEmin misiniz?",
+                "Gruba Aktar",
+                f"Firma: {oturum.firma_unvan or oturum.firma_kodu or '—'}\n"
+                f"Hedef: {oniz['hedef_yol']}\nPolitika: {politika_adi}\n"
+                f"Değişecek: {oniz['ozet']['guncellenecek']} ürün\n\nAktarım yapılsın mı?",
                 parent=app,
             ):
                 return
-        onay = tk.Toplevel(app)
-        onay.title("Son Onay")
-        onay.transient(app)
-        onay.grab_set()
-        ttk.Label(
-            onay,
-            text=(
-                f"Hedef grup:\n{oniz['hedef_yol']}\n\n"
-                f"Değişecek stok sayısı: {gunc}\n\n"
-                "İşlemi uygulamak istiyor musunuz?"
-            ),
-            justify="left",
-            padding=16,
-        ).pack()
-        sonuc_kutusu = {"ok": False}
-
-        def iptal():
-            onay.destroy()
-
-        def uygula_ok():
-            sonuc_kutusu["ok"] = True
-            onay.destroy()
-
-        bf = ttk.Frame(onay, padding=8)
-        bf.pack(fill="x")
-        ttk.Button(bf, text="Vazgeç", command=iptal).pack(side="right")
-        ttk.Button(bf, text="İşlemi Uygula", command=uygula_ok).pack(side="right", padx=8)
-        app.wait_window(onay)
-        if not sonuc_kutusu["ok"]:
-            return
-
-        state["busy"] = True
-        try:
-            uygula_btn.configure(state="disabled")
-        except Exception:
-            pass
-        ana, tali, alt = _hedef_idler()
-        try:
+            if state["son_onizleme"] is not oniz:
+                raise ValueError("Seçim değişti. Ön izlemeyi yenileyin.")
+            ana, tali, alt = _hedef_idler()
             sonuc = StokGrupTopluService.uygula(
-                sorted(state["secili"]),
-                ana_id=ana,
-                tali_id=tali,
-                alt_id=alt,
-                politika=politika.get(),
-                onizleme_ozeti=oniz["ozet"],
-            )
-            messagebox.showinfo(
-                "Tamamlandı",
-                f"İşlem: {sonuc['islem_no']}\n"
-                f"Güncellenen: {sonuc['guncellenen']}\n"
-                f"Hedef: {sonuc['hedef_yol']}",
-                parent=app,
+                sorted(state["secili"]), ana_id=ana, tali_id=tali, alt_id=alt,
+                politika=politika.get(), onizleme_ozeti=oniz["ozet"], onizleme_kaydi=oniz,
             )
             state["secili"].clear()
-            state["son_onizleme"] = None
+            _onizleme_gecersiz()
             _listele()
             _gecmis_yenile()
+            messagebox.showinfo(
+                "Tamamlandı",
+                f"İşlem: {sonuc['islem_no']}\nGüncellenen: {sonuc['guncellenen']}\n"
+                f"Hedef: {sonuc['hedef_yol']}", parent=app,
+            )
         except Exception as exc:
-            messagebox.showerror("Eşleştirme", str(exc), parent=app)
+            _onizleme_gecersiz()
+            messagebox.showerror("Gruba Aktar", str(exc), parent=app)
         finally:
             state["busy"] = False
-            try:
+            onizle_btn.configure(state="normal")
+            if state["son_onizleme"] is not None:
                 uygula_btn.configure(state="normal")
-            except Exception:
-                pass
 
     def _gecmis_yenile():
         for i in gecmis.get_children():
@@ -808,6 +915,8 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
             pass
 
     def _geri_al():
+        if state["busy"]:
+            return
         sec = gecmis.selection()
         if not sec:
             messagebox.showinfo("Geri Al", "İşlem seçin.", parent=app)
@@ -830,6 +939,7 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
                 for c in sonuc["cakisan"][:5]:
                     msg += f"\n- {c.get('stok_kodu')}: {c.get('neden')}"
             messagebox.showinfo("Geri Al", msg, parent=app)
+            _onizleme_gecersiz()
             _listele()
             _gecmis_yenile()
         except Exception as exc:
@@ -894,7 +1004,27 @@ def stok_grup_toplu_eslestirme_goster(app) -> None:
     tablo.bind("<ButtonRelease-1>", _toggle_secim)
     tablo.bind("<space>", _toggle_secim)
     arama.bind("<Return>", lambda _e: _listele())
-    politika.trace_add("write", lambda *_a: state.__setitem__("son_onizleme", None))
+    politika.trace_add("write", _onizleme_gecersiz)
+
+    def _sag_teker(event):
+        if sag_kaydir.yview() == (0.0, 1.0):
+            return None
+        if getattr(event, "num", None) in (4, 5):
+            adim = -1 if event.num == 4 else 1
+        else:
+            adim = -1 if event.delta > 0 else 1
+        sag_kaydir.yview_scroll(adim * 3, "units")
+        return "break"
+
+    def _teker_bagla(widget):
+        if isinstance(widget, (ttk.Treeview, ttk.Combobox, ttk.Scrollbar)):
+            return
+        for olay in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(olay, _sag_teker, add="+")
+        for child in widget.winfo_children():
+            _teker_bagla(child)
+
+    _teker_bagla(sag_kaydir)
 
     _yukle_hedef_ana()
     _yukle_filtre_ana()

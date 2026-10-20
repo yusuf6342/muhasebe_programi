@@ -149,9 +149,11 @@ class FinansService:
                     session.add(FinansHesabi(hesap_adi=ad, hesap_turu=tur))
 
     @staticmethod
-    def hesaplar(hesap_turu=None, aktif_only=True):
+    def hesaplar(hesap_turu=None, aktif_only=True, *, hareketler: bool = True):
         with get_session() as session:
-            q = select(FinansHesabi).options(selectinload(FinansHesabi.hareketler))
+            q = select(FinansHesabi)
+            if hareketler:
+                q = q.options(selectinload(FinansHesabi.hareketler))
             if aktif_only:
                 q = q.where(FinansHesabi.aktif.is_(True))
             if hesap_turu:
@@ -165,8 +167,10 @@ class FinansService:
         - Nakit/Kasa → yalnızca KASA
         - Gelen/Alınan Havale → MEVDUAT + KMH
         - Kredi kartı tahsilat → yalnızca POS (firma KK hesapları tahsilatta yok)
+
+        Yalnız hesap kimliği/adı/türü döner; hareketler yüklenmez.
         """
-        tum = FinansService.hesaplar()
+        tum = FinansService.hesaplar(hareketler=False)
         sekil = (
             (odeme_sekli or "")
             .replace("İ", "I")

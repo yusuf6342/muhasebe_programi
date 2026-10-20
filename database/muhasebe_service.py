@@ -326,6 +326,40 @@ class HesapPlanService:
             return satirlar
 
     @staticmethod
+    def kod_ile_getir(hesap_kodu: str) -> dict | None:
+        """Aktif firmanın hesap planında koda göre hesap (alt hesap durumu dahil)."""
+        yetki_zorunlu("muhasebe_goruntuleme", "goruntuleme")
+        kod = (hesap_kodu or "").strip()
+        if not kod:
+            return None
+        with get_session() as session:
+            firma_id = MuhasebeService.yerel_firma_id(session)
+            h = session.scalar(
+                select(HesapPlani).where(HesapPlani.firma_id == firma_id, HesapPlani.hesap_kodu == kod)
+            )
+            if h is None:
+                return None
+            alt_var = session.scalar(
+                select(HesapPlani.id).where(
+                    HesapPlani.firma_id == firma_id, HesapPlani.ust_hesap_id == h.id
+                ).limit(1)
+            ) is not None
+            return {"id": h.id, "hesap_kodu": h.hesap_kodu, "hesap_adi": h.hesap_adi,
+                    "aktif": bool(h.aktif), "alt_hesap_var": alt_var}
+
+    @staticmethod
+    def alt_hesap_dogrula(hesap_kodu: str) -> dict:
+        """Cari kartına bağlanacak hesap: bu firmada var, aktif ve alt hesabı olmayan (kayıt alabilen)."""
+        h = HesapPlanService.kod_ile_getir(hesap_kodu)
+        if h is None:
+            raise ValueError(f"«{hesap_kodu}» hesabı bu firmanın hesap planında yok.")
+        if not h["aktif"]:
+            raise ValueError(f"«{h['hesap_kodu']}» hesabı pasif; aktif bir hesap seçin.")
+        if h["alt_hesap_var"]:
+            raise ValueError(f"«{h['hesap_kodu']}» hesabının alt hesapları var; bir alt hesap seçin.")
+        return h
+
+    @staticmethod
     def getir(hesap_id: int) -> dict | None:
         yetki_zorunlu("muhasebe_goruntuleme", "goruntuleme")
         with get_session() as session:

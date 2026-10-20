@@ -41,6 +41,7 @@ from finans_ui import finans_menusu_goster
 from gelir_gider_ui import gelir_gider_menusu_goster
 from genel_muhasebe_ui import genel_muhasebe_menusu_goster
 from ozet_tablolar_ui import ozet_tablolar_menusu_goster
+from personel_ui import personel_menusu_goster
 from doviz_kur_ui import doviz_kur_yonetimi_goster
 from doviz_rapor_ui import doviz_raporlari_goster
 from satis_ui import (
@@ -71,6 +72,8 @@ ProductSelectionDialog = UrunSecDialog
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 CARI_DURUM_FILTRELERI = ("Tümü", "Aktif", "Pasif")
 CARI_BAKIYE_FILTRELERI = ("Tümü", "Bakiyeli", "Bakiyesiz")
+CARI_GRUBU_BOS = "Grubu boş olanlar"
+CARI_GRUP_FILTRELERI = ("Tümü", CARI_GRUBU_BOS)
 KDV_ORANLARI = ("0", "1", "8", "10", "18", "20")
 # Fatura menüsü: ilk üç sabit; diğer seçenekler bunlardan sonra, görsel içe aktarma en sonda.
 SATIS_FATURA_MENU_SIRASI = (
@@ -4552,14 +4555,14 @@ class MusteriSecimDialog(tk.Toplevel):
         self._sirala_ters = False
         self._pasifleri_goster = tk.BooleanVar(value=False)
         self.title(baslik or "Müşteri Seçimi")
-        self.geometry("780x460")
-        self.minsize(640, 360)
+        self.geometry("900x460")
+        self.minsize(700, 360)
         self.transient(parent)
         self.grab_set()
         try:
             from ui_pencere import popup_ortala
 
-            popup_ortala(self, parent, genislik=780, yukseklik=460)
+            popup_ortala(self, parent, genislik=900, yukseklik=460)
         except Exception:
             pass
 
@@ -4592,16 +4595,18 @@ class MusteriSecimDialog(tk.Toplevel):
         orta.rowconfigure(0, weight=1)
         self.tablo = ttk.Treeview(
             orta,
-            columns=("kod", "unvan", "telefon", "grup", "bakiye"),
+            columns=("kod", "unvan", "telefon", "grup", "bakiye", "yon", "pb"),
             show="headings",
             selectmode="browse",
         )
         for kolon, baslik_metin, genislik, ank in (
-            ("kod", "Müşteri Kodu", 100, "w"),
-            ("unvan", "Müşteri Adı", 260, "w"),
-            ("telefon", "Telefon", 110, "w"),
+            ("kod", "Kod", 90, "w"),
+            ("unvan", "Ünvan", 250, "w"),
+            ("telefon", "Telefon", 105, "w"),
             ("grup", "Grup", 100, "w"),
-            ("bakiye", "Güncel Bakiye", 120, "e"),
+            ("bakiye", "Bakiye", 115, "e"),
+            ("yon", "B/A", 70, "center"),
+            ("pb", "Döviz", 50, "center"),
         ):
             self.tablo.heading(
                 kolon,
@@ -4668,11 +4673,18 @@ class MusteriSecimDialog(tk.Toplevel):
         return sorted(bulunan, key=anahtar, reverse=ters)
 
     def _listeyi_yaz(self, bulunan: list):
+        from database.cari_bakiye_service import bakiye_bilgisi
+        from tutar_bicim import tr_tutar
+
         bulunan = self._sirala_liste(bulunan)[:80]
         self._sonuclar = bulunan
         for item in self.tablo.get_children():
             self.tablo.delete(item)
         for i, cari in enumerate(bulunan):
+            bilgi = bakiye_bilgisi(
+                self._bakiyeler.get(cari.id, Decimal("0")),
+                tedarikci_modu=(getattr(cari, "cari_turu", "") or "").strip() == "Tedarikçi",
+            )
             self.tablo.insert(
                 "",
                 "end",
@@ -4682,7 +4694,9 @@ class MusteriSecimDialog(tk.Toplevel):
                     cari.unvan or "",
                     self._cari_telefon(cari),
                     self._cari_grup(cari),
-                    para_goster(self._bakiyeler.get(cari.id, Decimal("0"))),
+                    tr_tutar(bilgi["tutar"]),
+                    bilgi["yon"],
+                    bilgi["para_birimi"],
                 ),
             )
         if bulunan:
@@ -5454,7 +5468,10 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         """Onay öncesi müşteri risk limiti: (devam, kayit). Aşım yoksa sessizce devam eder."""
         from cari_risk_ui import satis_etkisi, satis_risk_onayi
 
-        return satis_risk_onayi(self, veriler.get("cari_id"), satis_etkisi(veriler), belge_turu="Satış Faturası")
+        return satis_risk_onayi(
+            self, veriler.get("cari_id"), satis_etkisi(veriler), belge_turu="Satış Faturası",
+            belge_no=getattr(self.fatura, "fatura_no", None) if self.fatura else None,
+        )
 
     def _risk_olayi_yaz(self, risk_kaydi):
         from cari_risk_ui import risk_olayi_yaz
@@ -14564,6 +14581,7 @@ class MuhasebeApp(tk.Tk):
                 "stoklar": "STOKLAR",
                 "finans": "FİNANS",
                 "gelir_gider": "GELİR VE GİDERLER",
+                "personel": "PERSONEL",
                 "genel_muhasebe": "GENEL MUHASEBE",
                 "cek_senet": "ÇEK VE SENET",
                 "ozet_tablolar": "ÖZET TABLOLAR",
@@ -14578,6 +14596,7 @@ class MuhasebeApp(tk.Tk):
                 "giris",
                 "finans",
                 "gelir_gider",
+                "personel",
                 "genel_muhasebe",
                 "ozet_tablolar",
                 "cek_senet",
@@ -14604,6 +14623,8 @@ class MuhasebeApp(tk.Tk):
                 self.finans_goster()
             elif anahtar == "gelir_gider":
                 gelir_gider_menusu_goster(self)
+            elif anahtar == "personel":
+                personel_menusu_goster(self)
             elif anahtar == "genel_muhasebe":
                 genel_muhasebe_menusu_goster(self)
             elif anahtar == "cek_senet":
@@ -18674,32 +18695,40 @@ class MuhasebeApp(tk.Tk):
         )
         ust = ttk.Frame(govde)
         ust.pack(fill="x", pady=(0, 10))
-        ttk.Label(ust, text="Ara (en az 3 karakter):").pack(side="left")
-        self.cari_arama = ttk.Entry(ust, width=30)
+        ara_g = ttk.Frame(ust)
+        ttk.Label(ara_g, text="Ara (en az 3 karakter):").pack(side="left")
+        self.cari_arama = ttk.Entry(ara_g, width=30)
         self.cari_arama.pack(side="left", padx=8)
         self.cari_arama.bind("<Return>", lambda _event: self.cari_listesini_yenile())
-        tk_buton(ust, "Ara", self.cari_listesini_yenile, rol="ara").pack(side="left")
-        tk_buton(ust, "Kolon Ayarları", self._cari_kolon_ayarlari_ac, rol="ara").pack(
-            side="left", padx=8
+        tk_buton(ara_g, "Ara", self.cari_listesini_yenile, rol="ara").pack(side="left")
+        kolon_btn = tk_buton(ust, "Kolon Ayarları", self._cari_kolon_ayarlari_ac, rol="ara")
+
+        def _filtre(metin, degerler, genislik):
+            g = ttk.Frame(ust)
+            ttk.Label(g, text=metin).pack(side="left", padx=(0, 2))
+            kutu = ttk.Combobox(g, values=degerler, state="readonly", width=genislik)
+            kutu.set("Tümü")
+            kutu.pack(side="left")
+            return g, kutu
+
+        durum_g, self.cari_durum_filtre = _filtre("Durum:", CARI_DURUM_FILTRELERI, 8)
+        bakiye_g, self.cari_bakiye_filtre = _filtre("Bakiye:", CARI_BAKIYE_FILTRELERI, 10)
+        try:
+            grup_adlari = CariService.gruplari_listele()
+        except Exception:
+            grup_adlari = []
+        grup_g, self.cari_grup_filtre = _filtre(
+            "Grup:", CARI_GRUP_FILTRELERI + tuple(grup_adlari), 18
         )
-        ttk.Label(ust, text="Durum:").pack(side="left", padx=(8, 2))
-        self.cari_durum_filtre = ttk.Combobox(
-            ust, values=CARI_DURUM_FILTRELERI, state="readonly", width=8
-        )
-        self.cari_durum_filtre.set("Tümü")
-        self.cari_durum_filtre.pack(side="left")
-        ttk.Label(ust, text="Bakiye:").pack(side="left", padx=(8, 2))
-        self.cari_bakiye_filtre = ttk.Combobox(
-            ust, values=CARI_BAKIYE_FILTRELERI, state="readonly", width=10
-        )
-        self.cari_bakiye_filtre.set("Tümü")
-        self.cari_bakiye_filtre.pack(side="left")
-        for kutu in (self.cari_durum_filtre, self.cari_bakiye_filtre):
+        for kutu in (self.cari_durum_filtre, self.cari_bakiye_filtre, self.cari_grup_filtre):
             kutu.bind("<<ComboboxSelected>>", lambda _e: self._cari_listesi_filtrele())
-        tk_buton(ust, "EvoBulut’tan Aktar", self.evobulut_cari_aktar, rol="duzenle").pack(
-            side="right", padx=(0, 8)
+        yeni_btn = tk_buton(ust, f"Yeni {etiket}", self.yeni_cari, rol="yeni")
+        evo_btn = tk_buton(ust, "EvoBulut’tan Aktar", self.evobulut_cari_aktar, rol="duzenle")
+        from ui_pencere import sarmali_yerlestir
+
+        sarmali_yerlestir(
+            ust, [ara_g, kolon_btn, durum_g, bakiye_g, grup_g, yeni_btn, evo_btn], padx=4
         )
-        tk_buton(ust, f"Yeni {etiket}", self.yeni_cari, rol="yeni").pack(side="right")
 
         cerceve = ttk.Frame(govde)
         cerceve.pack(fill="both", expand=True)
@@ -18817,6 +18846,7 @@ class MuhasebeApp(tk.Tk):
                     "agirlikli": gecen_gun_sayi(ozet.get("agirlikli_ortalama_gun")),
                     "bakiye": ozet.get("bakiye"),
                     "aktif": bool(cari.aktif),
+                    "grup": (cari.musteri_grubu or "").strip(),
                 }
                 self._cari_liste_kayitlar.append((iid, _satir_degerleri(ozet)))
             MuhasebeApp._cari_listesi_filtrele(self)
@@ -18836,6 +18866,8 @@ class MuhasebeApp(tk.Tk):
         bakiye_f = getattr(self, "cari_bakiye_filtre", None)
         durum_q = durum.get() if durum is not None else "Tümü"
         bakiye_q = bakiye_f.get() if bakiye_f is not None else "Tümü"
+        grup_f = getattr(self, "cari_grup_filtre", None)
+        grup_q = grup_f.get() if grup_f is not None else "Tümü"
         ham = getattr(self, "_cari_liste_ham", {})
         secili = tablo.selection()
         tablo.delete(*tablo.get_children())
@@ -18862,6 +18894,11 @@ class MuhasebeApp(tk.Tk):
                 continue
             sifir = Decimal(str(bilgi.get("bakiye") or 0)) == 0
             if (bakiye_q == "Bakiyeli" and sifir) or (bakiye_q == "Bakiyesiz" and not sifir):
+                continue
+            grup = bilgi.get("grup", "")
+            if grup_q == CARI_GRUBU_BOS and grup:
+                continue
+            if grup_q not in CARI_GRUP_FILTRELERI and grup != grup_q:
                 continue
             serit = "cift" if gorunen % 2 else "tek"
             tablo.insert("", "end", iid=iid, tags=(serit, "bakiye_koyu"), values=degerler)

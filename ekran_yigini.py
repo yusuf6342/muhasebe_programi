@@ -23,6 +23,7 @@ EKRAN_BASLIKLARI: dict[str, str] = {
     "stoklar": "STOKLAR",
     "finans": "FİNANS",
     "gelir_gider": "GELİR-GİDER",
+    "personel": "PERSONEL",
     "genel_muhasebe": "GENEL MUHASEBE",
     "cek_senet": "ÇEK VE SENET",
     "ozet_tablolar": "ÖZET TABLOLAR",

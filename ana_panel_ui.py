@@ -46,6 +46,7 @@ MENU_OGELERI: tuple[tuple[str, str, str, bool], ...] = (
     ("Stoklar", "stoklar", "#", False),
     ("Finans", "finans", "$", False),
     ("Gelir ve Giderler", "gelir_gider", "+/-", False),
+    ("Personel", "personel", "P", False),
     ("Genel Muhasebe", "genel_muhasebe", "=", False),
     ("Çek ve Senet", "cek_senet", "~", False),
     ("Özet Tablolar", "ozet_tablolar", "[]", False),
@@ -81,6 +82,21 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         ("Alış Siparişi", "alis_siparisi_yeni", ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
         ("Satın Alma Talepleri", "satin_alma_talebi_yeni",
          ("alis_talep_duzenleme", "alis_talep_goruntuleme", "alis_talep_onay", "alis_duzenleme")),
+    ),
+    "personel": (
+        ("Personel Kartları", "personel_kartlari_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
+        ("Personel Listesi", "personel_listesi_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
+        ("Özlük Dosyaları", "ozluk_dosyalari_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
+        ("Puantaj ve İzinler", "puantaj_izinler_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
+        ("Maaş ve Bordro Takibi", "maas_bordro_ac", ("personel_finans_goruntuleme", "personel_finans_duzenleme", "finans_goruntuleme")),
+        ("Avans ve Personel Ödemeleri", "avans_odeme_ac", ("personel_finans_goruntuleme", "personel_finans_duzenleme", "finans_goruntuleme")),
+        ("Personel Masrafları", "personel_masraf_ac", ("personel_finans_goruntuleme", "personel_finans_duzenleme", "finans_goruntuleme")),
+        ("SGK ve Beyan Takibi", "sgk_beyan_ac", ("personel_sgk_goruntuleme", "personel_sgk_duzenleme", "personel_goruntuleme")),
+        ("Performans ve Kariyer", "performans_kariyer_ac", ("personel_goruntuleme", "personel_duzenleme", "personel_performans", "goruntuleme")),
+        ("Ücret ve Kazanç Dağıtımı", "ucret_kazanc_ac", ("personel_finans_goruntuleme", "personel_prim_goruntuleme", "personel_finans_duzenleme")),
+        ("Personel Raporları", "personel_rapor_ac", ("personel_goruntuleme", "goruntuleme")),
+        ("Personel Formları", "personel_form_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
+        ("Personel Ayarları", "personel_ayar_ac", ("personel_ayar", "sistem_ayarlari", "personel_duzenleme")),
     ),
 }
 SATIS_PENCERELERI = frozenset({"musteri_karti_ac"})
@@ -883,6 +899,21 @@ class AnaPanelKabuk:
 
         if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI["satislar"]):
             self._satis_listesi_ac(alt_anahtar)
+            return
+        if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI.get("personel", ())):
+            import personel_ui
+            import personel_performans_ui
+
+            komut = getattr(personel_ui, alt_anahtar, None) or getattr(
+                personel_performans_ui, alt_anahtar, None
+            )
+            if not callable(komut):
+                return
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                komut(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Personel", str(hata), parent=self.app)
             return
         komut = getattr(satin_alma_ui, alt_anahtar, None)
         if not callable(komut):

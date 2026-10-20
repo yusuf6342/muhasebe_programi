@@ -119,9 +119,11 @@ class TeklifCarpanTest(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-        with patch("database.database.get_session", return_value=_Ctx()):
+        from tests._oturum_yamasi import oturum_yamasi
+
+        with oturum_yamasi(_Ctx):
             self.assertEqual(tps.stok_birim_carpani("U001", "Koli"), Decimal("12"))
-        with patch("database.database.get_session", return_value=_Ctx()):
+        with oturum_yamasi(_Ctx):
             with self.assertRaises(BirimDonusumHatasi):
                 tps.stok_birim_carpani("U001", "Paket")
         self.assertEqual(tps.stok_birim_carpani("OZEL", "Paket"), Decimal("1"))

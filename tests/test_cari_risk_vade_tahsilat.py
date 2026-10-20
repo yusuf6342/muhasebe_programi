@@ -143,12 +143,27 @@ class RiskHesapTest(Temel):
     def test_vadesi_gecen_ciro_riskte_kalir_karsiliksiz_cift_sayilmaz(self):
         self._ornek()
         self.assertEqual(crs.risk_ozeti(self.cid)["satirlar"][crs.TUR_CEK]["risk"], D("40000.00"))
+        from database.models.cek_senet import CekSenetHareket
+
         with get_session() as s:
             s.get(CekSenetEvrak, self.cek).durum = "KARSILIKSIZ"
-            _kalem(s, self.cid, "KRS-C1", date.today(), "40000")
+            kalem = _kalem(s, self.cid, "KRS-C1", date.today(), "40000")
+            # karsiliksiz_protesto: cariye geri borç + cari_hareket_id bağlı evrak hareketi
+            s.add(CekSenetHareket(evrak_id=self.cek, onceki_durum="CIRO_EDILDI", yeni_durum="KARSILIKSIZ",
+                                  islem_turu="KARSILIKSIZ", tutar=D("40000"), cari_hareket_id=kalem))
         s2 = crs.risk_ozeti(self.cid)["satirlar"]
         self.assertEqual((s2[crs.TUR_CEK]["risk"], s2[crs.TUR_ACIK]["risk"]), (D("0.00"), D("140000.00")))
         self.assertEqual(s2[crs.TUR_TOPLAM]["risk"], D("160000.00"))
+
+    def test_karsiliksiz_geri_borc_yoksa_risk_kaybolmaz(self):
+        self._ornek()
+        with get_session() as s:
+            s.get(CekSenetEvrak, self.cek).durum = "KARSILIKSIZ"
+        ozet = crs.risk_ozeti(self.cid)
+        self.assertEqual(ozet["satirlar"][crs.TUR_PORTFOY]["risk"], D("40000.00"))
+        self.assertEqual(ozet["satirlar"][crs.TUR_TOPLAM]["risk"], D("160000.00"))
+        diger = {b["bilesen"]: b for b in ozet["genel"]["bilesenler"]}[crs.BILESEN_DIGER_CEK]
+        self.assertEqual(diger["ham"], D("40000.00"))
 
     def test_ciro_kapanisi_kesinlesince_risk_duser(self):
         from database.cek_senet_service import CekSenetService

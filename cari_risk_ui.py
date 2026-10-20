@@ -70,12 +70,19 @@ class RiskLimitPaneli(tk.Frame):
         self.yillik_var = tk.StringVar(master=self)
         self.donem_var = tk.StringVar(master=self)
         self.aciklama_var = tk.StringVar(master=self)
+        self.oran_var = {b: tk.StringVar(master=self, value="100,00") for b in crs.RISK_ORANI_ALANI}
+        self._baglaniyor = False
+        self._vade_hatasi = ""
+        self._vade_celiski = ""
         self._hucre: dict[tuple[str, str], tk.Widget] = {}
+        self._genel_hucre: dict[tuple[str, str], tk.Label] = {}
         self._girisler: list[tk.Widget] = []
         self._olustur()
         for v in (*self.uygula_var.values(), *self.limit_var.values(), self.aylik_var, self.yillik_var,
-                  self.donem_var, self.aciklama_var):
+                  self.donem_var, self.aciklama_var, *self.oran_var.values()):
             v.trace_add("write", lambda *_a: self._degisti())
+        self.aylik_var.trace_add("write", lambda *_a: self._vade_bagla(crs.DONEM_AYLIK))
+        self.yillik_var.trace_add("write", lambda *_a: self._vade_bagla(crs.DONEM_YILLIK))
 
     # --- Arayüz ---
 
@@ -120,7 +127,7 @@ class RiskLimitPaneli(tk.Frame):
                 self._girisler += [chk, giris]
                 self._hucre[(tur, "limit")] = giris
             else:
-                tk.Label(tablo, text="Bilgi: toplam riske dahil", bg=zemin, fg=IKINCIL, font=font(9, root=r)).grid(
+                tk.Label(tablo, text="Bilgi: Genel Riske dahil", bg=zemin, fg=IKINCIL, font=font(9, root=r)).grid(
                     row=i, column=2, columnspan=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
             for c, ad in ((4, "kalan"), (5, "asim"), (6, "durum")):
                 lbl = tk.Label(tablo, text="", bg=zemin, fg=METIN, font=f, anchor="e" if c < 6 else "center",
@@ -132,17 +139,21 @@ class RiskLimitPaneli(tk.Frame):
         self.avans_lbl.pack(fill="x", pady=(2, 0))
         tk.Label(
             self, bg=BEYAZ, fg=IKINCIL, font=font(9, root=r), anchor="w", justify="left", wraplength=880,
-            text=("Limit Uygula kapalıysa denetim yapılmaz. İşaretliyken 0 TL geçerli limittir; pozitif risk aşım "
-                  "sayılır. Riskin kaynağını görmek için Güncel Risk tutarına tıklayın."),
+            text=("Genel Risk satırının limiti yüzdeli Genel Risk ile karşılaştırılır; Brüt Toplam yalnız bilgi "
+                  "amaçlıdır. Kalan Limit = limit − risk (aşımda eksi). Limit Uygula kapalıysa denetim yapılmaz. "
+                  "İşaretliyken 0 TL geçerli limittir; pozitif risk aşım sayılır. Riskin kaynağını görmek için "
+                  "Güncel Risk tutarına tıklayın."),
         ).pack(fill="x", pady=(0, 6))
+
+        self._genel_risk_olustur(r)
 
         vf = tk.LabelFrame(self, text=" Vade Farkı ", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", r), padx=8, pady=6)
         vf.pack(fill="x", pady=(4, 0))
         tk.Label(vf, text="Aylık Oran %", bg=BEYAZ, font=font(10, root=r)).grid(row=0, column=0, sticky="w")
-        self.aylik_giris = ttk.Entry(vf, textvariable=self.aylik_var, width=10, justify="right")
+        self.aylik_giris = ttk.Entry(vf, textvariable=self.aylik_var, width=12, justify="right")
         self.aylik_giris.grid(row=0, column=1, sticky="w", padx=(4, 16))
-        tk.Label(vf, text="Yıllık Oran %", bg=BEYAZ, font=font(10, root=r)).grid(row=0, column=2, sticky="w")
-        self.yillik_giris = ttk.Entry(vf, textvariable=self.yillik_var, width=10, justify="right")
+        tk.Label(vf, text="Yıllık Oran % (nominal)", bg=BEYAZ, font=font(10, root=r)).grid(row=0, column=2, sticky="w")
+        self.yillik_giris = ttk.Entry(vf, textvariable=self.yillik_var, width=12, justify="right")
         self.yillik_giris.grid(row=0, column=3, sticky="w", padx=(4, 16))
         tk.Label(vf, text="Esas Dönem", bg=BEYAZ, font=font(10, root=r)).grid(row=0, column=4, sticky="w")
         self.donem_cb = ttk.Combobox(vf, textvariable=self.donem_var, values=DONEM_SECENEK, state="readonly", width=9)
@@ -153,8 +164,143 @@ class RiskLimitPaneli(tk.Frame):
         self.aciklama_giris.grid(row=1, column=1, columnspan=5, sticky="ew", padx=(4, 16), pady=(6, 0))
         self.vf_not = tk.Label(vf, text="", bg=BEYAZ, fg=IKINCIL, font=font(9, root=r), anchor="w", justify="left")
         self.vf_not.grid(row=2, column=0, columnspan=7, sticky="w", pady=(4, 0))
+        self.vf_uyari = tk.Label(vf, text="", bg=BEYAZ, fg=UYARI, font=font(9, "bold", r), anchor="w",
+                                 justify="left", wraplength=860)
+        self.vf_uyari.grid(row=3, column=0, columnspan=7, sticky="w")
         vf.columnconfigure(5, weight=1)
         self._girisler += [self.aylik_giris, self.yillik_giris, self.donem_cb, self.aciklama_giris]
+
+    def _genel_risk_olustur(self, r):
+        gr = tk.LabelFrame(self, text=" Genel Risk ", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", r), padx=8, pady=6)
+        gr.pack(fill="x", pady=(4, 4))
+        tablo = tk.Frame(gr, bg=CIZGI)
+        tablo.pack(side="left", anchor="n")
+        for c, b in enumerate(("Bileşen", "Ham Tutar", "Risk Oranı %", "Risk Tutarı")):
+            tk.Label(tablo, text=b, bg=LACIVERT, fg=BEYAZ, font=font(9, "bold", r), padx=8, pady=3,
+                     anchor="w" if c == 0 else "e").grid(row=0, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        for i, bilesen in enumerate(crs.GENEL_BILESENLER, start=1):
+            zemin = BEYAZ if i % 2 else ACIK_BG
+            f = font(10, root=r)
+            tk.Label(tablo, text=crs.BILESEN_ETIKET[bilesen], bg=zemin, fg=METIN, font=f, anchor="w", padx=8,
+                     pady=2).grid(row=i, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            ham = tk.Label(tablo, text="…", bg=zemin, fg=METIN, font=f, anchor="e", padx=8)
+            ham.grid(row=i, column=1, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            if bilesen == crs.BILESEN_ACIK:
+                tk.Label(tablo, text="Tam tutar", bg=zemin, fg=IKINCIL, font=f, anchor="e", padx=8).grid(
+                    row=i, column=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            else:
+                hucre = tk.Frame(tablo, bg=zemin)
+                hucre.grid(row=i, column=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
+                giris = ttk.Entry(hucre, textvariable=self.oran_var[bilesen], width=8, justify="right")
+                giris.pack(padx=4, pady=1, anchor="e")
+                self._girisler.append(giris)
+            risk = tk.Label(tablo, text="…", bg=zemin, fg=METIN, font=f, anchor="e", padx=8)
+            risk.grid(row=i, column=3, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self._genel_hucre[(bilesen, "ham")] = ham
+            self._genel_hucre[(bilesen, "risk")] = risk
+        n = len(crs.GENEL_BILESENLER) + 1
+        for satir, (etiket, anahtar, zemin, boyut) in enumerate((
+            ("Brüt Toplam (oransız)", "brut", ACIK_BG, 10),
+            ("GENEL RİSK", "genel", "#FFF7D6", 12),
+        ), start=n):
+            tk.Label(tablo, text=etiket, bg=zemin, fg=LACIVERT, font=font(boyut, "bold", r), anchor="w", padx=8,
+                     pady=3).grid(row=satir, column=0, columnspan=2 if anahtar == "genel" else 1, sticky="nsew",
+                                  padx=(0, 1), pady=(0, 1))
+            deger = tk.Label(tablo, text="…", bg=zemin, fg=LACIVERT, font=font(boyut, "bold", r), anchor="e", padx=8)
+            if anahtar == "brut":
+                deger.grid(row=satir, column=1, sticky="nsew", padx=(0, 1), pady=(0, 1))
+                tk.Label(tablo, text="", bg=zemin).grid(row=satir, column=2, columnspan=2, sticky="nsew",
+                                                        padx=(0, 1), pady=(0, 1))
+            else:
+                deger.grid(row=satir, column=2, columnspan=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self._genel_hucre[(anahtar, "deger")] = deger
+        sag = tk.Frame(gr, bg=BEYAZ)
+        sag.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        tk.Label(
+            sag, bg=BEYAZ, fg=IKINCIL, font=font(9, root=r), anchor="w", justify="left", wraplength=360,
+            text=("Genel Risk = açık hesap (tam) + ciro edilen çekler + diğer çekler + senetler; her çek/senet "
+                  "bileşeni karttaki yüzdeyle çarpılır (0–100, iki ondalık; varsayılan %100). Brüt Toplam "
+                  "yüzdesiz toplamdır. Ciro edilmiş senet yalnız senetlerde sayılır. Muhasebe bakiyesini değiştirmez."),
+        ).pack(fill="x")
+        tk_buton(sag, "Bileşen Ayrıntısı", self.genel_detay_ac, rol="ikincil").pack(anchor="w", pady=(6, 0))
+        self.genel_uyari = tk.Label(sag, text="", bg=BEYAZ, fg=UYARI, font=font(9, "bold", r), anchor="w",
+                                    justify="left", wraplength=360)
+        self.genel_uyari.pack(fill="x", pady=(4, 0))
+
+    def _girilen_oranlar(self) -> tuple[dict, list[str]]:
+        oranlar, hatalar = {}, []
+        for bilesen, var in self.oran_var.items():
+            try:
+                oranlar[bilesen] = crs.risk_orani_dogrula(var.get(), crs.BILESEN_ETIKET[bilesen])
+            except ValueError as hata:
+                oranlar[bilesen] = None
+                hatalar.append(str(hata))
+        return oranlar, hatalar
+
+    def _genel_riski_ciz(self):
+        genel = (self._ozet or {}).get("genel")
+        oranlar, hatalar = self._girilen_oranlar()
+        if not genel:
+            for (anahtar, tur), lbl in self._genel_hucre.items():
+                lbl.configure(text="…" if self._ozet is None else "—")
+            self.genel_uyari.configure(text="\n".join(hatalar))
+            return
+        hamlar = {b["bilesen"]: b["ham"] for b in genel["bilesenler"]}
+        gecerli = {b: o for b, o in oranlar.items() if o is not None}
+        sonuc = crs.genel_risk_hesapla(hamlar, gecerli)
+        for b in sonuc["bilesenler"]:
+            self._genel_hucre[(b["bilesen"], "ham")].configure(text=_tl(b["ham"]))
+            eksik = b["bilesen"] in oranlar and oranlar[b["bilesen"]] is None
+            self._genel_hucre[(b["bilesen"], "risk")].configure(
+                text="Oran eksik" if eksik else _tl(b["risk"]), fg=UYARI if eksik else METIN
+            )
+        self._genel_hucre[("brut", "deger")].configure(text=_tl(sonuc["brut"]))
+        self._genel_hucre[("genel", "deger")].configure(
+            text="Oran eksik — hesaplanamadı" if hatalar else _tl(sonuc["genel_risk"]),
+            fg=UYARI if hatalar else LACIVERT,
+        )
+        notlar = list(hatalar)
+        eksik_kur = genel.get("eksik_kur") or []
+        if eksik_kur:
+            notlar.append(
+                f"{len(eksik_kur)} dövizli evrakın kuru tanımsız; TL karşılığı olmadığından toplama katılmadı "
+                "(Bileşen Ayrıntısı'nda görünür)."
+            )
+        self.genel_uyari.configure(text="\n".join(notlar))
+
+    def genel_detay_ac(self):
+        cari_id = self._cari_id_getir()
+        if not cari_id:
+            messagebox.showinfo("Genel Risk", "Önce cari kartını kaydedin.", parent=self)
+            return
+        oranlar, hatalar = self._girilen_oranlar()
+        GenelRiskDetayDialog(self, int(cari_id), oranlar=None if hatalar else oranlar)
+
+    # --- Vade farkı aylık ↔ yıllık ---
+
+    def _vade_bagla(self, kaynak: str):
+        """Son düzenlenen alan ana değerdir; diğeri ondan türetilir (geri yazma yok, sürüklenme yok)."""
+        if self._yukleniyor or self._baglaniyor:
+            return
+        ham = (self.aylik_var if kaynak == crs.DONEM_AYLIK else self.yillik_var).get()
+        hedef = self.yillik_var if kaynak == crs.DONEM_AYLIK else self.aylik_var
+        try:
+            aylik, yillik = crs.vade_oran_bagla(kaynak, ham)
+        except ValueError as hata:
+            self._vade_hatasi = str(hata)
+            self._vade_uyarisini_yaz()
+            return
+        self._vade_hatasi = ""
+        self._vade_celiski = ""
+        self._baglaniyor = True
+        try:
+            hedef.set(crs.vade_oran_metni(yillik if kaynak == crs.DONEM_AYLIK else aylik))
+        finally:
+            self._baglaniyor = False
+        self._vade_uyarisini_yaz()
+
+    def _vade_uyarisini_yaz(self):
+        self.vf_uyari.configure(text="\n".join(x for x in (self._vade_hatasi, self._vade_celiski) if x))
 
     # --- Veri ---
 
@@ -165,11 +311,27 @@ class RiskLimitPaneli(tk.Frame):
                 self.uygula_var[tur].set(bool(getattr(cari, uygula_alan, False)) if cari else False)
                 limit = getattr(cari, limit_alan, None) if cari else None
                 self.limit_var[tur].set("" if limit is None else tr_tutar(limit))
-            self.aylik_var.set(crs.oran_metni(getattr(cari, "vade_farki_aylik_oran", None)) if cari else "")
-            self.yillik_var.set(crs.oran_metni(getattr(cari, "vade_farki_yillik_oran", None)) if cari else "")
+            aylik = getattr(cari, "vade_farki_aylik_oran", None) if cari else None
+            yillik = getattr(cari, "vade_farki_yillik_oran", None) if cari else None
+            self.aylik_var.set(crs.vade_oran_metni(aylik))
+            self.yillik_var.set(crs.vade_oran_metni(yillik))
             donem = getattr(cari, "vade_farki_donem", None) if cari else None
             self.donem_var.set(crs.DONEM_ETIKET.get(donem, ""))
             self.aciklama_var.set((getattr(cari, "vade_farki_aciklama", None) or "") if cari else "")
+            oranlar = crs.risk_oranlari(cari) if cari else {}
+            for bilesen, var in self.oran_var.items():
+                var.set(crs.oran_metni(oranlar.get(bilesen, crs.VARSAYILAN_RISK_ORANI)))
+            self._vade_hatasi = ""
+            self._vade_celiski = ""
+            if not crs.vade_oranlari_tutarli(aylik, yillik):
+                esas = crs.DONEM_ETIKET.get(donem)
+                self._vade_celiski = (
+                    "Kayıtlı aylık ve yıllık oranlar birbirini tutmuyor (aylık × 12 ≠ yıllık). "
+                    + (f"Vade farkı hesabı esas dönemin ({esas}) oranını kullanmaya devam eder. "
+                       if esas else "")
+                    + "Bir alanı düzenlediğinizde diğeri ona göre güncellenir."
+                )
+            self._vade_uyarisini_yaz()
         finally:
             self._yukleniyor = False
         self._tabloyu_ciz()
@@ -184,6 +346,8 @@ class RiskLimitPaneli(tk.Frame):
         veri["vade_farki_yillik_oran"] = self.yillik_var.get().strip()
         veri["vade_farki_donem"] = _donem_kod(self.donem_var.get())
         veri["vade_farki_aciklama"] = self.aciklama_var.get().strip()
+        for bilesen, alan in crs.RISK_ORANI_ALANI.items():
+            veri[alan] = self.oran_var[bilesen].get().strip()
         return veri
 
     def snapshot(self) -> tuple:
@@ -240,11 +404,24 @@ class RiskLimitPaneli(tk.Frame):
         except (ValueError, ArithmeticError):
             return None
 
+    def _onizleme_genel_risk(self):
+        """Ekrandaki (henüz kaydedilmemiş) yüzdelerle Genel Risk; oran hatalıysa None."""
+        genel = (self._ozet or {}).get("genel")
+        if not genel:
+            return None
+        oranlar, hatalar = self._girilen_oranlar()
+        if hatalar:
+            return None
+        hamlar = {b["bilesen"]: b["ham"] for b in genel["bilesenler"]}
+        return crs.genel_risk_hesapla(hamlar, oranlar)["genel_risk"]
+
     def _tabloyu_ciz(self):
         satirlar = (self._ozet or {}).get("satirlar") or {}
         for tur in TABLO_TURLERI:
             s = satirlar.get(tur) or {}
             risk = s.get("risk")
+            if tur == crs.TUR_TOPLAM and s:
+                risk = self._onizleme_genel_risk()
             self._hucre[(tur, "risk")].configure(text=_tl(risk) if risk is not None else "…")
             if tur in crs.LIMITLI_TURLER:
                 uygula = bool(self.uygula_var[tur].get())
@@ -275,13 +452,15 @@ class RiskLimitPaneli(tk.Frame):
         zaman = (self._ozet or {}).get("zaman")
         self.zaman_lbl.configure(text=f"Hesaplandı: {_tarih(zaman)}" if zaman else "")
         donem = _donem_kod(self.donem_var.get())
+        bag = "Yıllık oran nominaldir (aylık × 12); birini girince diğeri hesaplanır. "
         if donem == crs.DONEM_AYLIK:
-            metin = "Esas oran: Aylık. Yıllık oran bilgi amaçlıdır; oranlar birbirine çevrilmez."
+            metin = bag + "Esas oran: Aylık."
         elif donem == crs.DONEM_YILLIK:
-            metin = "Esas oran: Yıllık. Aylık oran bilgi amaçlıdır; oranlar birbirine çevrilmez."
+            metin = bag + "Esas oran: Yıllık."
         else:
-            metin = "Esas dönem seçilmedi: oranlar yalnız bilgi amaçlıdır. Vade farkı kendiliğinden borç oluşturmaz."
+            metin = bag + "Esas dönem seçilmedi: oranlar bilgi amaçlıdır. Vade farkı kendiliğinden borç oluşturmaz."
         self.vf_not.configure(text=metin)
+        self._genel_riski_ciz()
 
     # --- Eylemler ---
 
@@ -439,6 +618,43 @@ class RiskDetayDialog(_ListeDialog):
             self._on_degisim()
 
 
+class GenelRiskDetayDialog(_ListeDialog):
+    """Genel Risk bileşenlerinin kaynakları: belge, durum, açık tutar, oran ve hesaplanan risk."""
+
+    KOLONLAR = (
+        ("bilesen", "Bileşen", 170), ("belge_turu", "Kaynak Belge", 130), ("belge_no", "Belge / Portföy No", 120),
+        ("evrak_no", "Evrak No", 100), ("vade", "Vade", 82), ("durum", "Durum", 200),
+        ("tutar", "Açık Tutar", 110), ("oran", "Oran %", 70), ("yeni", "Hesaplanan Risk", 120),
+    )
+
+    def __init__(self, parent, cari_id: int, *, oranlar: dict | None = None):
+        super().__init__(parent, "Genel Risk Ayrıntısı", self.KOLONLAR, genislik=1140)
+        self.tablo.column("oran", anchor="e")
+        ozet = crs.risk_ozeti(int(cari_id))
+        genel = ozet["genel"]
+        oranlar = oranlar or genel["oranlar"]
+        for i, k in enumerate(genel["detay"]):
+            bilesen = k["bilesen"]
+            oran = None if bilesen == crs.BILESEN_ACIK else oranlar.get(bilesen)
+            if k.get("kur_eksik"):
+                hesap = "Kur eksik"
+            elif oran is None:
+                hesap = tr_tutar(k["tutar"])
+            else:
+                hesap = tr_tutar(crs._kurus(k["tutar"] * oran / crs.YUZ))
+            self.tablo.insert("", "end", iid=str(i), values=(
+                crs.BILESEN_ETIKET[bilesen], k.get("belge_turu", ""), k.get("belge_no", ""), k.get("evrak_no", ""),
+                _tarih(k.get("vade")), k.get("durum", ""), tr_tutar(k.get("acik_tutar", k["tutar"])),
+                "Tam" if oran is None else crs.oran_metni(oran), hesap,
+            ))
+        hesap = crs.genel_risk_hesapla({b["bilesen"]: b["ham"] for b in genel["bilesenler"]}, oranlar)
+        self.bilgi_lbl.configure(text=(
+            f"Brüt Toplam: {_tl(hesap['brut'])}  ·  Genel Risk: {_tl(hesap['genel_risk'])}\n"
+            "Sorunlu evrakta cariye geri borç yazılan tutar açık hesapta sayılır; evrakta yalnız kalan risk "
+            "tutarı (Açık Tutar sütunundan farklı olabilir) bileşene girer."
+        ))
+
+
 class RiskOlaylariDialog(_ListeDialog):
     KOLONLAR = (
         ("zaman", "Zaman", 120), ("belge_turu", "Belge Türü", 110), ("belge_no", "Belge No", 110),
@@ -468,6 +684,8 @@ class DegisiklikGecmisiDialog(_ListeDialog):
         "toplam_risk_limiti": "Toplam risk limiti", "toplam_limit_uygula": "Toplam limit uygula",
         "vade_farki_aylik_oran": "Vade farkı aylık oran %", "vade_farki_yillik_oran": "Vade farkı yıllık oran %",
         "vade_farki_donem": "Vade farkı esas dönem", "vade_farki_aciklama": "Vade farkı açıklama",
+        "risk_orani_ciro_cek": "Ciro çek riski %", "risk_orani_diger_cek": "Diğer çek riski %",
+        "risk_orani_senet": "Senet riski %",
     }
 
     def __init__(self, parent, cari_id: int):
@@ -570,15 +788,16 @@ class RiskAsimDialog(tk.Toplevel):
         self.destroy()
 
 
-def satis_risk_onayi(parent, cari_id, etki, *, belge_turu: str = "Satış Faturası"):
+def satis_risk_onayi(parent, cari_id, etki, *, belge_turu: str = "Satış Faturası", belge_no: str | None = None):
     """(devam, kayit). Aşım yoksa (True, None). Kullanıcı vazgeçerse (False, None).
 
+    ``belge_no``: kayıtlı belgenin düzenlenmesinde eski açık hesap etkisi çıkarılır.
     Risk hesaplanamazsa satış engellenmez; hata yalnız bilgilendirilir.
     """
     if not cari_id:
         return True, None
     try:
-        kontrol = crs.islem_kontrolu(int(cari_id), etki)
+        kontrol = crs.islem_kontrolu(int(cari_id), etki, belge_no=belge_no)
     except Exception:
         return True, None
     if not kontrol.get("asimlar"):

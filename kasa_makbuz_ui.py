@@ -11,6 +11,7 @@ import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal
 from tkinter import messagebox, simpledialog, ttk
+from types import SimpleNamespace
 
 from database.acik_kalem_service import AcikKalemDegisti
 from database.cari_service import CariService
@@ -545,9 +546,10 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._tedarikci_kayitlari: list[tuple[str, str, int]] = []
         self._cari_turleri: dict[int, str] = {}
         gorulen = set()
-        for o in CariService.listele(hizli=True):
-            self._cari_kaydi_ekle(o["cari"])
-            gorulen.add(int(o["cari"].id))
+        # Seçim kutusu yalnız kod/ünvan/tür ister; bakiye özetli tam liste açılışı saniyelerce yavaşlatıyordu.
+        for o in CariService.secim_etiketleri():
+            self._cari_kaydi_ekle(SimpleNamespace(**o))
+            gorulen.add(int(o["id"]))
         if self._sabit_cari_id and self._sabit_cari_id not in gorulen:
             cari = CariService.getir(self._sabit_cari_id)
             if cari is not None:

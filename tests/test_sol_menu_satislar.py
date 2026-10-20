@@ -115,10 +115,11 @@ class SolMenuSatislarTest(unittest.TestCase):
         from cari_kart_ui import CariDialog
         from database.cari_service import CariService
 
+        grup_adi = "PERAKENDE MÜŞTERİ"
         a = CariService.ekle({"cari_kodu": "M900", "unvan": "Mevcut Müşteri A.Ş.", "cari_turu": "Müşteri",
-                              "telefon": "05550000000", "aktif": True})
+                              "telefon": "05550000000", "aktif": True, "musteri_grubu": grup_adi})
         b = CariService.ekle({"cari_kodu": "M901", "unvan": "İkinci Müşteri Ltd.", "cari_turu": "Müşteri",
-                              "telefon": "05551111111", "aktif": True})
+                              "telefon": "05551111111", "aktif": True, "musteri_grubu": grup_adi})
         mb = patch("cari_kart_ui.messagebox").start()
         self.addCleanup(patch.stopall)
         mb.askyesnocancel.return_value = False
@@ -160,17 +161,21 @@ class SolMenuSatislarTest(unittest.TestCase):
         self.assertEqual(self.app._ekran_yoneticisi.aktif_anahtar(), ekran_once, "kart ekran değiştirmez")
         self.assertTrue(grup.alt_dugmeler["musteri_karti_ac"]._aktif)
 
-        # 2) Mevcut arama/seçim ile eski müşteri aynı karta çağrılır
+        self.assertFalse(hasattr(bos, "_hizli_ara"), "üst arama şeridi kaldırıldı")
+        self.assertEqual(bos._widget_deger("musteri_grubu"), "", "yeni kartta grup seçili gelmez")
+
+        # 2) F10 / ünvan sağ tık listesinden seçilen müşteri aynı pencerede yüklenir
         class SecimSahte:
             def __init__(self, _parent, musteriler, ara, **_k):
-                self.result = next(c for c in CariService.aktif_musteriler() if c.unvan.startswith(ara))
+                self.result = next(c for c in CariService.aktif_musteriler() if c.id == a.id)
 
         with patch("app.MusteriSecimDialog", SecimSahte), patch.object(CariDialog, "wait_window", lambda *_a: None):
-            bos._hizli_ara.insert(0, "Mevcut")
             bos._hizli_cari_ara()
         self._pompala(0.6)
         kart_a = kart()
+        self.assertIs(kart_a, bos, "müşteri değişimi pencereyi kapatıp açmaz")
         self.assertEqual(kart_a.cari.id, a.id)
+        self.assertEqual(kart_a._widget_deger("musteri_grubu"), grup_adi)
         self.assertEqual(kart_a._widget_deger("unvan"), "Mevcut Müşteri A.Ş.")
         self.assertEqual(kart_a._widget_deger("telefon"), "05550000000")
         self.assertEqual(kart_a._widget_deger("cari_kodu"), "M900")
@@ -188,6 +193,7 @@ class SolMenuSatislarTest(unittest.TestCase):
         kart_a._cariye_gec(CariService.getir(b.id))
         self._pompala(0.6)
         kart_b = kart()
+        self.assertIs(kart_b, kart_a)
         self.assertEqual(kart_b.cari.id, b.id)
         self.assertEqual(kart_b._widget_deger("unvan"), "İkinci Müşteri Ltd.")
         self.assertEqual(kart_b._widget_deger("telefon"), "05551111111")
@@ -200,6 +206,10 @@ class SolMenuSatislarTest(unittest.TestCase):
         self.assertIsNone(yeni.cari)
         self.assertEqual(yeni._widget_deger("unvan"), "")
         yeni.degerler["unvan"].insert(0, "Yeni Deneme Müşterisi")
+        self.assertFalse(yeni.kaydet(), "grup seçilmeden kayıt yapılmaz")
+        self.assertEqual(musteri_sayisi(), sayi)
+        self.assertTrue(yeni._grup_uyari_lbl.winfo_ismapped() or yeni._grup_uyari_lbl.cget("text"))
+        yeni.degerler["musteri_grubu"].set(grup_adi)
         self.assertTrue(yeni.kaydet())
         self.assertEqual(musteri_sayisi(), sayi + 1)
         self.assertNotIn(yeni.cari.id, (a.id, b.id))

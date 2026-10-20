@@ -224,21 +224,65 @@ def liste_bakiyeleri(
     company_id: int | None = None,
     currency: str | None = None,
 ) -> dict[int, Decimal]:
-    """Toplu liste bakiyesi — müşteri listesi / fatura önbelleği için."""
-    ids = [int(i) for i in customer_ids if i is not None]
+    """Toplu liste bakiyesi — müşteri listesi / fatura önbelleği için.
+
+    ``net_bakiye`` ile aynı formül; hareketler cari başına değil, parça parça toplu okunur.
+    """
+    _ = _aktif_company_id(company_id)
+    ids = list(dict.fromkeys(int(i) for i in customer_ids if i is not None))
     if not ids:
         return {}
-    sonuc: dict[int, Decimal] = {}
+    pb_filtre = (currency or "").strip().upper() or None
+    borclar: dict[int, Decimal] = {cid: Decimal("0") for cid in ids}
+    alacaklar: dict[int, Decimal] = {cid: Decimal("0") for cid in ids}
     with get_session() as session:
-        for cid in ids:
-            ozet = net_bakiye(
-                cid,
-                company_id=company_id,
-                currency=currency,
-                session=session,
-            )
-            sonuc[cid] = ozet["bakiye"]
-    return sonuc
+        for bas in range(0, len(ids), 500):
+            parca = ids[bas:bas + 500]
+            islem_belgeleri: dict[int, set[str]] = {cid: set() for cid in parca}
+            for cid, bn, borc, alacak, pb in session.execute(
+                select(CariIslem.cari_id, CariIslem.belge_no, CariIslem.borc, CariIslem.alacak,
+                       CariIslem.para_birimi).where(CariIslem.cari_id.in_(parca))
+            ):
+                islem_belgeleri[int(cid)].add(bn or "")
+                if pb_filtre and (pb or "TRY").upper() != pb_filtre:
+                    continue
+                borclar[int(cid)] += _d(borc)
+                alacaklar[int(cid)] += _d(alacak)
+            for cid, bn, tutar, pb in session.execute(
+                select(SatisHareketi.cari_id, SatisHareketi.belge_no, SatisHareketi.satis_tutari,
+                       SatisHareketi.para_birimi).where(SatisHareketi.cari_id.in_(parca))
+            ):
+                bn = bn or ""
+                if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
+                    continue
+                if pb_filtre and (pb or "TRY").upper() != pb_filtre:
+                    continue
+                borclar[int(cid)] += _d(tutar)
+    return {cid: _kurus(_kurus(borclar[cid]) - _kurus(alacaklar[cid])) for cid in ids}
+
+
+PARA_BIRIMI_TL = "TL"
+
+
+def bakiye_yon_kisa(bakiye, *, tedarikci_modu: bool = False) -> str:
+    """Liste sütunu için yön: müşteride + Borçlu; tedarikçide + Alacaklı (bizim borcumuz)."""
+    net = _d(bakiye)
+    if net == 0:
+        return "Kapalı"
+    if tedarikci_modu:
+        return "Alacaklı" if net > 0 else "Borçlu"
+    return "Borçlu" if net > 0 else "Alacaklı"
+
+
+def bakiye_bilgisi(bakiye, *, tedarikci_modu: bool = False) -> dict[str, Any]:
+    """Tüm cari seçim listelerinde ortak gösterim: net, mutlak tutar, yön, para birimi."""
+    net = _kurus(bakiye)
+    return {
+        "net": net,
+        "tutar": abs(net),
+        "yon": bakiye_yon_kisa(net, tedarikci_modu=tedarikci_modu),
+        "para_birimi": PARA_BIRIMI_TL,
+    }
 
 
 def fatura_eski_yeni_bakiye(

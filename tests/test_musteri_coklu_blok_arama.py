@@ -31,13 +31,7 @@ class MusteriCokluBlokAramaTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        import database.cari_service as cari_svc
-        import database.database as db
-        import database.search_service as ss
-
-        self._patches = []
-        for mod in (db, ss, cari_svc):
-            self._patches.append((mod, getattr(mod, "get_session", None)))
+        from tests._oturum_yamasi import oturum_yamasi
 
         SessionLocal = self.Session
 
@@ -49,9 +43,8 @@ class MusteriCokluBlokAramaTest(unittest.TestCase):
             def __exit__(self, *a):
                 self.s.close()
 
-        for mod, _ in self._patches:
-            if hasattr(mod, "get_session"):
-                mod.get_session = lambda: _Ctx()
+        self._yama = oturum_yamasi(_Ctx)
+        self._yama.start()
 
         with self.Session() as s:
             s.add(
@@ -95,9 +88,7 @@ class MusteriCokluBlokAramaTest(unittest.TestCase):
             s.commit()
 
     def tearDown(self):
-        for mod, orig in self._patches:
-            if orig is not None:
-                mod.get_session = orig
+        self._yama.stop()
         self.engine.dispose()
 
     def _unvanlar(self, sorgu: str) -> list[str]:
@@ -165,13 +156,7 @@ class MusteriAramaPerformansTest(unittest.TestCase):
         Base.metadata.create_all(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine, expire_on_commit=False)
 
-        import database.cari_service as cari_svc
-        import database.database as db
-        import database.search_service as ss
-
-        cls._patches = []
-        for mod in (db, ss, cari_svc):
-            cls._patches.append((mod, getattr(mod, "get_session", None)))
+        from tests._oturum_yamasi import oturum_yamasi
 
         SessionLocal = cls.Session
 
@@ -183,9 +168,8 @@ class MusteriAramaPerformansTest(unittest.TestCase):
             def __exit__(self, *a):
                 self.s.close()
 
-        for mod, _ in cls._patches:
-            if hasattr(mod, "get_session"):
-                mod.get_session = lambda: _Ctx()
+        cls._yama = oturum_yamasi(_Ctx)
+        cls._yama.start()
 
         with cls.Session() as s:
             batch = []
@@ -213,9 +197,7 @@ class MusteriAramaPerformansTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for mod, orig in cls._patches:
-            if orig is not None:
-                mod.get_session = orig
+        cls._yama.stop()
         cls.engine.dispose()
 
     def test_10000_cari_sorgu_suresi(self):

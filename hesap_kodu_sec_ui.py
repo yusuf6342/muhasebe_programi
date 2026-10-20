@@ -127,22 +127,61 @@ class HesapKoduSecDialog(tk.Toplevel):
         self.destroy()
 
 
+def hesap_karti_ac(parent, hesap_kodu: str) -> None:
+    """Koda karşılık gelen mevcut hesap kartını açar (hesap oluşturmaz)."""
+    from database.muhasebe_service import HesapPlanService
+
+    kod = (hesap_kodu or "").strip()
+    if not kod:
+        return
+    try:
+        hesap = HesapPlanService.kod_ile_getir(kod)
+    except (PermissionError, ValueError) as hata:
+        messagebox.showwarning("Hesap kartı", str(hata), parent=parent)
+        return
+    if hesap is None:
+        messagebox.showwarning("Hesap kartı", f"«{kod}» hesabı bu firmanın hesap planında yok.", parent=parent)
+        return
+    from genel_muhasebe_ui import HesapDialog
+
+    HesapDialog(parent, hesap_id=int(hesap["id"]))
+
+
 def muhasebe_hesap_entry_bagla(parent, giris: ttk.Entry) -> None:
-    """Entry: sağ tık / F2 / 3. haneden sonra hesap planı seçimi."""
+    """Entry: sağ tık menüsü (Alt hesap seç / Hesap kartını aç), F2 veya 3. haneden sonra seçim."""
 
     def _onek():
         return (giris.get() or "").strip()
 
     def _ac(_event=None):
-        onek = _onek()
-        # Sağ tıkta 3 hane yoksa yine aç; kullanıcı diyalogda yazar
-        dlg = HesapKoduSecDialog(parent, onek=onek)
+        from database.muhasebe_service import HesapPlanService
+
+        dlg = HesapKoduSecDialog(parent, onek=_onek())
         parent.wait_window(dlg)
         if dlg.result:
+            try:
+                HesapPlanService.alt_hesap_dogrula(dlg.result)
+            except (PermissionError, ValueError) as hata:
+                messagebox.showwarning("Hesap seçimi", str(hata), parent=parent)
+                return "break"
             giris.delete(0, "end")
             giris.insert(0, dlg.result)
             giris.icursor("end")
             giris.focus_set()
+        return "break"
+
+    def _menu(event):
+        menu = tk.Menu(giris, tearoff=0)
+        menu.add_command(label="Alt hesap seç", command=_ac)
+        menu.add_command(
+            label="Hesap kartını aç",
+            command=lambda: hesap_karti_ac(parent, _onek()),
+            state="normal" if _onek() else "disabled",
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
         return "break"
 
     def _tus(event=None):
@@ -181,6 +220,6 @@ def muhasebe_hesap_entry_bagla(parent, giris: ttk.Entry) -> None:
 
         giris._hesap_sec_after = parent.after(350, _gecikmeli)
 
-    giris.bind("<Button-3>", _ac)
+    giris.bind("<Button-3>", _menu)
     giris.bind("<F2>", _ac)
     giris.bind("<KeyRelease>", _tus)

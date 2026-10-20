@@ -1169,8 +1169,8 @@ class TeklifDialog(tk.Toplevel):
             from database.models.cari import Cari
             from sqlalchemy import or_, select
 
-            grup = CariService.ADAY_MUSTERI_GRUP
             with get_session() as session:
+                grup = CariService.rol_grubu("ADAY_MUSTERI", session)
                 rows = list(
                     session.scalars(
                         select(Cari)

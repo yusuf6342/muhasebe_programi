@@ -31,16 +31,8 @@ class SearchServiceTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        import database.database as db
-        import database.search_service as ss
-        import database.stok_service as stok_svc
-        import database.cari_service as cari_svc
+        from tests._oturum_yamasi import oturum_yamasi
 
-        self._patches = []
-        for mod in (db, ss, stok_svc, cari_svc):
-            self._patches.append((mod, getattr(mod, "get_session", None)))
-
-        engine = self.engine
         SessionLocal = self.Session
 
         class _Ctx:
@@ -51,9 +43,8 @@ class SearchServiceTest(unittest.TestCase):
             def __exit__(self, *a):
                 self.s.close()
 
-        for mod, _ in self._patches:
-            if hasattr(mod, "get_session"):
-                mod.get_session = lambda: _Ctx()
+        self._yama = oturum_yamasi(_Ctx)
+        self._yama.start()
 
         with self.Session() as s:
             s.add(
@@ -112,9 +103,7 @@ class SearchServiceTest(unittest.TestCase):
             s.commit()
 
     def tearDown(self):
-        for mod, orig in self._patches:
-            if orig is not None:
-                mod.get_session = orig
+        self._yama.stop()
         self.engine.dispose()
 
     def _adlar(self, sorgu: str) -> list[str]:

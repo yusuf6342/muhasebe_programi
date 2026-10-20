@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterable
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from database.access import yazma_zorunlu, yetki_var, yetki_zorunlu
@@ -85,6 +85,18 @@ def _eski_yol(session, stok: StokKarti) -> str:
 
 def _grupsuz_mu(stok: StokKarti) -> bool:
     return not (stok.ana_grup_id or stok.tali_grup_id or stok.alt_grup_id)
+
+
+def _stok_anlik(stok: StokKarti) -> dict:
+    """Ön izlemenin dayandığı grup ve kart durumunu karşılaştırmak için."""
+    return {
+        "ana_grup_id": stok.ana_grup_id,
+        "tali_grup_id": stok.tali_grup_id,
+        "alt_grup_id": stok.alt_grup_id,
+        "rapor_grubu": stok.rapor_grubu,
+        "aktif": stok.aktif,
+        "is_deleted": stok.is_deleted,
+    }
 
 
 class StokGrupTopluService:
@@ -271,6 +283,7 @@ class StokGrupTopluService:
         yetki_zorunlu("stok_goruntuleme", "goruntuleme", "stok_grup_yonetme")
         if not stok_idler:
             raise ValueError("Ön izleme için en az bir stok seçin.")
+        stok_idler = sorted({int(i) for i in stok_idler})
         politika = (politika or POLITIKA_SADECE_GRUPSUZ).strip()
         if politika not in (
             POLITIKA_SADECE_GRUPSUZ,
@@ -281,8 +294,11 @@ class StokGrupTopluService:
 
         # Hedef doğrulama (pasif hedef engeli)
         dog = StokGrupService.hiyerarsi_dogrula(ana_id, tali_id, alt_id)
-        if not dog.get("ana_grup_id") and not dog.get("tali_grup_id") and not dog.get("alt_grup_id"):
-            raise ValueError("Hedef grup seçilmedi.")
+        if not ana_id or any(
+            secilen != dog.get(alan)
+            for secilen, alan in ((ana_id, "ana_grup_id"), (tali_id, "tali_grup_id"), (alt_id, "alt_grup_id"))
+        ):
+            raise ValueError("Geçerli bir hedef Ana Grup ve ona bağlı grupları seçin.")
         if dog.get("pasif_uyari"):
             raise ValueError(
                 "Hedef grup pasif: " + ", ".join(dog["pasif_uyari"]) + ". Aktif grup seçin."
@@ -510,6 +526,9 @@ class StokGrupTopluService:
                 "politika": politika,
                 "satirlar": satirlar,
                 "ozet": ozet,
+                "firma": (oturum.company_id, oturum.firma_uid, oturum.db_path),
+                "stok_idler": stok_idler,
+                "kayit_anliklari": {sid: _stok_anlik(stok) for sid, stok in by_id.items()},
             }
 
     @staticmethod
@@ -521,6 +540,7 @@ class StokGrupTopluService:
         alt_id: int | None,
         politika: str = POLITIKA_SADECE_GRUPSUZ,
         onizleme_ozeti: dict | None = None,
+        onizleme_kaydi: dict | None = None,
     ) -> dict[str, Any]:
         yazma_zorunlu("stok_duzenleme", "stok_grup_yonetme", "stok_grup_toplu_eslestirme")
         onizleme = StokGrupTopluService.onizle(
@@ -530,6 +550,11 @@ class StokGrupTopluService:
             alt_id=alt_id,
             politika=politika,
         )
+        if onizleme_kaydi is not None and any(
+            onizleme_kaydi.get(alan) != onizleme.get(alan)
+            for alan in ("firma", "stok_idler", "kayit_anliklari", "hedef", "politika", "satirlar")
+        ):
+            raise ValueError("Ön izleme güncelliğini yitirdi. Ön İzle'yi yeniden çalıştırın.")
         # Önizleme ile UI özeti çakışmasın diye güncellenecekleri filtrele
         guncellenecek = [
             s
@@ -578,16 +603,33 @@ class StokGrupTopluService:
                     satir.get("yeni_tali_id"),
                     satir.get("yeni_alt_id"),
                 )
+                if dog.get("pasif_uyari") or any(
+                    satir.get("yeni_" + alan + "_id") != dog.get(alan + "_grup_id")
+                    for alan in ("ana", "tali", "alt")
+                ):
+                    raise ValueError("Hedef grup değişti veya pasif oldu. İşlem geri alındı; Ön İzle'yi yenileyin.")
                 eski = {
                     "ana": stok.ana_grup_id,
                     "tali": stok.tali_grup_id,
                     "alt": stok.alt_grup_id,
                     "yol": _eski_yol(session, stok),
                 }
-                stok.ana_grup_id = dog["ana_grup_id"]
-                stok.tali_grup_id = dog["tali_grup_id"]
-                stok.alt_grup_id = dog["alt_grup_id"]
-                stok.rapor_grubu = dog["rapor_grubu"]
+                anlik = onizleme["kayit_anliklari"][stok.id]
+                degisen = session.execute(
+                    update(StokKarti)
+                    .where(
+                        StokKarti.id == stok.id,
+                        *(getattr(StokKarti, alan) == deger for alan, deger in anlik.items()),
+                    )
+                    .values(
+                        ana_grup_id=dog["ana_grup_id"], tali_grup_id=dog["tali_grup_id"],
+                        alt_grup_id=dog["alt_grup_id"], rapor_grubu=dog["rapor_grubu"],
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if degisen.rowcount != 1:
+                    raise ValueError("Stok grubu ön izlemeden sonra değişti. İşlem geri alındı; Ön İzle'yi yenileyin.")
+                session.expire(stok)
                 session.add(
                     StokGrupTopluIslemSatiri(
                         islem_id=baslik.id,
