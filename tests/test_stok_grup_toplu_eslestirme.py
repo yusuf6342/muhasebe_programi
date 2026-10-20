@@ -309,6 +309,93 @@ class TopluGrupEslestirmeTest(unittest.TestCase):
         )
         self.assertEqual(sonuc["guncellenen"], 200)
 
+    def _tam_onizleme(self, ids):
+        return StokGrupTopluService.onizle(
+            ids, ana_id=self.ana["id"], tali_id=None, alt_id=None,
+            politika=POLITIKA_DEGISTIR,
+        )
+
+    def _tam_uygula(self, ids, oniz):
+        return StokGrupTopluService.uygula(
+            ids, ana_id=self.ana["id"], tali_id=None, alt_id=None,
+            politika=POLITIKA_DEGISTIR, onizleme_ozeti=oniz["ozet"], onizleme_kaydi=oniz,
+        )
+
+    def test_10_adet_ayni_kalsa_da_eski_grup_degismisse_reddet(self):
+        sid = self._stok("ESKI", ana=self.ana2["id"])
+        oniz = self._tam_onizleme([sid])
+        with get_session() as s:
+            s.get(StokKarti, sid).ana_grup_id = None
+        self.assertEqual(self._tam_onizleme([sid])["ozet"], oniz["ozet"])
+        with self.assertRaisesRegex(ValueError, "güncelliğini"):
+            self._tam_uygula([sid], oniz)
+        with get_session() as s:
+            self.assertIsNone(s.get(StokKarti, sid).ana_grup_id)
+        self.assertEqual(StokGrupTopluService.islem_gecmisi(), [])
+
+    def test_11_ayni_adette_baska_urun_secilmesi_reddedilir(self):
+        ilk, ikinci = self._stok("ILK"), self._stok("IKINCI")
+        with self.assertRaisesRegex(ValueError, "güncelliğini"):
+            self._tam_uygula([ikinci], self._tam_onizleme([ilk]))
+
+    def test_12_firma_degismisse_onizleme_kullanilamaz(self):
+        sid = self._stok("FIRMA")
+        oniz = self._tam_onizleme([sid])
+        oturum.firma_uid = "baska-firma"
+        with self.assertRaisesRegex(ValueError, "güncelliğini"):
+            self._tam_uygula([sid], oniz)
+
+    def test_13_gecersiz_alt_grup_sessizce_atilmaz(self):
+        sid = self._stok("HEDEF")
+        with self.assertRaisesRegex(ValueError, "Geçerli"):
+            StokGrupTopluService.onizle(
+                [sid], ana_id=self.ana["id"], tali_id=self.tali["id"], alt_id=999999,
+            )
+
+    def test_14_yazma_hatasinda_gruplar_ve_islem_gecmisi_geri_alinir(self):
+        ids = [self._stok("ATOM1"), self._stok("ATOM2")]
+        oniz = self._tam_onizleme(ids)
+        with patch("database.stok_grup_toplu_service.audit_document", side_effect=RuntimeError("test hata")):
+            with self.assertRaisesRegex(RuntimeError, "test hata"):
+                self._tam_uygula(ids, oniz)
+        with get_session() as s:
+            for sid in ids:
+                self.assertIsNone(s.get(StokKarti, sid).ana_grup_id)
+        self.assertEqual(StokGrupTopluService.islem_gecmisi(), [])
+
+    def test_15_tam_onizleme_ile_aktarim_ve_guvenli_geri_alma(self):
+        sid = self._stok("DONUS", ana=self.ana2["id"])
+        sonuc = self._tam_uygula([sid], self._tam_onizleme([sid]))
+        with get_session() as s:
+            stok = s.get(StokKarti, sid)
+            self.assertEqual(stok.ana_grup_id, self.ana["id"])
+            self.assertEqual(stok.stok_adi, "Ürün DONUS")
+            self.assertEqual(stok.birim, "Adet")
+        StokGrupTopluService.geri_al(sonuc["islem_id"])
+        with get_session() as s:
+            self.assertEqual(s.get(StokKarti, sid).ana_grup_id, self.ana2["id"])
+
+    def test_16_kayit_aninda_hedef_gecersizlesirse_tum_islem_geri_alinir(self):
+        sid = self._stok("HEDEFDEGISIM")
+        oniz = self._tam_onizleme([sid])
+        dogrula = StokGrupService.hiyerarsi_dogrula
+        cagri = 0
+
+        def hedef_degissin(*args, **kwargs):
+            nonlocal cagri
+            cagri += 1
+            sonuc = dogrula(*args, **kwargs)
+            if cagri > 1:
+                sonuc["pasif_uyari"] = ["Mutfak"]
+            return sonuc
+
+        with patch.object(StokGrupService, "hiyerarsi_dogrula", side_effect=hedef_degissin):
+            with self.assertRaisesRegex(ValueError, "Hedef grup değişti"):
+                self._tam_uygula([sid], oniz)
+        with get_session() as s:
+            self.assertIsNone(s.get(StokKarti, sid).ana_grup_id)
+        self.assertEqual(StokGrupTopluService.islem_gecmisi(), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
