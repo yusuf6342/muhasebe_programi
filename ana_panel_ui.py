@@ -50,6 +50,7 @@ MENU_OGELERI: tuple[tuple[str, str, str, bool], ...] = (
     ("Genel Muhasebe", "genel_muhasebe", "=", False),
     ("Çek ve Senet", "cek_senet", "~", False),
     ("Özet Tablolar", "ozet_tablolar", "[]", False),
+    ("Bütçe", "butce", "B", False),
     ("Raporlar", "raporlar", "R", False),
     ("Kullanıcı ve Firma Yönetimi", "sistem", "@", False),
     ("Servis ve Sistem Kontrolü", "servis", "!", False),
@@ -92,11 +93,20 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         ("Avans ve Personel Ödemeleri", "avans_odeme_ac", ("personel_finans_goruntuleme", "personel_finans_duzenleme", "finans_goruntuleme")),
         ("Personel Masrafları", "personel_masraf_ac", ("personel_finans_goruntuleme", "personel_finans_duzenleme", "finans_goruntuleme")),
         ("SGK ve Beyan Takibi", "sgk_beyan_ac", ("personel_sgk_goruntuleme", "personel_sgk_duzenleme", "personel_goruntuleme")),
+        ("Ölçme / Prim", "olcme_prim_ac", ("personel_goruntuleme", "personel_duzenleme", "personel_performans", "personel_prim_goruntuleme", "goruntuleme")),
         ("Performans ve Kariyer", "performans_kariyer_ac", ("personel_goruntuleme", "personel_duzenleme", "personel_performans", "goruntuleme")),
         ("Ücret ve Kazanç Dağıtımı", "ucret_kazanc_ac", ("personel_finans_goruntuleme", "personel_prim_goruntuleme", "personel_finans_duzenleme")),
         ("Personel Raporları", "personel_rapor_ac", ("personel_goruntuleme", "goruntuleme")),
         ("Personel Formları", "personel_form_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
         ("Personel Ayarları", "personel_ayar_ac", ("personel_ayar", "sistem_ayarlari", "personel_duzenleme")),
+    ),
+    "butce": (
+        ("Yeni Bütçe", "butce_yeni_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Bütçe Listesi", "butce_liste_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Bütçe Gerçekleşen", "butce_gerceklesen_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Nakit Bütçesi", "butce_nakit_ac", ("finans_goruntuleme", "goruntuleme")),
+        ("Raporlar", "butce_raporlar_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Ayarlar", "butce_ayarlar_ac", ("finans_goruntuleme", "sistem_ayarlari", "goruntuleme")),
     ),
 }
 SATIS_PENCERELERI = frozenset({"musteri_karti_ac"})
@@ -565,6 +575,14 @@ class AnaPanelKabuk:
         app.header_saat_label = tk.Label(sag_h, text="", bg=BEYAZ, fg=LACIVERT, font=FONT_UI_BOLD, anchor="e")
         app.header_saat_label.pack(anchor="e", pady=(2, 0))
 
+        try:
+            from menu_arama_ui import MenuAramaCubugu
+
+            app._menu_arama = MenuAramaCubugu(app.oturum_cubugu, app)
+            app._menu_arama.pack(side="right", padx=(8, 12), pady=6)
+        except Exception:
+            app._menu_arama = None
+
         dugmeler = tk.Frame(app.oturum_cubugu, bg=BEYAZ)
         dugmeler.pack(side="right", padx=(0, 4), pady=8)
         for metin, cmd in (
@@ -914,6 +932,18 @@ class AnaPanelKabuk:
                 komut(self.app)
             except Exception as hata:  # noqa: BLE001
                 messagebox.showerror("Personel", str(hata), parent=self.app)
+            return
+        if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI.get("butce", ())):
+            import butce_ui
+
+            komut = getattr(butce_ui, alt_anahtar, None)
+            if not callable(komut):
+                return
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                komut(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Bütçe", str(hata), parent=self.app)
             return
         komut = getattr(satin_alma_ui, alt_anahtar, None)
         if not callable(komut):
@@ -1368,8 +1398,15 @@ def _hizli_islem_calistir(app, kod: str) -> None:
             from hizli_satis_gun_sonu_ui import HizliSatisGunSonuDialog
 
             HizliSatisGunSonuDialog(app)
-        except Exception:
-            _hazirlaniyor(app, "Gün Sonu Özeti")
+        except Exception as hata:
+            import logging
+
+            logging.getLogger(__name__).exception("Ana panel Gün Sonu açılamadı")
+            messagebox.showerror(
+                "Gün Sonu",
+                "Gün Sonu ekranı açılamadı.\n\n" + str(hata),
+                parent=app,
+            )
     else:
         _hazirlaniyor(app, "İşlem")
 
@@ -1431,8 +1468,14 @@ def ayarlar_goster(app) -> None:
 
         muhasebelestirme_ayarlari_goster(app)
 
+    def _kart_turleri():
+        from kart_turleri_gruplari_ui import kart_turleri_gruplari_goster
+
+        kart_turleri_gruplari_goster(app, geri_fn=lambda: ayarlar_goster(app))
+
     for i, (baslik, komut) in enumerate(
         (
+            ("KART TÜRLERİ VE GRUPLARI", _kart_turleri),
             ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
             ("MUHASEBELEŞTİRME AYARLARI", _muhasebelestirme),
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
