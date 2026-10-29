@@ -103,12 +103,24 @@ class DovizService:
 
     @staticmethod
     def bugun_kurlar_hazir_mi(kur_tarihi: date | None = None) -> bool:
-        """Hedef günde (veya en yakın iş gününde) USD ve EUR TCMB/manuel kur var mı."""
+        """Hedef günde (veya en yakın iş gününde) USD ve EUR TCMB/manuel kur var mı.
+
+        İşlem/fatura için yeterlilik: en yakın bülten. Arşiv doldurma için
+        ``gun_arsiv_kaydi_var_mi`` kullanın (tam tarih satırı).
+        """
         hedef = kur_tarihi or date.today()
         for kod in ("USD", "EUR"):
             if DovizService.en_yakin_kur_tarihi(kod, hedef, geri=TCMB_GERI_GUN) is None:
                 return False
         return True
+
+    @staticmethod
+    def gun_arsiv_kaydi_var_mi(kur_tarihi: date) -> bool:
+        """DOC4: o takvim gününde USD+EUR satırı var mı (yakın güne bakılmaz)."""
+        return (
+            DovizService.kur_getir(kur_tarihi, "USD") is not None
+            and DovizService.kur_getir(kur_tarihi, "EUR") is not None
+        )
 
     @staticmethod
     def kur_degeri(
@@ -360,9 +372,26 @@ class DovizService:
             return {"yapildi": False, "neden": "kapali"}
         bugun = date.today()
         if DovizService.bugun_kurlar_hazir_mi(bugun):
+            # Son 14 günün eksiklerini sessiz tamamla (tam 2025 arşivi değil)
+            try:
+                DovizService.eksik_gunleri_tamamla(
+                    baslangic=bugun - timedelta(days=14),
+                    bitis=bugun,
+                    ilerleme_cb=None,
+                )
+            except Exception:
+                pass
             return {"yapildi": False, "neden": "zaten_var"}
         try:
             kayitlar = DovizService.tcmb_kurlari_cek(bugun)
+            try:
+                DovizService.eksik_gunleri_tamamla(
+                    baslangic=bugun - timedelta(days=14),
+                    bitis=bugun,
+                    ilerleme_cb=None,
+                )
+            except Exception:
+                pass
             return {
                 "yapildi": True,
                 "adet": len(kayitlar),
@@ -372,6 +401,87 @@ class DovizService:
             if sessiz:
                 return {"yapildi": False, "neden": "hata", "mesaj": str(hata)}
             raise
+
+    @staticmethod
+    def tcmb_aralik_cek(
+        baslangic: date,
+        bitis: date | None = None,
+        *,
+        ilerleme_cb=None,
+        yalniz_eksik: bool = False,
+    ) -> dict[str, Any]:
+        """Takvim günü günü TCMB kurlarını çeker (idempotent).
+
+        Hafta sonu/tatilde mevcut hedefe_kopyala davranışı önceki bülteni yazar.
+        """
+        import time
+
+        bitis = bitis or date.today()
+        if baslangic > bitis:
+            raise ValueError("Başlangıç tarihi bitişten büyük olamaz.")
+        gun_sayisi = (bitis - baslangic).days + 1
+        basari = atlandi = hata = 0
+        hatalar: list[str] = []
+        aday = baslangic
+        sira = 0
+        while aday <= bitis:
+            sira += 1
+            # Arşiv: tam tarih satırı şart; "yakın bülten var" yetmez (DOC4).
+            if yalniz_eksik and DovizService.gun_arsiv_kaydi_var_mi(aday):
+                atlandi += 1
+                if ilerleme_cb:
+                    ilerleme_cb(sira, gun_sayisi, f"{aday:%d.%m.%Y} zaten var")
+                aday += timedelta(days=1)
+                continue
+            try:
+                DovizService.tcmb_kurlari_cek(aday)
+                basari += 1
+                if ilerleme_cb:
+                    durum = "arsiv tamam"
+                    if not DovizService.gun_arsiv_kaydi_var_mi(aday):
+                        durum = "yayın yok (taşıma başarısız)"
+                    ilerleme_cb(sira, gun_sayisi, f"{aday:%d.%m.%Y} {durum}")
+            except ValueError as exc:
+                hata += 1
+                hatalar.append(f"{aday:%d.%m.%Y}: {exc}")
+                if ilerleme_cb:
+                    ilerleme_cb(sira, gun_sayisi, f"{aday:%d.%m.%Y} hata/yayın yok")
+            time.sleep(0.05)
+            aday += timedelta(days=1)
+        # Özet: tam tarih satırı olan / olmayan (yayımlanmayan ≠ eksik)
+        arsiv_dolu = arsiv_eksik = 0
+        d = baslangic
+        while d <= bitis:
+            if DovizService.gun_arsiv_kaydi_var_mi(d):
+                arsiv_dolu += 1
+            else:
+                arsiv_eksik += 1
+            d += timedelta(days=1)
+        return {
+            "baslangic": baslangic,
+            "bitis": bitis,
+            "basari": basari,
+            "atlandi": atlandi,
+            "hata": hata,
+            "hatalar": hatalar[:20],
+            "arsiv_dolu_gun": arsiv_dolu,
+            "arsiv_eksik_gun": arsiv_eksik,
+        }
+
+    @staticmethod
+    def eksik_gunleri_tamamla(
+        baslangic: date | None = None,
+        bitis: date | None = None,
+        *,
+        ilerleme_cb=None,
+    ) -> dict[str, Any]:
+        """USD/EUR eksik günleri TCMB'den tamamlar (varsayılan 2025-01-01 → bugün)."""
+        return DovizService.tcmb_aralik_cek(
+            baslangic or date(2025, 1, 1),
+            bitis or date.today(),
+            ilerleme_cb=ilerleme_cb,
+            yalniz_eksik=True,
+        )
 
     @staticmethod
     def tl_den_dovize(
