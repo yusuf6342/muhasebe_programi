@@ -46,6 +46,116 @@ def calisma_alani(pencere: tk.Misc | None = None) -> tuple[int, int, int, int]:
     return (0, 0, 1280, 720)
 
 
+def pencere_cerceve_payi(win: tk.Misc) -> tuple[int, int]:
+    """Dış çerçeve (başlık + kenar) payı — (yatay_px, dikey_px).
+
+    Tk ``geometry`` WxH istemci alanıdır; iş alanına sığdırmak için bu pay
+    yükseklik/genişlikten düşülmelidir. Sabit görev çubuğu tahmini kullanılmaz.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            hwnd = int(win.winfo_id())
+            # Tk Toplevel: istemci HWND; üst çerçeve GetParent ile
+            parent = ctypes.windll.user32.GetParent(hwnd)
+            if parent:
+                hwnd = parent
+            outer, client = RECT(), RECT()
+            if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(outer)) and ctypes.windll.user32.GetClientRect(
+                hwnd, ctypes.byref(client)
+            ):
+                ow = int(outer.right - outer.left)
+                oh = int(outer.bottom - outer.top)
+                cw = int(client.right - client.left)
+                ch = int(client.bottom - client.top)
+                if ow > cw >= 0 and oh > ch >= 0:
+                    return (max(0, ow - cw), max(0, oh - ch))
+        except Exception:
+            pass
+    try:
+        win.update_idletasks()
+        # Kök y ile istemci y farkı ≈ üst başlık; altına simetrik kenar ekle
+        ust = max(0, int(win.winfo_rooty()) - int(win.winfo_y()))
+        if ust > 0:
+            return (16, ust + 8)
+    except Exception:
+        pass
+    return (16, 40)
+
+
+def is_alanina_sigdir(
+    win: tk.Toplevel,
+    *,
+    maximize: bool = False,
+) -> dict[str, Any]:
+    """Pencereyi SPI iş alanına sığdırır; alt kenar görev çubuğunun altında kalmaz.
+
+    ``geometry`` istemci boyutu olduğundan çerçeve payı düşülür.
+    maximize=True olsa bile taşma varsa normal + iş alanı geometrisi kullanılır.
+    """
+    ax, ay, aw, ah = calisma_alani(win)
+    try:
+        win.update_idletasks()
+    except tk.TclError:
+        pass
+    cx, cy = pencere_cerceve_payi(win)
+    # İstemci, dış çerçeve ile birlikte iş alanı içinde kalsın
+    gw = max(400, aw - max(cx, 2))
+    gh = max(320, ah - max(cy, 2))
+    try:
+        if str(win.state()) == "zoomed":
+            if not maximize:
+                win.state("normal")
+    except tk.TclError:
+        pass
+    zoomed = False
+    if maximize:
+        try:
+            win.geometry(f"{gw}x{gh}+{ax}+{ay}")
+            win.update_idletasks()
+            win.state("zoomed")
+            zoomed = True
+            win.update_idletasks()
+            # Zoom sonrası gerçekten taştı mı? (transient bazen tam ekrana gider)
+            ry = int(win.winfo_rooty())
+            rh = int(win.winfo_height())
+            if ry + rh > ay + ah - 2 or rh > gh + 8:
+                win.state("normal")
+                win.geometry(f"{gw}x{gh}+{ax}+{ay}")
+                zoomed = False
+        except tk.TclError:
+            try:
+                win.geometry(f"{gw}x{gh}+{ax}+{ay}")
+            except tk.TclError:
+                pass
+    else:
+        try:
+            win.geometry(f"{gw}x{gh}+{ax}+{ay}")
+        except tk.TclError:
+            pass
+    return {
+        "work_x": ax,
+        "work_y": ay,
+        "work_w": aw,
+        "work_h": ah,
+        "client_w": gw,
+        "client_h": gh,
+        "chrome_x": cx,
+        "chrome_y": cy,
+        "zoomed": zoomed,
+    }
+
+
 def belge_penceresini_hazirla(
     win: tk.Toplevel,
     *,

@@ -78,6 +78,8 @@ class PrimDonemIdempotentTest(unittest.TestCase):
         # Personel modellerinin metadata'ya kaydı
         import database.models.personel  # noqa: F401
         import database.models.personel_performans  # noqa: F401
+        # stok_kartlari.ana_kart_turu_id → kart_ana_turleri (create_all FK hedefi)
+        import database.models.kart_turu  # noqa: F401
 
         Base.metadata.create_all(cls.engine)
         schema_hazirla(cls.engine)

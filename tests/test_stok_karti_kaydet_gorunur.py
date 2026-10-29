@@ -67,6 +67,11 @@ class StokKartiKaydetGorunurTest(unittest.TestCase):
             alt_kenar = btn.winfo_rooty() + btn.winfo_height()
             self.assertLessEqual(alt_kenar, dlg.winfo_rooty() + dlg.winfo_height())
             self.assertLessEqual(alt_kenar, CALISMA_ALANI[1] + CALISMA_ALANI[3])
+            # Alt işlem şeridi sticky footer: pack side=bottom, kaydırılan gövde dışında
+            self.assertEqual(dlg._alt_islem_seridi.winfo_manager(), "pack")
+            self.assertEqual(str(dlg._alt_islem_seridi.pack_info().get("side")), "bottom")
+            self.assertEqual(dlg._govde.winfo_manager(), "pack")
+            self.assertTrue(str(dlg._govde.pack_info().get("expand")) in ("1", "true", True))
             dlg.destroy()
         finally:
             root.destroy()
