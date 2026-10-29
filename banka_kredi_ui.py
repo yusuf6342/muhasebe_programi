@@ -1,4 +1,4 @@
-"""FİNANS → BANKA KREDİLERİ — kurumsal kredi kartı / taksit / rapor ekranları."""
+"""FİNANS → BANKA KREDİLERİ — kredi hareketleri / taksit / rapor ekranları."""
 
 from __future__ import annotations
 
@@ -123,21 +123,27 @@ def banka_kredileri_menusu_goster(app):
     _oturum_banner(app.icerik)
     ttk.Label(
         app.icerik,
-        text="Kredi kartları, ödeme planları, taksit ödeme ve muhasebe eşleştirmeleri.",
+        text="Kredi hareketleri, ödeme planları, taksit ödeme ve muhasebe eşleştirmeleri.",
     ).pack(anchor="w", pady=(4, 8))
     alt = ttk.Frame(app.icerik)
     alt.pack(fill="x", pady=(8, 0))
     alt.columnconfigure(0, weight=1, minsize=520)
     nav = getattr(app, "nav_ac", lambda c: c())
+    def _faiz_tanim():
+        from faiz_urun_tanim_ui import faiz_urun_tanim_goster
+
+        faiz_urun_tanim_goster(app, urun_turu="KREDI")
+
     for i, (baslik, komut) in enumerate(
         (
-            ("Kredi Kartları", lambda: kredi_kartlari_sayfasi_goster(app)),
+            ("Kredi Hareketleri", lambda: kredi_hareketleri_sayfasi_goster(app)),
             ("Ödeme Planları", lambda: odeme_planlari_sayfasi_goster(app)),
             ("Bekleyen Taksitler", lambda: bekleyen_taksitler_sayfasi_goster(app)),
             ("Ödenen Taksitler", lambda: odenen_taksitler_sayfasi_goster(app)),
             ("Kredi Taksit Ödeme", lambda: kredi_taksit_odeme_sayfasi_goster(app)),
             ("Kredi Raporları", lambda: kredi_raporlari_sayfasi_goster(app)),
             ("Muhasebe Hesap Eşleştirmeleri", lambda: kredi_hesap_eslemeleri_sayfasi_goster(app)),
+            ("Faiz ve Masraf Tanımları", _faiz_tanim),
         )
     ):
         ttk.Button(
@@ -147,13 +153,13 @@ def banka_kredileri_menusu_goster(app):
         app.nav_sayfa_isaretle(lambda: banka_kredileri_menusu_goster(app))
 
 
-def kredi_kartlari_sayfasi_goster(app):
+def kredi_hareketleri_sayfasi_goster(app):
     BankaKrediService.schema_hazirla()
     app._icerigi_temizle()
     _finans_menu_isaretle(app)
     ust = ttk.Frame(app.icerik)
     ust.pack(fill="x")
-    ttk.Label(ust, text="Kredi Kartları", style="Baslik.TLabel").pack(side="left")
+    ttk.Label(ust, text="Kredi Hareketleri", style="Baslik.TLabel").pack(side="left")
     ttk.Button(
         ust, text="← Banka Kredileri", command=lambda: banka_kredileri_menusu_goster(app)
     ).pack(side="right")
@@ -275,7 +281,11 @@ def kredi_kartlari_sayfasi_goster(app):
     tablo.bind("<Double-1>", lambda _e: detay_ac())
     yenile()
     if hasattr(app, "nav_sayfa_isaretle"):
-        app.nav_sayfa_isaretle(lambda: kredi_kartlari_sayfasi_goster(app))
+        app.nav_sayfa_isaretle(lambda: kredi_hareketleri_sayfasi_goster(app))
+
+
+# Eski ad — geriye dönük çağrılar
+kredi_kartlari_sayfasi_goster = kredi_hareketleri_sayfasi_goster
 
 
 class _BankaSecDialog(tk.Toplevel):
@@ -592,10 +602,27 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
             font=("Segoe UI", 12, "bold"),
             fg=_NAVY,
         ).pack(anchor="w", padx=14, pady=(10, 2))
-        ttk.Label(self, text=f"Vade: {d.get('vade_tarihi')}").pack(anchor="w", padx=14)
+        ttk.Label(self, text=f"Vade: {d.get('vade_tarihi')}", font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=14
+        )
+        # Ödeme şekli: Tam / Kısmi (talimat — görünür seçenek)
+        sekil_f = ttk.LabelFrame(self, text="Ödeme şekli", padding=6)
+        sekil_f.pack(fill="x", padx=14, pady=(6, 0))
+        self._odeme_sekli = tk.StringVar(value="TAM")
+        ttk.Radiobutton(
+            sekil_f, text="Tam Ödeme", variable=self._odeme_sekli, value="TAM",
+            command=self._sekil_uygula,
+        ).pack(side="left", padx=4)
+        ttk.Radiobutton(
+            sekil_f, text="Kısmi Ödeme", variable=self._odeme_sekli, value="KISMI",
+            command=self._sekil_uygula,
+        ).pack(side="left", padx=4)
+        self._kalan_ozet = ttk.Label(self, text="", font=("Segoe UI", 9, "bold"))
+        self._kalan_ozet.pack(anchor="w", padx=14, pady=(4, 0))
+
         hesap_satiri = ttk.Frame(self)
         hesap_satiri.pack(fill="x", padx=14, pady=(6, 0))
-        ttk.Label(hesap_satiri, text="Ödeme hesabı").pack(side="left")
+        ttk.Label(hesap_satiri, text="Ödeme hesabı", font=("Segoe UI", 10, "bold")).pack(side="left")
         self.hesap_kutu, self.hesap_map = _odeme_hesabi_kutusu(
             hesap_satiri, taksit_id=self.taksit_id, secili_id=self.banka_hesap_id
         )
@@ -604,19 +631,31 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, padx=14, pady=8)
         self.vars = {}
+        self._tam_degerler = {
+            "anapara": str(d.get("anapara") or 0),
+            "faiz": str(d.get("faiz") or 0),
+            "bsmv": str(d.get("bsmv") or 0),
+            "kkdf": str(d.get("kkdf") or 0),
+            "komisyon": str(d.get("komisyon") or 0),
+            "sigorta": str(d.get("sigorta") or 0),
+            "dosya_masrafi": str(d.get("dosya_masrafi") or 0),
+            "diger_masraflar": str(
+                (d["diger_masraflar"] if "diger_masraflar" in d else d.get("masraf")) or 0
+            ),
+            "gecikme_faizi": str(d.get("gecikme_faizi") or 0),
+        }
         alanlar = (
             ("odeme_tarihi", "Ödeme tarihi (YYYY-MM-DD)", str(date.today())),
             ("banka_dekont_no", "Banka dekont no", ""),
-            ("anapara", "Anapara", str(d.get("anapara") or 0)),
-            ("faiz", "Faiz", str(d.get("faiz") or 0)),
-            ("bsmv", "BSMV", str(d.get("bsmv") or 0)),
-            ("kkdf", "KKDF", str(d.get("kkdf") or 0)),
-            ("komisyon", "Komisyon", str(d.get("komisyon") or 0)),
-            ("sigorta", "Sigorta", str(d.get("sigorta") or 0)),
-            ("dosya_masrafi", "Dosya/işlem masrafı", str(d.get("dosya_masrafi") or 0)),
-            ("diger_masraflar", "Diğer masraflar",
-             str((d["diger_masraflar"] if "diger_masraflar" in d else d.get("masraf")) or 0)),
-            ("gecikme_faizi", "Gecikme faizi", str(d.get("gecikme_faizi") or 0)),
+            ("anapara", "Anapara", self._tam_degerler["anapara"]),
+            ("faiz", "Faiz", self._tam_degerler["faiz"]),
+            ("bsmv", "BSMV", self._tam_degerler["bsmv"]),
+            ("kkdf", "KKDF", self._tam_degerler["kkdf"]),
+            ("komisyon", "Komisyon", self._tam_degerler["komisyon"]),
+            ("sigorta", "Sigorta", self._tam_degerler["sigorta"]),
+            ("dosya_masrafi", "Dosya/işlem masrafı", self._tam_degerler["dosya_masrafi"]),
+            ("diger_masraflar", "Diğer masraflar", self._tam_degerler["diger_masraflar"]),
+            ("gecikme_faizi", "Gecikme faizi", self._tam_degerler["gecikme_faizi"]),
             ("aciklama", "Açıklama", ""),
         )
         for i, (kod, etiket, deger) in enumerate(alanlar):
@@ -660,6 +699,36 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
         alt.pack(fill="x", padx=14, pady=10)
         ttk.Button(alt, text="Öde ve Kaydet", command=self._kaydet).pack(side="left", padx=4)
         ttk.Button(alt, text="Vazgeç", command=self.destroy).pack(side="left", padx=4)
+        self._sekil_uygula()
+        self._toplam_guncelle()
+
+    def _sekil_uygula(self):
+        """Tam ödemede kalan bileşenleri doldur; kısmi ödemede alanlar serbest."""
+        tam = bool(getattr(self, "_odeme_sekli", None) and self._odeme_sekli.get() == "TAM")
+        if tam:
+            for kod, deger in (getattr(self, "_tam_degerler", {}) or {}).items():
+                if kod in self.vars:
+                    self.vars[kod].set(deger)
+        if hasattr(self, "_kalan_ozet"):
+            bu_odeme = sum(
+                (
+                    self._d(k)
+                    for k in (
+                        "anapara", "faiz", "bsmv", "kkdf", "komisyon", "sigorta",
+                        "dosya_masrafi", "diger_masraflar", "gecikme_faizi",
+                    )
+                    if k in self.vars
+                ),
+                Decimal("0"),
+            )
+            plan = Decimal(str(self.detay.get("orijinal_tutar") or self.detay.get("toplam") or 0))
+            self._kalan_ozet.configure(
+                text=(
+                    f"Özgün / güncel kalan plan: {_para(plan)} · "
+                    f"{'Tam ödeme tutarı: ' if tam else 'Bu kısmi ödeme: '}"
+                    f"{_para(bu_odeme)}"
+                )
+            )
         self._toplam_guncelle()
 
     def _d(self, kod) -> Decimal:
@@ -731,10 +800,10 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
 
 
 def odeme_planlari_sayfasi_goster(app):
-    kredi_kartlari_sayfasi_goster(app)
+    kredi_hareketleri_sayfasi_goster(app)
     messagebox.showinfo(
         "Ödeme planları",
-        "Bir kredi kartına çift tıklayıp «Ödeme planı» / Excel aktarımını kullanın.",
+        "Bir krediye çift tıklayıp «Ödeme planı» / Excel aktarımını kullanın.",
     )
 
 

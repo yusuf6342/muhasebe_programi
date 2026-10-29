@@ -13,6 +13,7 @@ from database.models.firma import Firma
 from database.models.donem import Donem
 from database.models.sube import Sube  # noqa: F401
 from database.models.cari import Cari, CariIslem, CariYetkili, SatisHareketi  # noqa: F401
+from database.models.kart_turu import KartAltTuru, KartAnaTuru  # noqa: F401 — create_all / sema_eksikleri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri, SatisSiparisiTahsilati
 from database.models.satis_teklifi import SatisTeklifi, SatisTeklifiSatiri  # noqa: F401
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
@@ -159,6 +160,14 @@ def baslatma_adimlari(progress) -> None:
     if yedek:
         print("Açılış geçişi öncesi doğrulanmış yedek:", yedek.yol)
 
+    # Tam geçiş atlanmış olsa bile kart türü/grup tabloları firma DB'de oluşsun
+    try:
+        from database.kart_turu_service import KartTuruService
+
+        KartTuruService.schema_ve_seed()
+    except Exception as e:
+        print("Kart türü şema uyarısı:", e)
+
     progress(90, "Arayüz hazırlanıyor...")
     print("Tablolar başarıyla oluşturuldu!")
     print(f"Veritabanı: {db.engine.url}")
@@ -180,6 +189,12 @@ def _sema_adimlari(progress) -> None:
         print("Silinen kayıtlar şema uyarısı:", e)
     cari_kart_schemasini_guncelle()
     musteri_gruplarini_hazirla()
+    try:
+        from database.satis_fiyat_listesi_service import SatisFiyatListesiService
+
+        SatisFiyatListesiService.ensure_schema()
+    except Exception as e:
+        print("Satış fiyat listesi şema uyarısı:", e)
 
     progress(55, "Stok ve finans hazırlanıyor...")
     StokService.varsayilanlari_hazirla()
@@ -267,6 +282,39 @@ def main():
     ilk_test_acilisi = (
         db.TEST_KURULUMU and not db.SYSTEM_DB_ONCEDEN_VAR and not db.MUHASEBE_DB_ONCEDEN_VAR
     )
+    if "--gunluk-faiz" in sys.argv:
+        from database.gunluk_faiz_service import GunlukFaizService
+
+        baslatma_adimlari()
+        sonuc = GunlukFaizService.otomatik_acilis_calistir(sessiz=False)
+        print("Günlük faiz:", sonuc, flush=True)
+        sys.exit(0 if sonuc.get("yapildi") or sonuc.get("adet", 0) >= 0 else 1)
+    if "--sync-tcmb-rates" in sys.argv:
+        from datetime import date, datetime
+
+        from database.doviz_service import DovizService
+
+        def _arg_tarih(bayrak: str, varsayilan: date) -> date:
+            if bayrak not in sys.argv:
+                return varsayilan
+            i = sys.argv.index(bayrak)
+            if i + 1 >= len(sys.argv):
+                raise SystemExit(f"{bayrak} için YYYY-MM-DD gerekli")
+            return datetime.strptime(sys.argv[i + 1], "%Y-%m-%d").date()
+
+        bas = _arg_tarih("--from", date(2025, 1, 1))
+        bit = _arg_tarih("--to", date.today())
+
+        def _ilerleme(sira, toplam, mesaj):
+            print(f"[{sira}/{toplam}] {mesaj}", flush=True)
+
+        print(f"TCMB aralık: {bas} → {bit} (yalnız eksik)")
+        sonuc = DovizService.eksik_gunleri_tamamla(bas, bit, ilerleme_cb=_ilerleme)
+        print(
+            f"Tamam: başarı={sonuc['basari']} atlandı={sonuc['atlandi']} hata={sonuc['hata']}",
+            flush=True,
+        )
+        sys.exit(1 if sonuc["hata"] and not sonuc["basari"] else 0)
     if "--ekran-testi" in sys.argv:
         from ekran_testi import calistir
 
@@ -345,6 +393,12 @@ def main():
             from database.doviz_service import DovizService
 
             DovizService.otomatik_gunluk_cek(sessiz=True)
+        except Exception:
+            pass
+        try:
+            from database.gunluk_faiz_service import GunlukFaizService
+
+            GunlukFaizService.otomatik_acilis_calistir(sessiz=True)
         except Exception:
             pass
 
