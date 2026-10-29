@@ -32,13 +32,21 @@ GOREV_ALANLARI = (
 IS_PLANLANDI = "PLANLANDI"
 IS_BASLADI = "BASLADI"
 IS_ENGELLENDI = "ENGELLENDI"
-IS_KONTROL = "KONTROL_BEKLIYOR"
+IS_KONTROL = "KONTROL_BEKLIYOR"  # iş panosu (geniş)
+IS_KONTROL_MVP = "KONTROL"  # MVP PersonelGorev
 IS_TAMAMLANDI = "TAMAMLANDI"
 IS_DURUMLARI = (
     (IS_PLANLANDI, "Planlandı"),
     (IS_BASLADI, "Başladı"),
     (IS_ENGELLENDI, "Engellendi"),
     (IS_KONTROL, "Kontrol bekliyor"),
+    (IS_TAMAMLANDI, "Tamamlandı"),
+)
+GOREV_DURUMLARI_MVP = (
+    (IS_PLANLANDI, "Planlandı"),
+    (IS_BASLADI, "Başladı"),
+    (IS_ENGELLENDI, "Engellendi"),
+    (IS_KONTROL_MVP, "Kontrol"),
     (IS_TAMAMLANDI, "Tamamlandı"),
 )
 
@@ -305,7 +313,9 @@ class PersonelPrimDonemi(Base):
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
-class PersonelPrimPay(Base):
+class PersonelPrimPayDetay(Base):
+    """Geniş prim dönemi (tarih aralıklı) kişi payı — simülasyon yolu."""
+
     __tablename__ = "personel_prim_paylari"
     __table_args__ = (
         UniqueConstraint("donem_id", "personel_id", name="uq_pprim_pay"),
@@ -327,6 +337,10 @@ class PersonelPrimPay(Base):
     # Standart hakediş ek ödeme bağlantısı
     hakedis_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bordro_baglanti_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+# Geriye uyumluluk
+PersonelPrimPayLegacy = PersonelPrimPayDetay
 
 
 class PersonelFaturaHDonuk(Base):
@@ -352,3 +366,97 @@ class PersonelFaturaHDonuk(Base):
     H_fark: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     eksik_maliyet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     eksik_tahsilat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+# ---------------------------------------------------------------------------
+# MVP: Ölçme / Prim — sade modeller (aylık dönem + politika_json)
+# ---------------------------------------------------------------------------
+
+PRIM_MVP_TASLAK = "TASLAK"
+PRIM_MVP_HESAPLANDI = "HESAPLANDI"
+PRIM_MVP_ONAYLANDI = "ONAYLANDI"
+PRIM_MVP_DURUMLARI = (
+    (PRIM_MVP_TASLAK, "Taslak"),
+    (PRIM_MVP_HESAPLANDI, "Hesaplandı"),
+    (PRIM_MVP_ONAYLANDI, "Onaylandı"),
+)
+
+VARSAYILAN_POLITIKA_JSON = (
+    '{"ekip":50,"katki":30,"kidem":20}'
+)
+
+
+class PersonelGorev(Base):
+    """MVP görev kaydı — personel_id + durum akışı."""
+
+    __tablename__ = "personel_gorevler"
+    __table_args__ = (Index("ix_pgorev_mvp_personel", "personel_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    personel_id: Mapped[int] = mapped_column(ForeignKey("personel_kartlari.id"), nullable=False)
+    baslik: Mapped[str] = mapped_column(String(200), nullable=False)
+    durum: Mapped[str] = mapped_column(String(30), nullable=False, default=IS_PLANLANDI)
+    hedef_tarih: Mapped[date | None] = mapped_column(Date, nullable=True)
+    gerceklesen_tarih: Mapped[date | None] = mapped_column(Date, nullable=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class PersonelKatki(Base):
+    """MVP katkı satırı — belge + aşama + puan."""
+
+    __tablename__ = "personel_katkilar"
+    __table_args__ = (
+        Index("ix_pkatki_mvp_personel", "personel_id"),
+        UniqueConstraint(
+            "personel_id", "belge_turu", "belge_id", "asama",
+            name="uq_pkatki_mvp",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    personel_id: Mapped[int] = mapped_column(ForeignKey("personel_kartlari.id"), nullable=False)
+    belge_turu: Mapped[str] = mapped_column(String(40), nullable=False)
+    belge_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    asama: Mapped[str] = mapped_column(String(40), nullable=False)
+    puan: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    tarih: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    aciklama: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class PersonelPrimDonem(Base):
+    """MVP aylık prim dönemi — havuz + politika_json (50/30/20 varsayılan)."""
+
+    __tablename__ = "personel_prim_donem"
+    __table_args__ = (
+        UniqueConstraint("yil", "ay", name="uq_pprim_donem_yil_ay"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    yil: Mapped[int] = mapped_column(Integer, nullable=False)
+    ay: Mapped[int] = mapped_column(Integer, nullable=False)
+    durum: Mapped[str] = mapped_column(String(30), nullable=False, default=PRIM_MVP_TASLAK)
+    havuz: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    politika_json: Mapped[str] = mapped_column(
+        String(500), nullable=False, default=VARSAYILAN_POLITIKA_JSON
+    )
+    hesaplayan: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    hesap_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class PersonelPrimPay(Base):
+    """MVP kişi payı — tutar = ekip_pay + katki_pay + kidem_pay."""
+
+    __tablename__ = "personel_prim_pay"
+    __table_args__ = (
+        UniqueConstraint("donem_id", "personel_id", name="uq_pprim_pay_mvp"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    donem_id: Mapped[int] = mapped_column(ForeignKey("personel_prim_donem.id"), nullable=False)
+    personel_id: Mapped[int] = mapped_column(ForeignKey("personel_kartlari.id"), nullable=False)
+    tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    ekip_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    katki_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    kidem_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)

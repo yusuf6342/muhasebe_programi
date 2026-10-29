@@ -650,6 +650,225 @@ def ucret_kazanc_goster(app):
         app.nav_sayfa_isaretle(lambda: ucret_kazanc_goster(app))
 
 
+def olcme_prim_goster(app):
+    """MVP: dönem listesi + hesapla + pay tablosu (sarı/lacivert ttk)."""
+    from ana_panel_tema import LACIVERT, SARI, BEYAZ, FONT_UI_BOLD
+    from database.personel_performans_service import PersonelPerformansService
+    from database.personel_service import PersonelService
+
+    app._icerigi_temizle()
+    _ust(app, "ÖLÇME / PRİM")
+    ttk.Label(
+        app.icerik,
+        text="Aylık prim dönemi, havuz dağıtımı (varsayılan %%50 ekip / %%30 katkı / %%20 kıdem) "
+        "ve kişi payları. Bordro bağlantısı MVP stub’dur; vergi motoru yoktur. "
+        "Örnek H: S=100.000 C=70.000 tahsilat %%50 → H=15.000.",
+        wraplength=780,
+    ).pack(anchor="w", pady=(10, 0))
+
+    PersonelPerformansService.hazirla()
+    personeller = {p["id"]: p for p in PersonelService.listele(limit=500)}
+
+    ust = ttk.Frame(app.icerik)
+    ust.pack(fill="x", pady=(12, 4))
+    try:
+        ust.configure(style="TFrame")
+    except Exception:
+        pass
+
+    yil_var = tk.StringVar(value=str(date.today().year))
+    ay_var = tk.StringVar(value=str(date.today().month))
+    havuz_var = tk.StringVar(value="10000")
+    pol_var = tk.StringVar(value='{"ekip":50,"katki":30,"kidem":20}')
+
+    ttk.Label(ust, text="Yıl").pack(side="left")
+    ttk.Entry(ust, textvariable=yil_var, width=6).pack(side="left", padx=(4, 10))
+    ttk.Label(ust, text="Ay").pack(side="left")
+    ttk.Entry(ust, textvariable=ay_var, width=4).pack(side="left", padx=(4, 10))
+    ttk.Label(ust, text="Havuz").pack(side="left")
+    ttk.Entry(ust, textvariable=havuz_var, width=12).pack(side="left", padx=(4, 10))
+    ttk.Label(ust, text="Politika").pack(side="left")
+    ttk.Entry(ust, textvariable=pol_var, width=28).pack(side="left", padx=(4, 8))
+
+    orta = ttk.Panedwindow(app.icerik, orient="horizontal")
+    orta.pack(fill="both", expand=True, pady=8)
+    sol = ttk.Frame(orta)
+    sag = ttk.Frame(orta)
+    orta.add(sol, weight=1)
+    orta.add(sag, weight=2)
+
+    ttk.Label(sol, text="Dönemler", font=FONT_UI_BOLD).pack(anchor="w", padx=4)
+    donem_lb = tk.Listbox(
+        sol,
+        height=14,
+        bg=BEYAZ,
+        fg=LACIVERT,
+        selectbackground=SARI,
+        selectforeground=LACIVERT,
+        activestyle="none",
+    )
+    donem_lb.pack(fill="both", expand=True, padx=4, pady=4)
+    _donem_ids: list[int] = []
+
+    cols = ("personel", "ekip", "katki", "kidem", "tutar")
+    pay_tree = ttk.Treeview(sag, columns=cols, show="headings", height=14)
+    for k, b, w in (
+        ("personel", "Personel", 180),
+        ("ekip", "Ekip pay", 90),
+        ("katki", "Katkı pay", 90),
+        ("kidem", "Kıdem pay", 90),
+        ("tutar", "Tutar", 100),
+    ):
+        pay_tree.heading(k, text=b)
+        pay_tree.column(k, width=w, minwidth=60)
+    ys = ttk.Scrollbar(sag, orient="vertical", command=pay_tree.yview)
+    pay_tree.configure(yscrollcommand=ys.set)
+    pay_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    ys.pack(side="right", fill="y", pady=4)
+
+    durum_lbl = ttk.Label(app.icerik, text="")
+    durum_lbl.pack(fill="x", padx=4)
+
+    def _personel_ad(pid: int) -> str:
+        p = personeller.get(pid)
+        if p:
+            return f"{p.get('kod', '')} — {p.get('ad_soyad', pid)}"
+        return f"#{pid}"
+
+    def paylari_yukle(donem_id: int | None):
+        for i in pay_tree.get_children():
+            pay_tree.delete(i)
+        if not donem_id:
+            return
+        try:
+            for p in PersonelPerformansService.prim_paylari(donem_id):
+                pay_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        _personel_ad(p["personel_id"]),
+                        f"{p['ekip_pay']:,.2f}",
+                        f"{p['katki_pay']:,.2f}",
+                        f"{p['kidem_pay']:,.2f}",
+                        f"{p['tutar']:,.2f}",
+                    ),
+                )
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def donemleri_yenile(sec_id: int | None = None):
+        nonlocal _donem_ids
+        donem_lb.delete(0, "end")
+        _donem_ids = []
+        try:
+            for d in PersonelPerformansService.prim_donem_listele():
+                _donem_ids.append(d["id"])
+                donem_lb.insert("end", d["etiket"])
+                if sec_id and d["id"] == sec_id:
+                    donem_lb.selection_set(donem_lb.size() - 1)
+                    donem_lb.see(donem_lb.size() - 1)
+            if sec_id:
+                paylari_yukle(sec_id)
+            elif _donem_ids:
+                donem_lb.selection_set(0)
+                paylari_yukle(_donem_ids[0])
+            else:
+                paylari_yukle(None)
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def secili_donem_id() -> int | None:
+        s = donem_lb.curselection()
+        if not s:
+            return None
+        return _donem_ids[s[0]]
+
+    def donem_olustur():
+        try:
+            r = PersonelPerformansService.prim_donem_olustur(
+                int(yil_var.get()),
+                int(ay_var.get()),
+                havuz=havuz_var.get(),
+                politika_json=pol_var.get().strip() or None,
+            )
+            durum_lbl.configure(
+                text=f"Dönem #{r['id']} {r['yil']}-{r['ay']:02d} ({'mevcut' if r.get('mevcut') else 'yeni'})"
+            )
+            donemleri_yenile(r["id"])
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def hesapla():
+        did = secili_donem_id()
+        if did is None:
+            messagebox.showinfo("Ölçme / Prim", "Önce dönem seçin veya oluşturun.", parent=app)
+            return
+        try:
+            # Eşit katılım örneği: listedeki ilk 3 personel (yoksa uyarı)
+            kisiler = []
+            ornek = list(personeller.values())[:3]
+            if len(ornek) < 1:
+                messagebox.showwarning(
+                    "Ölçme / Prim",
+                    "Hesap için en az bir personel kartı gerekir.",
+                    parent=app,
+                )
+                return
+            for p in ornek:
+                kisiler.append(
+                    {
+                        "personel_id": p["id"],
+                        "hizmet_yili": 0,
+                        "performans": 100,
+                        "katilim": 1,
+                    }
+                )
+            r = PersonelPerformansService.prim_hesapla(
+                did, kisiler=kisiler, havuz=havuz_var.get()
+            )
+            durum_lbl.configure(
+                text=(
+                    f"Hesaplandı · dağıtılan {r['dagitilan']:,.2f} / "
+                    f"dağılmamış {r['dagitilmamis']:,.2f}"
+                )
+            )
+            donemleri_yenile(did)
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def onayla():
+        did = secili_donem_id()
+        if did is None:
+            return
+        try:
+            r = PersonelPerformansService.prim_onayla(did)
+            stub = PersonelPerformansService.prim_bordroya_bagla(did)
+            durum_lbl.configure(
+                text=f"Onaylandı · bordro stub: baglandi={stub['baglandi']} ({stub['neden']})"
+            )
+            donemleri_yenile(did)
+            _ = r
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def on_sec(_e=None):
+        paylari_yukle(secili_donem_id())
+
+    dug = ttk.Frame(app.icerik)
+    dug.pack(fill="x", pady=(0, 8))
+    ttk.Button(dug, text="Dönem Oluştur", command=donem_olustur).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="Hesapla", command=hesapla).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="Onayla (bordro stub)", command=onayla).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="Yenile", command=lambda: donemleri_yenile(secili_donem_id())).pack(
+        side="left"
+    )
+
+    donem_lb.bind("<<ListboxSelect>>", on_sec)
+    donemleri_yenile()
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: olcme_prim_goster(app))
+
+
 def performans_kariyer_ac(app):
     app.sayfa_goster("personel", ust_duzey=True)
     app.nav_ac(lambda: performans_kariyer_goster(app))
@@ -658,3 +877,8 @@ def performans_kariyer_ac(app):
 def ucret_kazanc_ac(app):
     app.sayfa_goster("personel", ust_duzey=True)
     app.nav_ac(lambda: ucret_kazanc_goster(app))
+
+
+def olcme_prim_ac(app):
+    app.sayfa_goster("personel", ust_duzey=True)
+    app.nav_ac(lambda: olcme_prim_goster(app))

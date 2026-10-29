@@ -13,23 +13,32 @@ from database.database import get_session
 from database.models.personel import DURUM_AKTIF, Personel, PersonelCalismaDonemi
 from database.models.personel_performans import (
     GOREV_ALANLARI,
+    GOREV_DURUMLARI_MVP,
     IS_DURUMLARI,
     IS_PLANLANDI,
     KADEME_OGRENEN,
     PRIM_BORDRO,
     PRIM_EKSIK,
     PRIM_HESAPLANDI,
+    PRIM_MVP_HESAPLANDI,
+    PRIM_MVP_ONAYLANDI,
+    PRIM_MVP_TASLAK,
     PRIM_ONAYLI,
     PRIM_TASLAK,
+    VARSAYILAN_POLITIKA_JSON,
     PersonelDegerlendirme,
     PersonelGelisimPlani,
+    PersonelGorev,
     PersonelGorevAtama,
     PersonelIsGecmis,
     PersonelIsKaydi,
     PersonelKariyerKarari,
+    PersonelKatki,
     PersonelKatkiOlay,
+    PersonelPrimDonem,
     PersonelPrimDonemi,
     PersonelPrimPay,
+    PersonelPrimPayDetay,
     PersonelPrimPolitika,
 )
 from database.personel_performans_sema import schema_hazirla
@@ -687,9 +696,9 @@ class PersonelPerformansService:
             d.hesaplayan = _kullanici()
             d.durum = PRIM_EKSIK if eksik else PRIM_HESAPLANDI
 
-            # Eski payları temizle
+            # Eski payları temizle (idempotent yeniden hesap)
             for eski in session.scalars(
-                select(PersonelPrimPay).where(PersonelPrimPay.donem_id == d.id)
+                select(PersonelPrimPayDetay).where(PersonelPrimPayDetay.donem_id == d.id)
             ).all():
                 session.delete(eski)
             session.flush()
@@ -713,7 +722,7 @@ class PersonelPerformansService:
             )
             for s in dag["kisiler"]:
                 session.add(
-                    PersonelPrimPay(
+                    PersonelPrimPayDetay(
                         donem_id=d.id,
                         personel_id=s["personel_id"],
                         katilim=s["katilim"],
@@ -769,86 +778,12 @@ class PersonelPerformansService:
             return {"id": d.id, "durum": d.durum}
 
     @staticmethod
-    def bordroya_aktar(donem_id: int, *, yil: int, ay: int) -> dict:
-        """Onaylı prim → standart hakediş ek_odeme tek bağlantı. İkinci borç/fiş yok."""
+    def bordroya_aktar(donem_id: int, *, yil: int | None = None, ay: int | None = None) -> dict:
+        """MVP stub — vergi/SGK/bordro motoru yok; bağlantı üretilmez."""
         yazma_zorunlu("personel_prim_onay", "personel_finans_duzenleme")
         schema_hazirla()
-        from database.models.personel import (
-            HAKEDIS_ONAYLI,
-            HAKEDIS_TASLAK,
-            PersonelCalismaDonemi,
-            PersonelHakedis,
-        )
-        from database.personel_service import _kullanici as _kul
-
-        sonuc_liste = []
-        with get_session() as session:
-            d = session.get(PersonelPrimDonemi, int(donem_id))
-            if d is None:
-                raise ValueError("Dönem bulunamadı.")
-            if d.durum != PRIM_ONAYLI:
-                raise ValueError("Bordro aktarımı için onaylı dönem gerekir.")
-            if d.simulasyon:
-                raise ValueError("Simülasyon dönemi bordroya aktarılamaz.")
-            for pay in session.scalars(
-                select(PersonelPrimPay).where(PersonelPrimPay.donem_id == d.id)
-            ).all():
-                if pay.hakedis_id or pay.toplam <= 0:
-                    continue
-                calisma = session.scalar(
-                    select(PersonelCalismaDonemi).where(
-                        PersonelCalismaDonemi.personel_id == pay.personel_id,
-                        PersonelCalismaDonemi.aktif.is_(True),
-                    )
-                )
-                if calisma is None:
-                    raise ValueError(f"Aktif çalışma dönemi yok (personel {pay.personel_id}).")
-                bag = f"PRIM_DONEM:{d.id}:PAY:{pay.id}"
-                h = session.scalar(
-                    select(PersonelHakedis).where(
-                        PersonelHakedis.personel_id == pay.personel_id,
-                        PersonelHakedis.yil == int(yil),
-                        PersonelHakedis.ay == int(ay),
-                        PersonelHakedis.kayit_turu == "NORMAL",
-                    )
-                )
-                if h is not None and h.durum == HAKEDIS_ONAYLI:
-                    raise ValueError(
-                        "Onaylı hakedişe prim eklemek için fark/düzeltme kaydı kullanın "
-                        f"(personel {pay.personel_id})."
-                    )
-                if h is None:
-                    h = PersonelHakedis(
-                        personel_id=pay.personel_id,
-                        donem_id=calisma.id,
-                        yil=int(yil),
-                        ay=int(ay),
-                        temel_ucret=0,
-                        ek_odeme=pay.toplam,
-                        net_hakedis=pay.toplam,
-                        bordro_kaynagi=bag,
-                        aciklama=f"Onaylı prim payı (dönem {d.id})",
-                        durum=HAKEDIS_TASLAK,
-                        olusturan=_kul(),
-                    )
-                    session.add(h)
-                    session.flush()
-                else:
-                    h.ek_odeme = Decimal(h.ek_odeme) + Decimal(pay.toplam)
-                    h.net_hakedis = (
-                        Decimal(h.temel_ucret)
-                        + Decimal(h.ek_odeme)
-                        + Decimal(h.fazla_mesai)
-                        - Decimal(h.kesinti)
-                    )
-                    h.bordro_kaynagi = ((h.bordro_kaynagi or "") + "|" + bag)[:200]
-                    session.flush()
-                pay.hakedis_id = h.id
-                pay.bordro_baglanti_id = bag
-                sonuc_liste.append({"pay_id": pay.id, "hakedis_id": h.id, "baglanti": bag})
-            d.durum = PRIM_BORDRO
-            session.flush()
-        return {"donem_id": donem_id, "durum": PRIM_BORDRO, "aktarilan": sonuc_liste}
+        _ = (donem_id, yil, ay)
+        return {"baglandi": False, "neden": "BORDRO_BAGLANTI_MVP"}
 
     @staticmethod
     def _pay_ozet(donem_id: int) -> list[dict]:
@@ -861,7 +796,9 @@ class PersonelPerformansService:
                     "hakedis_id": p.hakedis_id,
                 }
                 for p in session.scalars(
-                    select(PersonelPrimPay).where(PersonelPrimPay.donem_id == int(donem_id))
+                    select(PersonelPrimPayDetay).where(
+                        PersonelPrimPayDetay.donem_id == int(donem_id)
+                    )
                 ).all()
             ]
 
@@ -892,7 +829,7 @@ class PersonelPerformansService:
                 raise ValueError("Dönem bulunamadı.")
             paylar = []
             for p in session.scalars(
-                select(PersonelPrimPay).where(PersonelPrimPay.donem_id == d.id)
+                select(PersonelPrimPayDetay).where(PersonelPrimPayDetay.donem_id == d.id)
             ).all():
                 if finans:
                     paylar.append(
@@ -924,3 +861,352 @@ class PersonelPerformansService:
                 "politika_surum": d.politika_surum,
                 "paylar": paylar,
             }
+
+    # --- MVP Ölçme / Prim ----------------------------------------------------
+
+    @staticmethod
+    def politika_agirliklari(politika_json: str | None = None) -> dict[str, Decimal]:
+        """politika_json → ekip/katki/kidem (oran 0–1). Toplam %100 zorunlu."""
+        import json
+
+        ham = (politika_json or VARSAYILAN_POLITIKA_JSON).strip() or VARSAYILAN_POLITIKA_JSON
+        try:
+            veri = json.loads(ham)
+        except Exception as exc:
+            raise ValueError("politika_json geçersiz JSON.") from exc
+        ekip = Decimal(str(veri.get("ekip", 50)))
+        katki = Decimal(str(veri.get("katki", 30)))
+        kidem = Decimal(str(veri.get("kidem", 20)))
+        # Yüzde veya oran kabul et
+        if ekip + katki + kidem > Decimal("1.0001"):
+            ekip, katki, kidem = ekip / 100, katki / 100, kidem / 100
+        toplam = ekip + katki + kidem
+        if abs(toplam - Decimal("1")) > Decimal("0.0001"):
+            raise ValueError("Dağıtım ağırlıkları toplamı %100 olmalı.")
+        return {"ekip": ekip, "katki": katki, "kidem": kidem}
+
+    @staticmethod
+    def tahsil_kar_h(*, S, C, F=None, T=None, tahsilat_orani=None) -> dict:
+        """H = M × q. Örnek: S=100000 C=70000 tahsilat %50 → H=15000."""
+        if tahsilat_orani is not None and F is None and T is None:
+            m = _para(S) - _para(C)
+            f = abs(m) if m != 0 else Decimal("1")
+            # Marj üzerinden oran: F=S varsayımı yerine doğrudan q
+            from database.personel_prim_motoru import D, q2
+
+            q = min(Decimal("1"), max(Decimal("0"), D(tahsilat_orani)))
+            return {
+                "S": q2(D(S)),
+                "C": q2(D(C)),
+                "M": q2(m),
+                "q": q,
+                "H": q2(m * q),
+            }
+        f_val = F if F is not None else S
+        t_val = T if T is not None else (
+            Decimal(str(F if F is not None else S)) * Decimal(str(tahsilat_orani or 0))
+        )
+        return tahsil_kar_katkisi(S=S, C=C, F=f_val, T=t_val)
+
+    @staticmethod
+    def gorev_mvp_kaydet(veri: dict) -> dict:
+        yazma_zorunlu(*YAZ)
+        schema_hazirla()
+        baslik = (veri.get("baslik") or "").strip()
+        if not baslik:
+            raise ValueError("Görev başlığı zorunludur.")
+        durum = (veri.get("durum") or IS_PLANLANDI).strip().upper()
+        if durum not in dict(GOREV_DURUMLARI_MVP):
+            raise ValueError("Geçersiz görev durumu (PLANLANDI|BASLADI|ENGELLENDI|KONTROL|TAMAMLANDI).")
+        with get_session() as session:
+            if session.get(Personel, int(veri["personel_id"])) is None:
+                raise ValueError("Personel bulunamadı.")
+            if veri.get("id"):
+                g = session.get(PersonelGorev, int(veri["id"]))
+                if g is None:
+                    raise ValueError("Görev bulunamadı.")
+            else:
+                g = PersonelGorev(personel_id=int(veri["personel_id"]), baslik=baslik)
+                session.add(g)
+            g.personel_id = int(veri["personel_id"])
+            g.baslik = baslik
+            g.durum = durum
+            g.hedef_tarih = _tarih(veri.get("hedef_tarih"))
+            g.gerceklesen_tarih = _tarih(veri.get("gerceklesen_tarih"))
+            g.aciklama = (veri.get("aciklama") or "").strip() or None
+            session.flush()
+            return {
+                "id": g.id,
+                "personel_id": g.personel_id,
+                "baslik": g.baslik,
+                "durum": g.durum,
+                "hedef_tarih": g.hedef_tarih.isoformat() if g.hedef_tarih else None,
+                "gerceklesen_tarih": g.gerceklesen_tarih.isoformat() if g.gerceklesen_tarih else None,
+            }
+
+    @staticmethod
+    def katki_mvp_kaydet(veri: dict) -> dict:
+        yazma_zorunlu(*YAZ)
+        schema_hazirla()
+        with get_session() as session:
+            if session.get(Personel, int(veri["personel_id"])) is None:
+                raise ValueError("Personel bulunamadı.")
+            k = session.scalar(
+                select(PersonelKatki).where(
+                    PersonelKatki.personel_id == int(veri["personel_id"]),
+                    PersonelKatki.belge_turu == (veri.get("belge_turu") or "SATIS_FATURA").upper(),
+                    PersonelKatki.belge_id == int(veri["belge_id"]),
+                    PersonelKatki.asama == (veri.get("asama") or "").upper(),
+                )
+            )
+            if k is None:
+                k = PersonelKatki(
+                    personel_id=int(veri["personel_id"]),
+                    belge_turu=(veri.get("belge_turu") or "SATIS_FATURA").upper(),
+                    belge_id=int(veri["belge_id"]),
+                    asama=(veri.get("asama") or "HAZIRLAMA").upper(),
+                )
+                session.add(k)
+            k.puan = _para(veri.get("puan") or 0)
+            k.tarih = _tarih(veri.get("tarih")) or date.today()
+            k.aciklama = veri.get("aciklama")
+            session.flush()
+            return {
+                "id": k.id,
+                "personel_id": k.personel_id,
+                "belge_turu": k.belge_turu,
+                "belge_id": k.belge_id,
+                "asama": k.asama,
+                "puan": float(k.puan),
+            }
+
+    @staticmethod
+    def prim_donem_listele() -> list[dict]:
+        yetki_zorunlu(*PRIM_OKU)
+        schema_hazirla()
+        with get_session() as session:
+            satirlar = session.scalars(
+                select(PersonelPrimDonem).order_by(
+                    PersonelPrimDonem.yil.desc(), PersonelPrimDonem.ay.desc()
+                )
+            ).all()
+            return [
+                {
+                    "id": d.id,
+                    "yil": d.yil,
+                    "ay": d.ay,
+                    "durum": d.durum,
+                    "havuz": float(d.havuz),
+                    "politika_json": d.politika_json,
+                    "etiket": f"{d.yil}-{d.ay:02d} · {d.durum} · havuz {float(d.havuz):,.2f}",
+                }
+                for d in satirlar
+            ]
+
+    @staticmethod
+    def prim_donem_olustur(
+        yil: int,
+        ay: int,
+        *,
+        havuz=0,
+        politika_json: str | None = None,
+        aciklama: str | None = None,
+    ) -> dict:
+        yazma_zorunlu(*PRIM_YAZ)
+        schema_hazirla()
+        yil, ay = int(yil), int(ay)
+        if ay < 1 or ay > 12:
+            raise ValueError("Ay 1–12 olmalı.")
+        pol = politika_json or VARSAYILAN_POLITIKA_JSON
+        PersonelPerformansService.politika_agirliklari(pol)  # doğrula
+        with get_session() as session:
+            mevcut = session.scalar(
+                select(PersonelPrimDonem).where(
+                    PersonelPrimDonem.yil == yil, PersonelPrimDonem.ay == ay
+                )
+            )
+            if mevcut is not None:
+                return {
+                    "id": mevcut.id,
+                    "yil": mevcut.yil,
+                    "ay": mevcut.ay,
+                    "durum": mevcut.durum,
+                    "havuz": float(mevcut.havuz),
+                    "politika_json": mevcut.politika_json,
+                    "mevcut": True,
+                }
+            d = PersonelPrimDonem(
+                yil=yil,
+                ay=ay,
+                durum=PRIM_MVP_TASLAK,
+                havuz=_para(havuz),
+                politika_json=pol,
+                aciklama=aciklama,
+            )
+            session.add(d)
+            session.flush()
+            return {
+                "id": d.id,
+                "yil": d.yil,
+                "ay": d.ay,
+                "durum": d.durum,
+                "havuz": float(d.havuz),
+                "politika_json": d.politika_json,
+                "mevcut": False,
+            }
+
+    @staticmethod
+    def prim_hesapla(
+        donem_id: int,
+        *,
+        kisiler: list[dict] | None = None,
+        havuz=None,
+    ) -> dict:
+        """Havuzu 50/30/20 (politika_json) ile dağıtır. Yeniden çalıştırma pay çoğaltmaz."""
+        yazma_zorunlu(*PRIM_YAZ)
+        schema_hazirla()
+        with get_session() as session:
+            d = session.get(PersonelPrimDonem, int(donem_id))
+            if d is None:
+                raise ValueError("Prim dönemi bulunamadı.")
+            if d.durum == PRIM_MVP_ONAYLANDI:
+                raise ValueError("Onaylı dönem sessizce yeniden hesaplanamaz.")
+            if havuz is not None:
+                d.havuz = _para(havuz)
+            agirlik = PersonelPerformansService.politika_agirliklari(d.politika_json)
+
+            # Katkı puanlarından otomatik kişi listesi (verilmediyse)
+            if kisiler is None:
+                bas = date(d.yil, d.ay, 1)
+                if d.ay == 12:
+                    bit = date(d.yil + 1, 1, 1) - timedelta(days=1)
+                else:
+                    bit = date(d.yil, d.ay + 1, 1) - timedelta(days=1)
+                katkilar = session.scalars(
+                    select(PersonelKatki).where(
+                        PersonelKatki.tarih >= bas, PersonelKatki.tarih <= bit
+                    )
+                ).all()
+                puan_map: dict[int, Decimal] = {}
+                for k in katkilar:
+                    puan_map[k.personel_id] = puan_map.get(k.personel_id, Decimal("0")) + Decimal(
+                        k.puan
+                    )
+                kisiler = [
+                    {
+                        "personel_id": pid,
+                        "hizmet_yili": 0,
+                        "performans": float(puan) if puan <= 100 else 100,
+                        "katilim": 1,
+                    }
+                    for pid, puan in sorted(puan_map.items())
+                ]
+
+            dagitim_kisiler = [
+                DagitimKisi(
+                    personel_id=int(k["personel_id"]),
+                    hizmet_yili=int(k.get("hizmet_yili") or 0),
+                    performans=_para(k.get("performans") if k.get("performans") is not None else 100),
+                    katilim=_para(k.get("katilim") or 1),
+                )
+                for k in (kisiler or [])
+            ]
+            dag = kisi_dagitimi(
+                d.havuz,
+                dagitim_kisiler,
+                agirlik_ekip=agirlik["ekip"],
+                agirlik_katki=agirlik["katki"],
+                agirlik_kidem=agirlik["kidem"],
+            )
+
+            # Idempotent: mevcut payları sil, yeniden yaz
+            for eski in session.scalars(
+                select(PersonelPrimPay).where(PersonelPrimPay.donem_id == d.id)
+            ).all():
+                session.delete(eski)
+            session.flush()
+
+            pay_satirlari = []
+            for s in dag["kisiler"]:
+                pay = PersonelPrimPay(
+                    donem_id=d.id,
+                    personel_id=s["personel_id"],
+                    tutar=s["toplam"],
+                    ekip_pay=s["ekip_payi"],
+                    katki_pay=s["katki_payi"],
+                    kidem_pay=s["kidem_payi"],
+                )
+                session.add(pay)
+                pay_satirlari.append(
+                    {
+                        "personel_id": s["personel_id"],
+                        "tutar": float(s["toplam"]),
+                        "ekip_pay": float(s["ekip_payi"]),
+                        "katki_pay": float(s["katki_payi"]),
+                        "kidem_pay": float(s["kidem_payi"]),
+                    }
+                )
+            d.durum = PRIM_MVP_HESAPLANDI
+            d.hesaplayan = _kullanici()
+            d.hesap_zamani = datetime.now()
+            session.flush()
+            return {
+                "donem_id": d.id,
+                "yil": d.yil,
+                "ay": d.ay,
+                "durum": d.durum,
+                "havuz": float(d.havuz),
+                "politika_json": d.politika_json,
+                "dagitilan": float(dag["dagitilan"]),
+                "dagitilmamis": float(dag["dagitilmamis"]),
+                "paylar": pay_satirlari,
+            }
+
+    @staticmethod
+    def prim_paylari(donem_id: int) -> list[dict]:
+        yetki_zorunlu(*PRIM_OKU)
+        schema_hazirla()
+        with get_session() as session:
+            return [
+                {
+                    "id": p.id,
+                    "donem_id": p.donem_id,
+                    "personel_id": p.personel_id,
+                    "tutar": float(p.tutar),
+                    "ekip_pay": float(p.ekip_pay),
+                    "katki_pay": float(p.katki_pay),
+                    "kidem_pay": float(p.kidem_pay),
+                }
+                for p in session.scalars(
+                    select(PersonelPrimPay)
+                    .where(PersonelPrimPay.donem_id == int(donem_id))
+                    .order_by(PersonelPrimPay.personel_id)
+                ).all()
+            ]
+
+    @staticmethod
+    def prim_onayla(donem_id: int) -> dict:
+        yazma_zorunlu("personel_prim_onay", "personel_finans_duzenleme")
+        schema_hazirla()
+        with get_session() as session:
+            d = session.get(PersonelPrimDonem, int(donem_id))
+            if d is None:
+                raise ValueError("Prim dönemi bulunamadı.")
+            if d.durum != PRIM_MVP_HESAPLANDI:
+                raise ValueError("Yalnız hesaplanmış dönem onaylanır.")
+            d.durum = PRIM_MVP_ONAYLANDI
+            session.flush()
+            return {"id": d.id, "durum": d.durum}
+
+    @staticmethod
+    def prim_bordroya_bagla(donem_id: int) -> dict:
+        """Onaylı prim → bordro bağlantısı (MVP stub, vergi motoru yok)."""
+        yazma_zorunlu("personel_prim_onay", "personel_finans_duzenleme")
+        schema_hazirla()
+        with get_session() as session:
+            d = session.get(PersonelPrimDonem, int(donem_id))
+            if d is None:
+                raise ValueError("Prim dönemi bulunamadı.")
+            if d.durum != PRIM_MVP_ONAYLANDI:
+                raise ValueError("Bordro bağlantısı için onaylı dönem gerekir.")
+        return {"baglandi": False, "neden": "BORDRO_BAGLANTI_MVP", "donem_id": int(donem_id)}

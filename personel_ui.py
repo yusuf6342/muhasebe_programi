@@ -46,6 +46,7 @@ def personel_menusu_goster(app):
         ("AVANS VE PERSONEL ÖDEMELERİ", lambda: avans_odeme_goster(app)),
         ("PERSONEL MASRAFLARI", lambda: masraf_goster(app)),
         ("SGK VE BEYAN TAKİBİ", lambda: sgk_beyan_goster(app)),
+        ("ÖLÇME / PRİM", lambda: _olcme_prim_ac(app)),
         ("PERFORMANS VE KARİYER", lambda: _performans_ac(app)),
         ("ÜCRET VE KAZANÇ DAĞITIMI", lambda: _ucret_kazanc_ac(app)),
         ("PERSONEL RAPORLARI", lambda: raporlar_goster(app)),
@@ -74,6 +75,12 @@ def _ust(app, baslik: str, geri=None):
 
 # --- Kartlar / Liste ---------------------------------------------------------
 
+def _olcme_prim_ac(app):
+    from personel_performans_ui import olcme_prim_goster
+
+    olcme_prim_goster(app)
+
+
 def _performans_ac(app):
     from personel_performans_ui import performans_kariyer_goster
 
@@ -84,6 +91,11 @@ def _ucret_kazanc_ac(app):
     from personel_performans_ui import ucret_kazanc_goster
 
     ucret_kazanc_goster(app)
+
+
+def olcme_prim_ac(app):
+    """Ana panel alt menü anahtarı."""
+    _olcme_prim_ac(app)
 
 
 def personel_kartlari_goster(app):
@@ -908,42 +920,10 @@ def formlar_goster(app):
 
 
 def ayarlar_goster(app):
-    app._icerigi_temizle()
-    _ust(app, "PERSONEL AYARLARI")
-    from database.database import get_session
-    from database.models.personel import PersonelMevzuatParametre, PersonelBelgeTuru
-    from database.personel_sema import schema_hazirla
-    from sqlalchemy import select
+    """Ham metin dökümü yerine sekmeli tablo ekranı (personel_ayar_ui)."""
+    from personel_ayar_ui import ayarlar_ekrani_goster
 
-    schema_hazirla()
-    ttk.Label(
-        app.icerik,
-        text="Yetki, belge kuralları ve yürürlük tarihli mevzuat parametreleri. "
-        "Süre/oranlar kaynak göstermeden sabitlenmez. Hassas erişim ayrı izin ister.",
-        wraplength=760,
-    ).pack(anchor="w", pady=(10, 0))
-
-    text = tk.Text(app.icerik, height=20, wrap="word")
-    text.pack(fill="both", expand=True, pady=10)
-    with get_session() as session:
-        text.insert("end", "=== Mevzuat parametreleri ===\n")
-        for p in session.scalars(select(PersonelMevzuatParametre).order_by(PersonelMevzuatParametre.kod)):
-            text.insert(
-                "end",
-                f"{p.kod} v{p.surum} | {p.kapsam} | kaynak: {p.resmi_kaynak} | "
-                f"kontrol: {p.kontrol_tarihi} | yürürlük: {p.yururluk_baslangic}\n"
-                f"  {p.deger_json}\n",
-            )
-        text.insert("end", "\n=== Belge türleri ===\n")
-        for t in session.scalars(select(PersonelBelgeTuru).order_by(PersonelBelgeTuru.kod)):
-            text.insert(
-                "end",
-                f"{t.kod}: {t.ad} [{t.sinif}] gizlilik={t.gizlilik} "
-                f"koşul={t.uygulanma_kosulu or '—'} dayanak={t.hukuki_dayanak or '—'}\n",
-            )
-    text.configure(state="disabled")
-    if hasattr(app, "nav_sayfa_isaretle"):
-        app.nav_sayfa_isaretle(lambda: ayarlar_goster(app))
+    ayarlar_ekrani_goster(app)
 
 
 # Sol menü alt kısayolları (ana_panel alt_menu_ac)

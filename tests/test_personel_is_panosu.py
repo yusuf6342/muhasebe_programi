@@ -235,11 +235,18 @@ class IsPanosuTest(unittest.TestCase):
             }
         )
         self.assertEqual(i["durum"], "TAMAMLANDI")
-        # Prim dönemi / pay oluşmamalı
-        from database.models.personel_performans import PersonelPrimDonemi, PersonelPrimPay
+        # Prim dönemi / pay oluşmamalı (geniş + MVP tablolar)
+        from database.models.personel_performans import (
+            PersonelPrimDonem,
+            PersonelPrimDonemi,
+            PersonelPrimPay,
+            PersonelPrimPayDetay,
+        )
 
         with self._session_cm() as s:
             self.assertEqual(s.scalar(select(func.count()).select_from(PersonelPrimDonemi)) or 0, 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(PersonelPrimPayDetay)) or 0, 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(PersonelPrimDonem)) or 0, 0)
             self.assertEqual(s.scalar(select(func.count()).select_from(PersonelPrimPay)) or 0, 0)
 
     def test_atanmis_eski_is_duzenlenebilir(self):

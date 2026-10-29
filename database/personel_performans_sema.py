@@ -36,8 +36,14 @@ def schema_hazirla(motor=None) -> None:
         m.PersonelKariyerKarari.__table__,
         m.PersonelPrimPolitika.__table__,
         m.PersonelPrimDonemi.__table__,
-        m.PersonelPrimPay.__table__,
+        m.PersonelPrimPayDetay.__table__,
         m.PersonelFaturaHDonuk.__table__,
+    ]
+    mvp_tablolar = [
+        m.PersonelGorev.__table__,
+        m.PersonelKatki.__table__,
+        m.PersonelPrimDonem.__table__,
+        m.PersonelPrimPay.__table__,
     ]
 
     def _v1(e) -> None:
@@ -62,8 +68,14 @@ def schema_hazirla(motor=None) -> None:
         )
         # aciklama / dis_engel genişletme SQLite'ta tip değişimi gerektirmez; mevcut veri kalır
 
+    def _v3(e) -> None:
+        """MVP Ölçme/Prim: PersonelGorev, PersonelKatki, PersonelPrimDonem, PersonelPrimPay."""
+        for t in mvp_tablolar:
+            t.create(e, checkfirst=True)
+
     surum_uygula(motor, "personel_performans", 1, _v1)
     surum_uygula(motor, "personel_performans", 2, _v2)
+    surum_uygula(motor, "personel_performans", 3, _v3)
     _HAZIR.add(motor)
 
 
