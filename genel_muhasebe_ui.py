@@ -944,6 +944,9 @@ def _rapor_ust(app, baslik: str, bas_var, bit_var, yenile, excel, pdf):
 
 
 def mizan_goster(app):
+    """Mizan: kriter paneli (tarih) + kolon hunisi. GENEL TOPLAM her zaman tam rapor toplamı."""
+    from liste_filtre_ui import satir_kolon_filtre_uygun, treeview_filtre_bagla
+
     app._icerigi_temizle()
     _menu_isaretle(app)
     bas = ttk.Entry(width=12)
@@ -952,52 +955,63 @@ def mizan_goster(app):
     bit.insert(0, date.today().strftime("%d.%m.%Y"))
 
     kolonlar = ("kod", "ad", "ob", "oa", "db", "da", "bb", "ab")
+    basliklar = {
+        "kod": "Hesap Kodu",
+        "ad": "Hesap Adı",
+        "ob": "Önceki Borç",
+        "oa": "Önceki Alacak",
+        "db": "Dönem Borç",
+        "da": "Dönem Alacak",
+        "bb": "Borç Bakiyesi",
+        "ab": "Alacak Bakiyesi",
+    }
     tablo = ttk.Treeview(app.icerik, columns=kolonlar, show="headings", height=16)
-    for k, t, w in (
-        ("kod", "Hesap Kodu", 90),
-        ("ad", "Hesap Adı", 200),
-        ("ob", "Önceki Borç", 95),
-        ("oa", "Önceki Alacak", 95),
-        ("db", "Dönem Borç", 95),
-        ("da", "Dönem Alacak", 95),
-        ("bb", "Borç Bakiyesi", 95),
-        ("ab", "Alacak Bakiyesi", 95),
-    ):
-        tablo.heading(k, text=t)
-        tablo.column(k, width=w)
+    for k in kolonlar:
+        tablo.heading(k, text=basliklar[k])
+        tablo.column(k, width=95 if k != "ad" else 200)
     uyari = ttk.Label(app.icerik, text="")
+    filtre_ozet = ttk.Label(app.icerik, text="", foreground="#1a237e")
     son_data = {"mizan": None}
+    liste_filtre: dict = {}
 
-    def yenile():
+    def _satir_vals(s: dict) -> tuple:
+        return (
+            s["hesap_kodu"],
+            s["hesap_adi"],
+            para_goster(s["onceki_borc"]),
+            para_goster(s["onceki_alacak"]),
+            para_goster(s["donem_borc"]),
+            para_goster(s["donem_alacak"]),
+            para_goster(s["borc_bakiyesi"]),
+            para_goster(s["alacak_bakiyesi"]),
+        )
+
+    def _adaylar():
+        data = son_data["mizan"]
+        if not data:
+            return []
+        return [{"values": _satir_vals(s)} for s in data["satirlar"]]
+
+    def doldur():
+        data = son_data["mizan"]
         tablo.delete(*tablo.get_children())
-        try:
-            data = MuhasebeRaporService.mizan(_tarih_parse(bas.get()), _tarih_parse(bit.get()))
-        except Exception as hata:
-            messagebox.showerror("Mizan", str(hata), parent=app)
+        if not data:
             return
-        son_data["mizan"] = data
+        gosterilen = []
         for s in data["satirlar"]:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["hesap_kodu"],
-                    s["hesap_adi"],
-                    para_goster(s["onceki_borc"]),
-                    para_goster(s["onceki_alacak"]),
-                    para_goster(s["donem_borc"]),
-                    para_goster(s["donem_alacak"]),
-                    para_goster(s["borc_bakiyesi"]),
-                    para_goster(s["alacak_bakiyesi"]),
-                ),
-            )
+            vals = _satir_vals(s)
+            if not satir_kolon_filtre_uygun(vals, kolonlar, liste_filtre):
+                continue
+            tablo.insert("", "end", values=vals)
+            gosterilen.append(s)
+        # DOC5: GENEL TOPLAM = tam rapor; görünür satırlardan yeniden toplanmaz
         t = data["toplamlar"]
         tablo.insert(
             "",
             "end",
             values=(
                 "",
-                "GENEL TOPLAM",
+                "GENEL TOPLAM (tam rapor)",
                 para_goster(t["onceki_borc"]),
                 para_goster(t["onceki_alacak"]),
                 para_goster(t["donem_borc"]),
@@ -1005,14 +1019,38 @@ def mizan_goster(app):
                 para_goster(t["borc_bakiyesi"]),
                 para_goster(t["alacak_bakiyesi"]),
             ),
+            tags=("toplam",),
         )
         if data["dengeli"]:
-            uyari.configure(text="Mizan dengede.", foreground="#2e7d32")
+            uyari.configure(text="Mizan dengede (tam rapor).", foreground="#2e7d32")
         else:
             uyari.configure(
-                text="Uyarı: Toplam borç bakiyesi ile alacak bakiyesi eşit değil.",
+                text="Uyarı: Tam rapor toplam borç bakiyesi ile alacak bakiyesi eşit değil.",
                 foreground="#c62828",
             )
+        if liste_filtre:
+            f_bb = sum((s["borc_bakiyesi"] for s in gosterilen), Decimal("0"))
+            f_ab = sum((s["alacak_bakiyesi"] for s in gosterilen), Decimal("0"))
+            filtre_ozet.configure(
+                text=(
+                    f"Gösterilen hesap: {len(gosterilen)} / {len(data['satirlar'])}  |  "
+                    f"Filtrelenen hesapların toplamı — Borç bakiye: {para_goster(f_bb)}  "
+                    f"Alacak bakiye: {para_goster(f_ab)}  "
+                    f"(tam mizan dengesi değildir)"
+                )
+            )
+        else:
+            filtre_ozet.configure(text="")
+        filtre_bag["guncelle_basliklar"]()
+
+    def yenile():
+        try:
+            data = MuhasebeRaporService.mizan(_tarih_parse(bas.get()), _tarih_parse(bit.get()))
+        except Exception as hata:
+            messagebox.showerror("Mizan", str(hata), parent=app)
+            return
+        son_data["mizan"] = data
+        doldur()
 
     def excel():
         data = son_data["mizan"]
@@ -1088,12 +1126,29 @@ def mizan_goster(app):
             messagebox.showerror("PDF", str(hata), parent=app)
 
     _rapor_ust(app, "MİZAN", bas, bit, yenile, excel, pdf)
+    # Tutarsal bakiyeler huniden hariç — kod/ad ile görünüm daraltılır; toplam tam rapordan
+    filtre_bag = treeview_filtre_bagla(
+        tablo,
+        basliklar,
+        get_filtre_dict=lambda: liste_filtre,
+        set_filtre_dict=None,
+        yenile_cb=doldur,
+        deger_listesi_cb=_adaylar,
+        parent=app,
+        kolonlar=kolonlar,
+        haric_kolonlar=("ob", "oa", "db", "da", "bb", "ab"),
+        sag_tik_filtre=True,
+    )
     tablo.pack(fill="both", expand=True)
-    uyari.pack(anchor="w", pady=6)
+    uyari.pack(anchor="w", pady=(6, 0))
+    filtre_ozet.pack(anchor="w", pady=(2, 6))
     yenile()
 
 
 def bilanco_goster(app):
+    """Bilanço: rapor tarihi + hesap ara. Grup toplamları saklı; görünür yapraklar toplanmaz."""
+    from database.turkce_normalize import turkce_normalize
+
     app._icerigi_temizle()
     _menu_isaretle(app)
     ust = ttk.Frame(app.icerik)
@@ -1108,6 +1163,17 @@ def bilanco_goster(app):
     bit = ttk.Entry(filtre, width=12)
     bit.pack(side="left", padx=4)
     bit.insert(0, date.today().strftime("%d.%m.%Y"))
+    ttk.Label(filtre, text="Hesap ara:").pack(side="left", padx=(12, 0))
+    hesap_ara = ttk.Entry(filtre, width=18)
+    hesap_ara.pack(side="left", padx=4)
+
+    def _hesap_ara_temizle():
+        hesap_ara.delete(0, "end")
+        ciz()
+
+    ttk.Button(filtre, text="Ara", command=lambda: ciz()).pack(side="left", padx=2)
+    ttk.Button(filtre, text="Temizle", command=_hesap_ara_temizle).pack(side="left", padx=2)
+    hesap_ara.bind("<Return>", lambda _e: ciz())
 
     govde = ttk.Frame(app.icerik)
     govde.pack(fill="both", expand=True)
@@ -1132,22 +1198,60 @@ def bilanco_goster(app):
     pasif_agac.pack(fill="both", expand=True)
 
     ozet = ttk.Label(app.icerik, text="")
-    ozet.pack(anchor="w", pady=8)
+    ozet.pack(anchor="w", pady=(8, 0))
+    filtre_ozet = ttk.Label(app.icerik, text="", foreground="#1a237e")
+    filtre_ozet.pack(anchor="w", pady=(2, 8))
     son = {"data": None}
 
-    def doldur(agac, gruplar):
+    def doldur(agac, gruplar, ara: str):
         agac.delete(*agac.get_children())
+        gosterilen_yaprak = 0
         for g in gruplar:
+            # Grup satırı: saklı ara toplam (görünür yaprakların toplamı değil)
             gid = agac.insert(
-                "", "end", text=f"{g['kod']} {g['ad']}", values=(para_goster(g["toplam"]),)
+                "", "end", text=f"{g['kod']} {g['ad']}", values=(para_goster(g["toplam"]),), open=True
             )
             for h in g["hesaplar"]:
+                etiket = f"{h['hesap_kodu']} {h['hesap_adi']}"
+                if ara and ara not in turkce_normalize(etiket):
+                    continue
                 agac.insert(
                     gid,
                     "end",
-                    text=f"{h['hesap_kodu']} {h['hesap_adi']}",
+                    text=etiket,
                     values=(para_goster(h["bakiye"]),),
                 )
+                gosterilen_yaprak += 1
+        return gosterilen_yaprak
+
+    def ciz():
+        data = son["data"]
+        if not data:
+            return
+        ara = turkce_normalize((hesap_ara.get() or "").strip())
+        n_a = doldur(aktif_agac, data["aktif"], ara)
+        n_p = doldur(pasif_agac, data["pasif"], ara)
+        # Tam rapor toplamları — görünür yaprak + grup çift sayılmaz
+        dengeli_metin = "Bilanço dengede" if data["dengeli"] else "Bilanço dengede değil"
+        renk = "#2e7d32" if data["dengeli"] else "#c62828"
+        ozet.configure(
+            text=(
+                f"Tam rapor — Aktif Toplamı: {para_goster(data['aktif_toplam'])}   |   "
+                f"Pasif Toplamı: {para_goster(data['pasif_toplam'])}   |   "
+                f"Fark: {para_goster(data['fark'])} — {dengeli_metin}"
+            ),
+            foreground=renk,
+        )
+        if ara:
+            filtre_ozet.configure(
+                text=(
+                    f"Görüntü filtresi: «{hesap_ara.get().strip()}» — "
+                    f"gösterilen hesap satırı: {n_a + n_p} "
+                    f"(grup toplamları ve aktif/pasif genel toplamı değişmez)"
+                )
+            )
+        else:
+            filtre_ozet.configure(text="")
 
     def yenile():
         try:
@@ -1156,26 +1260,7 @@ def bilanco_goster(app):
             messagebox.showerror("Bilanço", str(hata), parent=app)
             return
         son["data"] = data
-        doldur(aktif_agac, data["aktif"])
-        doldur(pasif_agac, data["pasif"])
-        if data["dengeli"]:
-            ozet.configure(
-                text=(
-                    f"Aktif Toplamı: {para_goster(data['aktif_toplam'])}   |   "
-                    f"Pasif Toplamı: {para_goster(data['pasif_toplam'])}   |   "
-                    f"Fark: {para_goster(data['fark'])} — Bilanço dengede"
-                ),
-                foreground="#2e7d32",
-            )
-        else:
-            ozet.configure(
-                text=(
-                    f"Aktif Toplamı: {para_goster(data['aktif_toplam'])}   |   "
-                    f"Pasif Toplamı: {para_goster(data['pasif_toplam'])}   |   "
-                    f"Fark: {para_goster(data['fark'])} — Bilanço dengede değil"
-                ),
-                foreground="#c62828",
-            )
+        ciz()
 
     def excel():
         if not son["data"]:

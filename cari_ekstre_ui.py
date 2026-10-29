@@ -164,6 +164,16 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         ttk.Button(filtre, text="Tümünü Aç", command=self._hepsini_ac).pack(side="left", padx=2)
         ttk.Button(filtre, text="Tümünü Kapat", command=self._hepsini_kapat).pack(side="left", padx=2)
         ttk.Button(filtre, text="Excel", command=self._excel_aktar).pack(side="left", padx=(12, 0))
+        # DOC5: kayıtlı görünüm (firma+kullanıcı+ekran); bakiye kurallarına dokunmaz
+        from liste_filtre_ui import kayitli_gorunum_arac_cubugu
+
+        kayitli_gorunum_arac_cubugu(
+            filtre,
+            f"cari_ekstre_{getattr(cari, 'id', 0)}",
+            get_durum=self._gorunum_durumu,
+            uygula_durum=self._gorunum_uygula,
+            pack_side="left",
+        )
 
         zoom_bar = ttk.Frame(filtre)
         zoom_bar.pack(side="left", padx=(16, 0))
@@ -227,6 +237,9 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
             "alacak": ("Alacak", 110, "e"),
             "bakiye": ("Bakiye", 110, "e"),
         }
+        # DOC5: bakiye kolonunda hunisi yok — çalışan bakiye saklı değer; yeniden hesaplanmaz
+        self._liste_filtre: dict = {}
+        self._filtre_bag = None
         self.tablo = ttk.Treeview(
             tablo_cerceve,
             columns=self._kolonlar,
@@ -239,6 +252,7 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         self._kolon_surukleniyor = False
         self.tablo.bind("<ButtonPress-1>", self._kolon_ayirici_basla, add="+")
         self.tablo.bind("<ButtonRelease-1>", self._kolon_genislik_kaydet, add="+")
+        self._filtre_bagla()
 
         dikey = ttk.Scrollbar(tablo_cerceve, orient="vertical", command=self.tablo.yview)
         yatay = ttk.Scrollbar(tablo_cerceve, orient="horizontal", command=self.tablo.xview)
@@ -253,6 +267,23 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         alt.pack(fill="x")
         self.alt_ozet = ttk.Label(alt, text="", font=("Segoe UI", 9, "bold"), foreground="#1a237e")
         self.alt_ozet.pack(side="right")
+
+        # DOC5 istatistik: borç/alacak — bakiye (yürüyen) hariç
+        from liste_filtre_ui import istatistik_seridi_ekle
+
+        self._istatistik_satirlari: list[dict] = []
+        self._istatistik = istatistik_seridi_ekle(
+            self,
+            kolon_tanim=[
+                ("borc", "Borç", "para"),
+                ("alacak", "Alacak", "para"),
+                ("tutar", "Tutar", "para"),
+                ("miktar", "Miktar", "miktar"),
+            ],
+            get_satirlar=lambda: self._istatistik_satirlari,
+            yuruyen_haric=("bakiye",),
+            pack_opts={"fill": "x", "padx": 12, "pady": (0, 4), "before": alt},
+        )
 
         self.after(50, self.yenile)
 
@@ -279,6 +310,108 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         # Açıklama/ürün alanı pencere büyüyünce yer kaplasın; Borç/Alacak/Bakiye sabit kalsın
         return kolon == "urun"
 
+    def _filtre_bagla(self) -> None:
+        from liste_filtre_ui import treeview_filtre_bagla
+
+        basliklar = {k: self._kolon_ayar[k][0] for k in self._kolonlar}
+        self._filtre_bag = treeview_filtre_bagla(
+            self.tablo,
+            basliklar,
+            get_filtre_dict=lambda: self._liste_filtre,
+            set_filtre_dict=None,
+            yenile_cb=self.yenile,
+            deger_listesi_cb=self._filtre_adaylari,
+            parent=self,
+            kolonlar=self._kolonlar,
+            # Bakiye: saklı çalışan bakiye; kolon hunisi kapalı (DOC5)
+            haric_kolonlar=("bakiye",),
+            sag_tik_filtre=True,
+        )
+
+    def _gorunum_durumu(self) -> dict:
+        """Kayıtlı görünüm — filtre + tarih/stok kriteri; bakiye yeniden hesaplanmaz."""
+        genislik = {}
+        for k in self._kolonlar:
+            try:
+                genislik[k] = int(self.tablo.column(k, "width"))
+            except tk.TclError:
+                genislik[k] = self._kolon_ayar[k][1]
+        return {
+            "filtreler": {
+                "tarih_bas": self.tarih_bas.get().strip(),
+                "tarih_bit": self.tarih_bit.get().strip(),
+                "stok_ara": self.stok_ara.get().strip(),
+            },
+            "kolon_filtre": {
+                "ekstre": {k: sorted(v) for k, v in (self._liste_filtre or {}).items()}
+            },
+            "kolon_genislik": genislik,
+        }
+
+    def _gorunum_uygula(self, durum: dict) -> None:
+        if not isinstance(durum, dict):
+            return
+        kriter = durum.get("filtreler") or {}
+        for alan, widget in (
+            ("tarih_bas", self.tarih_bas),
+            ("tarih_bit", self.tarih_bit),
+            ("stok_ara", self.stok_ara),
+        ):
+            if alan in kriter:
+                widget.delete(0, "end")
+                widget.insert(0, str(kriter.get(alan) or ""))
+        kf = (durum.get("kolon_filtre") or {}).get("ekstre") or {}
+        self._liste_filtre = {
+            str(k): set(map(str, v)) if isinstance(v, (list, set, tuple)) else set()
+            for k, v in kf.items()
+        }
+        # Bakiye hunisi asla yüklenmesin
+        self._liste_filtre.pop("bakiye", None)
+        for kolon, genislik in (durum.get("kolon_genislik") or {}).items():
+            try:
+                self.tablo.column(kolon, width=int(genislik))
+            except (tk.TclError, TypeError, ValueError):
+                pass
+        self.yenile()
+
+    def _filtre_adaylari(self):
+        """Belge satırlarının görünen değerleri (stok alt satırları hariç)."""
+        if self._ham is None:
+            return []
+        baslangic, bitis, ok = self._tarih_araligi()
+        if not ok:
+            return []
+        stok_filtre = turkce_normalize((self.stok_ara.get() or "").strip())
+        aday = []
+        for belge in list(reversed(self._ham.get("belgeler") or [])):
+            tarih = belge.get("tarih")
+            if baslangic and tarih and tarih < baslangic:
+                continue
+            if bitis and tarih and tarih > bitis:
+                continue
+            stok_satirlari = list(belge.get("stok_satirlari") or [])
+            stoklu = belge.get("tur") in STOKLU_TURLER
+            if stok_filtre:
+                stok_satirlari = [
+                    s
+                    for s in stok_satirlari
+                    if stok_filtre in turkce_normalize(s.get("urun_kodu") or "")
+                    or stok_filtre in turkce_normalize(s.get("urun_adi") or "")
+                ]
+                if stoklu and not stok_satirlari:
+                    continue
+                if not stoklu:
+                    continue
+            borc = Decimal(str(belge.get("borc") or 0))
+            alacak = Decimal(str(belge.get("alacak") or 0))
+            bakiye = Decimal(str(belge.get("bakiye") or 0))
+            aday.append({
+                "values": self._belge_degerleri(
+                    tarih, _belge_baslik(belge), borc, alacak, bakiye
+                )
+            })
+        return aday
+
     def _kolonlari_uygula(self, genislikler: dict | None = None) -> None:
         gen = genislikler if genislikler is not None else (
             self._oturum_genislik or self._varsayilan_genislikler()
@@ -295,6 +428,8 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                 anchor=hiza,
                 stretch=self._kolon_stretch(kolon),
             )
+        if self._filtre_bag:
+            self._filtre_bag["guncelle_basliklar"]()
 
     def _kolon_ayirici_basla(self, event) -> None:
         try:
@@ -473,11 +608,17 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         for item in self.tablo.get_children():
             self.tablo.delete(item)
 
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
         belgeler = list(reversed(rapor.get("belgeler") or []))
         gosterilen = 0
         borc_t = Decimal("0")
         alacak_t = Decimal("0")
-        son_bakiye = Decimal("0")
+        # DOC5: görünen borç−alacak = filtrelenen hareket neti; kapanış bakiyesi tam akıştan
+        filtre_net = Decimal("0")
+        # Gerçek kapanış: dönem/stok filtresi öncesi saklı cari bakiye — görünür satırdan türetilmez
+        gercek_kapanis = Decimal(str(rapor.get("bakiye") or 0))
+        self._istatistik_satirlari = []
 
         for belge in belgeler:
             tarih = belge.get("tarih")
@@ -502,21 +643,32 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
 
             borc = Decimal(str(belge.get("borc") or 0))
             alacak = Decimal(str(belge.get("alacak") or 0))
+            # Saklı çalışan bakiye — görünür satırlardan yeniden hesaplanmaz
             bakiye = Decimal(str(belge.get("bakiye") or 0))
+            belge_vals = self._belge_degerleri(
+                tarih, _belge_baslik(belge), borc, alacak, bakiye
+            )
+            if not satir_kolon_filtre_uygun(belge_vals, self._kolonlar, self._liste_filtre):
+                continue
             tag = "belge" if gosterilen % 2 == 0 else "belge_cift"
             parent = self.tablo.insert(
                 "",
                 "end",
-                values=self._belge_degerleri(
-                    tarih, _belge_baslik(belge), borc, alacak, bakiye
-                ),
+                values=belge_vals,
                 tags=(tag,),
                 open=True,
             )
             gosterilen += 1
             borc_t += borc
             alacak_t += alacak
-            son_bakiye = bakiye
+            filtre_net += borc - alacak
+            # İstatistik: yalnız belge satırı borç/alacak — bakiye asla toplanmaz
+            self._istatistik_satirlari.append({
+                "borc": borc,
+                "alacak": alacak,
+                "tutar": None,
+                "miktar": None,
+            })
 
             if stoklu and stok_satirlari:
                 self.tablo.insert(
@@ -534,20 +686,25 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                         tags=(stok_tag,),
                     )
 
+        if self._filtre_bag:
+            self._filtre_bag["guncelle_basliklar"]()
         self.ozet.configure(
             text=(
                 f"{rapor['cari'].cari_kodu} — {rapor['cari'].unvan}  |  "
-                f"Genel bakiye: {_para(rapor.get('bakiye')) or '0,00'}"
+                f"Gerçek kapanış bakiyesi: {_para(gercek_kapanis) or '0,00'}"
             )
         )
-        self.alt_ozet.configure(
-            text=(
-                f"Belge: {gosterilen}  |  "
-                f"Borç: {_para(borc_t) or '0,00'}  |  "
-                f"Alacak: {_para(alacak_t) or '0,00'}  |  "
-                f"Son bakiye: {_para(son_bakiye) or '0,00'}"
-            )
+        alt = (
+            f"Belge: {gosterilen}  |  "
+            f"Borç: {_para(borc_t) or '0,00'}  |  "
+            f"Alacak: {_para(alacak_t) or '0,00'}  |  "
+            f"Gerçek kapanış bakiyesi: {_para(gercek_kapanis) or '0,00'}"
         )
+        if self._liste_filtre or stok_filtre:
+            alt += f"  |  Filtrelenen hareket neti: {_para(filtre_net) or '0,00'}"
+        self.alt_ozet.configure(text=alt)
+        if getattr(self, "_istatistik", None) and callable(self._istatistik.get("guncelle")):
+            self._istatistik["guncelle"]()
 
     def _hepsini_ac(self):
         for item in self.tablo.get_children():
@@ -565,6 +722,8 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         baslangic, bitis, ok = self._tarih_araligi()
         if not ok:
             return None
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
         stok_filtre = turkce_normalize((self.stok_ara.get() or "").strip())
         belgeler = list(reversed(self._ham.get("belgeler") or []))
         sonuc = []
@@ -587,6 +746,14 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
                     continue
                 if not stoklu:
                     continue
+            borc = Decimal(str(belge.get("borc") or 0))
+            alacak = Decimal(str(belge.get("alacak") or 0))
+            bakiye = Decimal(str(belge.get("bakiye") or 0))
+            belge_vals = self._belge_degerleri(
+                tarih, _belge_baslik(belge), borc, alacak, bakiye
+            )
+            if not satir_kolon_filtre_uygun(belge_vals, self._kolonlar, self._liste_filtre):
+                continue
             sonuc.append((belge, stok_satirlari if stoklu else []))
         return sonuc
 
