@@ -321,6 +321,32 @@ def _toplamlar_kur(parent) -> tuple[tk.Frame, dict]:
     for w in gizli:
         w.grid_remove()
     degerler["_fon_ek_widgetleri"] = gizli
+
+    # Kârlılık Özeti — Satış / Maliyet / Kâr / % (yetki kontrolü dialogda)
+    kar_fr = tk.Frame(sag, bg=ftema.BEYAZ)
+    kar_fr.grid(row=8, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+    tk.Label(
+        kar_fr, text="Kârlılık Özeti", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
+        font=_font(parent, 10, "bold"),
+    ).pack(anchor="w")
+    satir = tk.Frame(kar_fr, bg=ftema.BEYAZ)
+    satir.pack(fill="x", pady=(2, 0))
+    for anahtar, baslik in (
+        ("kar_satis", "Satış Toplamı"),
+        ("kar_maliyet", "Toplam Maliyet"),
+        ("kar_tutar", "Toplam Kâr"),
+        ("kar_yuzde", "Kâr Yüzdesi"),
+    ):
+        k = tk.Frame(satir, bg=ftema.BEYAZ)
+        k.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        tk.Label(k, text=baslik, bg=ftema.BEYAZ, fg=ftema.IKINCIL, font=kucuk).pack(anchor="w")
+        lbl = tk.Label(
+            k, text="—", bg=ftema.BEYAZ, fg=ftema.METIN,
+            font=_font(parent, 14, "bold"), anchor="w",
+        )
+        lbl.pack(anchor="w")
+        degerler[anahtar] = lbl
+    degerler["_karlilik_cerceve"] = kar_fr
     return sag, degerler
 
 
@@ -862,10 +888,11 @@ def ust_panel_genislik_kur(dialog) -> None:
     ] + [(t, "Takvim", "▼") for t in takvimler]
     for panel_ad, metinler in (
         ("_fatura_ust_cari", {
-            "Ortalama borç kapatma süresi": "Ort. kapatma",
-            "Ortalama Valör": "Ort. valör",
-            "Ortalama Valör Tarihi": "Valör tarihi",
-            "Ortalama Valör Gün Sayısı": "Valör gün",
+            "Kalan Bakiye": "Kalan Bakiye",
+            "Kalan Bakiye Gün": "Kalan Gün",
+            "Kapatılan Bakiye Gün": "Kapatılan Gün",
+            "Toplam Borç": "Toplam Borç",
+            "Toplam Alacak": "Toplam Alacak",
         }),
         ("_fatura_ust_sol", {"İşlem Saati": "Saat"}),
     ):
