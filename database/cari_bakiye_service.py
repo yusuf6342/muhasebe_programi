@@ -261,7 +261,67 @@ def liste_bakiyeleri(
     return {cid: _kurus(_kurus(borclar[cid]) - _kurus(alacaklar[cid])) for cid in ids}
 
 
+def liste_bakiyeleri_detay(
+    customer_ids: list[int],
+    *,
+    company_id: int | None = None,
+    currency: str | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Toplu bakiye + borç/alacak toplamları (liste ekranı N+1 net_bakiye yerine)."""
+    _ = _aktif_company_id(company_id)
+    ids = list(dict.fromkeys(int(i) for i in customer_ids if i is not None))
+    if not ids:
+        return {}
+    pb_filtre = (currency or "").strip().upper() or None
+    borclar: dict[int, Decimal] = {cid: Decimal("0") for cid in ids}
+    alacaklar: dict[int, Decimal] = {cid: Decimal("0") for cid in ids}
+    with get_session() as session:
+        for bas in range(0, len(ids), 500):
+            parca = ids[bas : bas + 500]
+            islem_belgeleri: dict[int, set[str]] = {cid: set() for cid in parca}
+            for cid, bn, borc, alacak, pb in session.execute(
+                select(
+                    CariIslem.cari_id,
+                    CariIslem.belge_no,
+                    CariIslem.borc,
+                    CariIslem.alacak,
+                    CariIslem.para_birimi,
+                ).where(CariIslem.cari_id.in_(parca))
+            ):
+                islem_belgeleri[int(cid)].add(bn or "")
+                if pb_filtre and (pb or "TRY").upper() != pb_filtre:
+                    continue
+                borclar[int(cid)] += _d(borc)
+                alacaklar[int(cid)] += _d(alacak)
+            for cid, bn, tutar, pb in session.execute(
+                select(
+                    SatisHareketi.cari_id,
+                    SatisHareketi.belge_no,
+                    SatisHareketi.satis_tutari,
+                    SatisHareketi.para_birimi,
+                ).where(SatisHareketi.cari_id.in_(parca))
+            ):
+                bn = bn or ""
+                if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
+                    continue
+                if pb_filtre and (pb or "TRY").upper() != pb_filtre:
+                    continue
+                borclar[int(cid)] += _d(tutar)
+    sonuc: dict[int, dict[str, Any]] = {}
+    for cid in ids:
+        tb = _kurus(borclar[cid])
+        ta = _kurus(alacaklar[cid])
+        sonuc[cid] = {
+            "bakiye": _kurus(tb - ta),
+            "toplam_borc": tb,
+            "toplam_alacak": ta,
+        }
+    return sonuc
+
+
 PARA_BIRIMI_TL = "TL"
+# Liste özet eşiği: mutlak net ≤ bu tutar sayılardan ve toplamdan çıkar (tam 10,00 hariç)
+OZET_ESIK_TL = Decimal("10.00")
 
 
 def bakiye_yon_kisa(bakiye, *, tedarikci_modu: bool = False) -> str:
@@ -281,6 +341,77 @@ def bakiye_bilgisi(bakiye, *, tedarikci_modu: bool = False) -> dict[str, Any]:
         "net": net,
         "tutar": abs(net),
         "yon": bakiye_yon_kisa(net, tedarikci_modu=tedarikci_modu),
+        "para_birimi": PARA_BIRIMI_TL,
+    }
+
+
+def filtre_bakiye_ozeti(
+    bakiyeler: dict[int, Any] | list[tuple[int, Any]],
+    *,
+    tedarikci_modu: bool = False,
+    esik: Decimal | None = None,
+) -> dict[str, Any]:
+    """Filtre kapsamındaki carilerin borçlu/alacaklı özeti (tek yön, tek sayım).
+
+    Net = borç − alacak (müşteride + → Borçlu, − → Alacaklı).
+    ``abs(net) <= esik`` (varsayılan 10,00 TL) hem sayıdan hem toplamdan çıkar.
+    Aynı cari_id bir kez sayılır; çift rol kartı da tek kayıt olarak girer.
+    """
+    esik_tl = _kurus(OZET_ESIK_TL if esik is None else esik)
+    if isinstance(bakiyeler, dict):
+        pairs = list(bakiyeler.items())
+    else:
+        pairs = list(bakiyeler)
+
+    gorulen: set[int] = set()
+    borclu_say = 0
+    alacakli_say = 0
+    borclar = Decimal("0")
+    alacaklar = Decimal("0")
+    esik_alti = 0
+    sifir = 0
+    hatali = 0
+
+    for cid, ham in pairs:
+        try:
+            kid = int(cid)
+        except (TypeError, ValueError):
+            hatali += 1
+            continue
+        if kid in gorulen:
+            continue
+        gorulen.add(kid)
+        try:
+            net = _kurus(ham)
+        except Exception:
+            hatali += 1
+            continue
+        if net == 0:
+            sifir += 1
+            continue
+        mutlak = abs(net)
+        if mutlak <= esik_tl:
+            esik_alti += 1
+            continue
+        yon = bakiye_yon_kisa(net, tedarikci_modu=tedarikci_modu)
+        if yon == "Borçlu":
+            borclu_say += 1
+            borclar += mutlak
+        elif yon == "Alacaklı":
+            alacakli_say += 1
+            alacaklar += mutlak
+
+    return {
+        "borclu_sayisi": borclu_say,
+        "borclar_toplami": _kurus(borclar),
+        "alacakli_sayisi": alacakli_say,
+        "alacaklar_toplami": _kurus(alacaklar),
+        "esik": esik_tl,
+        "esik_alti_sayisi": esik_alti,
+        "sifir_sayisi": sifir,
+        "hatali_sayisi": hatali,
+        "kapsam_sayisi": len(gorulen),
+        "tedarikci_modu": bool(tedarikci_modu),
         "para_birimi": PARA_BIRIMI_TL,
     }
 

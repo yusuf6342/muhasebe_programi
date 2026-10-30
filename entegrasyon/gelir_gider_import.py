@@ -136,42 +136,80 @@ def _tur_ve_tutar(liste: dict, ana: dict) -> tuple[str, Decimal]:
     raise ValueError(f"Gelir/Gider türü belirsiz tur_id={tur_id!r} tur_adi={tur_adi!r}")
 
 
-def evb_hizmet_kartlarini_hazirla() -> None:
-    """EvoBulut aktarımı için genel gelir/gider hizmet kartlarını oluşturur."""
+def evb_hizmet_kartlarini_hazirla(*, uyari_listesi: list[str] | None = None) -> dict[str, str]:
+    """EvoBulut aktarımı için genel gelir/gider hizmet kartlarını oluşturur.
+
+    Tek kart politikası: tüm EVB gelir/gider faturaları EVB-GIDER / EVB-GELIR kartına
+    bağlanır. Cari unvanları (Peşin Perakende, Trendyol, kişi adları) cari eşlemesine
+    gider; hizmet kartı adına yazılmaz. Kullanıcı sildiyse engel tablosu yeniden
+    oluşturmayı engeller ve uyarı üretir. Kullanıcı düzenlediyse ad/sınıf ezilmez.
+    """
     from database.models.hizmet import HizmetKarti
 
-    with get_session() as session:
-        gider = session.scalar(
-            select(HizmetKarti).where(HizmetKarti.hizmet_kodu == HIZMET_KOD_GIDER)
-        )
-        gelir = session.scalar(
-            select(HizmetKarti).where(HizmetKarti.hizmet_kodu == HIZMET_KOD_GELIR)
-        )
-    if gider is None:
-        HizmetService.kaydet(
-            {
-                "hizmet_kodu": HIZMET_KOD_GIDER,
-                "hizmet_adi": "EvoBulut Gider",
-                "hizmet_turu": "GIDER",
-                "gider_sinifi": "ISLETME",
-                "birim": "Adet",
-                "kdv_orani": 0,
-                "alis_fiyati": 0,
-                "satis_fiyati": 0,
-            }
-        )
-    if gelir is None:
-        HizmetService.kaydet(
-            {
-                "hizmet_kodu": HIZMET_KOD_GELIR,
-                "hizmet_adi": "EvoBulut Gelir",
-                "hizmet_turu": "GELIR",
-                "birim": "Adet",
-                "kdv_orani": 0,
-                "alis_fiyati": 0,
-                "satis_fiyati": 0,
-            }
-        )
+    HizmetService.ensure_schema()
+    sonuc: dict[str, str] = {}
+    uyari = uyari_listesi if uyari_listesi is not None else []
+
+    for kod, tur, ad, sinif, kimlik in (
+        (HIZMET_KOD_GIDER, "GIDER", "EvoBulut Gider", "ISLETME", "GENEL_GIDER"),
+        (HIZMET_KOD_GELIR, "GELIR", "EvoBulut Gelir", None, "GENEL_GELIR"),
+    ):
+        if HizmetService.kaynak_engelli_mi("EVOBULUT", kimlik):
+            uyari.append(
+                f"EvoBulut {kod} kartı kullanıcı tarafından silinmiş/engellenmiş; "
+                "yeniden oluşturulmadı. Aktarım bu kartı gerektiren kayıtları "
+                "eşleştirme sorunu olarak bildirmeli."
+            )
+            sonuc[kod] = "ENGELLI"
+            continue
+        mevcut = HizmetService.kaynak_ile_bul("EVOBULUT", kimlik)
+        if mevcut is None:
+            with get_session() as session:
+                mevcut = session.scalar(
+                    select(HizmetKarti).where(HizmetKarti.hizmet_kodu == kod)
+                )
+        if mevcut is None:
+            HizmetService.kaydet(
+                {
+                    "hizmet_kodu": kod,
+                    "hizmet_adi": ad,
+                    "hizmet_turu": tur,
+                    "gider_sinifi": sinif or "",
+                    "birim": "Adet",
+                    "kdv_orani": 0,
+                    "alis_fiyati": 0,
+                    "satis_fiyati": 0,
+                    "kaynak_sistem": "EVOBULUT",
+                    "kaynak_kimlik": kimlik,
+                    "kullanici_duzenledi": False,
+                },
+                kullanici_islemi=False,
+            )
+            # kaynak alanlarını yaz (kaydet yeni kayıtta set eder)
+            with get_session() as session:
+                h = session.scalar(select(HizmetKarti).where(HizmetKarti.hizmet_kodu == kod))
+                if h is not None:
+                    h.kaynak_sistem = "EVOBULUT"
+                    h.kaynak_kimlik = kimlik
+                    h.kullanici_duzenledi = False
+                    session.flush()
+            sonuc[kod] = "OLUSTURULDU"
+        else:
+            # Kullanıcı düzenlemesini / pasifi ezme
+            with get_session() as session:
+                h = session.get(HizmetKarti, int(mevcut.id))
+                if h is None:
+                    continue
+                if not h.kaynak_sistem:
+                    h.kaynak_sistem = "EVOBULUT"
+                    h.kaynak_kimlik = kimlik
+                if h.kullanici_duzenledi or not h.aktif:
+                    sonuc[kod] = "KORUNDU"
+                else:
+                    # Yalnız boş kaynak izini tamamla; ad/kod değiştirme
+                    sonuc[kod] = "MEVCUT"
+                session.flush()
+    return sonuc
 
 
 def _odeme_tutari(tutar: Decimal, kalan: Decimal | None, kapatilan: Decimal | None) -> Decimal:
@@ -195,13 +233,39 @@ def _hizmet_faturasi_yaz(
     kalan: Decimal | None,
     kapatilan: Decimal | None,
 ) -> bool:
-    """Hizmet faturası oluşturur. True = yeni yazıldı. Cari deftere dokunmaz."""
+    """Hizmet faturası oluşturur. True = yeni yazıldı. Cari deftere dokunmaz.
+
+    Satır açıklaması cari/işlem metnini taşıyabilir; bu yeni hizmet kartı üretmez.
+    Kart kodu her zaman EVB-GIDER / EVB-GELIR genel kartıdır.
+    """
     fatura_no = belge[:30]
     if HizmetFaturasiService.fatura_no_var_mi(fatura_no):
         return False
 
-    odeme = _odeme_tutari(tutar, kalan, kapatilan)
     hizmet_kodu = HIZMET_KOD_GELIR if tur == "GELIR" else HIZMET_KOD_GIDER
+    kimlik = "GENEL_GELIR" if tur == "GELIR" else "GENEL_GIDER"
+    if HizmetService.kaynak_engelli_mi("EVOBULUT", kimlik):
+        raise ValueError(
+            f"EvoBulut {hizmet_kodu} kartı engelli/silinmiş; "
+            f"belge {fatura_no} için eşleştirme gerekli (sessizce atlanmadı)."
+        )
+    kart = HizmetService.kaynak_ile_bul("EVOBULUT", kimlik)
+    if kart is None:
+        from database.models.hizmet import HizmetKarti
+
+        with get_session() as session:
+            kart = session.scalar(select(HizmetKarti).where(HizmetKarti.hizmet_kodu == hizmet_kodu))
+    if kart is None:
+        raise ValueError(
+            f"{hizmet_kodu} hizmet kartı yok; evb_hizmet_kartlarini_hazirla çağrılmalı."
+        )
+    if not kart.aktif:
+        raise ValueError(
+            f"{hizmet_kodu} pasif; belge {fatura_no} için kartı aktifleştirin veya eşleştirin."
+        )
+
+    odeme = _odeme_tutari(tutar, kalan, kapatilan)
+    # Satır adı: kart adı (cari unvanı kart adına yazılmaz)
     HizmetFaturasiService.kaydet(
         {
             "fatura_no": fatura_no,
@@ -215,7 +279,7 @@ def _hizmet_faturasi_yaz(
         [
             {
                 "hizmet_kodu": hizmet_kodu,
-                "hizmet_adi": aciklama[:200] or ("EvoBulut Gelir" if tur == "GELIR" else "EvoBulut Gider"),
+                "hizmet_adi": kart.hizmet_adi,
                 "aciklama": aciklama[:500] or None,
                 "miktar": Decimal("1"),
                 "birim": "Adet",

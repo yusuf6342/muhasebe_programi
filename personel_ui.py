@@ -185,13 +185,14 @@ def personel_listesi_goster(app):
 
 # --- Özlük -------------------------------------------------------------------
 
-def ozluk_dosyalari_goster(app):
+def ozluk_dosyalari_goster(app, personel_id: int | None = None):
+    """Özlük arşivi — standart personel_kartlari kimliği; ikinci depo yok."""
     app._icerigi_temizle()
     _ust(app, "ÖZLÜK DOSYALARI")
     ttk.Label(
         app.icerik,
         text="Belgeleri personel ve kategori bazında yükleyin. Sağlık ve adli sicil ayrı yetki ister. "
-        "Yükleme resmî onay anlamına gelmez.",
+        "Yükleme resmî onay anlamına gelmez. Personel kimliği standart karttan alınır.",
         wraplength=760,
     ).pack(anchor="w", pady=(10, 0))
 
@@ -203,7 +204,9 @@ def ozluk_dosyalari_goster(app):
     ttk.Label(ust, text="Personel").pack(side="left")
     personeller = PersonelService.listele(limit=1000)
     pmap = {f"{p['kod']} — {p['ad_soyad']}": p["id"] for p in personeller}
-    pvar = tk.StringVar(value=next(iter(pmap), ""))
+    id_to_etiket = {v: k for k, v in pmap.items()}
+    baslangic = id_to_etiket.get(int(personel_id)) if personel_id else None
+    pvar = tk.StringVar(value=baslangic or next(iter(pmap), ""))
     ttk.Combobox(ust, textvariable=pvar, values=list(pmap), width=40, state="readonly").pack(
         side="left", padx=6
     )
@@ -750,12 +753,16 @@ def sgk_beyan_goster(app):
                     if s.get("donem_yil") and s.get("donem_ay")
                     else ""
                 )
+                bagli = s.get("bagli_personel_ids") or []
+                onay = s.get("onay_no") or ""
+                if bagli:
+                    onay = (onay + f" · {len(bagli)} bağ").strip(" ·")
                 tree.insert(
                     "", "end", iid=str(s["id"]),
                     values=(
                         s["islem_turu"], s.get("isyeri_kodu") or "",
                         donem, s["durum"], s.get("son_tarih") or "",
-                        s.get("onay_no") or "",
+                        onay,
                     ),
                 )
         except Exception as e:
@@ -779,7 +786,7 @@ def sgk_beyan_goster(app):
 
         def kaydet():
             try:
-                PersonelSgkService.kaydet(
+                r = PersonelSgkService.kaydet(
                     {
                         "islem_turu": "MPHB",
                         "isyeri_kodu": isyeri.get(),
@@ -791,10 +798,72 @@ def sgk_beyan_goster(app):
                 )
                 dlg.destroy()
                 yenile()
+                if r.get("son_tarih_uyari"):
+                    messagebox.showwarning(
+                        "SGK",
+                        f"Kayıt oluştu; son tarih hesaplanamadı:\n{r['son_tarih_uyari']}",
+                        parent=app,
+                    )
             except Exception as e:
                 messagebox.showerror("SGK", str(e), parent=dlg)
 
         ttk.Button(f, text="Oluştur", command=kaydet).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def yeni_giris_cikis(islem_turu: str, baslik: str):
+        """İşe giriş / işten ayrılış bildirim hazırlık kaydı (portal gönderimi yok)."""
+        from database.personel_service import PersonelService
+
+        personeller = PersonelService.listele(limit=500)
+        if not personeller:
+            messagebox.showwarning("SGK", "Personel kartı yok.", parent=app)
+            return
+        dlg = tk.Toplevel(app)
+        dlg.title(baslik)
+        dlg.transient(app)
+        dlg.grab_set()
+        f = ttk.Frame(dlg, padding=12)
+        f.pack()
+        isyeri = tk.StringVar(value="MERKEZ")
+        tarih_v = tk.StringVar(value=date.today().isoformat())
+        pmap = {f"{p['kod']} — {p['ad_soyad']}": p["id"] for p in personeller}
+        pvar = tk.StringVar(value=next(iter(pmap), ""))
+        ttk.Label(f, text="Personel").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=pvar, values=list(pmap), width=36, state="readonly").grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(f, text="İşyeri kodu").grid(row=1, column=0, sticky="w")
+        ttk.Entry(f, textvariable=isyeri, width=20).grid(row=1, column=1, sticky="w")
+        ttk.Label(
+            f,
+            text="Ayrılış tarihi" if islem_turu == "ISTEN_AYRILIS" else "İşe giriş tarihi",
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Entry(f, textvariable=tarih_v, width=14).grid(row=2, column=1, sticky="w")
+
+        def kaydet():
+            pid = pmap.get(pvar.get())
+            if not pid:
+                return
+            try:
+                r = PersonelSgkService.kaydet(
+                    {
+                        "islem_turu": islem_turu,
+                        "isyeri_kodu": isyeri.get().strip(),
+                        "personel_id": int(pid),
+                        "baslangic_tarihi": tarih_v.get().strip(),
+                        "durum": "HAZIRLANACAK",
+                    }
+                )
+                dlg.destroy()
+                yenile()
+                msg = f"Kayıt #{r['id']} · son tarih: {r.get('son_tarih') or '—'}"
+                if r.get("son_tarih_uyari"):
+                    messagebox.showwarning("SGK", msg + f"\n{r['son_tarih_uyari']}", parent=app)
+                else:
+                    messagebox.showinfo("SGK", msg, parent=app)
+            except Exception as e:
+                messagebox.showerror("SGK", str(e), parent=dlg)
+
+        ttk.Button(f, text="Oluştur", command=kaydet).grid(row=3, column=0, columnspan=2, pady=10)
 
     def resmi_onay():
         sec = tree.selection()
@@ -826,10 +895,65 @@ def sgk_beyan_goster(app):
 
         ttk.Button(f, text="Kaydet", command=kaydet).grid(row=1, column=0, columnspan=2, pady=10)
 
+    def personel_bagla():
+        """MPHB ana kaydına standart personel kartı bağlar (mükerrer beyan yok)."""
+        sec = tree.selection()
+        if not sec:
+            messagebox.showinfo("SGK", "Önce MPHB satırı seçin.", parent=app)
+            return
+        from database.personel_service import PersonelService
+
+        personeller = PersonelService.listele(limit=500)
+        if not personeller:
+            messagebox.showwarning("SGK", "Bağlanacak personel kartı yok.", parent=app)
+            return
+        dlg = tk.Toplevel(app)
+        dlg.title("Personel bağla (MPHB)")
+        dlg.transient(app)
+        dlg.grab_set()
+        f = ttk.Frame(dlg, padding=12)
+        f.pack()
+        ttk.Label(
+            f,
+            text="Standart personel kartı seçin. İkinci personel deposu kullanılmaz.",
+            wraplength=360,
+        ).pack(anchor="w")
+        pmap = {f"{p['kod']} — {p['ad_soyad']}": p["id"] for p in personeller}
+        pvar = tk.StringVar(value=next(iter(pmap), ""))
+        ttk.Combobox(f, textvariable=pvar, values=list(pmap), width=40, state="readonly").pack(
+            pady=8
+        )
+
+        def kaydet():
+            pid = pmap.get(pvar.get())
+            if not pid:
+                return
+            try:
+                PersonelSgkService.bagla_personel(int(sec[0]), int(pid))
+                dlg.destroy()
+                yenile()
+                messagebox.showinfo("SGK", "Personel MPHB kaydına bağlandı.", parent=app)
+            except Exception as e:
+                messagebox.showerror("SGK", str(e), parent=dlg)
+
+        ttk.Button(f, text="Bağla", command=kaydet).pack(side="left", padx=(0, 6))
+        ttk.Button(f, text="Vazgeç", command=dlg.destroy).pack(side="left")
+
     dug = ttk.Frame(app.icerik)
     dug.pack(fill="x", pady=8)
     ttk.Button(dug, text="Yenile", command=yenile).pack(side="left")
     ttk.Button(dug, text="Yeni MPHB", command=yeni_mphb).pack(side="left", padx=6)
+    ttk.Button(
+        dug,
+        text="İşe Giriş Bildirimi",
+        command=lambda: yeni_giris_cikis("ISE_GIRIS", "İşe giriş bildirim kaydı"),
+    ).pack(side="left", padx=6)
+    ttk.Button(
+        dug,
+        text="İşten Ayrılış Bildirimi",
+        command=lambda: yeni_giris_cikis("ISTEN_AYRILIS", "İşten ayrılış bildirim kaydı"),
+    ).pack(side="left", padx=6)
+    ttk.Button(dug, text="Personel Bağla", command=personel_bagla).pack(side="left", padx=6)
     ttk.Button(dug, text="Resmî Onay Belgesi Kaydet", command=resmi_onay).pack(side="left")
     yenile()
     if hasattr(app, "nav_sayfa_isaretle"):

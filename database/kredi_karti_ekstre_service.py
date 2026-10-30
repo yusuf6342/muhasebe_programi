@@ -125,11 +125,24 @@ class KrediKartiEkstreService:
             "tatil_odeme_kurali": "VARCHAR(20)",
         }
         eksik = {a: t for a, t in ekstra.items() if a not in mevcut}
-        if not eksik:
-            return
-        with engine.begin() as conn:
-            for alan, tip in eksik.items():
-                conn.execute(text(f'ALTER TABLE "kredi_karti_tanimlari" ADD COLUMN "{alan}" {tip}'))
+        if eksik:
+            with engine.begin() as conn:
+                for alan, tip in eksik.items():
+                    conn.execute(text(f'ALTER TABLE "kredi_karti_tanimlari" ADD COLUMN "{alan}" {tip}'))
+        if insp.has_table("kredi_karti_ekstreleri"):
+            ekstre_sutun = {c["name"] for c in insp.get_columns("kredi_karti_ekstreleri")}
+            ekstre_ekstra = {
+                "son_odeme_manuel": "BOOLEAN DEFAULT 0 NOT NULL",
+                "asgari_tutar": "NUMERIC(18, 2)",
+                "asgari_odenen": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+            }
+            eklenecek = {a: t for a, t in ekstre_ekstra.items() if a not in ekstre_sutun}
+            if eklenecek:
+                with engine.begin() as conn:
+                    for alan, tip in eklenecek.items():
+                        conn.execute(
+                            text(f'ALTER TABLE "kredi_karti_ekstreleri" ADD COLUMN "{alan}" {tip}')
+                        )
 
     # --- Dönem kuralları (gün tanımsızsa tahmin yapılmaz) ---
 
@@ -266,6 +279,193 @@ class KrediKartiEkstreService:
             return []
         ilk = KrediKartiEkstreService.donem_bilgisi(islem_tarihi, kart)["kesim_tarihi"]
         return [KrediKartiEkstreService.kesim_ay_sonra(ilk, i, kart) for i in range(max(1, adet))]
+
+    @staticmethod
+    def kart_tarih_ozeti(kart: KrediKartiTanimi | dict, bugun: date | None = None) -> dict[str, Any]:
+        """Liste/kart ekranı için GG.AA.YYYY tarihleri.
+
+        Dönüş: son_kesim, sonraki_kesim (planlanan), son_odeme + etiket metinleri.
+        Kesim günü yoksa tarihler None, etiketler «—».
+        """
+        bugun = bugun or date.today()
+        bos = {
+            "son_kesim": None,
+            "sonraki_kesim": None,
+            "son_odeme": None,
+            "son_kesim_metin": "—",
+            "sonraki_kesim_metin": "—",
+            "son_odeme_metin": "—",
+        }
+        if KrediKartiEkstreService.kesim_gunu(kart) is None:
+            return bos
+        try:
+            donem = KrediKartiEkstreService.donem_bilgisi(bugun, kart)
+        except Exception:
+            return bos
+        bu_kesim = donem["kesim_tarihi"]
+        if bu_kesim <= bugun:
+            # Bugün kesim günü veya sonrası: bu kesim kesinleşmiş
+            son_kesim = bu_kesim
+            sonraki = KrediKartiEkstreService.kesim_ay_sonra(bu_kesim, 1, kart)
+            son_odeme = donem.get("son_odeme_tarihi")
+            if son_odeme and son_odeme < bugun:
+                sonraki_donem = KrediKartiEkstreService.kesim_donemi(sonraki, kart)
+                son_odeme = sonraki_donem.get("son_odeme_tarihi") or son_odeme
+        else:
+            # Henüz bu ayın kesimi gelmedi: son kesinleşmiş = önceki kesim
+            son_kesim = KrediKartiEkstreService.kesim_ay_sonra(bu_kesim, -1, kart)
+            sonraki = bu_kesim
+            onceki = KrediKartiEkstreService.kesim_donemi(son_kesim, kart)
+            son_odeme = onceki.get("son_odeme_tarihi")
+            # Önceki dönemin son ödemesi geçtiyse yaklaşan ödeme = planlanan kesimin son ödemesi
+            if son_odeme and son_odeme < bugun:
+                son_odeme = donem.get("son_odeme_tarihi") or son_odeme
+
+        def _fmt(t: date | None, *, planlanan: bool = False) -> str:
+            if t is None:
+                return "—"
+            metin = t.strftime("%d.%m.%Y")
+            return f"{metin} (Planlanan)" if planlanan else metin
+
+        return {
+            "son_kesim": son_kesim,
+            "sonraki_kesim": sonraki,
+            "son_odeme": son_odeme,
+            "son_kesim_metin": _fmt(son_kesim),
+            "sonraki_kesim_metin": _fmt(sonraki, planlanan=True),
+            "son_odeme_metin": _fmt(son_odeme),
+        }
+
+    @staticmethod
+    def kart_tarih_kurali_guncelle(
+        kredi_karti_id: int,
+        *,
+        hesap_kesim_gunu=None,
+        son_odeme_gunu=None,
+        kesimden_sonra_odeme_gun=None,
+        neden: str | None = None,
+    ) -> dict:
+        """Gelecek dönem kurallarını günceller; borç/muhasebe tutarına dokunmaz.
+
+        Kesinleşmiş ekstre tutarları değişmez. Manuel son ödeme işaretli ekspres korunur.
+        """
+        yazma_zorunlu("finans_duzenleme")
+        KrediKartiEkstreService.schema_hazirla()
+
+        def _gun(ham, etiket):
+            if ham in (None, ""):
+                return None
+            try:
+                g = int(str(ham).strip())
+            except ValueError as hata:
+                raise ValueError(f"{etiket} 1-31 arasında olmalıdır.") from hata
+            if g < 1 or g > 31:
+                raise ValueError(f"{etiket} 1-31 arasında olmalıdır.")
+            return g
+
+        kesim = _gun(hesap_kesim_gunu, "Hesap kesim günü")
+        son = _gun(son_odeme_gunu, "Son ödeme günü")
+        sonra_val = None
+        if kesimden_sonra_odeme_gun not in (None, ""):
+            try:
+                sonra_val = int(str(kesimden_sonra_odeme_gun).strip())
+            except ValueError as hata:
+                raise ValueError("Kesimden sonra ödeme günü sayı olmalıdır.") from hata
+            if sonra_val < 0 or sonra_val > 45:
+                raise ValueError("Kesimden sonra ödeme günü 0-45 arasında olmalıdır.")
+
+        with get_session() as session:
+            kart = session.get(KrediKartiTanimi, int(kredi_karti_id))
+            if not kart:
+                raise ValueError("Kredi kartı bulunamadı.")
+            eski = {
+                "hesap_kesim_gunu": kart.hesap_kesim_gunu,
+                "son_odeme_gunu": kart.son_odeme_gunu,
+                "kesimden_sonra_odeme_gun": getattr(kart, "kesimden_sonra_odeme_gun", None),
+            }
+            if hesap_kesim_gunu is not None:
+                kart.hesap_kesim_gunu = kesim
+            if son_odeme_gunu is not None:
+                kart.son_odeme_gunu = son
+            if kesimden_sonra_odeme_gun is not None:
+                kart.kesimden_sonra_odeme_gun = sonra_val
+            if neden:
+                notu = (kart.aciklama or "").strip()
+                ek = f"[Tarih kuralı {date.today().strftime('%d.%m.%Y')}] {neden.strip()}"
+                kart.aciklama = f"{notu}\n{ek}".strip() if notu else ek
+            session.flush()
+            yeni_ozet = KrediKartiEkstreService.kart_tarih_ozeti(kart)
+            return {
+                "kart_id": int(kart.id),
+                "eski": eski,
+                "yeni": {
+                    "hesap_kesim_gunu": kart.hesap_kesim_gunu,
+                    "son_odeme_gunu": kart.son_odeme_gunu,
+                    "kesimden_sonra_odeme_gun": getattr(kart, "kesimden_sonra_odeme_gun", None),
+                },
+                "tarih_ozeti": yeni_ozet,
+            }
+
+    @staticmethod
+    def ekstre_son_odeme_duzelt(
+        ekstre_id: int,
+        yeni_son_odeme: date,
+        *,
+        neden: str | None = None,
+    ) -> dict:
+        """Açık/kesilmiş ekstrenin bankaca bildirilen son ödeme tarihini sabitler.
+
+        Toplam borç ve ödemeler değişmez; yalnızca vade/ay gruplaması güncellenir.
+        """
+        yazma_zorunlu("finans_duzenleme")
+        KrediKartiEkstreService.schema_hazirla()
+        if not isinstance(yeni_son_odeme, date):
+            raise ValueError("Yeni son ödeme tarihi geçersiz.")
+        with get_session() as session:
+            ekstre = session.get(KrediKartiEkstre, int(ekstre_id))
+            if not ekstre:
+                raise ValueError("Ekstre bulunamadı.")
+            eski = ekstre.son_odeme_tarihi
+            ekstre.son_odeme_tarihi = yeni_son_odeme
+            ekstre.son_odeme_manuel = True
+            ekstre.guncelleme = datetime.now()
+            # Durumu yeni vadeye göre yenile (tutar aynı)
+            ekstre.durum = KrediKartiEkstreService._durum_hesapla(
+                ekstre.toplam_borc,
+                ekstre.odenen,
+                yeni_son_odeme,
+                kesin=bool(ekstre.kesin),
+            )
+            session.flush()
+            return {
+                "ekstre_id": int(ekstre.id),
+                "kredi_karti_id": int(ekstre.kredi_karti_id),
+                "kesim_tarihi": ekstre.kesim_tarihi,
+                "eski_son_odeme": eski,
+                "yeni_son_odeme": yeni_son_odeme,
+                "neden": (neden or "").strip() or None,
+                "kalan": ekstre.kalan,
+            }
+
+    @staticmethod
+    def acik_ekstreler(kredi_karti_id: int) -> list[dict]:
+        """Kartın kalanı olan ekspres (tarih düzeltme listesi)."""
+        KrediKartiEkstreService.schema_hazirla()
+        bugun = date.today()
+        satirlar = KrediKartiEkstreService.ekstreleri_hesapla(
+            bugun=bugun, kredi_karti_id=int(kredi_karti_id), odenenleri_dahil=False
+        )
+        return [
+            {
+                "ekstre_id": s["ekstre_id"],
+                "kesim_tarihi": s["kesim_tarihi"],
+                "son_odeme_tarihi": s["son_odeme_tarihi"],
+                "kalan": s["kalan"],
+                "aciklama": s["aciklama"],
+            }
+            for s in satirlar
+            if s.get("ekstre_id") and _d(s.get("kalan")) > 0
+        ]
 
     @staticmethod
     def obligation_key(kredi_karti_id: int, kesim_tarihi: date) -> str:
@@ -412,6 +612,10 @@ class KrediKartiEkstreService:
             g = sonuc[int(e.kredi_karti_id)]["donemler"].get(e.kesim_tarihi)
             if g is not None:
                 g["ekstre_id"] = e.id
+                # Bankanın bildirdiği gerçek son ödeme — kural hesabını ezmez
+                if getattr(e, "son_odeme_manuel", False) and e.son_odeme_tarihi is not None:
+                    g["son_odeme_tarihi"] = e.son_odeme_tarihi
+                    g["son_odeme_manuel"] = True
 
         gko_ids = {s["gider_kart_odeme_id"] for k in sonuc.values()
                    for s in [x for g in k["donemler"].values() for x in g["satirlar"]] + k["belirsiz_satirlar"]
@@ -435,21 +639,36 @@ class KrediKartiEkstreService:
 
     @staticmethod
     def borc_ozeti_hesapla(veri: dict, *, bugun: date | None = None, kesim: date | None = None) -> dict:
-        """``donem_borclari`` kart kaydından ekranlarda gösterilen dört tutar ve limit bilgisi."""
+        """``donem_borclari`` kart kaydından ekranlarda gösterilen tutarlar ve limit bilgisi.
+
+        Doc5: toplam borç, ekstre kalan (kesilmiş), gelecek taksit (kesilmemiş),
+        gecikmiş (son ödeme geçmiş + kalan > 0), kullanılabilir limit.
+        """
         bugun = bugun or date.today()
         kart = veri["kart"]
         limit = _d(getattr(kart, "kart_limiti", None))
         tanimli = limit_tanimli(limit)
         kullanilan = veri["toplam_borc"]
         kesilmis = sum((g["kalan"] for k, g in veri["donemler"].items() if k <= bugun), SIFIR)
+        kesilmemis = sum((g["kalan"] for k, g in veri["donemler"].items() if k > bugun), SIFIR)
+        gecikmis = SIFIR
+        for _k, g in veri["donemler"].items():
+            kalan = _d(g.get("kalan"))
+            if kalan <= 0:
+                continue
+            son = g.get("son_odeme_tarihi")
+            if son is not None and son < bugun:
+                gecikmis += kalan
         return {
             "kredi_karti_id": int(kart.id),
             "kart_adi": kart.kart_adi,
+            "para_birimi": (getattr(kart, "para_birimi", None) or "TRY").upper(),
             "toplam_borc": kullanilan,
             "kesilmis_kalan": _d(kesilmis),
             "bu_ekstrede_kalan": (veri["donemler"][kesim]["kalan"]
                                   if kesim is not None and kesim in veri["donemler"] else None),
-            "kesilmemis": _d(sum((g["kalan"] for k, g in veri["donemler"].items() if k > bugun), SIFIR)),
+            "kesilmemis": _d(kesilmemis),
+            "gecikmis": _d(gecikmis),
             "belirsiz": _d(veri["belirsiz"]),
             "kullanilan": kullanilan,
             "limit": limit if tanimli else None,
@@ -523,8 +742,6 @@ class KrediKartiEkstreService:
                     toplam, odenen, kalan = g["toplam"], g["odenen"], g["net"]
                     son_odeme = g["son_odeme_tarihi"]
                     kesin = kesim <= bugun
-                    durum = KrediKartiEkstreService._durum_hesapla(
-                        toplam, odenen, son_odeme, bugun=bugun, kesin=kesin)
                     ekstre = session.get(KrediKartiEkstre, g["ekstre_id"]) if g["ekstre_id"] else None
                     if ekstre is None:
                         ekstre = KrediKartiEkstre(
@@ -535,7 +752,12 @@ class KrediKartiEkstreService:
                         session.flush()
                     ekstre.donem_baslangic = g["donem_baslangic"]
                     ekstre.donem_bitis = g["donem_bitis"]
-                    ekstre.son_odeme_tarihi = son_odeme
+                    if getattr(ekstre, "son_odeme_manuel", False) and ekstre.son_odeme_tarihi is not None:
+                        son_odeme = ekstre.son_odeme_tarihi
+                    else:
+                        ekstre.son_odeme_tarihi = son_odeme
+                    durum = KrediKartiEkstreService._durum_hesapla(
+                        toplam, odenen, son_odeme, bugun=bugun, kesin=kesin)
                     ekstre.toplam_borc = toplam
                     ekstre.odenen = odenen
                     ekstre.kalan = max(kalan, SIFIR)
@@ -576,6 +798,12 @@ class KrediKartiEkstreService:
                         "tl_tutar": toplam,
                         "odenen": odenen,
                         "kalan": max(kalan, SIFIR),
+                        "asgari_tutar": (
+                            None
+                            if getattr(ekstre, "asgari_tutar", None) is None
+                            else _d(ekstre.asgari_tutar)
+                        ),
+                        "asgari_odenen": _d(getattr(ekstre, "asgari_odenen", None) or 0),
                         "anapara": SIFIR,
                         "faiz": SIFIR,
                         "masraf": SIFIR,

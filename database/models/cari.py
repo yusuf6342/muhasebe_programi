@@ -24,12 +24,23 @@ class Cari(Base):
     cari_kodu: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     unvan: Mapped[str] = mapped_column(String(200), nullable=False)
     cari_turu: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Ana cari kart türü id (KartAnaTuru); cari_turu muhasebe rol metni olarak korunur
+    ana_kart_turu_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kart_ana_turleri.id"), nullable=True, index=True
+    )
+    musteri_alt_tur_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kart_alt_turleri.id"), nullable=True, index=True
+    )
+    tedarikci_alt_tur_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kart_alt_turleri.id"), nullable=True, index=True
+    )
     vergi_dairesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vergi_numarasi: Mapped[str | None] = mapped_column(String(20), nullable=True)
     tc_kimlik: Mapped[str | None] = mapped_column(String(11), nullable=True)
-    telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    telefon2: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    telefon3: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)  # GSM
+    telefon2: Mapped[str | None] = mapped_column(String(30), nullable=True)  # GSM 2
+    telefon3: Mapped[str | None] = mapped_column(String(30), nullable=True)  # Sabit
+    whatsapp: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email: Mapped[str | None] = mapped_column(String(150), nullable=True)
     musteri_grubu: Mapped[str | None] = mapped_column(String(100), nullable=True)
     satis_fiyat_listesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -211,10 +222,21 @@ class MusteriGrubuAyari(Base):
 
 
 class MusteriGrubu(Base):
+    """Cari sektör grubu (UI: Sektör Grubu). Perakende Müşteri sektör listesinde değildir."""
+
     __tablename__ = "musteri_gruplari"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ad: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    kod: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="1")
+    sira: Mapped[int] = mapped_column(Integer, default=100, nullable=False, server_default="100")
+    # False: sektör seçim listesinde gösterme (ör. PERAKENDE MÜŞTERİ → alt tür)
+    sektor_listesinde: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="1"
+    )
+    sistem: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="0")
 
 
 class SatisHareketi(Base):

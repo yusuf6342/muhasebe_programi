@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import date
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from personel_ui import _menu_isaretle, personel_menusu_goster
 
@@ -470,16 +470,82 @@ def performans_kariyer_goster(app):
         row=6, column=0, columnspan=2, pady=10
     )
 
-    # --- Gelişim ---
+    # --- Gelişim / Kariyer ---
     gf = ttk.Frame(tab_gel, padding=12)
-    gf.pack(anchor="nw")
+    gf.pack(fill="both", expand=True)
     g_pvar = tk.StringVar(value=next(iter(pmap), ""))
     beceri = tk.StringVar(value="İkinci görev yeterliliği")
+    unvan_v = tk.StringVar(value="")
+    gorev_v = tk.StringVar(value="")
+    band_v = tk.StringVar(value="")
+    kademe_v = tk.StringVar(value="YETKIN")
+    yol_v = tk.StringVar(value="UZMANLIK")
+    gecer_v = tk.StringVar(value=date.today().isoformat())
+
     ttk.Combobox(gf, textvariable=g_pvar, values=list(pmap), width=40, state="readonly").grid(
-        row=0, column=0, columnspan=2
+        row=0, column=0, columnspan=3, sticky="w"
     )
     ttk.Label(gf, text="90 gün hedef beceri").grid(row=1, column=0, sticky="w")
-    ttk.Entry(gf, textvariable=beceri, width=40).grid(row=1, column=1)
+    ttk.Entry(gf, textvariable=beceri, width=40).grid(row=1, column=1, columnspan=2, sticky="w")
+    ttk.Label(gf, text="Kademe / Yol").grid(row=2, column=0, sticky="w")
+    ttk.Combobox(
+        gf, textvariable=kademe_v,
+        values=["OGRENEN", "YETKIN", "KIDEMLI", "UZMAN_LIDER"], width=14, state="readonly",
+    ).grid(row=2, column=1, sticky="w")
+    ttk.Combobox(
+        gf, textvariable=yol_v, values=["UZMANLIK", "EKIP_LIDERLIGI"], width=16, state="readonly",
+    ).grid(row=2, column=2, sticky="w")
+    ttk.Label(gf, text="Unvan").grid(row=3, column=0, sticky="w")
+    ttk.Entry(gf, textvariable=unvan_v, width=28).grid(row=3, column=1, columnspan=2, sticky="w")
+    ttk.Label(gf, text="Görev").grid(row=4, column=0, sticky="w")
+    ttk.Entry(gf, textvariable=gorev_v, width=28).grid(row=4, column=1, columnspan=2, sticky="w")
+    ttk.Label(gf, text="Ücret bandı").grid(row=5, column=0, sticky="w")
+    ttk.Entry(gf, textvariable=band_v, width=28).grid(row=5, column=1, columnspan=2, sticky="w")
+    ttk.Label(gf, text="Geçerlilik").grid(row=6, column=0, sticky="w")
+    ttk.Entry(gf, textvariable=gecer_v, width=14).grid(row=6, column=1, sticky="w")
+
+    ktree = ttk.Treeview(
+        gf,
+        columns=("id", "kademe", "unvan", "gorev", "band", "gecer", "onay"),
+        show="headings",
+        height=8,
+    )
+    for k, b, w in (
+        ("id", "Id", 40),
+        ("kademe", "Kademe", 90),
+        ("unvan", "Unvan", 110),
+        ("gorev", "Görev", 110),
+        ("band", "Ücret bandı", 90),
+        ("gecer", "Geçerlilik", 90),
+        ("onay", "Onay", 50),
+    ):
+        ktree.heading(k, text=b)
+        ktree.column(k, width=w, minwidth=40)
+    ktree.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=8)
+    gf.rowconfigure(8, weight=1)
+
+    def kariyer_yenile():
+        for i in ktree.get_children():
+            ktree.delete(i)
+        pid = pmap.get(g_pvar.get())
+        try:
+            for k in PersonelPerformansService.kariyer_listele(pid):
+                ktree.insert(
+                    "",
+                    "end",
+                    iid=str(k["id"]),
+                    values=(
+                        k["id"],
+                        k["kademe"],
+                        k.get("unvan") or "",
+                        k.get("gorev") or "",
+                        k.get("ucret_bandi") or "",
+                        k.get("gecerlilik") or "",
+                        "Evet" if k.get("onayli") else "Hayır",
+                    ),
+                )
+        except Exception as e:
+            messagebox.showerror("Kariyer", str(e), parent=app)
 
     def gel_kaydet():
         pid = pmap.get(g_pvar.get())
@@ -492,23 +558,44 @@ def performans_kariyer_goster(app):
             PersonelPerformansService.kariyer_karari(
                 {
                     "personel_id": pid,
-                    "kademe": "YETKIN",
-                    "yol": "UZMANLIK",
+                    "kademe": kademe_v.get(),
+                    "yol": yol_v.get(),
+                    "unvan": unvan_v.get().strip() or None,
+                    "gorev": gorev_v.get().strip() or None,
+                    "ucret_bandi": band_v.get().strip() or None,
+                    "gecerlilik": gecer_v.get().strip() or None,
                     "onayli": False,
                     "eksik_kosullar": "Yönetici onayı bekleniyor",
                 }
             )
+            kariyer_yenile()
             messagebox.showinfo(
                 "Gelişim",
-                f"Plan {r['baslangic']} – {r['bitis']}. Kariyer önerisi oluşturuldu (ortaklık değil).",
+                f"Plan {r['baslangic']} – {r['bitis']}. Kariyer kararı kaydedildi (ortaklık değil).",
                 parent=app,
             )
         except Exception as e:
             messagebox.showerror("Gelişim", str(e), parent=app)
 
-    ttk.Button(gf, text="90 Günlük Plan + Kademe Önerisi", command=gel_kaydet).grid(
-        row=2, column=0, columnspan=2, pady=10
+    def kariyer_onay():
+        sec = ktree.selection()
+        if not sec:
+            messagebox.showinfo("Kariyer", "Listeden karar seçin.", parent=app)
+            return
+        try:
+            PersonelPerformansService.kariyer_onayla(int(sec[0]))
+            kariyer_yenile()
+        except Exception as e:
+            messagebox.showerror("Kariyer", str(e), parent=app)
+
+    dug_g = ttk.Frame(gf)
+    dug_g.grid(row=7, column=0, columnspan=3, sticky="w", pady=6)
+    ttk.Button(dug_g, text="90 Gün Plan + Kariyer Kaydı", command=gel_kaydet).pack(
+        side="left", padx=(0, 6)
     )
+    ttk.Button(dug_g, text="Kararı Onayla", command=kariyer_onay).pack(side="left", padx=(0, 6))
+    ttk.Button(dug_g, text="Yenile", command=kariyer_yenile).pack(side="left")
+    kariyer_yenile()
     if hasattr(app, "nav_sayfa_isaretle"):
         app.nav_sayfa_isaretle(lambda: performans_kariyer_goster(app))
 
@@ -660,9 +747,10 @@ def olcme_prim_goster(app):
     _ust(app, "ÖLÇME / PRİM")
     ttk.Label(
         app.icerik,
-        text="Aylık prim dönemi, havuz dağıtımı (varsayılan %%50 ekip / %%30 katkı / %%20 kıdem) "
-        "ve kişi payları. Bordro bağlantısı MVP stub’dur; vergi motoru yoktur. "
-        "Örnek H: S=100.000 C=70.000 tahsilat %%50 → H=15.000.",
+        text="Aylık prim: onaylı satış faturalarından tahsil edilmiş kâr katkısı (H=M×q) → havuz; "
+        "kişi payları katkı/değerlendirme ölçümüne bağlı (%%50/%%30/%%20). "
+        "Durum: Taslak→Veriler eksik→Hesaplandı→İncelemede→Onaylandı→Bordroya aktarıldı→Ödendi. "
+        "Bordro ek ödeme anahtarı PRIM_DONEM:dönem:personel (mükerrer yok). Excel/PDF bağlı.",
         wraplength=780,
     ).pack(anchor="w", pady=(10, 0))
 
@@ -678,14 +766,15 @@ def olcme_prim_goster(app):
 
     yil_var = tk.StringVar(value=str(date.today().year))
     ay_var = tk.StringVar(value=str(date.today().month))
-    havuz_var = tk.StringVar(value="10000")
+    # Boş = satış faturalarından H→havuz; dolu = manuel override (stub varsayılan yok)
+    havuz_var = tk.StringVar(value="")
     pol_var = tk.StringVar(value='{"ekip":50,"katki":30,"kidem":20}')
 
     ttk.Label(ust, text="Yıl").pack(side="left")
     ttk.Entry(ust, textvariable=yil_var, width=6).pack(side="left", padx=(4, 10))
     ttk.Label(ust, text="Ay").pack(side="left")
     ttk.Entry(ust, textvariable=ay_var, width=4).pack(side="left", padx=(4, 10))
-    ttk.Label(ust, text="Havuz").pack(side="left")
+    ttk.Label(ust, text="Havuz (boş=satıştan)").pack(side="left")
     ttk.Entry(ust, textvariable=havuz_var, width=12).pack(side="left", padx=(4, 10))
     ttk.Label(ust, text="Politika").pack(side="left")
     ttk.Entry(ust, textvariable=pol_var, width=28).pack(side="left", padx=(4, 8))
@@ -785,10 +874,11 @@ def olcme_prim_goster(app):
 
     def donem_olustur():
         try:
+            hv_raw = (havuz_var.get() or "").strip()
             r = PersonelPerformansService.prim_donem_olustur(
                 int(yil_var.get()),
                 int(ay_var.get()),
-                havuz=havuz_var.get(),
+                havuz=hv_raw if hv_raw else 0,
                 politika_json=pol_var.get().strip() or None,
             )
             durum_lbl.configure(
@@ -803,36 +893,35 @@ def olcme_prim_goster(app):
         if did is None:
             messagebox.showinfo("Ölçme / Prim", "Önce dönem seçin veya oluşturun.", parent=app)
             return
-        try:
-            # Eşit katılım örneği: listedeki ilk 3 personel (yoksa uyarı)
-            kisiler = []
-            ornek = list(personeller.values())[:3]
-            if len(ornek) < 1:
-                messagebox.showwarning(
-                    "Ölçme / Prim",
-                    "Hesap için en az bir personel kartı gerekir.",
-                    parent=app,
+
+        def _is():
+            hv_raw = (havuz_var.get() or "").strip()
+            if hv_raw:
+                return PersonelPerformansService.prim_hesapla(
+                    did, kisiler=None, havuz=hv_raw, satis_verisinden=False
                 )
-                return
-            for p in ornek:
-                kisiler.append(
-                    {
-                        "personel_id": p["id"],
-                        "hizmet_yili": 0,
-                        "performans": 100,
-                        "katilim": 1,
-                    }
-                )
-            r = PersonelPerformansService.prim_hesapla(
-                did, kisiler=kisiler, havuz=havuz_var.get()
+            return PersonelPerformansService.prim_hesapla(
+                did, kisiler=None, havuz=None, satis_verisinden=True
             )
+
+        def _ok(r):
+            kay = (r or {}).get("kaynak") or {}
             durum_lbl.configure(
                 text=(
-                    f"Hesaplandı · dağıtılan {r['dagitilan']:,.2f} / "
-                    f"dağılmamış {r['dagitilmamis']:,.2f}"
+                    f"{r['durum']} · havuz {r['havuz']:,.2f} · dağıtılan {r['dagitilan']:,.2f} / "
+                    f"dağılmamış {r['dagitilmamis']:,.2f} · kaynak={kay.get('kaynak', '—')} "
+                    f"fat={kay.get('fatura_sayisi', '—')} H_fark={kay.get('tahsil_kar_fark', '—')}"
                 )
             )
             donemleri_yenile(did)
+
+        def _err(exc):
+            messagebox.showerror("Ölçme / Prim", str(exc), parent=app)
+
+        try:
+            from ui_bg import arka_planda
+
+            arka_planda(app, _is, on_ok=_ok, on_err=_err)
         except Exception as e:
             messagebox.showerror("Ölçme / Prim", str(e), parent=app)
 
@@ -841,13 +930,86 @@ def olcme_prim_goster(app):
         if did is None:
             return
         try:
-            r = PersonelPerformansService.prim_onayla(did)
-            stub = PersonelPerformansService.prim_bordroya_bagla(did)
+            r = PersonelPerformansService.prim_onayla(did, bordroya_aktar=True)
+            bag = r.get("bordro") or {}
+            n = len(bag.get("baglantilar") or [])
             durum_lbl.configure(
-                text=f"Onaylandı · bordro stub: baglandi={stub['baglandi']} ({stub['neden']})"
+                text=(
+                    f"Durum={r['durum']} · bordro baglandi={bag.get('baglandi')} "
+                    f"· {n} ek ödeme bağlantısı"
+                )
             )
             donemleri_yenile(did)
-            _ = r
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def iptal_et():
+        did = secili_donem_id()
+        if did is None:
+            return
+        if not messagebox.askyesno(
+            "Ölçme / Prim",
+            "Ödenmemiş bordro aktarımını geri alıp dönemi Hesaplandı'ya döndürmek istiyor musunuz?",
+            parent=app,
+        ):
+            return
+        try:
+            r = PersonelPerformansService.prim_iptal(did)
+            durum_lbl.configure(
+                text=f"İptal · durum={r['durum']} · iptal hakediş={r.get('iptal_edilen_hakedis', 0)}"
+            )
+            donemleri_yenile(did)
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def incelemeye():
+        did = secili_donem_id()
+        if did is None:
+            return
+        try:
+            r = PersonelPerformansService.prim_incelemeye_al(did)
+            durum_lbl.configure(text=f"Durum={r['durum']}")
+            donemleri_yenile(did)
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def excel_cikti():
+        did = secili_donem_id()
+        if did is None:
+            messagebox.showinfo("Ölçme / Prim", "Önce dönem seçin.", parent=app)
+            return
+        yol = filedialog.asksaveasfilename(
+            parent=app,
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"prim_pay_{yil_var.get()}_{ay_var.get().zfill(2)}.xlsx",
+        )
+        if not yol:
+            return
+        try:
+            PersonelPerformansService.prim_excel_aktar(did, yol)
+            durum_lbl.configure(text=f"Excel kaydedildi: {yol}")
+            messagebox.showinfo("Ölçme / Prim", f"Excel kaydedildi:\n{yol}", parent=app)
+        except Exception as e:
+            messagebox.showerror("Ölçme / Prim", str(e), parent=app)
+
+    def pdf_cikti():
+        did = secili_donem_id()
+        if did is None:
+            messagebox.showinfo("Ölçme / Prim", "Önce dönem seçin.", parent=app)
+            return
+        yol = filedialog.asksaveasfilename(
+            parent=app,
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"prim_pay_{yil_var.get()}_{ay_var.get().zfill(2)}.pdf",
+        )
+        if not yol:
+            return
+        try:
+            PersonelPerformansService.prim_pdf_aktar(did, yol)
+            durum_lbl.configure(text=f"PDF kaydedildi: {yol}")
+            messagebox.showinfo("Ölçme / Prim", f"PDF kaydedildi:\n{yol}", parent=app)
         except Exception as e:
             messagebox.showerror("Ölçme / Prim", str(e), parent=app)
 
@@ -858,7 +1020,11 @@ def olcme_prim_goster(app):
     dug.pack(fill="x", pady=(0, 8))
     ttk.Button(dug, text="Dönem Oluştur", command=donem_olustur).pack(side="left", padx=(0, 6))
     ttk.Button(dug, text="Hesapla", command=hesapla).pack(side="left", padx=(0, 6))
-    ttk.Button(dug, text="Onayla (bordro stub)", command=onayla).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="İncelemeye Al", command=incelemeye).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="Onayla → Bordro", command=onayla).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="İptal (ödenmemiş)", command=iptal_et).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="Excel", command=excel_cikti).pack(side="left", padx=(0, 6))
+    ttk.Button(dug, text="PDF", command=pdf_cikti).pack(side="left", padx=(0, 6))
     ttk.Button(dug, text="Yenile", command=lambda: donemleri_yenile(secili_donem_id())).pack(
         side="left"
     )

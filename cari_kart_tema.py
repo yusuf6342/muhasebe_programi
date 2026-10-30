@@ -98,8 +98,57 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         foreground=LACIVERT,
         font=f_bold,
     )
-    stil.configure("CariKart.TEntry", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
-    stil.configure("CariKart.TCombobox", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
+    # Kod kutusu referansı: clam TEntry !focus bordercolor; focus haritası aşağıda korunur
+    _entry_kenar = stil.lookup("TEntry", "bordercolor", state=("!focus",)) or "#9e9a91"
+    stil.configure(
+        "CariKart.TEntry",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=f_ui,
+        bordercolor=_entry_kenar,
+        lightcolor=_entry_kenar,
+        darkcolor=_entry_kenar,
+    )
+    stil.configure(
+        "CariKart.TCombobox",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=f_ui,
+        bordercolor=_entry_kenar,
+        lightcolor=_entry_kenar,
+        darkcolor=_entry_kenar,
+    )
+    # Üst panel sarmal çerçeve içinde: iç kenar yok (çift çizgi olmasın); odak rengi map’te
+    stil.configure(
+        "CariKartUst.TEntry",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=f_ui,
+        borderwidth=0,
+        relief="flat",
+        padding=(2, 1),
+    )
+    stil.configure(
+        "CariKartUst.TCombobox",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=f_ui,
+        borderwidth=0,
+        relief="flat",
+        padding=(2, 1),
+    )
+    # Odak görünürlüğü: clam’ın focus bordercolor’u (#4a6984) — Unvan odak mavisini
+    # normal çerçeve referansı yapma; yalnız focus state
+    stil.map(
+        "CariKart.TEntry",
+        bordercolor=[("focus", stil.lookup("TEntry", "bordercolor", state=("focus",)) or "#4a6984")],
+        lightcolor=[("focus", stil.lookup("TEntry", "lightcolor", state=("focus",)) or "#6f9dc6")],
+    )
+    stil.map(
+        "CariKart.TCombobox",
+        bordercolor=[("focus", stil.lookup("TCombobox", "bordercolor", state=("focus",)) or "#4a6984")],
+        lightcolor=[("focus", stil.lookup("TCombobox", "lightcolor", state=("focus",)) or "#6f9dc6")],
+    )
     stil.configure("CariKart.TNotebook", background=BEYAZ)
     stil.configure("CariKart.TNotebook.Tab", font=f_alt, padding=(10, 4))
 

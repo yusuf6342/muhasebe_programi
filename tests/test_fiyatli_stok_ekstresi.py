@@ -54,6 +54,7 @@ class FiyatliStokEkstreTest(unittest.TestCase):
         import database.models.finans  # noqa: F401
         import database.models.firma  # noqa: F401
         import database.models.hizli_satis  # noqa: F401
+        import database.models.kart_turu  # noqa: F401 — stok_kartlari FK
         import database.models.satis_faturasi  # noqa: F401
         import database.models.satis_iade_faturasi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401
@@ -372,7 +373,8 @@ class FiyatliStokEkstreTest(unittest.TestCase):
         )
         tr = next(s for s in r["satirlar"] if s["belge_no"] == "TR-1")
         self.assertEqual(tr["cari_kodu"], "")
-        self.assertIn("transfer", tr["cari_adi"].lower())
+        self.assertEqual((tr.get("cari_adi") or "").strip(), "")
+        self.assertIn("transfer", (tr.get("belge_turu") or "").lower())
 
     def test_05_sayim_etiket(self):
         r = FiyatliStokEkstreService.ekstre(

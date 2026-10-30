@@ -116,22 +116,91 @@ class CariUsdRaporCercevesi(ttk.Frame):
         self.uyari_etiketi = ttk.Label(self, text="", foreground="#B71C1C", wraplength=1100, justify="left")
         self.uyari_etiketi.pack(fill="x")
         self.rapor: dict | None = None
+        self._liste_filtre: dict = {}
+        self._ham_satirlar: list = []
+        from liste_filtre_ui import treeview_filtre_bagla
+
+        basliklar = {k[0]: k[1] for k in _KOLONLAR}
+        # DOC5: çalışan TL/USD bakiye kolonlarında hunisi yok; saklı değer korunur
+        self._filtre_bag = treeview_filtre_bagla(
+            self.tablo,
+            basliklar,
+            get_filtre_dict=lambda: self._liste_filtre,
+            set_filtre_dict=None,
+            yenile_cb=self._gorunumu_yenile,
+            deger_listesi_cb=lambda: [s for s in self._ham_satirlar if s.get("tur") == "satir"],
+            parent=self,
+            kolonlar=[k[0] for k in _KOLONLAR],
+            haric_kolonlar=("tl_bakiye", "usd_bakiye"),
+        )
+
+    def _satir_values(self, r: dict) -> tuple:
+        tamam = r["durum"] == usd_servis.DURUM_TAMAM
+        usd_bakiye = _para(r["usd_bakiye"], "USD")
+        if r.get("usd_eksik_birikimli"):
+            usd_bakiye = f"{usd_bakiye} *"
+        return (
+            _tarih(r["tarih"]), r["belge_no"], r["tur"],
+            _para(r["tl_borc"]) if r["tl_borc"] else "",
+            _para(r["tl_alacak"]) if r["tl_alacak"] else "",
+            _para(r["tl_bakiye"], "TL"),
+            _kur_metin(r["usd_kur"]) if tamam else "—",
+            _tarih(r.get("kur_tarihi")) if tamam else "",
+            (r.get("kur_kaynagi") or "") if tamam else "",
+            _para(r["usd_borc"]) if tamam and r["usd_borc"] else ("" if tamam else "—"),
+            _para(r["usd_alacak"]) if tamam and r["usd_alacak"] else ("" if tamam else "—"),
+            usd_bakiye,
+            _durum_metni(r),
+        )
+
+    def _gorunumu_yenile(self) -> None:
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
+        rapor = self.rapor
+        if not rapor:
+            return
+        kolonlar = [k[0] for k in _KOLONLAR]
+        self.tablo.delete(*self.tablo.get_children())
+        filtre_net_tl = Decimal("0")
+        for item in self._ham_satirlar:
+            values = item["values"]
+            tur = item.get("tur")
+            if tur == "satir" and not satir_kolon_filtre_uygun(values, kolonlar, self._liste_filtre):
+                continue
+            self.tablo.insert("", "end", tags=item.get("tags") or (), values=values)
+            if tur == "satir":
+                r = item["kayit"]
+                filtre_net_tl += Decimal(str(r.get("tl_borc") or 0)) - Decimal(str(r.get("tl_alacak") or 0))
+        self._filtre_bag["guncelle_basliklar"]()
+        usd_ek = "" if rapor["tam"] else " (eksik)"
+        ozet = (
+            f"TL bakiye: {_para(rapor['tl_bakiye'], 'TL')}   |   "
+            f"Tarihsel USD bakiye: {_para(rapor['usd_bakiye'], 'USD')}{usd_ek}"
+        )
+        if self._liste_filtre:
+            ozet += f"   |   Filtre neti (TL): {_para(filtre_net_tl, 'TL')}"
+        self.ozet.configure(text=ozet)
 
     def yukle(self, cari_id: int, baslangic: date | None = None, bitis: date | None = None) -> dict:
         self._cari_id, self._baslangic, self._bitis = int(cari_id), baslangic, bitis
         rapor = usd_servis.cari_usd_raporu(cari_id, baslangic, bitis)
         self.rapor = rapor
-        self.tablo.delete(*self.tablo.get_children())
+        self._liste_filtre.clear()
+        self._ham_satirlar.clear()
         devir = rapor["devir"]
         if baslangic is not None:
             usd_devir = _para(devir["usd"], "USD")
             if devir["eksik"]:
                 usd_devir = f"{usd_devir} (eksik)"
-            self.tablo.insert("", "end", tags=("devir",), values=(
-                _tarih(baslangic), "DEVİR", "Önceki hareketler", "", "", _para(devir["tl"], "TL"),
-                "", "", "", "", "", usd_devir,
-                f"⚠ {devir['eksik']} hareketin kuru yok" if devir["eksik"] else "",
-            ))
+            self._ham_satirlar.append({
+                "tur": "devir",
+                "tags": ("devir",),
+                "values": (
+                    _tarih(baslangic), "DEVİR", "Önceki hareketler", "", "", _para(devir["tl"], "TL"),
+                    "", "", "", "", "", usd_devir,
+                    f"⚠ {devir['eksik']} hareketin kuru yok" if devir["eksik"] else "",
+                ),
+            })
         for r in rapor["satirlar"]:
             etiket = ()
             if r["durum"] == usd_servis.DURUM_EKSIK:
@@ -140,36 +209,25 @@ class CariUsdRaporCercevesi(ttk.Frame):
                 etiket = ("uyusmaz",)
             elif r.get("onceki_gun_kuru"):
                 etiket = ("onceki",)
-            tamam = r["durum"] == usd_servis.DURUM_TAMAM
-            usd_bakiye = _para(r["usd_bakiye"], "USD")
-            if r.get("usd_eksik_birikimli"):
-                usd_bakiye = f"{usd_bakiye} *"
-            self.tablo.insert("", "end", tags=etiket, values=(
-                _tarih(r["tarih"]), r["belge_no"], r["tur"],
-                _para(r["tl_borc"]) if r["tl_borc"] else "",
-                _para(r["tl_alacak"]) if r["tl_alacak"] else "",
-                _para(r["tl_bakiye"], "TL"),
-                _kur_metin(r["usd_kur"]) if tamam else "—",
-                _tarih(r.get("kur_tarihi")) if tamam else "",
-                (r.get("kur_kaynagi") or "") if tamam else "",
-                _para(r["usd_borc"]) if tamam and r["usd_borc"] else ("" if tamam else "—"),
-                _para(r["usd_alacak"]) if tamam and r["usd_alacak"] else ("" if tamam else "—"),
-                usd_bakiye,
-                _durum_metni(r),
-            ))
+            self._ham_satirlar.append({
+                "tur": "satir",
+                "tags": etiket,
+                "values": self._satir_values(r),
+                "kayit": r,
+            })
         t = rapor["toplam"]
         eksik_toplam = rapor["eksik_sayisi"] + rapor["devir_eksik"]
         usd_ek = "" if rapor["tam"] else " (eksik)"
-        self.tablo.insert("", "end", tags=("toplam",), values=(
-            "", "TOPLAM", "", _para(t["tl_borc"]), _para(t["tl_alacak"]), _para(rapor["tl_bakiye"], "TL"),
-            "", "", "", _para(t["usd_borc"]) + usd_ek, _para(t["usd_alacak"]) + usd_ek,
-            _para(rapor["usd_bakiye"], "USD") + usd_ek, "",
-        ))
-        ozet = (
-            f"TL bakiye: {_para(rapor['tl_bakiye'], 'TL')}   |   "
-            f"Tarihsel USD bakiye: {_para(rapor['usd_bakiye'], 'USD')}{usd_ek}"
-        )
-        self.ozet.configure(text=ozet)
+        self._ham_satirlar.append({
+            "tur": "toplam",
+            "tags": ("toplam",),
+            "values": (
+                "", "TOPLAM", "", _para(t["tl_borc"]), _para(t["tl_alacak"]), _para(rapor["tl_bakiye"], "TL"),
+                "", "", "", _para(t["usd_borc"]) + usd_ek, _para(t["usd_alacak"]) + usd_ek,
+                _para(rapor["usd_bakiye"], "USD") + usd_ek, "",
+            ),
+        })
+        self._gorunumu_yenile()
         if not rapor["tam"]:
             self.uyari_etiketi.configure(text=(
                 f"⚠ {eksik_toplam} hareketin USD kuru yok veya kaydı değişmiş. USD toplamları ve bakiye "

@@ -54,10 +54,25 @@ def _valor_turu_etiket(valor_turu: str) -> str:
     return "Valör Yok"
 
 
+def _islem_tarihi(dilim: dict[str, Any]) -> date | None:
+    """Borç/alacak valörü için işlem (belge) tarihi — vade değil."""
+    t = (
+        dilim.get("borc_tarihi")
+        or dilim.get("alacak_tarihi")
+        or dilim.get("belge_tarihi")
+        or dilim.get("islem_tarihi")
+    )
+    return t if isinstance(t, date) else None
+
+
 def _ortalama_tarih_ve_gun(
     dilimler: list[dict[str, Any]], referans: date
 ) -> tuple[date | None, float, Decimal]:
-    """Ağırlıklı ortalama valör tarihi + gün (gün = referans − vade; mevcut borç yolu)."""
+    """Açık kalan tutarların işlem tarihi üzerinden ağırlıklı ortalama tarih + gün.
+
+    Talimat: Borç Valörü = açık kalan borcun işlem tarihinden tutar-ağırlıklı yaşı.
+    gün = hesap tarihi − işlem tarihi. Vade gecikmesi ayrı ölçü (vade_farki_gun).
+    """
     from database.cari_service import CariService
 
     toplam = ZERO
@@ -66,23 +81,18 @@ def _ortalama_tarih_ve_gun(
         tutar = _kurus(d.get("tutar"))
         if tutar <= 0:
             continue
-        vade = (
-            d.get("borc_vadesi")
-            or d.get("alacak_vadesi")
-            or d.get("vade")
-        )
-        if vade is None:
-            continue
-        if not isinstance(vade, date):
+        islem = _islem_tarihi(d)
+        if islem is None:
             continue
         toplam += tutar
-        ord_agirlik += tutar * Decimal(vade.toordinal())
+        ord_agirlik += tutar * Decimal(islem.toordinal())
 
     if toplam <= 0:
         return None, 0.0, ZERO
 
     avg_ord = int((ord_agirlik / toplam).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     ortalama_tarih = date.fromordinal(avg_ord)
+    # gun alanı dilimde işlem yaşı olarak tutulur
     gun = CariService._agirlikli_gun_ortalama(dilimler)
     return ortalama_tarih, float(gun), toplam
 
@@ -116,11 +126,13 @@ def fifo_valor_paketi_hesapla(
     cari_turu: str | None = None,
     vade_harita: dict[str, date] | None = None,
     referans: date | None = None,
+    sadece_acik: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """FIFO: (tam_kapanan_borç, açık_borç, kapanan_dilimler, açık_alacak).
 
     Borç kuyruğu ve eşleştirme mevcut ``CariService._fifo_valor_dilimleri`` ile aynıdır;
     ek olarak eşleşmeyen alacak dilimleri döner.
+    sadece_acik=True: liste için kapanan dilim ayrıntısı üretilmez (sonuç aynı açık kalemler).
     """
     from database.cari_service import CariService
 
@@ -147,7 +159,11 @@ def fifo_valor_paketi_hesapla(
     )
 
     # [vade, belge_tarih, kalan, orijinal, belge_no, son_odeme_tarihi]
-    kuyruk: list[list] = []
+    # SatisHareketi + yalnızca orada olmayan CariIslem borçları (Devir/Açılış vb.).
+    # Eksik Devir → net bakiye ile açık kuyruk uyumsuz → _kredi_ile_fifo_dus her şeyi
+    # siler → sahte 0 gün. Ortak hesap tüm defter borç kaynaklarını kuyruğa alır.
+    ham_borclar: list[tuple] = []  # (tarih, id, belge_no, vade, tutar)
+    borc_belgeleri: set[str] = set()
     for h in hareketler_sirali:
         tutar = _kurus(h.satis_tutari)
         if tutar <= 0:
@@ -156,21 +172,63 @@ def fifo_valor_paketi_hesapla(
         if no.startswith(CariService._VALOR_BORC_HARIC_ONEK):
             continue
         vade = CariService._hareket_vade(h, vade_harita)
-        kuyruk.append([vade, h.satis_tarihi, tutar, tutar, no, None])
+        ham_borclar.append(
+            (
+                h.satis_tarihi or date.min,
+                int(getattr(h, "id", 0) or 0),
+                no,
+                vade,
+                tutar,
+            )
+        )
+        if no:
+            borc_belgeleri.add(no)
+
+    for islem in islemler_sirali:
+        tutar = _kurus(getattr(islem, "borc", None))
+        if tutar <= 0:
+            continue
+        no = (islem.belge_no or "").strip()
+        if not no or no in borc_belgeleri:
+            continue
+        if no.startswith(CariService._VALOR_BORC_HARIC_ONEK):
+            continue
+        belge_tarih = islem.tarih
+        vade = vade_harita.get(no) if vade_harita else None
+        if vade is None:
+            vade = belge_tarih
+        ham_borclar.append(
+            (
+                belge_tarih or date.min,
+                int(getattr(islem, "id", 0) or 0),
+                no,
+                vade,
+                tutar,
+            )
+        )
+        borc_belgeleri.add(no)
+
+    ham_borclar.sort(key=lambda x: (x[0], x[1], x[2]))
+    kuyruk: list[list] = [
+        [vade, (tarih if tarih != date.min else None), tutar, tutar, no, None]
+        for tarih, _hid, no, vade, tutar in ham_borclar
+    ]
 
     kapanan_dilimler: list[dict[str, Any]] = []
     acik_alacak: list[dict[str, Any]] = []
     tedarikci = (cari_turu or "").casefold().startswith("tedarik")
 
     if kuyruk or islemler_sirali:
+        bas = 0  # kalan>0 ilk dilim; sıfır kalanları her ödemede baştan taramayız
         for islem in islemler_sirali:
             kalan_odeme = CariService._odeme_borc_dusurur_mu(islem, tedarikci)
             if kalan_odeme <= 0:
                 continue
             kalan_odeme = _kurus(kalan_odeme)
-            for dilim_satir in kuyruk:
+            for i in range(bas, len(kuyruk)):
                 if kalan_odeme <= 0:
                     break
+                dilim_satir = kuyruk[i]
                 vade, belge_tarih, kalan_dilim, _orj, borc_no, _son = dilim_satir
                 if kalan_dilim <= 0:
                     continue
@@ -180,29 +238,39 @@ def fifo_valor_paketi_hesapla(
                 dilim = _kurus(dilim)
                 dilim_satir[2] = _kurus(kalan_dilim - dilim)
                 dilim_satir[5] = islem.tarih
-                kapanan_dilimler.append(
-                    {
-                        "odeme_belge_no": islem.belge_no,
-                        "odeme_tarihi": islem.tarih,
-                        "borc_belge_no": borc_no,
-                        "borc_tarihi": belge_tarih,
-                        "borc_vadesi": vade,
-                        "tutar": dilim,
-                        "gun": (islem.tarih - vade).days if vade and islem.tarih else 0,
-                    }
-                )
+                if not sadece_acik:
+                    kapanan_dilimler.append(
+                        {
+                            "odeme_belge_no": islem.belge_no,
+                            "odeme_tarihi": islem.tarih,
+                            "borc_belge_no": borc_no,
+                            "borc_tarihi": belge_tarih,
+                            "borc_vadesi": vade,
+                            "tutar": dilim,
+                            # Kapanma süresi: ödeme − vade (ayrı ölçü; açık borç yaşı değil)
+                            "gun": (islem.tarih - vade).days if vade and islem.tarih else 0,
+                            "vade_farki_gun": (
+                                (islem.tarih - vade).days if vade and islem.tarih else None
+                            ),
+                        }
+                    )
                 kalan_odeme = _kurus(kalan_odeme - dilim)
+
+            while bas < len(kuyruk) and kuyruk[bas][2] <= 0:
+                bas += 1
 
             # Eşleşmeyen alacak dilimi (açık alacak)
             if kalan_odeme > 0:
-                vade_a = islem.tarih or bugun
+                islem_t = islem.tarih
                 acik_alacak.append(
                     {
                         "alacak_belge_no": islem.belge_no,
-                        "alacak_tarihi": islem.tarih,
-                        "alacak_vadesi": vade_a,
+                        "alacak_tarihi": islem_t,
+                        "alacak_vadesi": islem_t,  # alacakta vade yoksa işlem tarihi
                         "tutar": kalan_odeme,
-                        "gun": (bugun - vade_a).days,
+                        # Açık alacak valörü: hesap tarihi − işlem tarihi
+                        "gun": (bugun - islem_t).days if islem_t else 0,
+                        "vade_farki_gun": (bugun - islem_t).days if islem_t else None,
                         "yon": "ALACAK",
                     }
                 )
@@ -211,29 +279,62 @@ def fifo_valor_paketi_hesapla(
     acik_borc: list[dict[str, Any]] = []
     for vade, belge_tarih, kalan_dilim, orijinal, borc_no, son_odeme in kuyruk:
         if kalan_dilim <= 0 and son_odeme is not None:
-            kapanan.append(
-                {
-                    "borc_belge_no": borc_no,
-                    "borc_tarihi": belge_tarih,
-                    "borc_vadesi": vade,
-                    "kapanma_tarihi": son_odeme,
-                    "tutar": orijinal,
-                    "gun": (son_odeme - vade).days if vade and son_odeme else 0,
-                    "yon": "BORC",
-                }
-            )
+            if not sadece_acik:
+                kapanan.append(
+                    {
+                        "borc_belge_no": borc_no,
+                        "borc_tarihi": belge_tarih,
+                        "borc_vadesi": vade,
+                        "kapanma_tarihi": son_odeme,
+                        "tutar": orijinal,
+                        "gun": (son_odeme - vade).days if vade and son_odeme else 0,
+                        "yon": "BORC",
+                    }
+                )
         elif kalan_dilim > 0:
+            # Borç Valörü yaşı = hesap − işlem tarihi (vade değil)
+            islem_yasi = (bugun - belge_tarih).days if belge_tarih else 0
+            vade_farki = (bugun - vade).days if vade else None
             acik_borc.append(
                 {
                     "borc_belge_no": borc_no,
                     "borc_tarihi": belge_tarih,
                     "borc_vadesi": vade,
                     "tutar": kalan_dilim,
-                    "gun": (bugun - vade).days if vade else 0,
+                    "gun": islem_yasi,
+                    "vade_farki_gun": vade_farki,
                     "yon": "BORC",
                 }
             )
     return kapanan, acik_borc, kapanan_dilimler, acik_alacak
+
+
+def _kredi_ile_fifo_dus(
+    dilimler: list[dict[str, Any]], kredi: Decimal
+) -> list[dict[str, Any]]:
+    """Açık karşı taraf tutarını en eski kalemlerden FIFO düşer; net bakiye dilimleri kalır."""
+    kalan = _kurus(kredi)
+    if kalan <= 0:
+        return [dict(d) for d in dilimler if _kurus(d.get("tutar")) > 0]
+    sirali = sorted(
+        [d for d in dilimler if _kurus(d.get("tutar")) > 0],
+        key=lambda x: (_islem_tarihi(x) or date.min, str(x.get("borc_belge_no") or x.get("alacak_belge_no") or "")),
+    )
+    sonuc: list[dict[str, Any]] = []
+    for d in sirali:
+        tutar = _kurus(d.get("tutar"))
+        if kalan <= 0:
+            sonuc.append(dict(d))
+            continue
+        if kalan >= tutar:
+            kalan -= tutar
+            continue
+        parca = dict(d)
+        parca["tutar"] = tutar - kalan
+        # Kısmi dilimde gün/vade alanları aynı kalır (işlem tarihi değişmez)
+        kalan = ZERO
+        sonuc.append(parca)
+    return sonuc
 
 
 def _sonuc_olustur(
@@ -247,7 +348,10 @@ def _sonuc_olustur(
         return _bos_sonuc(bakiye, sebep="Bakiye kapalı")
 
     if tur == "BORC":
-        dilimler = [d for d in acik_borc if _kurus(d.get("tutar")) > 0]
+        ham = [d for d in acik_borc if _kurus(d.get("tutar")) > 0]
+        # Net borç valörü: açık alacakları en eski borçlardan düş (brüt 91 gün tuzakını önler)
+        kredi = sum((_kurus(d.get("tutar")) for d in acik_alacak), ZERO)
+        dilimler = _kredi_ile_fifo_dus(ham, kredi)
         if not dilimler:
             return _bos_sonuc(
                 bakiye,
@@ -255,7 +359,9 @@ def _sonuc_olustur(
                 uyari="Borç bakiyesi var ancak açık borç kalemi bulunamadı.",
             )
     else:
-        dilimler = [d for d in acik_alacak if _kurus(d.get("tutar")) > 0]
+        ham = [d for d in acik_alacak if _kurus(d.get("tutar")) > 0]
+        borc_brut = sum((_kurus(d.get("tutar")) for d in acik_borc), ZERO)
+        dilimler = _kredi_ile_fifo_dus(ham, borc_brut)
         if not dilimler:
             return _bos_sonuc(
                 bakiye,
@@ -263,15 +369,30 @@ def _sonuc_olustur(
                 uyari="Alacak bakiyesi var ancak açık alacak kalemi bulunamadı.",
             )
 
-    # Tarih eksik kalemleri ayıkla
+    # İşlem tarihi eksik kalemleri ayıkla (valör tarihi uydurulmaz)
     gecerli: list[dict[str, Any]] = []
+    tarih_eksik = 0
     for d in dilimler:
-        vade = d.get("borc_vadesi") or d.get("alacak_vadesi") or d.get("vade")
-        if vade is None:
+        if _islem_tarihi(d) is None:
+            tarih_eksik += 1
             continue
         gecerli.append(d)
     if not gecerli:
-        return _bos_sonuc(bakiye, sebep="Tarih eksik")
+        return _bos_sonuc(
+            bakiye,
+            sebep="Tarih eksik",
+            uyari=(
+                f"{tarih_eksik} açık kalemde işlem tarihi yok; valör üretilmedi."
+                if tarih_eksik
+                else None
+            ),
+        )
+
+    # Kısmi dilimde gun alanını işlem yaşıyla senkron tut
+    for d in gecerli:
+        islem = _islem_tarihi(d)
+        if islem is not None:
+            d["gun"] = (referans - islem).days
 
     ortalama_tarih, gun, toplam_acik = _ortalama_tarih_ve_gun(gecerli, referans)
     uyari = None
@@ -281,7 +402,8 @@ def _sonuc_olustur(
             f"Bakiye ({_kurus(bakiye)}) ile açık kalem toplamı ({_kurus(toplam_acik)}) "
             f"arasında {fark} TL fark var."
         )
-        logger.warning(
+        # Liste toplu çağrıda binlerce satır logu UI'yi yavaşlatır; kart/detayda debug yeterli
+        logger.debug(
             "ortalama_valor bakiye/acik uyumsuzlugu: bakiye=%s acik=%s fark=%s",
             bakiye,
             toplam_acik,
@@ -415,25 +537,41 @@ def calculate_accounts_average_value_date_bulk(
         for i in islemler:
             islem_by.setdefault(int(i.cari_id), []).append(i)
 
-    tum_belge = []
-    for cid in ids:
-        for h in hareket_by.get(cid, []):
-            tum_belge.append(h.belge_no)
-    vade_harita = CariService._borc_vade_haritasi(session, tum_belge)
-
+    # Önce bakiyeler; kapalı carilerde FIFO/vade haritası gereksiz
     sonuclar: dict[int, dict[str, Any]] = {}
+    acik_cariler: list[Cari] = []
     for cari in cariler:
         cid = int(cari.id)
         if bakiyeler is not None and cid in bakiyeler:
             bakiye = _kurus(bakiyeler[cid])
         else:
             bakiye = _kurus(net_bakiye(cid, session=session)["bakiye"])
+        if bakiye == 0:
+            sonuclar[cid] = _bos_sonuc(bakiye, sebep="Bakiye kapalı")
+        else:
+            acik_cariler.append(cari)
+
+    tum_belge = []
+    for cari in acik_cariler:
+        cid = int(cari.id)
+        for h in hareket_by.get(cid, []):
+            tum_belge.append(h.belge_no)
+    vade_harita = (
+        CariService._borc_vade_haritasi(session, tum_belge) if tum_belge else {}
+    )
+
+    for cari in acik_cariler:
+        cid = int(cari.id)
+        bakiye = _kurus(bakiyeler[cid]) if bakiyeler is not None and cid in bakiyeler else _kurus(
+            net_bakiye(cid, session=session)["bakiye"]
+        )
         paket = fifo_valor_paketi_hesapla(
             hareket_by.get(cid, []),
             islem_by.get(cid, []),
             cari_turu=cari.cari_turu,
             vade_harita=vade_harita,
             referans=referans,
+            sadece_acik=True,
         )
         sonuclar[cid] = _sonuc_olustur(bakiye, paket[1], paket[3], referans)
     return sonuclar

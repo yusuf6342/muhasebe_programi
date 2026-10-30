@@ -28,6 +28,46 @@ class ExcelAktarimTest(unittest.TestCase):
         self.assertTrue(any(t.kod == "musteri_cari" for t in modul_tipleri("satis")))
         self.assertTrue(any(t.kod == "tedarikci_cari" for t in modul_tipleri("satin_alma")))
         self.assertTrue(any(t.kod == "stok_karti" for t in modul_tipleri("stok")))
+        self.assertTrue(any(t.kod == "stok_birim" for t in modul_tipleri("stok")))
+
+    def test_stok_birim_sablon(self):
+        tip = getir("stok_birim")
+        with tempfile.TemporaryDirectory() as tmp:
+            yol = Path(tmp) / "birim.xlsx"
+            ImportTemplateService.olustur(tip, yol)
+            self.assertTrue(yol.is_file())
+            okuma = ExcelReaderService.oku(yol)
+            esleme = ColumnMappingService.otomatik_esle(tip, okuma.basliklar)
+            self.assertIn("yeni_birim", esleme.esleme.values())
+
+    def test_stok_birim_dogrulama_eksik(self):
+        from excel_aktarim.importers.stok_birim import StokBirimImporter, STOK_BIRIM_TIPI
+
+        importer = StokBirimImporter(STOK_BIRIM_TIPI)
+        rapor = importer.dogrula_satirlar(
+            [{"yeni_birim": "Paket", "carpan": "1000"}],
+            guncelleme_modu="guncelle",
+        )
+        self.assertEqual(rapor.hatali, 1)
+
+    def test_fatura_excel_tipleri(self):
+        self.assertTrue(any(t.kod == "satis_fatura_excel" for t in modul_tipleri("satis")))
+        self.assertTrue(any(t.kod == "alis_fatura_excel" for t in modul_tipleri("satin_alma")))
+        tip = getir("satis_fatura_excel")
+        with tempfile.TemporaryDirectory() as tmp:
+            yol = Path(tmp) / "sf.xlsx"
+            ImportTemplateService.olustur(tip, yol)
+            self.assertTrue(yol.is_file())
+
+    def test_fatura_excel_dogrulama_eksik(self):
+        from excel_aktarim.importers.fatura_excel import FaturaExcelImporter, SATIS_FATURA_TIPI
+
+        importer = FaturaExcelImporter(SATIS_FATURA_TIPI, "SATIS")
+        rapor = importer.dogrula_satirlar(
+            [{"fatura_grubu": "G1", "miktar": "1"}],
+            guncelleme_modu="guncelle",
+        )
+        self.assertGreaterEqual(rapor.hatali, 1)
 
     def test_sablon_ve_okuma(self):
         tip = getir("musteri_cari")

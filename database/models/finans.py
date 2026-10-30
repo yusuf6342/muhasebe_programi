@@ -116,6 +116,12 @@ class BankaKarti(Base):
     kk_komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     banka_karti_komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     pos_valor_gun: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # MEVDUAT | KMH — net POS yatışının hedef hesabı (eski sabit KMH kaldırıldı)
+    pos_hedef_hesap_turu: Mapped[str | None] = mapped_column(String(20), nullable=True, default="MEVDUAT")
+    # True: valör günü iş günü sayılır (Cmt/Paz atlanır)
+    pos_valor_is_gunu: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    # True olmadıkça planlanan valörden otomatik mevduat hareketi üretilmez
+    pos_otomatik_mahsup: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     # KMH (kredili mevduat): bu limite kadar eksi bakiyeye düşülebilir
     kmh_limiti: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -189,10 +195,19 @@ class FinansHesabi(Base):
     hesap_adi: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     hesap_turu: Mapped[str] = mapped_column(String(30), nullable=False)  # KASA | BANKA | KREDİ KARTI
     acilis_bakiyesi: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    para_birimi: Mapped[str | None] = mapped_column(String(10), nullable=True, default="TRY")
+    acilis_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Açılış anındaki kayıt kuru (1 PB = kaç TRY); sonradan kur indirme değiştirmez
+    acilis_kuru: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    acilis_tl_karsiligi: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     banka_adi: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    sube: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sube: Mapped[str | None] = mapped_column(String(100), nullable=True)  # şube adı
+    sube_kodu: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    hesap_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    bloke_tutari: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True, default=0)
+    varsayilan: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     banka_karti_id: Mapped[int | None] = mapped_column(
         ForeignKey("banka_kartlari.id"), nullable=True, index=True
@@ -216,23 +231,34 @@ class FinansHareketi(Base):
     tarih: Mapped[date] = mapped_column(Date, nullable=False)
     hareket_turu: Mapped[str] = mapped_column(String(50), nullable=False)
     belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # tutar = hesabın PB cinsinden miktar (USD kasada USD, TRY kasada TRY)
     tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    para_birimi: Mapped[str | None] = mapped_column(String(10), nullable=True, default="TRY")
+    # Normalize: 1 PB kaç TRY; kayıt anında sabitlenir
+    kur: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    kur_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    tl_karsiligi: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     hesap: Mapped["FinansHesabi"] = relationship("FinansHesabi", back_populates="hareketler")
 
 
 class PosValorKaydi(Base):
-    """POS tahsilat sonrası komisyon düşülmüş net tutarın KMH'ye valör aktarımı."""
+    """POS tahsilat sonrası net tutarın beklenen valörde hedef hesaba (mevduat/KMH) aktarımı."""
 
     __tablename__ = "pos_valor_kayitlari"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     banka_karti_id: Mapped[int] = mapped_column(ForeignKey("banka_kartlari.id"), nullable=False, index=True)
     pos_hesap_id: Mapped[int] = mapped_column(ForeignKey("finans_hesaplari.id"), nullable=False)
+    # Eski ad: kmh_hesap_id — artık hedef mevduat veya KMH; hedef_hesap_id tercih edilir
     kmh_hesap_id: Mapped[int] = mapped_column(ForeignKey("finans_hesaplari.id"), nullable=False)
+    hedef_hesap_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("finans_hesaplari.id"), nullable=True, index=True
+    )
     belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     tahsilat_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     valor_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    valor_saati: Mapped[str] = mapped_column(String(8), nullable=False, default="08:00")
+    # Bilgi amaçlı; vade kontrolü yalnızca valör tarihine bakar (iş günü)
+    valor_saati: Mapped[str] = mapped_column(String(8), nullable=False, default="")
     kart_tipi: Mapped[str] = mapped_column(String(20), nullable=False)  # KREDI_KARTI | BANKA_KARTI
     taksit_sayisi: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     brut_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
@@ -242,8 +268,15 @@ class PosValorKaydi(Base):
     cari_id: Mapped[int | None] = mapped_column(nullable=True)
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")  # BEKLIYOR|AKTARILDI
     aktarim_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Gerçek banka yatışı (mutabakat) — beklenen valörden ayrı
+    gercek_yatis_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    gercek_yatis_tutari: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="pos_valor_kayitlari")
+
+    @property
+    def hedef_id(self) -> int:
+        return int(self.hedef_hesap_id or self.kmh_hesap_id)
 
 
 class KrediKartiTanimi(Base):
@@ -301,11 +334,17 @@ class KrediKartiEkstre(Base):
     donem_bitis: Mapped[date] = mapped_column(Date, nullable=False)
     # Kartın son ödeme günü tanımsızsa boş (tahmin edilmez); durum EKSIK_BILGI olur
     son_odeme_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    # True ise son_odeme_tarihi banka bildirimiyle elle sabitlenmiş; kural yeniden hesaplamaz
+    son_odeme_manuel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # KESILMEMIS | KESILMIS | KISMI | ODENDI | GECIKMIS | FAZLA | EKSIK_BILGI
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="KESILMEMIS")
     toplam_borc: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     odenen: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     kalan: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Bankanın bildirdiği asgari ödeme (yoksa NULL → UI'da Asgari seçeneği pasif)
+    asgari_tutar: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    # Asgariye sayılan önceki ödemeler toplamı
+    asgari_odenen: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     para_birimi: Mapped[str] = mapped_column(String(10), nullable=False, default="TRY")
     kesin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

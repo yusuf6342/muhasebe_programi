@@ -85,12 +85,17 @@ class StokKartiImporter(BaseImporter):
         sonuc.eslenen = veriler
         kod = temiz(veriler.get("stok_kodu"))
         ad = temiz(veriler.get("stok_adi"))
-        if not kod:
-            sonuc.hata_ekle("Stok kodu zorunludur.")
         if not ad:
             sonuc.hata_ekle("Stok adı zorunludur.")
         if not sonuc.gecerli:
             return sonuc
+        if not kod:
+            # Talimat: stok kodu boşsa mevcut EAN-13 üreticisi
+            from database.stok_service import StokService
+
+            kod = StokService.ean13_olustur()
+            veriler["stok_kodu"] = kod
+            sonuc.eslenen = veriler
 
         with get_session() as session:
             mevcut = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
@@ -204,7 +209,13 @@ STOK_TIPI = kaydet(
         ad="Stok Kartları",
         modul="stok",
         alanlar=[
-            AlanTanimi("stok_kodu", "Stok Kodu", zorunlu=True, ornek="STK001"),
+            AlanTanimi(
+                "stok_kodu",
+                "Stok Kodu",
+                zorunlu=False,
+                ornek="STK001",
+                aciklama="Boş bırakılırsa otomatik EAN-13 kod üretilir.",
+            ),
             AlanTanimi("stok_adi", "Stok Adı", zorunlu=True, ornek="Örnek Ürün"),
             AlanTanimi("barkod", "Barkod", ornek="8690000000001"),
             AlanTanimi("birim", "Birim", ornek="Adet"),

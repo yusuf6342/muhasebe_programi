@@ -111,7 +111,20 @@ def schema_hazirla(motor=None) -> None:
 
         MusteriGrubuAyari.__table__.create(e, checkfirst=True)
 
+    def _v3(e) -> None:
+        # Modelde olan iletişim alanları eski firma DB'lerinde eksik kalabiliyor
+        eksik_kolonlari_ekle(
+            e,
+            "cari_kartlar",
+            {
+                "telefon2": "VARCHAR(30)",
+                "telefon3": "VARCHAR(30)",
+                "whatsapp": "VARCHAR(30)",
+            },
+        )
+
     if inspect(motor).has_table("cari_kartlar"):
         surum_uygula(motor, "cari_kart", 1, _v1)
         surum_uygula(motor, "cari_kart", 2, _v2)
+        surum_uygula(motor, "cari_kart", 3, _v3)
     _HAZIR_MOTORLAR.add(motor)

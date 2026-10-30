@@ -198,14 +198,17 @@ class HizmetFaturaDialog(tk.Toplevel):
         fatura_id=None,
     ):
         super().__init__(parent)
-        self.hizmet_turu = (hizmet_turu or "GIDER").upper()
-        self.gelir_mi = self.hizmet_turu == "GELIR"
+        self.hizmet_turu = (hizmet_turu or "GIDER").upper()  # fatura türü (iade dahil)
         self.fatura = fatura or (
             HizmetFaturasiService.getir(fatura_id) if fatura_id else None
         )
         if self.fatura:
             self.hizmet_turu = (self.fatura.fatura_turu or self.hizmet_turu).upper()
-            self.gelir_mi = self.hizmet_turu == "GELIR"
+        from database.hizmet_faturasi_service import _kart_turu
+
+        self.kart_turu = _kart_turu(self.hizmet_turu)
+        self.iade_mi = self.hizmet_turu in ("GIDER_IADE", "GELIR_IADE")
+        self.gelir_mi = self.kart_turu == "GELIR"
         self.on_hizmet_id = hizmet_id
         self.result = None
         self.satirlar: list[dict] = []
@@ -213,18 +216,20 @@ class HizmetFaturaDialog(tk.Toplevel):
         self.girdiler = {}
         self.satir_girdileri = {}
 
-        baslik = (
-            "HİZMET SATIŞ (GELİR) FATURASI"
-            if self.gelir_mi
-            else "HİZMET ALIŞ (GİDER) FATURASI"
-        )
+        baslik_map = {
+            "GIDER": "HİZMET ALIŞ (GİDER) FATURASI",
+            "GIDER_IADE": "HİZMET ALIŞ (GİDER) İADE FATURASI",
+            "GELIR": "HİZMET SATIŞ (GELİR) FATURASI",
+            "GELIR_IADE": "HİZMET SATIŞ (GELİR) İADE FATURASI",
+        }
+        baslik = baslik_map.get(self.hizmet_turu, "HİZMET FATURASI")
         self.title(baslik)
         self.geometry("980x680")
         self.minsize(860, 560)
         self.transient(parent)
         self.grab_set()
 
-        cariler = list(HizmetFaturasiService.aktif_cariler(self.hizmet_turu))
+        cariler = list(HizmetFaturasiService.aktif_cariler(self.kart_turu))
         if self.fatura and self.fatura.cari and self.fatura.cari not in cariler:
             cariler.append(self.fatura.cari)
         self.cari_map = {f"{c.cari_kodu} - {c.unvan}": c for c in cariler}
@@ -472,7 +477,7 @@ class HizmetFaturaDialog(tk.Toplevel):
         self.girdiler["vade_gunu"].insert(0, str((vade - fatura_tarihi).days))
 
     def hizmet_sec(self):
-        dlg = HizmetSecDialog(self, self.hizmet_turu)
+        dlg = HizmetSecDialog(self, self.kart_turu)
         self.wait_window(dlg)
         if dlg.result:
             self._hizmeti_forma_yaz(dlg.result)
@@ -480,7 +485,7 @@ class HizmetFaturaDialog(tk.Toplevel):
     def yeni_hizmet_karti(self):
         from gelir_gider_ui import HizmetKartiDialog
 
-        dlg = HizmetKartiDialog(self, hizmet_turu=self.hizmet_turu)
+        dlg = HizmetKartiDialog(self, hizmet_turu=self.kart_turu)
         self.wait_window(dlg)
         if dlg.result:
             self._hizmeti_forma_yaz(dlg.result)
@@ -491,7 +496,7 @@ class HizmetFaturaDialog(tk.Toplevel):
         arama = kod or ad
         if len(arama) < 2:
             return
-        dlg = HizmetSecDialog(self, self.hizmet_turu, arama=arama)
+        dlg = HizmetSecDialog(self, self.kart_turu, arama=arama)
         self.wait_window(dlg)
         if dlg.result:
             self._hizmeti_forma_yaz(dlg.result)

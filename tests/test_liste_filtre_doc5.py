@@ -102,3 +102,111 @@ def test_kimlik_kolonlari_sec():
     kolonlar = ["kod", "ad", "miktar", "tutar", "bakiye"]
     tip = {"kod": "metin", "ad": "metin", "miktar": "miktar", "tutar": "para", "bakiye": "para"}
     assert lfu.kimlik_kolonlari_sec(kolonlar, tip_map=tip, en_fazla=2) == ["kod", "ad"]
+
+
+def test_grafik_verisi_filtrelenmis_istatistik_ile_eslesir():
+    """Grafik çubuk değerleri = istatistik_hesapla(filtrelenmiş satırlar); bakiye hariç."""
+    ham = [
+        {"borc": Decimal("100"), "alacak": Decimal("10"), "bakiye": Decimal("500"), "_sabit": False},
+        {"borc": Decimal("50"), "alacak": Decimal("40"), "bakiye": Decimal("510"), "_sabit": False},
+        {"borc": Decimal("25"), "alacak": Decimal("5"), "bakiye": Decimal("530"), "_sabit": False},
+        {"borc": Decimal("999"), "alacak": Decimal("999"), "bakiye": Decimal("0"), "_sabit": True},
+    ]
+    # Filtre: yalnız borc >= 50 (görünür küme)
+    filtreli = [r for r in ham if not r.get("_sabit") and r["borc"] >= Decimal("50")]
+    assert len(filtreli) == 2
+
+    secimler = {
+        "borc": lfu.IST_TOPLAM,
+        "alacak": lfu.IST_MAKS,
+        "bakiye": lfu.IST_TOPLAM,  # yürüyen — grafiğe girmemeli
+    }
+    seriler = lfu.grafik_verisi_hazirla(
+        filtreli,
+        secimler,
+        basliklar={"borc": "Borç", "alacak": "Alacak", "bakiye": "Bakiye"},
+        kolon_tip={"borc": "para", "alacak": "para", "bakiye": "para"},
+    )
+    # Alias
+    assert lfu.grafik_verisi_olustur is lfu.grafik_verisi_hazirla
+
+    anahtarlar = {s["kolon"] for s in seriler}
+    assert "bakiye" not in anahtarlar
+    assert anahtarlar == {"borc", "alacak"}
+
+    by_kolon = {s["kolon"]: s for s in seriler}
+    borc_degerler = [r["borc"] for r in filtreli]
+    alacak_degerler = [r["alacak"] for r in filtreli]
+    assert by_kolon["borc"]["deger"] == lfu.istatistik_hesapla(
+        borc_degerler, lfu.IST_TOPLAM, satir_sayisi=len(filtreli)
+    )
+    assert by_kolon["alacak"]["deger"] == lfu.istatistik_hesapla(
+        alacak_degerler, lfu.IST_MAKS, satir_sayisi=len(filtreli)
+    )
+    # Ham (filtresiz) toplam ile karışmamalı
+    assert by_kolon["borc"]["deger"] != lfu.istatistik_hesapla(
+        [r["borc"] for r in ham if not r.get("_sabit")], lfu.IST_TOPLAM
+    )
+
+
+def test_grafik_verisi_satir_ve_bos():
+    satirlar = [{"miktar": Decimal("2")}, {"miktar": Decimal("8")}]
+    seriler = lfu.grafik_verisi_hazirla(
+        satirlar,
+        {"miktar": lfu.IST_SATIR, "oran": lfu.IST_ORTALAMA},
+        basliklar={"miktar": "Miktar", "oran": "Oran"},
+        kolon_tip={"miktar": "miktar", "oran": "oran"},
+    )
+    assert len(seriler) == 1
+    assert seriler[0]["tur"] == lfu.IST_SATIR
+    assert seriler[0]["deger"] == 2
+
+    assert lfu.grafik_verisi_hazirla([], {"borc": lfu.IST_MAKS}) == []
+    assert lfu.grafik_verisi_hazirla(
+        [{"borc": Decimal("1")}], {"borc": None}
+    ) == []
+
+
+def test_grafik_verisi_filtrelenmis_istatistikle_ayni():
+    satirlar = [
+        {"borc": Decimal("100"), "bakiye": Decimal("500")},
+        {"borc": Decimal("50"), "bakiye": Decimal("450")},
+        {"borc": Decimal("25"), "bakiye": Decimal("425")},
+    ]
+    # Bakiye seçilse bile yürüyen kolon grafiğe girmez
+    seriler = lfu.grafik_verisi_hazirla(
+        satirlar,
+        {"borc": lfu.IST_TOPLAM, "bakiye": lfu.IST_TOPLAM},
+        basliklar={"borc": "Borç", "bakiye": "Bakiye"},
+    )
+    assert len(seriler) == 1
+    assert seriler[0]["kolon"] == "borc"
+    assert seriler[0]["deger"] == Decimal("175")
+    assert seriler[0]["deger"] == lfu.istatistik_hesapla(
+        [s["borc"] for s in satirlar], lfu.IST_TOPLAM
+    )
+
+
+def test_satir_gruplari_olustur_iki_duzey_ve_sabit():
+    satirlar = [
+        {"cari": "A", "urun": "X", "tutar": 10},
+        {"cari": "A", "urun": "Y", "tutar": 20},
+        {"cari": "B", "urun": "X", "tutar": 30},
+        {"cari": "TOPLAM", "tutar": 60, "_sabit": True},
+    ]
+    g0 = lfu.satir_gruplari_olustur(satirlar, [])
+    assert len(g0) == 4
+    assert not any(r.get("_grup") for r in g0)
+
+    g1 = lfu.satir_gruplari_olustur(satirlar, ["cari"])
+    gruplar = [r for r in g1 if r.get("_grup")]
+    assert len(gruplar) == 2
+    assert {r["_grup_deger"] for r in gruplar} == {"A", "B"}
+    assert gruplar[0]["_grup_adet"] == 2
+    assert g1[-1].get("_sabit") and not g1[-1].get("_grup")
+
+    g2 = lfu.satir_gruplari_olustur(satirlar, ["cari", "urun", "fazla"])
+    # en fazla 2 düzey
+    seviye = {r.get("_grup_seviye") for r in g2 if r.get("_grup")}
+    assert seviye == {0, 1}
+    assert sum(1 for r in g2 if not r.get("_grup") and not r.get("_sabit")) == 3

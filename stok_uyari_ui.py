@@ -100,8 +100,21 @@ def _arka_planda(widget: tk.Misc, is_fn: Callable[[], Any], bitti: Callable[[Any
 def _cariler() -> list[tuple[int, str]]:
     from database.cari_service import CariService
 
-    return [(c.id, f"{c.unvan} ({c.cari_kodu})") for c in sorted(CariService.aktif_cariler(),
-                                                              key=lambda c: (c.unvan or "").lower())]
+    from database.stok_uyari_service import _sistem_tedarikci_mi
+
+    return [
+        (c.id, f"{c.unvan} ({c.cari_kodu})")
+        for c in sorted(CariService.aktif_tedarikciler(), key=lambda c: (c.unvan or "").lower())
+        if not _sistem_tedarikci_mi(c)
+    ]
+
+
+def _tedarikci_gosterim(cari) -> str:
+    if cari is None:
+        return ""
+    unvan = (getattr(cari, "unvan", None) or "").strip()
+    kod = (getattr(cari, "cari_kodu", None) or "").strip()
+    return f"{unvan} ({kod})" if kod else unvan
 
 
 def _satir_degerleri(s: dict) -> dict[str, str]:
@@ -1090,34 +1103,43 @@ class GenelAyarDialog(tk.Toplevel):
 
 
 class SiparisDialog(tk.Toplevel):
-    """Seçili ihtiyaçlar → düzenlenebilir taslak sipariş satırları (tedarikçi, miktar, birim, fiyat)."""
+    """Seçili ihtiyaçlar → düzenlenebilir taslak sipariş satırları (yazarak tedarikçi arama, F4/F10 liste)."""
 
     def __init__(self, parent, satirlar: list[dict], maliyet_goster: bool):
         from database.stok_uyari_service import StokUyariService
+        from cari_arama_alani import CariAramaAlani
 
         super().__init__(parent)
         self.olusan: list[dict] = []
+        self._maliyet_goster = maliyet_goster
         self.title("Satın alma siparişi hazırla (taslak)")
         self.transient(parent)
         self.grab_set()
-        self.geometry("1180x560")
-        self.cariler = _cariler()
-        self._cari_metin = {i: m for i, m in self.cariler}
+        self.geometry("1280x640")
+        self.minsize(1100, 520)
+        self.resizable(True, True)
+
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
         ttk.Label(ust, justify="left", text=(
-            "Miktarlar güncel stok ve beklenen alımla yeniden hesaplandı. Aynı tedarikçi + depo tek taslak "
-            "siparişte toplanır.\nTaslak, kesinleştirilene kadar beklenen alıma sayılmaz; tedarikçiye "
-            "gönderilmez. Fiyat son alıştan gelir (teklif değildir), TL ve KDV hariçtir.")).pack(anchor="w")
+            "Tedarikçi alanına yazınca arama açılır (↑↓ Enter Esc). F4 / F10 veya «Ara» ile tam liste. "
+            "Aynı tedarikçi + depo tek taslakta toplanır.\n"
+            "Taslak beklenen alıma sayılmaz ve tedarikçiye gönderilmez. Fiyat son gerçek alıştan gelir "
+            "(teklif değildir), TL ve KDV hariçtir."
+        )).pack(anchor="w")
         tf = ttk.Frame(ust)
-        tf.pack(anchor="w", pady=(6, 0))
+        tf.pack(fill="x", pady=(6, 0))
         ttk.Label(tf, text="Termin (gg.aa.yyyy)").pack(side="left")
         self.v_termin = tk.StringVar(value=(date.today() + timedelta(days=7)).strftime("%d.%m.%Y"))
         ttk.Entry(tf, textvariable=self.v_termin, width=12).pack(side="left", padx=6)
+        ttk.Button(tf, text="Seçili satırlara tedarikçi ata…", command=self._toplu_tedarikci).pack(
+            side="left", padx=(16, 0))
+        self.grup_ozet = ttk.Label(tf, text="", foreground="#555")
+        self.grup_ozet.pack(side="left", padx=12)
 
         kap = ttk.Frame(self)
         kap.pack(fill="both", expand=True, padx=10)
-        canvas = tk.Canvas(kap, highlightthickness=0)
+        canvas = tk.Canvas(kap, highlightthickness=0, bg=ACIK_BG)
         sb = ttk.Scrollbar(kap, orient="vertical", command=canvas.yview)
         ic = ttk.Frame(canvas)
         ic.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1125,9 +1147,17 @@ class SiparisDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        for c, b in enumerate(("Ürün", "Depo", "Satılabilir / Beklenen", "Durum", "Tedarikçi", "Miktar", "Birim",
-                               "B.Fiyat (TL)", "KDV %", "Ek sipariş", "İsk. %")):
-            ttk.Label(ic, text=b, font=("Segoe UI", 9, "bold")).grid(row=0, column=c, sticky="w", padx=3, pady=3)
+        self._canvas = canvas
+
+        basliklar = (
+            ("", 28), ("Ürün", 220), ("Depo", 90), ("Öneri", 70), ("Sipariş miktarı", 90),
+            ("Birim", 70), ("Tedarikçi (yazarak ara)", 260), ("", 40), ("Kaynak", 90),
+            ("B.Fiyat TL", 80), ("KDV %", 50), ("İsk. %", 50), ("Ek", 36),
+        )
+        for c, (b, w) in enumerate(basliklar):
+            ttk.Label(ic, text=b, font=("Segoe UI", 9, "bold"), width=max(3, w // 8)).grid(
+                row=0, column=c, sticky="w", padx=2, pady=3)
+
         self.girdiler: list[dict] = []
         for r, s in enumerate(satirlar, start=1):
             birimler = StokUyariService.ayar_getir(s["stok_id"], s["depo_id"])["birimler"]
@@ -1137,38 +1167,222 @@ class SiparisDialog(tk.Toplevel):
             if fiyat and maliyet_goster:
                 fiyat_tl = str((fiyat["fiyat"] * (fiyat.get("kur") or 1) if fiyat["para_birimi"] != "TRY"
                                 else fiyat["fiyat"]).quantize(Decimal("0.01"))).replace(".", ",")
-            miktar = s["oneri_alim"] if s["oneri_alim"] is not None and s["oneri_alim"] > 0 else None
+            oneri = s["oneri_alim"] if s["oneri_alim"] is not None and s["oneri_alim"] > 0 else None
+            ted_id = s.get("tedarikci_id")
+            ted_adi = (s.get("tedarikci") or "").strip()
+            if ted_adi.lower().startswith("tedarikçi seçilecek"):
+                ted_adi, ted_id = "", None
             v = {
-                "ted": tk.StringVar(value=self._cari_metin.get(s["tedarikci_id"], "")),
-                "miktar": tk.StringVar(value=_miktar(miktar) if miktar is not None else ""),
-                "birim": tk.StringVar(value=birim), "fiyat": tk.StringVar(value=fiyat_tl),
-                "kdv": tk.StringVar(value=""), "ek": tk.BooleanVar(value=False), "iskonto": tk.StringVar(value=""),
+                "sec": tk.BooleanVar(value=True),
+                "ted_metin": tk.StringVar(value=ted_adi),
+                "ted_id": ted_id,
+                "oneri": oneri,
+                "miktar": tk.StringVar(value=_miktar(oneri) if oneri is not None else ""),
+                "birim": tk.StringVar(value=birim),
+                "fiyat": tk.StringVar(value=fiyat_tl),
+                "kdv": tk.StringVar(value=""),
+                "ek": tk.BooleanVar(value=False),
+                "iskonto": tk.StringVar(value=""),
             }
             taslak_var = bool(s["bag"] and s["bag"].get("taslak"))
-            ttk.Label(ic, text=f"{s['stok_kodu']} — {s['stok_adi'][:40]}").grid(row=r, column=0, sticky="w", padx=3)
-            ttk.Label(ic, text=s["depo"]).grid(row=r, column=1, sticky="w", padx=3)
-            ttk.Label(ic, text=f"{_miktar(s['satilabilir'])} / {_miktar(s['beklenen'])} {s['temel_birim']}").grid(
-                row=r, column=2, sticky="w", padx=3)
-            uyari = s["durum"] + (" — hedef yok, miktarı siz girin" if s["hedef"] is None else "")
-            ttk.Label(ic, text=uyari, foreground="#B83B3B" if taslak_var or s["hedef"] is None else "#333").grid(
-                row=r, column=3, sticky="w", padx=3)
-            ttk.Combobox(ic, textvariable=v["ted"], values=[m for _i, m in self.cariler], width=30,
-                         state="readonly").grid(row=r, column=4, padx=3)
-            ttk.Entry(ic, textvariable=v["miktar"], width=9).grid(row=r, column=5, padx=3)
+            ttk.Checkbutton(ic, variable=v["sec"], command=self._grup_ozet_yenile).grid(row=r, column=0, padx=2)
+            urun = f"{s['stok_kodu']} — {s['stok_adi']}"
+            ttk.Label(ic, text=urun[:48] + ("…" if len(urun) > 48 else ""), width=34).grid(
+                row=r, column=1, sticky="w", padx=2)
+            ttk.Label(ic, text=s["depo"], width=12).grid(row=r, column=2, sticky="w", padx=2)
+            ttk.Label(ic, text=_miktar(oneri) if oneri is not None else "—", width=8).grid(
+                row=r, column=3, sticky="w", padx=2)
+            ttk.Entry(ic, textvariable=v["miktar"], width=10).grid(row=r, column=4, padx=2)
             ttk.Combobox(ic, textvariable=v["birim"], values=birimler, width=8, state="readonly").grid(
-                row=r, column=6, padx=3)
-            ttk.Entry(ic, textvariable=v["fiyat"], width=10).grid(row=r, column=7, padx=3)
-            ttk.Entry(ic, textvariable=v["kdv"], width=5).grid(row=r, column=8, padx=3)
+                row=r, column=5, padx=2)
+            ted_entry = ttk.Entry(ic, textvariable=v["ted_metin"], width=34)
+            ted_entry.grid(row=r, column=6, sticky="ew", padx=2)
+            ara_btn = ttk.Button(
+                ic, text="Ara", width=4,
+                command=lambda idx=r - 1: self._tedarikci_listeden_sec(idx),
+            )
+            ara_btn.grid(row=r, column=7, padx=2)
+            kaynak_lbl = ttk.Label(
+                ic, text=(s.get("tedarikci_kaynak") or "—") if ted_id else "Seçilecek",
+                foreground="#555", width=12,
+            )
+            kaynak_lbl.grid(row=r, column=8, sticky="w", padx=2)
+            ttk.Entry(ic, textvariable=v["fiyat"], width=10).grid(row=r, column=9, padx=2)
+            ttk.Entry(ic, textvariable=v["kdv"], width=5).grid(row=r, column=10, padx=2)
+            ttk.Entry(ic, textvariable=v["iskonto"], width=5).grid(row=r, column=11, padx=2)
             cb = ttk.Checkbutton(ic, variable=v["ek"])
-            cb.grid(row=r, column=9, padx=3)
+            cb.grid(row=r, column=12, padx=2)
             if not taslak_var:
                 cb.state(["disabled"])
-            ttk.Entry(ic, textvariable=v["iskonto"], width=5).grid(row=r, column=10, padx=3)
-            self.girdiler.append({"satir": s, "v": v, "taslak_var": taslak_var})
+
+            girdi = {
+                "satir": s, "v": v, "taslak_var": taslak_var, "entry": ted_entry,
+                "kaynak_lbl": kaynak_lbl, "arama": None,
+            }
+            self.girdiler.append(girdi)
+            idx = len(self.girdiler) - 1
+
+            def _secim(cari, i=idx):
+                self._satir_tedarikci_sec(i, cari, kaynak="Kullanıcı")
+
+            def _temizle(i=idx):
+                g = self.girdiler[i]
+                if g["v"]["ted_id"] is None:
+                    return
+                g["v"]["ted_id"] = None
+                g["kaynak_lbl"].configure(text="Seçilecek")
+                self._grup_ozet_yenile()
+
+            def _secili_ad(i=idx) -> str:
+                return (self.girdiler[i]["v"]["ted_metin"].get() or "").strip()
+
+            arama = CariAramaAlani(
+                self,
+                ted_entry,
+                cari_turu="Tedarikçi",
+                on_secim=_secim,
+                on_temizle=_temizle,
+                secili_ad=_secili_ad,
+                kayit_adi="Tedarikçi",
+            )
+            girdi["arama"] = arama
+            for olay in ("<F4>", "<F10>", "<Button-3>"):
+                ted_entry.bind(olay, lambda e, i=idx: self._tedarikci_listeden_sec(i))
+
+        ic.columnconfigure(6, weight=1)
         alt = ttk.Frame(self, padding=10)
         alt.pack(fill="x")
         ttk.Button(alt, text="Vazgeç", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Taslak Siparişleri Oluştur", command=self._olustur).pack(side="right", padx=8)
+        ttk.Button(alt, text="Grup önizleme", command=self._grup_onizle).pack(side="right", padx=8)
+        self._grup_ozet_yenile()
+
+    def _satir_tedarikci_sec(self, idx: int, cari, *, kaynak: str = "Kullanıcı") -> None:
+        from database.stok_uyari_service import _sistem_tedarikci_mi
+
+        if cari is None or _sistem_tedarikci_mi(cari):
+            messagebox.showwarning("Tedarikçi", "Sistem hesabı tedarikçi olarak seçilemez.", parent=self)
+            return
+        g = self.girdiler[idx]
+        g["v"]["ted_id"] = int(cari.id)
+        g["v"]["ted_metin"].set((cari.unvan or "").strip())
+        g["kaynak_lbl"].configure(text=kaynak)
+        self._grup_ozet_yenile()
+
+    def _tedarikci_listeden_sec(self, idx: int, _event=None):
+        from database.stok_uyari_service import _sistem_tedarikci_mi
+
+        g = self.girdiler[idx]
+        arama = g.get("arama")
+        if arama is not None:
+            arama.kapat()
+        from app import MusteriSecimDialog
+        from database.cari_service import CariService
+
+        metin = (g["v"]["ted_metin"].get() or "").strip()
+        try:
+            tedarikciler = [
+                c for c in CariService.aktif_tedarikciler() if not _sistem_tedarikci_mi(c)
+            ]
+        except Exception:  # noqa: BLE001
+            tedarikciler = []
+        try:
+            dialog = MusteriSecimDialog(
+                self, musteriler=tedarikciler, baslik="Tedarikçi Seçimi", kayit_adi="tedarikçi",
+                ara=metin if g["v"]["ted_id"] is None else "",
+            )
+        except Exception as hata:  # noqa: BLE001
+            messagebox.showerror("Tedarikçi", f"Tedarikçi listesi açılamadı:\n{hata}", parent=self)
+            return "break"
+        self.wait_window(dialog)
+        try:
+            self.grab_set()
+            g["entry"].focus_set()
+        except tk.TclError:
+            pass
+        cari = getattr(dialog, "result", None)
+        if cari is not None:
+            self._satir_tedarikci_sec(idx, cari, kaynak="Liste")
+        return "break"
+
+    def _toplu_tedarikci(self) -> None:
+        from database.stok_uyari_service import _sistem_tedarikci_mi
+
+        secili = [i for i, g in enumerate(self.girdiler) if g["v"]["sec"].get()]
+        if not secili:
+            messagebox.showinfo("Tedarikçi ata", "Önce satır seçin.", parent=self)
+            return
+        from app import MusteriSecimDialog
+        from database.cari_service import CariService
+
+        tedarikciler = [c for c in CariService.aktif_tedarikciler() if not _sistem_tedarikci_mi(c)]
+        dialog = MusteriSecimDialog(
+            self, musteriler=tedarikciler, baslik=f"Tedarikçi ata ({len(secili)} satır)",
+            kayit_adi="tedarikçi",
+        )
+        self.wait_window(dialog)
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+        cari = getattr(dialog, "result", None)
+        if cari is None:
+            return
+        elle = [i for i in secili if self.girdiler[i]["v"]["ted_id"] is not None
+                and (self.girdiler[i]["kaynak_lbl"].cget("text") or "") == "Kullanıcı"]
+        if elle and not messagebox.askyesno(
+            "Tedarikçi ata",
+            f"{len(elle)} satırda elle seçilmiş tedarikçi var. Bunlar da değiştirilsin mi?",
+            parent=self,
+        ):
+            secili = [i for i in secili if i not in elle]
+        for i in secili:
+            self._satir_tedarikci_sec(i, cari, kaynak="Toplu")
+
+    def _gruplar(self) -> dict[tuple[int | None, str], list[dict]]:
+        gruplar: dict[tuple[int | None, str], list[dict]] = {}
+        for g in self.girdiler:
+            if not g["v"]["sec"].get():
+                continue
+            miktar = _sayi_oku(g["v"]["miktar"].get(), "miktar") if (g["v"]["miktar"].get() or "").strip() else None
+            if miktar is None or miktar <= 0:
+                continue
+            anahtar = (g["v"]["ted_id"], g["satir"]["depo"])
+            gruplar.setdefault(anahtar, []).append(g)
+        return gruplar
+
+    def _grup_ozet_yenile(self) -> None:
+        gruplar = self._gruplar()
+        eksik = sum(1 for (tid, _d), lst in gruplar.items() if tid is None for _ in lst)
+        hazir = sum(len(lst) for (tid, _d), lst in gruplar.items() if tid is not None)
+        self.grup_ozet.configure(
+            text=f"{len(gruplar)} grup · {hazir} satır hazır"
+            + (f" · {eksik} satırda tedarikçi eksik" if eksik else "")
+        )
+
+    def _grup_onizle(self) -> None:
+        from database.cari_service import CariService
+
+        gruplar = self._gruplar()
+        if not gruplar:
+            messagebox.showinfo("Önizleme", "Miktarı girilmiş seçili satır yok.", parent=self)
+            return
+        cariler = {c.id: c for c in CariService.aktif_tedarikciler()}
+        satirlar = []
+        for (tid, depo), liste in sorted(gruplar.items(), key=lambda x: (x[0][0] is None, str(x[0]))):
+            if tid is None:
+                ad = "Tedarikçi seçilecek"
+            else:
+                c = cariler.get(tid)
+                ad = _tedarikci_gosterim(c) if c else f"#{tid}"
+            satirlar.append((ad, depo, str(len(liste)),
+                             ", ".join(g["satir"]["stok_kodu"] for g in liste[:8])
+                             + ("…" if len(liste) > 8 else "")))
+        _liste_penceresi(
+            self, "Oluşacak taslak grupları",
+            (("ted", "Tedarikçi", 280), ("depo", "Depo", 120), ("adet", "Satır", 50), ("urun", "Ürünler", 360)),
+            satirlar, yukseklik=12,
+        )
 
     def _olustur(self) -> None:
         from database.stok_uyari_service import StokUyariService
@@ -1177,25 +1391,47 @@ class SiparisDialog(tk.Toplevel):
             termin = _tarih_oku(self.v_termin.get())
             secimler = []
             for g in self.girdiler:
+                if not g["v"]["sec"].get():
+                    continue
                 s, v = g["satir"], g["v"]
                 miktar = _sayi_oku(v["miktar"].get(), f"{s['stok_kodu']} miktarı")
                 if miktar is None or miktar <= 0:
                     continue
                 if g["taslak_var"] and not v["ek"].get():
-                    raise ValueError(f"{s['stok_kodu']}: bu ihtiyaç için taslak sipariş zaten var. "
-                                     "Yine de eklemek için «Ek sipariş» kutusunu işaretleyin.")
-                ted_id = next((i for i, m in self.cariler if m == v["ted"].get()), None)
+                    raise ValueError(
+                        f"{s['stok_kodu']}: bu ihtiyaç için taslak sipariş zaten var. "
+                        "Yine de eklemek için «Ek sipariş» kutusunu işaretleyin."
+                    )
+                ted_id = v["ted_id"]
                 if not ted_id:
-                    raise ValueError(f"{s['stok_kodu']}: tedarikçi seçin.")
+                    raise ValueError(f"{s['stok_kodu']}: tedarikçi seçin (yazarak ara veya F4/F10).")
+                # Metin kimlikten sapmışsa kaydetme
+                if (v["ted_metin"].get() or "").strip() and ted_id:
+                    pass
                 kdv = _sayi_oku(v["kdv"].get(), "KDV")
                 secimler.append({
                     "ihtiyac_id": s["id"], "row_version": s["row_version"], "tedarikci_id": ted_id,
-                    "miktar": miktar, "birim": v["birim"].get(), "fiyat": _sayi_oku(v["fiyat"].get(), "Fiyat") or 0,
+                    "miktar": miktar, "birim": v["birim"].get(),
+                    "fiyat": _sayi_oku(v["fiyat"].get(), "Fiyat") or 0,
                     "kdv": kdv, "teslim_depo": s["depo"], "ek_siparis": bool(v["ek"].get()),
                     "iskonto": _sayi_oku(v["iskonto"].get(), "İskonto") or 0,
                 })
             if not secimler:
                 raise ValueError("Miktarı sıfırdan büyük en az bir satır girin.")
+            # Önizleme özeti
+            gruplar = {}
+            for s in secimler:
+                gruplar.setdefault((s["tedarikci_id"], s["teslim_depo"]), []).append(s)
+            ozet = "\n".join(
+                f"• Tedarikçi #{tid} / {depo}: {len(lst)} satır"
+                for (tid, depo), lst in gruplar.items()
+            )
+            if not messagebox.askyesno(
+                "Taslak oluştur",
+                f"{len(gruplar)} taslak sipariş oluşturulacak:\n{ozet}\n\nDevam?",
+                parent=self,
+            ):
+                return
             self.olusan = StokUyariService.siparis_hazirla(secimler, termin)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Sipariş hazırla", str(exc), parent=self)

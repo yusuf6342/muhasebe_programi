@@ -27,6 +27,24 @@ class AlisIrsaliyesi(Base):
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+    # Giriş deposu ve tedarikçinin kendi (harici) irsaliye bilgisi
+    giris_depo: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    harici_irsaliye_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    harici_irsaliye_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Teslim alma / sevkiyat bilgileri
+    teslim_adresi: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    teslim_il: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    teslim_ilce: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    planlanan_teslim: Mapped[date | None] = mapped_column(Date, nullable=True)
+    teslim_kisi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    teslim_telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    sevkiyat_yontemi: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    nakliyeci: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    arac_plaka: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sofor_adi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sofor_telefon: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    takip_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     cari: Mapped["Cari"] = relationship("Cari")
     siparis: Mapped["AlisSiparisi | None"] = relationship("AlisSiparisi")
     satirlar: Mapped[list["AlisIrsaliyesiSatiri"]] = relationship(

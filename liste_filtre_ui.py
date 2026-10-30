@@ -14,7 +14,7 @@ import tkinter as tk
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from tkinter import messagebox, ttk
 
@@ -1073,6 +1073,8 @@ def istatistik_seridi_ekle(
             return deger_al(satir, kolon)
         return satir.get(kolon)
 
+    grafik_api: dict[str, Any] = {}
+
     def guncelle(_event=None) -> str:
         satirlar = [
             s for s in (get_satirlar() or [])
@@ -1088,6 +1090,11 @@ def istatistik_seridi_ekle(
             parcalar.append(f"{b} {IST_ETIKET.get(tur, tur)}: {istatistik_metni(sonuc, tur)}")
         metin = "  |  ".join(parcalar) if parcalar else "İstatistik seçilmedi"
         ozet.configure(text=metin)
+        if grafik_api.get("guncelle"):
+            try:
+                grafik_api["guncelle"]()
+            except tk.TclError:
+                pass
         return metin
 
     def _menu_ac() -> None:
@@ -1152,6 +1159,31 @@ def istatistik_seridi_ekle(
         secimler.clear(), secimler.update(baslangic_varsayilan), guncelle()
     )).pack(side="left")
 
+    def _grafik_ac() -> None:
+        # Embedded Liste|Grafik paneli varsa ona geç; yoksa ayrı pencere
+        if callable(grafik_api.get("panel_goster")):
+            grafik_api["panel_goster"]()
+            return
+        if grafik_api.get("pencere") and grafik_api["pencere"].winfo_exists():
+            try:
+                grafik_api["pencere"].lift()
+                grafik_api["guncelle"]()
+            except tk.TclError:
+                pass
+            return
+        grafik_api.update(
+            grafik_penceresi_ac(
+                parent,
+                kolon_tanim=uygun,
+                get_satirlar=get_satirlar,
+                secimler=secimler,
+                deger_al=deger_al,
+                yuruyen_haric=yuruyen_haric,
+            )
+        )
+
+    ttk.Button(ust, text="Grafik", command=_grafik_ac).pack(side="left", padx=8)
+
     guncelle()
     return {
         "cerceve": cerceve,
@@ -1159,7 +1191,311 @@ def istatistik_seridi_ekle(
         "secimler": secimler,
         "guncelle": guncelle,
         "uygun_kolonlar": [a for a, _b, _t in uygun],
+        "grafik_ac": _grafik_ac,
+        "grafik": grafik_api,
     }
+
+
+# ---------------------------------------------------------------------------
+# DOC5: Seçilebilir istatistik → Canvas çubuk grafik (aynı filtrelenmiş veri)
+# ---------------------------------------------------------------------------
+
+GORUNUM_LISTE = "liste"
+GORUNUM_GRAFIK = "grafik"
+GORUNUM_YAN_YANA = "yan_yana"
+
+
+def grafik_verisi_hazirla(
+    satirlar: Sequence[dict],
+    kolon_secimler: Mapping[str, str | None],
+    *,
+    basliklar: Mapping[str, str] | None = None,
+    deger_al: Callable[[dict, str], Any] | None = None,
+    yuruyen_haric: Iterable[str] | None = None,
+    kolon_tip: Mapping[str, str | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Filtrelenmiş satırlardan seçili istatistik çubuklarını üretir.
+
+    Yürüyen bakiye kolonları atlanır. Değerler ``istatistik_hesapla`` ile aynıdır.
+    ``deger is None`` (Veri yok) çubuk listesine girmez.
+    """
+    basliklar = dict(basliklar or {})
+    tipler = dict(kolon_tip or {})
+    sonuc: list[dict[str, Any]] = []
+    temiz = [
+        s for s in (satirlar or [])
+        if not (isinstance(s, dict) and s.get("_sabit"))
+    ]
+    for kolon, tur in (kolon_secimler or {}).items():
+        if not tur:
+            continue
+        if not kolon_istatistik_uygun_mu(
+            kolon, tip=tipler.get(kolon), yuruyen_haric=yuruyen_haric
+        ):
+            continue
+        if deger_al:
+            degerler = [deger_al(s, kolon) for s in temiz]
+        else:
+            degerler = [s.get(kolon) if isinstance(s, dict) else None for s in temiz]
+        deger = istatistik_hesapla(degerler, tur, satir_sayisi=len(temiz))
+        if deger is None:
+            continue
+        if tur == IST_SATIR:
+            deger_dec: Decimal | int = int(deger)
+        else:
+            deger_dec = Decimal(str(deger))
+        sonuc.append(
+            {
+                "kolon": kolon,
+                "anahtar": kolon,
+                "baslik": basliklar.get(kolon, kolon),
+                "tur": tur,
+                "etiket": f"{basliklar.get(kolon, kolon)} ({IST_ETIKET.get(tur, tur)})",
+                "deger": deger_dec,
+            }
+        )
+    return sonuc
+
+
+# Geriye uyumlu / test adı
+grafik_verisi_olustur = grafik_verisi_hazirla
+
+
+def _grafik_cubuklari_ciz(canvas: tk.Canvas, seriler: Sequence[dict[str, Any]]) -> None:
+    canvas.delete("all")
+    try:
+        w = max(int(canvas.winfo_width() or 480), 320)
+        h = max(int(canvas.winfo_height() or 280), 200)
+    except tk.TclError:
+        w, h = 480, 280
+    canvas.configure(scrollregion=(0, 0, w, h))
+    if not seriler:
+        canvas.create_text(
+            w // 2, h // 2, text="Grafik için istatistik seçin", fill="#546e7a", font=("Segoe UI", 11)
+        )
+        return
+    sol, sag, ust, alt = 48, 16, 28, 56
+    alan_w = max(w - sol - sag, 40)
+    alan_h = max(h - ust - alt, 40)
+    sayisal = [float(s["deger"]) for s in seriler]
+    maks = max((abs(v) for v in sayisal), default=0.0) or 1.0
+    has_neg = any(v < 0 for v in sayisal)
+    if has_neg:
+        sifir_y = ust + alan_h / 2
+        olcek = (alan_h / 2) / maks
+    else:
+        sifir_y = ust + alan_h
+        olcek = alan_h / maks
+    n = len(seriler)
+    cubuk_w = max(min(alan_w / max(n, 1) * 0.62, 72), 18)
+    aralik = alan_w / max(n, 1)
+    renkler = ("#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#00838f", "#c62828")
+    canvas.create_line(sol, sifir_y, sol + alan_w, sifir_y, fill="#90a4ae")
+    for i, s in enumerate(seriler):
+        val = float(s["deger"])
+        bh = abs(val) * olcek
+        x0 = sol + i * aralik + (aralik - cubuk_w) / 2
+        if val >= 0:
+            y0, y1 = sifir_y - bh, sifir_y
+            renk = renkler[i % len(renkler)]
+            metin_y, metin_anchor = y0 - 8, "s"
+        else:
+            y0, y1 = sifir_y, sifir_y + bh
+            renk = "#c62828"
+            metin_y, metin_anchor = y1 + 8, "n"
+        canvas.create_rectangle(x0, y0, x0 + cubuk_w, y1, fill=renk, outline="")
+        canvas.create_text(
+            x0 + cubuk_w / 2,
+            metin_y,
+            text=istatistik_metni(s["deger"], s["tur"]),
+            fill="#1a237e",
+            font=("Segoe UI", 8),
+            anchor=metin_anchor,
+        )
+        etiket = str(s.get("etiket") or s.get("kolon") or "")
+        if len(etiket) > 22:
+            etiket = etiket[:20] + "…"
+        canvas.create_text(
+            x0 + cubuk_w / 2,
+            h - 10,
+            text=etiket,
+            fill="#37474f",
+            font=("Segoe UI", 8),
+            angle=20 if n > 3 else 0,
+            anchor="s",
+        )
+
+
+def grafik_penceresi_ac(
+    parent,
+    *,
+    kolon_tanim: Sequence[tuple[str, str, str | None]],
+    get_satirlar: Callable[[], Sequence[dict]],
+    secimler: dict[str, str | None],
+    deger_al: Callable[[dict, str], Any] | None = None,
+    yuruyen_haric: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """İstatistik seçimleriyle aynı filtrelenmiş veriyi çubuk grafikte gösterir."""
+    win = tk.Toplevel(parent.winfo_toplevel())
+    win.title("İstatistik grafiği")
+    win.geometry("560x360")
+    try:
+        win.transient(parent.winfo_toplevel())
+    except tk.TclError:
+        pass
+    ust = ttk.Frame(win, padding=6)
+    ust.pack(fill="x")
+    ttk.Label(
+        ust,
+        text="Grafik, listedeki filtrelenmiş satırlar ve seçili istatistiklerle aynı veriyi kullanır.",
+        wraplength=520,
+    ).pack(side="left", fill="x", expand=True)
+    canvas = tk.Canvas(win, background="#fafafa", highlightthickness=1, highlightbackground="#cfd8dc")
+    canvas.pack(fill="both", expand=True, padx=8, pady=8)
+    basliklar = {a: b for a, b, _t in kolon_tanim}
+    tipler = {a: t for a, _b, t in kolon_tanim}
+
+    def guncelle(_event=None) -> None:
+        seriler = grafik_verisi_hazirla(
+            get_satirlar() or [],
+            secimler,
+            basliklar=basliklar,
+            deger_al=deger_al,
+            yuruyen_haric=yuruyen_haric,
+            kolon_tip=tipler,
+        )
+        _grafik_cubuklari_ciz(canvas, seriler)
+
+    ttk.Button(ust, text="Yenile", command=guncelle).pack(side="right", padx=4)
+    canvas.bind("<Configure>", lambda _e: guncelle())
+    win.after(50, guncelle)
+    return {"pencere": win, "canvas": canvas, "guncelle": guncelle}
+
+
+def liste_grafik_gorunum_ekle(
+    parent,
+    liste_cerceve,
+    *,
+    get_satirlar: Callable[[], Sequence[dict]],
+    get_secimler: Callable[[], Mapping[str, str | None]],
+    kolon_baslik: Mapping[str, str] | None = None,
+    deger_al: Callable[[dict, str], Any] | None = None,
+    yuruyen_haric: Iterable[str] | None = None,
+    kolon_tip: Mapping[str, str | None] | None = None,
+    arac_parent=None,
+    varsayilan: str = GORUNUM_LISTE,
+) -> dict[str, Any]:
+    """Liste | Grafik | Yan yana geçişi; grafik aynı filtrelenmiş satırları kullanır."""
+    arac = arac_parent or parent
+    mod_var = tk.StringVar(value=varsayilan)
+
+    grafik_cerceve = ttk.Frame(parent)
+    canvas = tk.Canvas(
+        grafik_cerceve, height=220, background="#fafafa",
+        highlightthickness=1, highlightbackground="#cfd8dc",
+    )
+    canvas.pack(fill="both", expand=True, padx=4, pady=4)
+
+    _liste_opts: dict[str, Any] = {"fill": "both", "expand": True}
+    try:
+        if liste_cerceve.winfo_manager() == "pack":
+            _liste_opts = dict(liste_cerceve.pack_info())
+            _liste_opts.pop("in", None)
+    except tk.TclError:
+        pass
+
+    def guncelle(_event=None) -> list[dict[str, Any]]:
+        seriler = grafik_verisi_hazirla(
+            get_satirlar() or [],
+            get_secimler() or {},
+            basliklar=kolon_baslik,
+            deger_al=deger_al,
+            yuruyen_haric=yuruyen_haric,
+            kolon_tip=kolon_tip,
+        )
+        if mod_var.get() != GORUNUM_LISTE:
+            try:
+                _grafik_cubuklari_ciz(canvas, seriler)
+            except tk.TclError:
+                pass
+        return seriler
+
+    def _uygula_mod(_event=None) -> None:
+        mod = mod_var.get()
+        try:
+            liste_cerceve.pack_forget()
+        except tk.TclError:
+            pass
+        try:
+            grafik_cerceve.pack_forget()
+        except tk.TclError:
+            pass
+        if mod == GORUNUM_LISTE:
+            liste_cerceve.pack(**_liste_opts)
+        elif mod == GORUNUM_GRAFIK:
+            grafik_cerceve.pack(fill="both", expand=True)
+            parent.after(30, guncelle)
+        else:
+            liste_cerceve.pack(side="left", fill="both", expand=True)
+            grafik_cerceve.pack(side="left", fill="both", expand=True)
+            parent.after(30, guncelle)
+
+    def goster_grafik() -> None:
+        mod_var.set(GORUNUM_GRAFIK)
+        _uygula_mod()
+
+    btn_kutu = ttk.Frame(arac)
+    btn_kutu.pack(side="left", padx=6)
+    ttk.Label(btn_kutu, text="Görünüm:").pack(side="left")
+    for metin, deger in (
+        ("Liste", GORUNUM_LISTE),
+        ("Grafik", GORUNUM_GRAFIK),
+        ("Yan yana", GORUNUM_YAN_YANA),
+    ):
+        ttk.Radiobutton(
+            btn_kutu, text=metin, value=deger, variable=mod_var, command=_uygula_mod
+        ).pack(side="left", padx=2)
+
+    canvas.bind(
+        "<Configure>",
+        lambda _e: guncelle() if mod_var.get() != GORUNUM_LISTE else None,
+    )
+    _uygula_mod()
+
+    return {
+        "cerceve": grafik_cerceve,
+        "canvas": canvas,
+        "mod_var": mod_var,
+        "guncelle": guncelle,
+        "uygula_mod": _uygula_mod,
+        "goster_grafik": goster_grafik,
+        "arac": btn_kutu,
+    }
+
+
+def istatistik_grafik_bagla(istatistik: dict[str, Any], grafik: dict[str, Any]) -> None:
+    """İstatistik şeridi / panel: filtre veya seçim değişince grafiği yeniler."""
+    onceki = istatistik.get("guncelle")
+    if not callable(onceki):
+        return
+
+    def _ikili(_event=None):
+        metin = onceki()
+        try:
+            grafik["guncelle"]()
+        except tk.TclError:
+            pass
+        return metin
+
+    istatistik["guncelle"] = _ikili
+    api = istatistik.get("grafik")
+    if isinstance(api, dict) and callable(grafik.get("goster_grafik")):
+        api["panel_goster"] = grafik["goster_grafik"]
+        api["guncelle"] = grafik["guncelle"]
+    try:
+        grafik["guncelle"]()
+    except tk.TclError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1556,3 +1892,287 @@ def grup_agaci_filtre_ekle(
     ttk.Button(kutu, text="Seç…", command=ac).pack(side="left", padx=4)
     _ozet_yaz()
     return {"cerceve": kutu, "ozet": ozet, "yenile_ozet": _ozet_yaz, "ac": ac}
+
+
+# ---------------------------------------------------------------------------
+# DOC5: Sürüklemeli / menülü sütun gruplama (en fazla 2 düzey)
+# ---------------------------------------------------------------------------
+
+def satir_gruplari_olustur(
+    satirlar: Sequence[Mapping[str, Any]],
+    grup_kolonlari: Sequence[str],
+    *,
+    deger_fn: Callable[[Mapping[str, Any], str], Any] | None = None,
+    sabit_key: str = "_sabit",
+    en_fazla: int = 2,
+) -> list[dict[str, Any]]:
+    """Filtrelenmiş satırları en fazla iki düzey grup başlığıyla döndürür.
+
+    Grup başlıkları ``_grup=True`` ve ``_sabit=True`` taşır (kayıt sayısına girmez).
+    Genel toplam satırları (``_sabit``) en sonda korunur.
+    """
+    kolonlar = [k for k in list(grup_kolonlari or [])[: max(0, int(en_fazla))] if k]
+    if not kolonlar:
+        return [dict(r) for r in satirlar]
+
+    def _deger(r: Mapping[str, Any], kolon: str):
+        if deger_fn is not None:
+            return deger_fn(r, kolon)
+        v = r.get(kolon)
+        return "" if v is None else v
+
+    veri = [r for r in satirlar if not r.get(sabit_key)]
+    sabitler = [dict(r) for r in satirlar if r.get(sabit_key)]
+    if not veri:
+        return sabitler
+
+    sonuc: list[dict[str, Any]] = []
+
+    def _gez(kalan: list[Mapping[str, Any]], seviye: int) -> None:
+        if seviye >= len(kolonlar):
+            for r in kalan:
+                sonuc.append(dict(r))
+            return
+        kolon = kolonlar[seviye]
+        sirali: dict[str, list[Mapping[str, Any]]] = {}
+        for r in kalan:
+            anahtar = deger_metin(_deger(r, kolon)) or "(Boş)"
+            sirali.setdefault(anahtar, []).append(r)
+        for anahtar, alt in sirali.items():
+            sonuc.append({
+                "_grup": True,
+                sabit_key: True,
+                "_grup_seviye": seviye,
+                "_grup_kolon": kolon,
+                "_grup_deger": anahtar,
+                "_grup_adet": len(alt),
+                kolon: f"{anahtar}  ({len(alt)})",
+            })
+            _gez(list(alt), seviye + 1)
+
+    _gez(veri, 0)
+    sonuc.extend(sabitler)
+    return sonuc
+
+
+def gruplama_alani_ekle(
+    parent,
+    *,
+    get_gruplar: Callable[[], list[str]],
+    set_gruplar: Callable[[list[str]], None],
+    basliklar: Mapping[str, str],
+    izinli_kolonlar: Sequence[str] | None = None,
+    on_degisti: Callable[[], None] | None = None,
+    en_fazla: int = 2,
+    pack_side: str = "left",
+    bg: str | None = None,
+) -> dict[str, Any]:
+    """Gruplama drop zone + chip'ler + Grupla menüsü (sürükleme tek yol değil)."""
+    izinli = list(izinli_kolonlar) if izinli_kolonlar is not None else list(basliklar.keys())
+    cerceve_kw: dict[str, Any] = {}
+    if bg is not None:
+        cerceve = tk.Frame(parent, bg=bg, highlightthickness=1, highlightbackground="#90a4ae")
+        cerceve_kw["bg"] = bg
+    else:
+        cerceve = ttk.Frame(parent)
+    cerceve.pack(side=pack_side, padx=6, fill="x", expand=True)
+
+    tk.Label(
+        cerceve,
+        text="Grupla:",
+        **({**cerceve_kw, "fg": "#37474f"} if bg is not None else {}),
+        font=("Segoe UI", 9),
+    ).pack(side="left", padx=(4, 2))
+    chip_kutu = tk.Frame(cerceve, **cerceve_kw) if bg is not None else ttk.Frame(cerceve)
+    chip_kutu.pack(side="left", fill="x", expand=True)
+    ipucu = tk.Label(
+        cerceve,
+        text="Sütun başlığını buraya sürükleyin veya menüden seçin",
+        **({**cerceve_kw, "fg": "#78909c"} if bg is not None else {}),
+        font=("Segoe UI", 8),
+    )
+    ipucu.pack(side="left", padx=4)
+
+    def _gruplar() -> list[str]:
+        return [k for k in (get_gruplar() or []) if k in izinli][:en_fazla]
+
+    def _yaz(yeni: list[str]) -> None:
+        temiz = []
+        for k in yeni:
+            if k in izinli and k not in temiz:
+                temiz.append(k)
+            if len(temiz) >= en_fazla:
+                break
+        set_gruplar(temiz)
+        _chip_yenile()
+        if on_degisti:
+            on_degisti()
+
+    def _chip_yenile() -> None:
+        for c in chip_kutu.winfo_children():
+            c.destroy()
+        g = _gruplar()
+        if not g:
+            ipucu.pack(side="left", padx=4)
+            return
+        try:
+            ipucu.pack_forget()
+        except tk.TclError:
+            pass
+        for kolon in g:
+            ad = basliklar.get(kolon, kolon)
+            chip = ttk.Frame(chip_kutu)
+            chip.pack(side="left", padx=2)
+            ttk.Label(chip, text=ad).pack(side="left")
+            ttk.Button(
+                chip, text="×", width=2,
+                command=lambda k=kolon: _yaz([x for x in _gruplar() if x != k]),
+            ).pack(side="left")
+
+    def kolon_ekle(kolon: str) -> None:
+        if kolon not in izinli:
+            return
+        g = _gruplar()
+        if kolon in g:
+            return
+        if len(g) >= en_fazla:
+            messagebox.showinfo(
+                "Gruplama",
+                f"İlk sürümde en fazla {en_fazla} düzey gruplama desteklenir.",
+                parent=parent.winfo_toplevel(),
+            )
+            return
+        _yaz(g + [kolon])
+
+    def _menu_ac() -> None:
+        menu = tk.Menu(cerceve, tearoff=0)
+        mevcut = set(_gruplar())
+        for kolon in izinli:
+            ad = basliklar.get(kolon, kolon)
+            if kolon in mevcut:
+                menu.add_command(
+                    label=f"✓ {ad}  (kaldır)",
+                    command=lambda k=kolon: _yaz([x for x in _gruplar() if x != k]),
+                )
+            else:
+                menu.add_command(label=ad, command=lambda k=kolon: kolon_ekle(k))
+        menu.add_separator()
+        menu.add_command(label="Gruplamayı temizle", command=lambda: _yaz([]))
+        try:
+            menu.tk_popup(cerceve.winfo_pointerx(), cerceve.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    ttk.Button(cerceve, text="Grupla ▾", command=_menu_ac).pack(side="right", padx=4)
+    ttk.Button(cerceve, text="Temizle", command=lambda: _yaz([])).pack(side="right")
+
+    def drop_hedefi_mi(x_root: int, y_root: int) -> bool:
+        try:
+            return (
+                cerceve.winfo_rootx() <= x_root <= cerceve.winfo_rootx() + cerceve.winfo_width()
+                and cerceve.winfo_rooty() <= y_root <= cerceve.winfo_rooty() + cerceve.winfo_height()
+            )
+        except tk.TclError:
+            return False
+
+    _chip_yenile()
+    return {
+        "cerceve": cerceve,
+        "kolon_ekle": kolon_ekle,
+        "temizle": lambda: _yaz([]),
+        "yenile": _chip_yenile,
+        "drop_hedefi_mi": drop_hedefi_mi,
+        "get_gruplar": _gruplar,
+    }
+
+
+def treeview_grup_surukle_bagla(
+    tablo: ttk.Treeview,
+    kolonlar: Sequence[str],
+    *,
+    on_birak: Callable[[str], None],
+    drop_hedefi_mi: Callable[[int, int], bool] | None = None,
+    haric_kolonlar: Sequence[str] | None = None,
+    esik_px: int = 8,
+) -> dict[str, Any]:
+    """Başlıkta sürüklemeyi grup drop zone'a bağlar (sütun ayırıcı sürüklemesi bozulmaz)."""
+    haric = set(haric_kolonlar or ())
+    durum: dict[str, Any] = {"kolon": None, "x": 0, "y": 0, "aktif": False, "label": None}
+
+    def _temiz_label() -> None:
+        lab = durum.get("label")
+        if lab is not None:
+            try:
+                lab.destroy()
+            except tk.TclError:
+                pass
+            durum["label"] = None
+
+    def _basla(event):
+        bolge = tablo.identify_region(event.x, event.y)
+        # Ayırıcı sürüklemesi kolon genişliği için kalsın
+        if bolge == "separator" or bolge != "heading":
+            durum["kolon"] = None
+            return
+        kolon = heading_kolon_bul(tablo, event, kolonlar)
+        if not kolon or kolon in haric:
+            durum["kolon"] = None
+            return
+        durum["kolon"] = kolon
+        durum["x"] = event.x_root
+        durum["y"] = event.y_root
+        durum["aktif"] = False
+
+    def _hareket(event):
+        kolon = durum.get("kolon")
+        if not kolon:
+            return
+        dx = abs(event.x_root - (durum.get("x") or 0))
+        dy = abs(event.y_root - (durum.get("y") or 0))
+        if not durum["aktif"] and (dx >= esik_px or dy >= esik_px):
+            durum["aktif"] = True
+            _temiz_label()
+            try:
+                lab = tk.Label(
+                    tablo.winfo_toplevel(),
+                    text=f"Grupla: {kolon}",
+                    bg="#fff8e1",
+                    fg="#1a237e",
+                    relief="solid",
+                    borderwidth=1,
+                    padx=6,
+                    pady=2,
+                    font=("Segoe UI", 9),
+                )
+                lab.place(x=event.x_root - tablo.winfo_toplevel().winfo_rootx(),
+                          y=event.y_root - tablo.winfo_toplevel().winfo_rooty())
+                durum["label"] = lab
+            except tk.TclError:
+                pass
+        lab = durum.get("label")
+        if lab is not None:
+            try:
+                ust = tablo.winfo_toplevel()
+                lab.place(x=event.x_root - ust.winfo_rootx() + 12,
+                          y=event.y_root - ust.winfo_rooty() + 12)
+            except tk.TclError:
+                pass
+
+    def _bitir(event):
+        kolon = durum.get("kolon")
+        aktif = durum.get("aktif")
+        _temiz_label()
+        durum["kolon"] = None
+        durum["aktif"] = False
+        if not kolon or not aktif:
+            return
+        hedef_ok = True
+        if drop_hedefi_mi is not None:
+            hedef_ok = bool(drop_hedefi_mi(event.x_root, event.y_root))
+        if hedef_ok:
+            on_birak(kolon)
+
+    bid1 = tablo.bind("<ButtonPress-1>", _basla, add="+")
+    bid2 = tablo.bind("<B1-Motion>", _hareket, add="+")
+    bid3 = tablo.bind("<ButtonRelease-1>", _bitir, add="+")
+    return {"bind_ids": (bid1, bid2, bid3), "durum": durum}

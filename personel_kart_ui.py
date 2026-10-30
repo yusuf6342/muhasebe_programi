@@ -193,9 +193,13 @@ class PersonelKartDialog(tk.Toplevel):
         oz_bar = tk.Frame(self.sekme_ozluk, bg=BEYAZ)
         oz_bar.pack(fill="x", padx=8, pady=(0, 8))
         tk.Button(
-            oz_bar, text="Belge Yükle", command=self.belge_yukle,
+            oz_bar, text="Belge Yükle / Özlük", command=self.belge_yukle,
             bg=LACIVERT, fg=BEYAZ, relief="flat",
         ).pack(side="left")
+        tk.Button(
+            oz_bar, text="SGK / Beyan", command=self.sgk_ac,
+            bg=LACIVERT, fg=BEYAZ, relief="flat",
+        ).pack(side="left", padx=6)
 
         self.hesap_tree = ttk.Treeview(
             self.sekme_hesap, columns=("tur", "tarih", "tutar"), show="headings", height=12
@@ -205,6 +209,37 @@ class PersonelKartDialog(tk.Toplevel):
         self.hesap_tree.pack(fill="both", expand=True, padx=8, pady=8)
         self.gecmis_text = tk.Text(self.sekme_gecmis, height=12, wrap="word")
         self.gecmis_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Performans / kariyer — aynı personel kimliği (ikinci depo yok)
+        bag_bar = tk.Frame(self, bg=ACIK_BG)
+        bag_bar.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(
+            bag_bar,
+            text="Bağlantılar (standart personel kimliği):",
+            bg=ACIK_BG,
+            fg=METIN,
+            font=FONT_UI,
+        ).pack(side="left")
+        tk.Button(
+            bag_bar,
+            text="Performans / Kariyer",
+            command=self.performans_ac,
+            bg=SARI,
+            fg=LACIVERT,
+            relief="flat",
+            font=FONT_UI_BOLD,
+            padx=8,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            bag_bar,
+            text="Ölçme / Prim",
+            command=self.olcme_prim_ac,
+            bg=SARI,
+            fg=LACIVERT,
+            relief="flat",
+            font=FONT_UI_BOLD,
+            padx=8,
+        ).pack(side="left", padx=4)
 
     def _alan(self, parent, alanlar, *, ekstra_kimlik=False, ekstra_ucret=False):
         f = tk.Frame(parent, bg=BEYAZ)
@@ -433,14 +468,15 @@ class PersonelKartDialog(tk.Toplevel):
         except Exception as ex:
             self.izin_text.insert("end", str(ex))
 
-        # SGK
+        # SGK — işyeri dönem kaydı + personel bağlantıları (tek depo)
         self.sgk_text.delete("1.0", "end")
         try:
             for s in PersonelSgkService.listele(personel_id=self.personel_id):
+                bagli = s.get("bagli_personel_ids") or []
                 self.sgk_text.insert(
                     "end",
                     f"{s['islem_turu']} durum={s['durum']} son={s.get('son_tarih')} "
-                    f"onay={s.get('onay_no') or '—'} | {s.get('uyari')}\n",
+                    f"onay={s.get('onay_no') or '—'} bağlı={len(bagli)} | {s.get('uyari')}\n",
                 )
             if self.isyeri_var.get() and self.sicil_var.get():
                 self.sgk_text.insert(
@@ -448,6 +484,10 @@ class PersonelKartDialog(tk.Toplevel):
                     f"\nKart SGK: işyeri={self.isyeri_var.get()} sicil={self.sicil_var.get()} "
                     f"meslek={self.meslek_var.get()}\n",
                 )
+            self.sgk_text.insert(
+                "end",
+                "\nResmî portal gönderimi yok. MPHB personel bağlantısı SGK menüsünden yapılır.\n",
+            )
         except Exception as ex:
             self.sgk_text.insert("end", str(ex))
 
@@ -472,18 +512,47 @@ class PersonelKartDialog(tk.Toplevel):
             "Yeniden işe girişte yeni çalışma dönemi eklenir; eski ücret taşınmaz.\n",
         )
 
+    def _menuye_gec(self, ac_fn):
+        app = self.app
+        self.destroy()
+        if hasattr(app, "nav_ac"):
+            app.sayfa_goster("personel", ust_duzey=True)
+            app.nav_ac(lambda: ac_fn(app))
+        else:
+            ac_fn(app)
+
     def belge_yukle(self):
         if not self.personel_id:
             messagebox.showwarning("Özlük", "Önce kartı kaydedin.", parent=self)
             return
         from personel_ui import ozluk_dosyalari_goster
 
-        messagebox.showinfo(
-            "Özlük",
-            "Belge yüklemek için PERSONEL → Özlük Dosyaları ekranını kullanın "
-            "veya kayıttan sonra o menüye gidin.",
-            parent=self,
-        )
+        pid = int(self.personel_id)
+        self._menuye_gec(lambda app: ozluk_dosyalari_goster(app, personel_id=pid))
+
+    def sgk_ac(self):
+        if not self.personel_id:
+            messagebox.showwarning("SGK", "Önce kartı kaydedin.", parent=self)
+            return
+        from personel_ui import sgk_beyan_goster
+
+        self._menuye_gec(sgk_beyan_goster)
+
+    def performans_ac(self):
+        if not self.personel_id:
+            messagebox.showwarning("Performans", "Önce kartı kaydedin.", parent=self)
+            return
+        from personel_performans_ui import performans_kariyer_goster
+
+        self._menuye_gec(performans_kariyer_goster)
+
+    def olcme_prim_ac(self):
+        if not self.personel_id:
+            messagebox.showwarning("Ölçme / Prim", "Önce kartı kaydedin.", parent=self)
+            return
+        from personel_performans_ui import olcme_prim_goster
+
+        self._menuye_gec(olcme_prim_goster)
 
     def kaydet(self):
         veri = {

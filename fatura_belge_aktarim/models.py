@@ -40,6 +40,9 @@ class InvoiceImportDraft(Base):
     hata_mesaji: Mapped[str | None] = mapped_column(Text, nullable=True)
     linked_invoice_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     linked_invoice_tur: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # mal_geldi | mal_bekleniyor | irsaliyeden — fiziksel stok kabulü (ALIS)
+    mal_kabul_durumu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    linked_irsaliye_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
@@ -83,6 +86,9 @@ class InvoiceImportLine(Base):
     stok_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     birim_carpan: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     guven: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # Kısmi mal kabul: teslim edilen miktar (None = belge miktarının tamamı)
+    teslim_miktar: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    irsaliye_satiri_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

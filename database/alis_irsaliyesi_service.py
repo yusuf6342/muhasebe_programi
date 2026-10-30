@@ -18,6 +18,14 @@ IRSALIYE_DURUMLARI = ("AÇIK", "KISMİ FATURALANDI", "FATURALANDI", "İPTAL")
 
 
 class AlisIrsaliyesiService:
+    # Giriş deposu, harici irsaliye ve teslim alma / sevkiyat alanları (veriler → model)
+    SEVKIYAT_ALANLARI = (
+        "giris_depo", "harici_irsaliye_no", "harici_irsaliye_tarihi",
+        "teslim_adresi", "teslim_il", "teslim_ilce", "planlanan_teslim",
+        "teslim_kisi", "teslim_telefon", "sevkiyat_yontemi",
+        "nakliyeci", "arac_plaka", "sofor_adi", "sofor_telefon", "takip_no",
+    )
+
     @staticmethod
     def _siparis_durumunu_guncelle(session, siparis_id: int | None) -> None:
         if not siparis_id:
@@ -152,7 +160,7 @@ class AlisIrsaliyesiService:
             else:
                 ozel_no = (veriler.get("irsaliye_no") or "").strip()
                 irsaliye = AlisIrsaliyesi(
-                    irsaliye_no=ozel_no or AlisIrsaliyesiService.irsaliye_no(),
+                    irsaliye_no=ozel_no or AlisIrsaliyesiService.irsaliye_no(session),
                     durum="AÇIK",
                     row_version=1,
                 )
@@ -165,6 +173,12 @@ class AlisIrsaliyesiService:
             irsaliye.siparis_id = veriler.get("siparis_id")
             irsaliye.aciklama = veriler.get("aciklama")
             irsaliye.ayrintili_notlar = veriler.get("ayrintili_notlar")
+            for alan in AlisIrsaliyesiService.SEVKIYAT_ALANLARI:
+                if alan in veriler:
+                    deger = veriler.get(alan)
+                    if isinstance(deger, str):
+                        deger = deger.strip() or None
+                    setattr(irsaliye, alan, deger)
             from database.stok_service import StokService, birim_anahtari
 
             StokService.belge_birimlerini_dogrula(session, satir_verileri, "Alış irsaliyesi")
@@ -235,8 +249,27 @@ class AlisIrsaliyesiService:
                 )
 
     @staticmethod
-    def irsaliye_no() -> str:
-        return f"AIRS-{datetime.now():%Y%m%d%H%M%S%f}"
+    def irsaliye_no(session=None) -> str:
+        """AIR-00001 sıralı numara; okunamazsa benzersiz zaman damgalı AIRS-… numarasına düşer."""
+        zaman_damgali = f"AIRS-{datetime.now():%Y%m%d%H%M%S%f}"
+        try:
+            if session is None:
+                with get_session() as yeni:
+                    return AlisIrsaliyesiService.irsaliye_no(yeni)
+            nolar = session.scalars(
+                select(AlisIrsaliyesi.irsaliye_no).where(AlisIrsaliyesi.irsaliye_no.like("AIR-%"))
+            ).all()
+            son = 0
+            for no in nolar:
+                parca = (no or "")[4:]
+                if parca.isdigit() and len(parca) <= 9:
+                    son = max(son, int(parca))
+            aday = f"AIR-{son + 1:05d}"
+            if session.scalar(select(AlisIrsaliyesi.id).where(AlisIrsaliyesi.irsaliye_no == aday)) is not None:
+                return zaman_damgali
+            return aday
+        except Exception:
+            return zaman_damgali
 
     @staticmethod
     def toplam(satirlar: list[AlisIrsaliyesiSatiri]) -> dict[str, Decimal]:

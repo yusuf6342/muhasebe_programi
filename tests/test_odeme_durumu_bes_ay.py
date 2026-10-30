@@ -253,5 +253,55 @@ class BesAylikRaporFiltreTest(unittest.TestCase):
         self.assertEqual(len(birlesik), 1)
 
 
+class KkSonOdemeAyGruplamaTest(unittest.TestCase):
+    """Doc6: KK satırı ekstrenin son ödeme tarihine göre aya girer; taksit vadesi kullanılmaz."""
+
+    def test_kk_satiri_son_odeme_ayi_kullanir(self):
+        # Taksit vadesi Ekim (çekim) olsa bile ekstre son ödeme 08.11 → Kasım kartı
+        fake_ekstre = [{
+            "source_id": "ekstre-22",
+            "ekstre_id": 22,
+            "kredi_karti_id": 3,
+            "due_date": date(2026, 11, 8),
+            "son_odeme_tarihi": date(2026, 11, 8),
+            "payment_month": (2026, 11),
+            "kalan": Decimal("37500.00"),
+            "odenen": SIFIR,
+            "tl_tutar": Decimal("37500.00"),
+            "orijinal_tutar": Decimal("37500.00"),
+            "aciklama": "axess busines ekstre",
+            "kart_adi": "axess busines",
+            "banka_adi": "Akbank",
+            "kesim_tarihi": date(2026, 11, 7),
+            "certainty": "KESIN",
+            "kesin": True,
+        }]
+        with patch(
+            "database.kredi_karti_ekstre_service.KrediKartiEkstreService.schema_hazirla"
+        ), patch(
+            "database.kredi_karti_ekstre_service.KrediKartiEkstreService.ekstreleri_hesapla",
+            return_value=fake_ekstre,
+        ):
+            satirlar = OdemeDurumuService._kk_satirlari(bugun=date(2026, 10, 20))
+        self.assertEqual(len(satirlar), 1)
+        self.assertEqual(satirlar[0]["due_date"], date(2026, 11, 8))
+        self.assertEqual(satirlar[0]["payment_month"], (2026, 11))
+        self.assertEqual(satirlar[0]["kalan"], Decimal("37500.00"))
+
+        with patch.object(OdemeDurumuService, "yetki_kontrol", return_value=None), patch.object(
+            OdemeDurumuService, "tum_yukumlulukler", return_value=list(satirlar)
+        ):
+            rapor = OdemeDurumuService.bes_aylik_rapor(
+                referans=date(2026, 10, 20),
+                sadece_acik=True,
+                kaynaklar={KAYNAK_KK},
+            )
+        kasim = next(a for a in rapor["aylar"] if a["ay"] == 11 and a["yil"] == 2026)
+        self.assertEqual(kasim["filtre_adet"], 1)
+        self.assertEqual(kasim["kalan"], Decimal("37500.00"))
+        ekim = next(a for a in rapor["aylar"] if a["ay"] == 10 and a["yil"] == 2026)
+        self.assertEqual(ekim["filtre_adet"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -24,6 +24,8 @@ class AlisSiparisi(Base):
     durum: Mapped[str] = mapped_column(String(30), nullable=False, default="AÇIK")
     # Boş = firmanın varsayılan deposu (stok uyarısı beklenen alım hesabı)
     teslim_depo: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Siparişe özel valör (gün); varsayılan cari.alis_vade_gunu, siparişte düzenlenebilir
+    valor_gun: Mapped[int | None] = mapped_column(Integer, nullable=True)
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
@@ -48,6 +50,8 @@ class AlisSiparisiSatiri(Base):
     birim: Mapped[str] = mapped_column(String(20), nullable=False)
     birim_alis_fiyati: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     iskonto_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
+    iskonto_orani_2: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
+    iskonto_orani_3: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=0)
     kdv_orani: Mapped[Decimal] = mapped_column(Numeric(7, 2), nullable=False, default=20)
     irsaliyelenen_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     faturalanan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)

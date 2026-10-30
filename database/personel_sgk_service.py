@@ -223,10 +223,16 @@ class PersonelSgkService:
                     )
             islem.durum = durum
 
-            # Son tarih (beyan ve ödeme ayrı)
+            # Son tarih (beyan ve ödeme ayrı) — parametre yoksa sessizce yutma
+            son_tarih_uyari = None
             if veri.get("son_tarih"):
                 islem.son_tarih = _tarih(veri["son_tarih"])
-            elif islem_turu in (SGK_ISLEM_GIRIS, SGK_ISLEM_CIKIS, SGK_ISLEM_MPHB):
+            elif islem_turu in (
+                SGK_ISLEM_GIRIS,
+                SGK_ISLEM_CIKIS,
+                SGK_ISLEM_MPHB,
+                SGK_ISLEM_PRIM,
+            ):
                 ref = islem.baslangic_tarihi or date.today()
                 try:
                     st = son_tarih_hesapla(
@@ -238,8 +244,13 @@ class PersonelSgkService:
                     islem.son_tarih = st["son_tarih"]
                     islem.son_tarih_kural = f"{st['kural']}:{st['surum']}"
                     islem.son_tarih_kaynak = st["kaynak"]
-                except ValueError:
-                    pass
+                except ValueError as exc:
+                    son_tarih_uyari = str(exc)
+                    # Kayıt oluşsun; son tarih boş kalır ve açıklamada uyarı görünür
+                    not_ek = f"[Son tarih kuralı eksik: {exc}]"
+                    islem.aciklama = (
+                        f"{(islem.aciklama or '').strip()} {not_ek}".strip()
+                    )
 
             session.flush()
 
@@ -247,7 +258,10 @@ class PersonelSgkService:
             for pid in veri.get("personel_ids") or []:
                 PersonelSgkService._bagla(session, islem.id, int(pid), veri.get("donem_id"))
 
-            return PersonelSgkService._dict(islem, session)
+            sonuc = PersonelSgkService._dict(islem, session)
+            if son_tarih_uyari:
+                sonuc["son_tarih_uyari"] = son_tarih_uyari
+            return sonuc
 
     @staticmethod
     def _bagla(session, sgk_id: int, personel_id: int, donem_id=None) -> None:

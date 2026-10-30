@@ -89,3 +89,17 @@ class AlisFaturasiSatiri(Base):
     tl_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
 
     fatura: Mapped["AlisFaturasi"] = relationship("AlisFaturasi", back_populates="satirlar")
+
+
+# String relationship çözümlemesi için sınıfların registry'de olması şart.
+# Aksi halde mapper init bozulur ve unvan_ara vb. tüm sorgular sessizce düşer.
+def _alis_iliski_modellerini_kaydet() -> None:
+    from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri  # noqa: F401
+    from database.models.alis_siparisi import (  # noqa: F401
+        AlisSiparisi,
+        AlisSiparisiOdemesi,
+        AlisSiparisiSatiri,
+    )
+
+
+_alis_iliski_modellerini_kaydet()

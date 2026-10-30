@@ -2,8 +2,11 @@
 
 Güncel riskler kayıtlı sabit rakam değildir; her çağrıda kaynak hareketlerden hesaplanır:
 
-* Açık hesap: carinin açık belge kalemleri (``cari_satis_hareketleri.kalan_acik_tutar > 0``) eksi
-  dağıtılmamış avans. Kayıt dışı taslak belge ve kaydedilmemiş tahsilat kalem oluşturmaz.
+* Açık hesap: açık belge kalemleri (``kalan_acik_tutar > 0``) + bakiyede kalemsiz borçlar (devir vb.),
+  eksi dağıtılmamış avans. Defterdeki alacakların kalem kapatma/avans ötesindeki kısmı önce yetim
+  borçlara, artanı açık kalemlere tarih sırasıyla mahsup edilir (mali kayıt yazılmaz). Böylece
+  tahsilatı deftere geçmiş ama ``kalan_acik``/kapatmaya işlenmemiş tutarlar riski şişirmez;
+  kapanmış kalemler ve çift sayım olmaz. Bekleyen siparişler açık hesap riskine girmez.
   Alış faturası kalemleri (tedarikçiye borcumuz) müşteri riskine girmez.
 * Ciro çek / ciro senet: müşteriden alınıp üçüncü kişiye ciro edilmiş, kapanışı kesinleşmemiş
   (``CIRO_EDILDI``) evrakların kalan tutarı. Vade gelmesi riski düşürmez.
@@ -217,6 +220,116 @@ def _tedarikci_mi(cari) -> bool:
     return (getattr(cari, "cari_turu", "") or "").strip().casefold() == "tedarikçi".casefold()
 
 
+def _tl_mahsup_yazi(tutar: Decimal) -> str:
+    return (
+        f"{_kurus(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+    )
+
+
+def _defter_mahsup_havuzu(session, cari_id: int) -> Decimal:
+    """Cariİşlem alacak − (SH kapanan + SH avans). Kalan havuz risk mahsubunda kullanılır."""
+    from database.models.cari import CariIslem, SatisHareketi
+
+    cid = int(cari_id)
+    islemler = list(session.scalars(select(CariIslem).where(CariIslem.cari_id == cid)).all())
+    hareketler = list(
+        session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cid)).all()
+    )
+    sh_kapanan = Decimal("0")
+    sh_avans = Decimal("0")
+    for h in hareketler:
+        kalan = _d(h.kalan_acik_tutar)
+        tutar = _kurus(h.satis_tutari)
+        if tutar > 0:
+            sh_kapanan += _kurus(tutar - max(kalan, Decimal("0")))
+        if kalan < 0:
+            sh_avans += _kurus(-kalan)
+    toplam_alacak = _kurus(sum((_d(i.alacak) for i in islemler), Decimal("0")))
+    return max(Decimal("0.00"), _kurus(toplam_alacak - sh_kapanan - sh_avans))
+
+
+def _yetim_borc_kalemleri(
+    session, cari_id: int, *, mahsup_havuzu: Decimal | None = None
+) -> tuple[list[dict], Decimal]:
+    """Bakiyede borç, SatisHareketi'si olmayan Cariİşlemler (devir vb.).
+
+    ``mahsup_havuzu`` verilmezse defterden hesaplanır. Dönen ikinci değer kullanılmayan havuz.
+    Mali kayıt yazılmaz.
+    """
+    from database.models.cari import CariIslem, SatisHareketi
+
+    cid = int(cari_id)
+    islemler = list(session.scalars(select(CariIslem).where(CariIslem.cari_id == cid)).all())
+    hareketler = list(
+        session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cid)).all()
+    )
+    sh_belgeler = {(h.belge_no or "") for h in hareketler}
+    yetimler = sorted(
+        (
+            i
+            for i in islemler
+            if _kurus(i.borc) > 0 and (i.belge_no or "") not in sh_belgeler
+        ),
+        key=lambda i: (i.tarih or date.min, int(i.id)),
+    )
+    havuz = (
+        _kurus(mahsup_havuzu)
+        if mahsup_havuzu is not None
+        else _defter_mahsup_havuzu(session, cid)
+    )
+    satirlar: list[dict] = []
+    for i in yetimler:
+        ilk = _kurus(i.borc)
+        dus = min(ilk, havuz)
+        havuz = _kurus(havuz - dus)
+        kalan = _kurus(ilk - dus)
+        if kalan <= 0:
+            continue
+        tip = (getattr(i, "islem_turu", None) or "").strip() or "Cari işlem"
+        satirlar.append({
+            "kaynak": "Bakiye borç (açık kalemsiz)",
+            "kimlik": f"ISLEM-{int(i.id)}",
+            "belge_turu": tip,
+            "belge_no": i.belge_no or "",
+            "tarih": i.tarih,
+            "vade": None,
+            "ilk_tutar": ilk,
+            "tutar": kalan,
+            "para_birimi": (getattr(i, "para_birimi", None) or "TRY"),
+            "durum": (
+                f"Açık — {_tl_mahsup_yazi(dus)} tahsilat mahsup"
+                if dus > 0
+                else "Açık (kalem kaydı yok)"
+            ),
+        })
+    return satirlar, havuz
+
+
+def _kalemlere_mahsup_uygula(kalemler: list[dict], mahsup_havuzu: Decimal) -> Decimal:
+    """Defterde görünüp SH.kalan'a işlenmemiş alacağı açık kalemlerden FIFO düş."""
+    havuz = _kurus(mahsup_havuzu)
+    if havuz <= 0 or not kalemler:
+        return havuz
+    for k in sorted(
+        kalemler,
+        key=lambda x: (x.get("tarih") or date.min, str(x.get("kimlik") or "")),
+    ):
+        if havuz <= 0:
+            break
+        once = _kurus(k["tutar"])
+        if once <= 0:
+            continue
+        dus = min(once, havuz)
+        havuz = _kurus(havuz - dus)
+        kalan = _kurus(once - dus)
+        k["tutar"] = kalan
+        if dus > 0:
+            k["durum"] = (
+                f"{k.get('durum') or 'Açık'} — defter tahsilatı {_tl_mahsup_yazi(dus)} mahsup"
+            )
+    return havuz
+
+
 def _acik_hesap(session, cari) -> tuple[Decimal, Decimal, Decimal, list[dict]]:
     """(risk, açık borç, dağıtılmamış avans, ayrıntı). Tedarikçide müşteri alacak riski yoktur."""
     from database.acik_kalem_service import AcikKalemService, para_anahtari
@@ -227,15 +340,13 @@ def _acik_hesap(session, cari) -> tuple[Decimal, Decimal, Decimal, list[dict]]:
     alis_nolari = set(
         session.scalars(select(AlisFaturasi.fatura_no).where(AlisFaturasi.cari_id == cari.id)).all()
     )
-    borc = Decimal("0")
-    detay = []
+    kalemler: list[dict] = []
     for h in AcikKalemService.acik_kalemler(session, cari.id, yon="BORC", para_birimi=None):
         if (h.belge_no or "") in alis_nolari:
             continue
         kalan = _kurus(h.kalan_acik_tutar)
         ilk = _kurus(h.satis_tutari)
-        borc += kalan
-        detay.append({
+        kalemler.append({
             "kaynak": "Cari açık kalem",
             "kimlik": f"KALEM-{int(h.id)}",
             "belge_turu": AcikKalemService._evrak_turu(session, h),
@@ -247,6 +358,13 @@ def _acik_hesap(session, cari) -> tuple[Decimal, Decimal, Decimal, list[dict]]:
             "para_birimi": para_anahtari(h),
             "durum": "Kısmen Kapalı" if ilk > 0 and kalan < ilk else "Açık",
         })
+    # Tek havuz: önce yetim (devir), artan açık kalemlere — mükerrer mahsup yok
+    havuz = _defter_mahsup_havuzu(session, int(cari.id))
+    yetimler, havuz = _yetim_borc_kalemleri(session, int(cari.id), mahsup_havuzu=havuz)
+    havuz = _kalemlere_mahsup_uygula(kalemler, havuz)
+    detay = [k for k in kalemler if _kurus(k["tutar"]) > 0]
+    detay.extend(yetimler)
+    borc = _kurus(sum((_kurus(d["tutar"]) for d in detay), Decimal("0")))
     avans = sum(
         (-_kurus(h.kalan_acik_tutar)
          for h in AcikKalemService.acik_kalemler(session, cari.id, yon="AVANS", para_birimi=None)),

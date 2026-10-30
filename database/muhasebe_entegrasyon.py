@@ -1592,7 +1592,8 @@ class MuhasebeEntegrasyonService:
         if pv is None or (pv.durum or "").upper() != "AKTARILDI":
             return None
         net = decimal(pv.net_tutar or 0)
-        borc = H._finans_karsiligi_ayarli(s.get(FinansHesabi, pv.kmh_hesap_id), s)
+        hedef_id = getattr(pv, "hedef_hesap_id", None) or pv.kmh_hesap_id
+        borc = H._finans_karsiligi_ayarli(s.get(FinansHesabi, hedef_id), s)
         alacak = H._finans_karsiligi_ayarli(s.get(FinansHesabi, pv.pos_hesap_id), s)
         tarih = pv.aktarim_zamani.date() if pv.aktarim_zamani else pv.valor_tarihi
         acik = f"{pv.belge_no} POS valör aktarımı"

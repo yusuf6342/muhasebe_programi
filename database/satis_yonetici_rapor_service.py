@@ -903,9 +903,24 @@ def urun_satis_hizi(bas: date, bit: date, filtre: dict | None = None, bugun: dat
             if arama and arama not in turkce_normalize(kart.stok_kodu) and arama not in turkce_normalize(
                     kart.stok_adi or ""):
                 continue
-            if f.get("stok_grup_id") and int(f["stok_grup_id"]) not in {kart.ana_grup_id, kart.tali_grup_id,
-                                                                       kart.alt_grup_id}:
-                continue
+            sg = f.get("stok_grup_id")
+            if sg:
+                if isinstance(sg, (set, list, tuple, frozenset)):
+                    izin = set()
+                    for x in sg:
+                        if x in (None, ""):
+                            continue
+                        try:
+                            izin.add(int(x))
+                        except (TypeError, ValueError):
+                            continue
+                else:
+                    try:
+                        izin = {int(sg)}
+                    except (TypeError, ValueError):
+                        izin = set()
+                if not izin or not (izin & {kart.ana_grup_id, kart.tali_grup_id, kart.alt_grup_id}):
+                    continue
             k = kovalar.get(kart.stok_kodu)
             t = tamamla(k) if k else None
             mevcut = stok_m.get(kart.id, SIFIR)

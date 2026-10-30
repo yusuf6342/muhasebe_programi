@@ -118,6 +118,44 @@ def barkod_ile_ara(barkod: str) -> dict[str, Any]:
             "mesaj": "Geçersiz barkod.",
         }
 
+    # Lot barkodu (ürün+lot+birim) — genel barkoddan önce
+    try:
+        from database.lot_barkod_service import LotBarkodService
+
+        lot_ozet = LotBarkodService.coz(kod)
+        if lot_ozet and lot_ozet.get("durum") == "ok":
+            kayit = {
+                "stok_id": lot_ozet["stok_id"],
+                "stok_kodu": lot_ozet["stok_kodu"],
+                "stok_adi": lot_ozet["stok_adi"],
+                "barkod": lot_ozet["barkod"],
+                "birim": lot_ozet["birim"],
+                "miktar": lot_ozet.get("miktar") or Decimal("1"),
+                "birim_fiyat": lot_ozet.get("birim_fiyat") or Decimal("0"),
+                "mevcut_stok": lot_ozet.get("mevcut_stok") or Decimal("0"),
+                "kdv_orani": lot_ozet.get("kdv_orani"),
+                "lot_id": lot_ozet.get("lot_id"),
+                "lot_no": lot_ozet.get("lot_no"),
+                "lot_barkod": True,
+                "aktif": True,
+                "satis_kapali": False,
+            }
+            return {
+                "durum": "ok",
+                "kayit": kayit,
+                "liste": [kayit],
+                "mesaj": "",
+            }
+        if lot_ozet and lot_ozet.get("durum") == "pasif":
+            return {
+                "durum": "pasif",
+                "kayit": None,
+                "liste": [],
+                "mesaj": lot_ozet.get("mesaj") or "Ürün pasif.",
+            }
+    except Exception:  # noqa: BLE001
+        pass
+
     aktif_idler: list[int] = []
     pasifler: list[dict[str, Any]] = []
     gorulen: set[int] = set()

@@ -81,3 +81,15 @@ def test_rapor_modulleri_import():
     assert hasattr(RaporEkrani, "_filtre_bagla")
     assert hasattr(stok_rapor_ui, "_tablo_filtreli_doldur")
     assert callable(treeview_filtre_bagla)
+
+
+def test_app_rapor_tablo_filtre_imza():
+    """app.py gömülü rapor yardımcısı DOC5 haric_kolonlar / ham doldur içerir (canlı DB yok)."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1].joinpath("app.py").read_text(encoding="utf-8")
+    assert "def _rapor_tablo(" in src
+    assert "haric_kolonlar" in src
+    assert "def _rapor_tablo_ham_doldur(" in src
+    assert "def _treeview_filtre_bagla_hizli(" in src
+    assert 'haric_kolonlar=("bakiye",)' in src

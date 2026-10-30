@@ -90,6 +90,25 @@ def _kartlar(session, arama: str = "", grup_id=None, *, pasif_dahil: bool = Fals
     if not pasif_dahil:
         q = q.where(StokKarti.aktif.is_(True))
     hedef = turkce_normalize((arama or "").strip())
+    # DOC5: tek id veya üst+alt genişletilmiş id kümesi
+    if grup_id in (None, "", set(), [], ()):
+        grup_izin = None
+    elif isinstance(grup_id, (set, list, tuple, frozenset)):
+        grup_izin = set()
+        for x in grup_id:
+            if x in (None, ""):
+                continue
+            try:
+                grup_izin.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        if not grup_izin:
+            grup_izin = None
+    else:
+        try:
+            grup_izin = {int(grup_id)}
+        except (TypeError, ValueError):
+            grup_izin = None
     out = []
     for k in session.scalars(q.order_by(StokKarti.stok_kodu)).all():
         if getattr(k, "is_deleted", False) or _hizmet(k):
@@ -97,7 +116,7 @@ def _kartlar(session, arama: str = "", grup_id=None, *, pasif_dahil: bool = Fals
         if hedef and hedef not in turkce_normalize(k.stok_kodu or "") and hedef not in turkce_normalize(
                 k.stok_adi or "") and hedef not in turkce_normalize(k.barkod or ""):
             continue
-        if grup_id and int(grup_id) not in {k.ana_grup_id, k.tali_grup_id, k.alt_grup_id}:
+        if grup_izin and not (grup_izin & {k.ana_grup_id, k.tali_grup_id, k.alt_grup_id}):
             continue
         out.append(k)
     return out
@@ -1807,3 +1826,187 @@ def _verimlilik_satiri(kod, ad, birim, meta, t, d, bas_q, son_q, stok_nedeni, gu
             "pasif": pasif, "hesap_notu": "; ".join(nedenler),
             "_tam": not stok_nedeni and ort is not None and smm is not None,
             "_ort": ort if ort is not None else SIFIR, "_smm": smm or SIFIR, "_kar": kar or SIFIR, "_net": net}
+
+
+# ---------------------------------------------------------------------------
+# Yerine koyma maliyeti (GMROI ekranı sekmesi) — FIFO/muhasebe maliyetini değiştirmez
+# ---------------------------------------------------------------------------
+
+def _tedarik_birim_fiyati(session, stok_id: int | None, urun_kodu: str, fiyat_tarihi: date) -> tuple[Decimal | None, str]:
+    """Fiyat tarihindeki karşılaştırılabilir net tedarik birim fiyatı (R).
+
+    Sıra: kart ALIŞ FİYATI (geçmiş sürümüyle) → onaylı alış faturası satırı.
+    Son alış tek başına 'güncel teklif' sayılmaz; kaynak etiketlenir.
+    """
+    from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
+    from database.models.stok import StokFiyati, StokFiyatGecmisi
+
+    if stok_id:
+        # Geçmiş: fiyat_tarihi anında geçerli ALIŞ FİYATI sürümü
+        gecmis = list(
+            session.scalars(
+                select(StokFiyatGecmisi)
+                .where(
+                    StokFiyatGecmisi.stok_id == int(stok_id),
+                    StokFiyatGecmisi.fiyat_adi == "ALIŞ FİYATI",
+                    StokFiyatGecmisi.degisim_tarihi <= datetime.combine(fiyat_tarihi, datetime.max.time()),
+                )
+                .order_by(StokFiyatGecmisi.degisim_tarihi.desc(), StokFiyatGecmisi.id.desc())
+                .limit(1)
+            ).all()
+        )
+        if gecmis:
+            return Decimal(str(gecmis[0].yeni_tutar)), "Fiyat geçmişi (ALIŞ FİYATI)"
+        kart = session.scalar(
+            select(StokFiyati).where(
+                StokFiyati.stok_id == int(stok_id), StokFiyati.fiyat_adi == "ALIŞ FİYATI"
+            )
+        )
+        if kart is not None and Decimal(str(kart.tutar or 0)) > 0:
+            return Decimal(str(kart.tutar)), "Stok kartı ALIŞ FİYATI"
+
+    satir = session.execute(
+        select(AlisFaturasiSatiri.birim_fiyat, AlisFaturasi.fatura_tarihi, AlisFaturasi.fatura_no)
+        .join(AlisFaturasi, AlisFaturasi.id == AlisFaturasiSatiri.fatura_id)
+        .where(
+            AlisFaturasiSatiri.urun_kodu == urun_kodu,
+            AlisFaturasi.durum != "İPTAL",
+            AlisFaturasi.fatura_tarihi <= fiyat_tarihi,
+        )
+        .order_by(AlisFaturasi.fatura_tarihi.desc(), AlisFaturasi.id.desc())
+        .limit(1)
+    ).first()
+    if satir and satir[0] is not None and Decimal(str(satir[0])) > 0:
+        return Decimal(str(satir[0])), f"Onaylı alış {satir[2] or ''} ({_gun(satir[1]):%d.%m.%Y})"
+    return None, "Tedarik fiyatı yok"
+
+
+def yerine_koyma_ekle(rapor: dict, *, fiyat_tarihi: date | None = None) -> dict:
+    """Mevcut yatırım verimliliği sonucuna Y/A/D ve yerine koyma katkı oranını ekler (salt okunur)."""
+    ft = fiyat_tarihi or rapor.get("son") or date.today()
+    with get_session() as session:
+        satirlar = []
+        for r in rapor.get("urunler") or []:
+            if r.get("_sabit"):
+                satirlar.append(r)
+                continue
+            nr = dict(r)
+            Q = r.get("net_miktar")
+            N = r.get("_net") if isinstance(r.get("_net"), Decimal) else (
+                r["net_satis"] if isinstance(r.get("net_satis"), Decimal) else SIFIR
+            )
+            C = r.get("_smm") if isinstance(r.get("_smm"), Decimal) else (
+                r["smm"] if isinstance(r.get("smm"), Decimal) else None
+            )
+            G = r.get("_kar") if isinstance(r.get("_kar"), Decimal) else (
+                r["brut_kar"] if isinstance(r.get("brut_kar"), Decimal) else None
+            )
+            ort = r.get("_ort") if isinstance(r.get("_ort"), Decimal) else (
+                r["ort_stok"] if isinstance(r.get("ort_stok"), Decimal) else None
+            )
+            R, kaynak = _tedarik_birim_fiyati(session, r.get("stok_id"), r.get("urun_kodu") or "", ft)
+            nr["yerine_birim"] = _deger(R) if R is not None else HESAPLANAMADI
+            nr["fiyat_kaynak"] = kaynak
+            neden = []
+            if not isinstance(Q, Decimal):
+                neden.append("Net miktar yok — Y hesaplanamaz")
+                Y = A = D = None
+            elif R is None:
+                neden.append(kaynak)
+                Y = A = D = None
+                if Q == 0:
+                    # Satışı yok: katkı 0, oran paydasında kalır
+                    Y = A = D = SIFIR
+                    neden = []
+            else:
+                Y = _q2(Q * R)
+                A = _q2(N - Y) if N is not None else None
+                if C is not None and Y is not None:
+                    D = _q2(Y - C)
+                elif G is not None and A is not None:
+                    D = _q2(G - A)
+                else:
+                    D = None
+                    neden.append("Kayıtlı maliyet veya katkı eksik — D hesaplanamaz")
+            nr["yerine_tutar"] = _deger(Y)
+            nr["yerine_katki"] = _deger(A)
+            nr["maliyet_farki"] = _deger(D)
+            if A is not None and ort is not None and ort > 0:
+                nr["yerine_katki_orani"] = (A / ort).quantize(KURUS, rounding=ROUND_HALF_UP)
+            else:
+                nr["yerine_katki_orani"] = HESAPLANAMADI
+                if ort is None or (isinstance(ort, Decimal) and ort <= 0):
+                    neden.append("Ortalama stok yok — yerine koyma katkı oranı hesaplanamaz")
+            if G is not None and isinstance(N, Decimal) and N > 0:
+                nr["brut_marj"] = (G / N * 100).quantize(KURUS, rounding=ROUND_HALF_UP)
+            else:
+                nr["brut_marj"] = HESAPLANAMADI
+            if A is not None and isinstance(N, Decimal) and N > 0:
+                nr["yerine_marj"] = (A / N * 100).quantize(KURUS, rounding=ROUND_HALF_UP)
+            else:
+                nr["yerine_marj"] = HESAPLANAMADI
+            if neden:
+                eski = (nr.get("hesap_notu") or "").strip()
+                nr["hesap_notu"] = "; ".join(x for x in (eski, "; ".join(neden)) if x)
+            nr["_yk_tam"] = (
+                isinstance(Y, Decimal)
+                and isinstance(A, Decimal)
+                and isinstance(D, Decimal)
+                and G is not None
+                and abs((G or SIFIR) - (A + D)) < Decimal("0.02")
+            )
+            satirlar.append(nr)
+
+    tam = [x for x in satirlar if x.get("_yk_tam") and not x.get("_sabit")]
+    toplam_n = sum((x["_net"] for x in tam), SIFIR)
+    toplam_c = sum((x["_smm"] for x in tam), SIFIR)
+    toplam_g = sum((x["_kar"] for x in tam), SIFIR)
+    toplam_y = sum(
+        (x["yerine_tutar"] for x in tam if isinstance(x.get("yerine_tutar"), Decimal)), SIFIR
+    )
+    toplam_a = sum(
+        (x["yerine_katki"] for x in tam if isinstance(x.get("yerine_katki"), Decimal)), SIFIR
+    )
+    toplam_d = sum(
+        (x["maliyet_farki"] for x in tam if isinstance(x.get("maliyet_farki"), Decimal)), SIFIR
+    )
+    toplam_ort = sum((x["_ort"] for x in tam), SIFIR)
+    ozet = {
+        "urun_sayisi": len(tam),
+        "net_satis": _q2(toplam_n),
+        "smm": _q2(toplam_c),
+        "brut_kar": _q2(toplam_g),
+        "yerine_tutar": _q2(toplam_y),
+        "yerine_katki": _q2(toplam_a),
+        "maliyet_farki": _q2(toplam_d),
+        "ort_stok": _q2(toplam_ort),
+        "yerine_katki_orani": (
+            (toplam_a / toplam_ort).quantize(KURUS, rounding=ROUND_HALF_UP)
+            if toplam_ort > 0
+            else HESAPLANAMADI
+        ),
+        "gmroi": (
+            (toplam_g / toplam_ort).quantize(KURUS, rounding=ROUND_HALF_UP)
+            if toplam_ort > 0
+            else HESAPLANAMADI
+        ),
+        "kapsam": f"{len(tam)}/{sum(1 for x in satirlar if not x.get('_sabit'))} ürün",
+    }
+    notlar = list(rapor.get("notlar") or [])
+    notlar.extend(
+        [
+            "Yerine koyma: Y = net satılan miktar × seçilen tedarik birim fiyatı (R). "
+            "A (yerine koyma katkısı) = N − Y. D (yenileme maliyet farkı) = Y − C. G = A + D.",
+            "Sonuç brüt katkıdır; genel gider, finansman, vergi ve reel getiri değildir. "
+            "Rapor stok/cari/kasa hareketi oluşturmaz.",
+            f"Fiyat tarihi: {ft:%d.%m.%Y}. Eksik fiyat sıfırlanmaz; satılmayan stok paydaya dahildir.",
+        ]
+    )
+    return {
+        **rapor,
+        "yerine_koyma": satirlar,
+        "yerine_toplam": ozet,
+        "fiyat_tarihi": ft,
+        "notlar": notlar,
+        "_baslik": f"{rapor.get('_baslik', 'STOK YATIRIM VERİMLİLİĞİ')} — Yerine Koyma",
+    }

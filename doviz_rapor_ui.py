@@ -102,6 +102,7 @@ def doviz_raporlari_goster(uygulama) -> None:
         ("rapor_kur", "Rapor Kuru", 90),
         ("doviz_genel", "Döviz Yekün", 100),
     )
+    baslik_map = {k: b for k, b, _w in basliklar}
     for k, b, w in basliklar:
         tablo.heading(k, text=b)
         tablo.column(k, width=w, anchor="e" if k not in ("fatura_no", "tarih", "cari", "f_pb") else "w")
@@ -113,8 +114,41 @@ def doviz_raporlari_goster(uygulama) -> None:
     ozet = ttk.Label(govde, text="", foreground="#1565c0")
     ozet.pack(anchor="w", pady=4)
 
-    def raporla():
+    from liste_filtre_ui import filtre_ozet_metni, satir_kolon_filtre_uygun, treeview_filtre_bagla
+
+    _liste_filtre: dict = {}
+    _ham_satirlar: list = []
+    _son_satirlar: list = []
+
+    def _tabloyu_goster():
         tablo.delete(*tablo.get_children())
+        tl_toplam = Decimal("0")
+        doviz_toplam = Decimal("0")
+        gorunen = 0
+        for item in _ham_satirlar:
+            values = item["values"]
+            s = item["kayit"]
+            if not satir_kolon_filtre_uygun(values, kolonlar, _liste_filtre):
+                continue
+            tablo.insert("", "end", values=values)
+            gorunen += 1
+            tl_toplam += s["tl_genel_toplam"]
+            if s["doviz_genel_toplam"] is not None:
+                doviz_toplam += s["doviz_genel_toplam"]
+        ozet.configure(
+            text=filtre_ozet_metni(
+                gorunen=gorunen,
+                toplam=len(_ham_satirlar),
+                aktif_filtre=len(_liste_filtre),
+                ekstra=[
+                    f"TL: {_para(tl_toplam, 'TL')}",
+                    f"{rapor_pb.get()}: {_para(doviz_toplam, rapor_pb.get())}",
+                ],
+            )
+        )
+        _filtre_bag["guncelle_basliklar"]()
+
+    def raporla():
         try:
             bas = datetime.strptime(bas_var.get(), "%d.%m.%Y").date() if bas_var.get().strip() else None
             bit = datetime.strptime(bit_var.get(), "%d.%m.%Y").date() if bit_var.get().strip() else None
@@ -132,34 +166,34 @@ def doviz_raporlari_goster(uygulama) -> None:
             messagebox.showerror("Rapor", str(hata), parent=uygulama)
             return
 
-        tl_toplam = Decimal("0")
-        doviz_toplam = Decimal("0")
+        _liste_filtre.clear()
+        _ham_satirlar.clear()
+        _son_satirlar[:] = satirlar
         for s in satirlar:
-            tablo.insert(
-                "",
-                "end",
-                values=(
-                    s["fatura_no"],
-                    s["fatura_tarihi"].strftime("%d.%m.%Y"),
-                    f"{s['cari_kodu']} — {s['unvan']}",
-                    s["fatura_para_birimi"],
-                    _para(s["fatura_kuru"]),
-                    _para(s["tl_genel_toplam"], "TL"),
-                    _para(s["rapor_kuru"]) if s["rapor_kuru"] else "—",
-                    _para(s["doviz_genel_toplam"], s["rapor_para_birimi"])
-                    if s["doviz_genel_toplam"] is not None
-                    else "—",
-                ),
+            values = (
+                s["fatura_no"],
+                s["fatura_tarihi"].strftime("%d.%m.%Y"),
+                f"{s['cari_kodu']} — {s['unvan']}",
+                s["fatura_para_birimi"],
+                _para(s["fatura_kuru"]),
+                _para(s["tl_genel_toplam"], "TL"),
+                _para(s["rapor_kuru"]) if s["rapor_kuru"] else "—",
+                _para(s["doviz_genel_toplam"], s["rapor_para_birimi"])
+                if s["doviz_genel_toplam"] is not None
+                else "—",
             )
-            tl_toplam += s["tl_genel_toplam"]
-            if s["doviz_genel_toplam"] is not None:
-                doviz_toplam += s["doviz_genel_toplam"]
-        ozet.configure(
-            text=(
-                f"{len(satirlar)} fatura | TL toplam: {_para(tl_toplam, 'TL')} | "
-                f"{rapor_pb.get()} toplam: {_para(doviz_toplam, rapor_pb.get())}"
-            )
-        )
+            _ham_satirlar.append({"values": values, "kayit": s})
+        _tabloyu_goster()
 
+    _filtre_bag = treeview_filtre_bagla(
+        tablo,
+        baslik_map,
+        get_filtre_dict=lambda: _liste_filtre,
+        set_filtre_dict=None,
+        yenile_cb=_tabloyu_goster,
+        deger_listesi_cb=lambda: _ham_satirlar,
+        parent=uygulama,
+        kolonlar=kolonlar,
+    )
     ttk.Button(filtre, text="Raporla", command=raporla).grid(row=1, column=5, padx=8, pady=4)
     raporla()

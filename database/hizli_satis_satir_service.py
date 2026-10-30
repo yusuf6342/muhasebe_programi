@@ -232,8 +232,17 @@ def fiyat_secenekleri(
         pb = para_birimi_normalle(getattr(f, "para_birimi", None))
         tutar = _d(f.tutar)
         kdv_durumu = kdv_durumu_normalle(getattr(f, "kdv_durumu", None))
+        gorunen = ad
+        if ad_u.startswith("SATIŞ FİYATI") or ad_u.startswith("SATIS FIYATI"):
+            try:
+                from database.stok_service import satis_fiyat_gorunen_ad
+
+                gorunen = satis_fiyat_gorunen_ad(ad) or ad
+            except Exception:
+                gorunen = ad
         kayit = {
-            "fiyat_adi": ad,
+            "fiyat_adi": gorunen,
+            "fiyat_kodu": ad,
             "tutar": tutar,
             "birim": ana,
             "para_birimi": pb,

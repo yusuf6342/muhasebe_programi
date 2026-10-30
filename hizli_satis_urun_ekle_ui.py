@@ -70,6 +70,8 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         self._arama_after = None
         self._urunler: list[dict] = []
         self._secili: dict | None = None
+        self._secili_idler: set[int] = set()  # sayfalar arası kalıcı seçim (stok_id)
+        self._islem_suruyor = False
         self._offset = 0
         self._toplam = 0
         self.varsayilan_hizli_grup_kod = varsayilan_hizli_grup_kod
@@ -110,6 +112,12 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             variable=self.stokta_var,
             command=self.listeyi_yenile,
         ).grid(row=0, column=6, sticky="w")
+        self.alt_gruplar_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            ust,
+            text="Alt gruplar dahil",
+            variable=self.alt_gruplar_var,
+        ).grid(row=0, column=7, sticky="w", padx=(8, 0))
         ust.columnconfigure(1, weight=1)
 
         orta = tk.Frame(self, padx=10, pady=4)
@@ -118,6 +126,7 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         orta.columnconfigure(0, weight=1)
 
         kolonlar = (
+            "sec",
             "kod",
             "ad",
             "barkod",
@@ -133,6 +142,7 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             orta, columns=kolonlar, show="headings", selectmode="extended"
         )
         baslik = {
+            "sec": "✓",
             "kod": "Stok Kodu",
             "ad": "Ad",
             "barkod": "Barkod",
@@ -145,6 +155,7 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             "raf": "Raf",
         }
         genislik = {
+            "sec": 36,
             "kod": 100,
             "ad": 180,
             "barkod": 100,
@@ -158,15 +169,19 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         }
         for k in kolonlar:
             self.tablo.heading(k, text=baslik[k])
-            self.tablo.column(k, width=genislik[k], anchor="w")
+            self.tablo.column(
+                k, width=genislik[k], anchor="center" if k == "sec" else "w", stretch=(k == "ad")
+            )
         sb = ttk.Scrollbar(orta, orient="vertical", command=self.tablo.yview)
         self.tablo.configure(yscrollcommand=sb.set)
         self.tablo.grid(row=0, column=0, sticky="nsew")
         sb.grid(row=0, column=1, sticky="ns")
         self.tablo.bind("<<TreeviewSelect>>", self._secim_degisti)
-        self.tablo.bind("<Double-1>", lambda _e: self._seciliyi_ekle_akisi())
+        self.tablo.bind("<Double-1>", self._cift_tik_isaretle)
         self.tablo.bind("<Return>", lambda _e: self._seciliyi_ekle_akisi())
+        self.tablo.bind("<space>", self._space_isaretle)
         self.tablo.bind("<Control-a>", self._hepsini_sec)
+        self.tablo.bind("<Button-1>", self._tik_secim_kutusu, add="+")
 
         bilgi = tk.LabelFrame(self, text=" Seçili ürün ", padx=10, pady=8)
         bilgi.pack(fill="x", padx=10, pady=4)
@@ -209,9 +224,16 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             row=0, column=2, padx=4
         )
 
-        tk.Label(satir, text="Kısa ad").grid(row=0, column=3, sticky="w", padx=(12, 0))
+        tk.Label(satir, text="Kısa ad (tekli)").grid(row=0, column=3, sticky="w", padx=(12, 0))
         self.kisa_ad = ttk.Entry(satir, width=20)
         self.kisa_ad.grid(row=0, column=4, sticky="w", padx=6)
+        self._kisa_ad_uyari = tk.Label(
+            satir,
+            text="Çoklu seçimde her ürün kendi adını korur",
+            fg="#666",
+            font=("Segoe UI", 8),
+        )
+        self._kisa_ad_uyari.grid(row=0, column=5, sticky="w", padx=4)
 
         tk.Label(satir, text="Miktar").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.miktar_entry = ttk.Entry(satir, width=8)
@@ -245,25 +267,69 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         ttk.Button(
             alt, text="Yeni ürün kartı oluştur", command=self._yeni_stok_karti
         ).pack(side="left")
-        ttk.Button(alt, text="Toplu ekle", command=self._toplu_pin).pack(side="left", padx=8)
         self.sayfa_lbl = tk.Label(alt, text="", fg="#555")
-        self.sayfa_lbl.pack(side="left", padx=16)
+        self.sayfa_lbl.pack(side="left", padx=12)
+        self.secim_lbl = tk.Label(alt, text="0 seçili", fg=KOYU_GRI, font=("Segoe UI", 9, "bold"))
+        self.secim_lbl.pack(side="left", padx=8)
+        self.hedef_uyari_lbl = tk.Label(alt, text="", fg="#B45309", font=("Segoe UI", 8))
+        self.hedef_uyari_lbl.pack(side="left", padx=6)
+
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(
             alt,
-            text="KAYDET VE EKLE",
+            text="Kaydet ve Ekle",
             command=self._seciliyi_ekle_akisi,
-        ).pack(side="right", padx=8)
+        ).pack(side="right", padx=4)
+
+        toplu = tk.Frame(self)
+        toplu.pack(fill="x", padx=10, pady=(0, 10))
+        self.btn_secilenleri = ttk.Button(
+            toplu, text="Seçilenleri Ekle (0)", command=self._toplu_pin
+        )
+        self.btn_secilenleri.pack(side="left", padx=2)
+        ttk.Button(
+            toplu, text="Filtreye Uyanların Tümünü Seç", command=self._filtreye_uyanlari_sec
+        ).pack(side="left", padx=2)
+        ttk.Button(toplu, text="Seçimi Temizle", command=self._secimi_temizle).pack(
+            side="left", padx=2
+        )
+        self.btn_grubun_tamami = ttk.Button(
+            toplu, text="Grubun Tamamını Ekle", command=self._grubun_tamamini_ekle
+        )
+        self.btn_grubun_tamami.pack(side="left", padx=8)
+        self.hizli_grup.bind("<<ComboboxSelected>>", lambda _e: self._ekleme_dugmelerini_ayarla())
+        self._ekleme_dugmelerini_ayarla()
 
     def _filtreleri_yukle(self) -> None:
-        gruplar = [FILTRE_TUMU, FILTRE_GRUPSUZ] + StokService.secenekleri_listele(
-            "rapor_grubu"
-        )
-        self.stok_grup_filtre["values"] = gruplar
-        self.stok_grup_filtre.set(FILTRE_TUMU)
-        markalar = ["(Tümü)"] + StokService.secenekleri_listele("marka")
-        self.marka_filtre["values"] = markalar
-        self.marka_filtre.set("(Tümü)")
+        """Stok grubu / marka listelerini doldur (seçenek + kartlardan)."""
+        try:
+            grup_adlari = StokService.hizli_satis_filtre_degerleri("rapor_grubu")
+        except Exception:
+            try:
+                grup_adlari = StokService.secenekleri_listele("rapor_grubu")
+            except Exception:
+                grup_adlari = []
+        try:
+            marka_adlari = StokService.hizli_satis_filtre_degerleri("marka")
+        except Exception:
+            try:
+                marka_adlari = StokService.secenekleri_listele("marka")
+            except Exception:
+                marka_adlari = []
+
+        gruplar = [FILTRE_TUMU, FILTRE_GRUPSUZ] + list(grup_adlari)
+        markalar = ["(Tümü)"] + list(marka_adlari)
+        self.stok_grup_filtre.configure(values=gruplar, state="readonly")
+        self.marka_filtre.configure(values=markalar, state="readonly")
+        # current(0): bazı ttk temalarında set() boş görünebiliyor
+        try:
+            self.stok_grup_filtre.current(0)
+        except tk.TclError:
+            self.stok_grup_filtre.set(FILTRE_TUMU)
+        try:
+            self.marka_filtre.current(0)
+        except tk.TclError:
+            self.marka_filtre.set("(Tümü)")
 
     def _hizli_gruplari_yukle(self) -> None:
         HizliSatisService.schema_hazirla()
@@ -334,11 +400,14 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
                 kdv_metin = satir_kdv_metin_sayisal(kdv if kdv is not None else 20)
             except Exception:
                 kdv_metin = "20"
+            sid = int(u.get("stok_id") or 0)
+            isaret = "☑" if sid in self._secili_idler else "☐"
             self.tablo.insert(
                 "",
                 "end",
                 iid=str(i),
                 values=(
+                    isaret,
                     u.get("stok_kodu") or "",
                     u.get("stok_adi") or "",
                     u.get("barkod") or "",
@@ -357,10 +426,167 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             if self._toplam
             else "0 ürün"
         )
+        self._secim_sayacini_guncelle()
+        # Liste yenilenirken arama odağını koru
+        try:
+            if self.focus_get() is self.arama_entry or self.focus_get() is None:
+                self.arama_entry.focus_set()
+        except tk.TclError:
+            pass
 
     def _hepsini_sec(self, _event=None):
+        for i, u in enumerate(self._urunler):
+            sid = int(u.get("stok_id") or 0)
+            if sid:
+                self._secili_idler.add(sid)
+            self._satir_isaret_goster(str(i), sid in self._secili_idler)
         self.tablo.selection_set(self.tablo.get_children())
+        self._secim_sayacini_guncelle()
         return "break"
+
+    def _satir_isaret_goster(self, iid: str, isaretli: bool) -> None:
+        try:
+            degerler = list(self.tablo.item(iid, "values"))
+            if not degerler:
+                return
+            degerler[0] = "☑" if isaretli else "☐"
+            self.tablo.item(iid, values=degerler)
+        except tk.TclError:
+            pass
+
+    def _stok_id_toggle(self, sid: int, iid: str | None = None) -> None:
+        if not sid:
+            return
+        if sid in self._secili_idler:
+            self._secili_idler.discard(sid)
+            isaretli = False
+        else:
+            self._secili_idler.add(sid)
+            isaretli = True
+        if iid is not None:
+            self._satir_isaret_goster(iid, isaretli)
+        self._secim_sayacini_guncelle()
+
+    def _tik_secim_kutusu(self, event):
+        bolge = self.tablo.identify_region(event.x, event.y)
+        if bolge != "cell":
+            return
+        kolon = self.tablo.identify_column(event.x)
+        if kolon != "#1":  # sec
+            return
+        iid = self.tablo.identify_row(event.y)
+        if not iid:
+            return
+        try:
+            u = self._urunler[int(iid)]
+            self._stok_id_toggle(int(u.get("stok_id") or 0), iid)
+        except (ValueError, IndexError, TypeError):
+            pass
+        return "break"
+
+    def _space_isaretle(self, _event=None):
+        for iid in self.tablo.selection():
+            try:
+                u = self._urunler[int(iid)]
+                self._stok_id_toggle(int(u.get("stok_id") or 0), iid)
+            except (ValueError, IndexError, TypeError):
+                continue
+        return "break"
+
+    def _cift_tik_isaretle(self, _event=None):
+        """Toplu seçim: çift tık işareti değiştirir; pencereyi kapatmaz."""
+        secim = self.tablo.selection()
+        if not secim:
+            return "break"
+        try:
+            u = self._urunler[int(secim[0])]
+            self._stok_id_toggle(int(u.get("stok_id") or 0), secim[0])
+        except (ValueError, IndexError, TypeError):
+            pass
+        return "break"
+
+    def _secim_sayacini_guncelle(self) -> None:
+        n = len(self._secili_idler)
+        filtredeki = sum(
+            1 for u in self._urunler if int(u.get("stok_id") or 0) in self._secili_idler
+        )
+        disarida = max(0, n - filtredeki)
+        if disarida:
+            metin = f"{n} seçili, {disarida} tanesi filtre dışında"
+        else:
+            metin = f"{n} seçili"
+        try:
+            self.secim_lbl.configure(text=metin)
+            self.btn_secilenleri.configure(text=f"Seçilenleri Ekle ({n})")
+        except (tk.TclError, AttributeError):
+            pass
+        self._ekleme_dugmelerini_ayarla()
+
+    def _ekleme_dugmelerini_ayarla(self) -> None:
+        hedef = (self.hizli_grup.get() or "").strip()
+        ok = bool(hedef) and not self._islem_suruyor
+        durum = "normal" if ok else "disabled"
+        for btn in (
+            getattr(self, "btn_secilenleri", None),
+            getattr(self, "btn_grubun_tamami", None),
+        ):
+            if btn is None:
+                continue
+            try:
+                btn.configure(state=durum)
+            except tk.TclError:
+                pass
+        try:
+            self.hedef_uyari_lbl.configure(
+                text="" if hedef else "Hedef hızlı satış grubu seçilmedi — ekleme pasif"
+            )
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _secimi_temizle(self) -> None:
+        self._secili_idler.clear()
+        for iid in self.tablo.get_children():
+            self._satir_isaret_goster(iid, False)
+        self._secim_sayacini_guncelle()
+
+    def _filtreye_uyanlari_sec(self) -> None:
+        """Mevcut arama/stok grubu/marka/stokta filtresine uyan tüm sayfalar."""
+        filtre = self.stok_grup_filtre.get().strip()
+        sadece_grupsuz = filtre == FILTRE_GRUPSUZ
+        rapor = None if filtre in (FILTRE_TUMU, FILTRE_GRUPSUZ, "") else filtre
+        marka = self.marka_filtre.get().strip()
+        if marka in ("(Tümü)", ""):
+            marka = None
+        offset = 0
+        limit = 200
+        eklenen = 0
+        while True:
+            sonuc = StokService.hizli_satis_urun_ara(
+                self.arama_entry.get().strip(),
+                rapor_grubu=rapor,
+                marka=marka,
+                sadece_stokta=bool(self.stokta_var.get()),
+                sadece_grupsuz=sadece_grupsuz,
+                limit=limit,
+                offset=offset,
+                fiyat_adi=self.fiyat_adi,
+            )
+            urunler = sonuc.get("urunler") or []
+            for u in urunler:
+                sid = int(u.get("stok_id") or 0)
+                if sid and sid not in self._secili_idler:
+                    self._secili_idler.add(sid)
+                    eklenen += 1
+            toplam = int(sonuc.get("toplam") or 0)
+            offset += len(urunler)
+            if not urunler or offset >= toplam:
+                break
+        self._yukle()
+        messagebox.showinfo(
+            "Seçim",
+            f"Filtreye uyan ürünler seçildi.\nYeni işaretlenen: {eklenen}\nToplam seçili: {len(self._secili_idler)}",
+            parent=self,
+        )
 
     def _secim_degisti(self, _event=None) -> None:
         secim = self.tablo.selection()
@@ -391,6 +617,10 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             self.hizli_grup.set(u["rapor_grubu"])
 
     def _secili_stok_idler(self) -> list[int]:
+        """İşaretli stok kimlikleri (filtre dışı sayfalar dahil)."""
+        if self._secili_idler:
+            return sorted(self._secili_idler)
+        # Geriye uyum: yalnızca satır vurgusu varsa onu kullan
         idler = []
         for iid in self.tablo.selection():
             try:
@@ -404,7 +634,7 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
         if not self._secili:
             messagebox.showinfo("Seçim", "Önce bir ürün seçin.", parent=self)
             return
-        gruplar = StokService.secenekleri_listele("rapor_grubu")
+        gruplar = StokService.hizli_satis_filtre_degerleri("rapor_grubu")
         if not gruplar:
             messagebox.showwarning(
                 "Stok grubu",
@@ -465,7 +695,7 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             parent=self,
         ):
             return
-        gruplar = StokService.secenekleri_listele("rapor_grubu")
+        gruplar = StokService.hizli_satis_filtre_degerleri("rapor_grubu")
         if not gruplar:
             messagebox.showwarning("Stok grubu", "Tanımlı stok grubu yok.", parent=self)
             return
@@ -552,18 +782,24 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
             return None
         return HizliSatisService.hizli_grup_olustur(ad)
 
-    def _pin_alanlari(self) -> dict:
+    def _pin_alanlari(self, *, coklu: bool = False) -> dict:
         miktar = self.miktar_entry.get().strip() or "1"
         sira = self.sira_entry.get().strip()
-        return {
-            "kisa_ad": self.kisa_ad.get().strip() or None,
-            "varsayilan_birim": self.birim_entry.get().strip() or None,
+        alan = {
             "varsayilan_miktar": miktar,
-            "sira_no": int(sira) if sira.isdigit() else None,
             "kart_rengi": self.renk_var.get().strip() or None,
             "gorsel_yolu": self.gorsel_yolu.get().strip() or None,
             "aktif": bool(self.aktif_var.get()),
         }
+        if not coklu:
+            alan["kisa_ad"] = self.kisa_ad.get().strip() or None
+            alan["varsayilan_birim"] = self.birim_entry.get().strip() or None
+            alan["sira_no"] = int(sira) if sira.isdigit() else None
+        else:
+            # Çoklu: ortak birim adı uygulanmaz; her ürün kendi satış birimini korur
+            alan["varsayilan_birim"] = None
+            alan["sira_no"] = None
+        return alan
 
     def _seciliyi_ekle_akisi(self, _event=None) -> None:
         if not self._secili:
@@ -615,32 +851,151 @@ class HizliSatisUrunEkleDialog(tk.Toplevel):
     def _toplu_pin(self) -> None:
         idler = self._secili_stok_idler()
         if not idler:
-            messagebox.showinfo("Seçim", "Toplu ekleme için ürün seçin (Ctrl/Shift).", parent=self)
+            messagebox.showinfo(
+                "Seçim",
+                "Seçilenleri Ekle için kutucuklarla ürün işaretleyin.",
+                parent=self,
+            )
             return
-        # İlk seçilinin rapor grubundan varsayılan
-        ornek = self._urunler[int(self.tablo.selection()[0])]
-        rapor = (ornek.get("rapor_grubu") or "").strip()
-        grup = self._hedef_hizli_grup(rapor)
+        if self._islem_suruyor:
+            return
+        ad = self.hizli_grup.get().strip()
+        if not ad:
+            messagebox.showwarning(
+                "Hedef grup",
+                "Önce hedef hızlı satış grubunu seçin.",
+                parent=self,
+            )
+            return
+        grup = self._hedef_hizli_grup(None)
         if not grup:
             return
-        self._hizli_gruplari_yukle()
-        self.hizli_grup.set(grup["ad"])
-        sonuc = HizliSatisService.pin_toplu_ekle(
-            idler,
-            hizli_satis_grubu_id=int(grup["id"]),
-            grup_olustur_onayli=False,
+        miktar = self.miktar_entry.get().strip() or "1"
+        if miktar not in ("1", "1,0", "1.0"):
+            if not messagebox.askyesno(
+                "Ortak miktar",
+                f"Varsayılan miktar «{miktar}» seçilen tüm kartlara uygulanacak. Devam?",
+                parent=self,
+            ):
+                return
+        self._islem_suruyor = True
+        self._ekleme_dugmelerini_ayarla()
+        try:
+            self._hizli_gruplari_yukle()
+            self.hizli_grup.set(grup["ad"])
+            sonuc = HizliSatisService.pin_toplu_ekle(
+                idler,
+                hizli_satis_grubu_id=int(grup["id"]),
+                grup_olustur_onayli=False,
+                ortak=self._pin_alanlari(coklu=True),
+            )
+            messagebox.showinfo(
+                "Seçilenleri Ekle",
+                (
+                    f"Eklenen: {sonuc['eklenen']}\n"
+                    f"Atlanan (mevcut): {sonuc['atlanan']}\n"
+                    f"Başarısız: {sonuc['basarisiz']}"
+                ),
+                parent=self,
+            )
+            if sonuc["basarisiz"] == 0:
+                # Başarıda işlenen seçimleri temizle; filtreler kalsın
+                for sid in idler:
+                    self._secili_idler.discard(sid)
+                self._yukle()
+            self._bildir_degisti()
+        finally:
+            self._islem_suruyor = False
+            self._ekleme_dugmelerini_ayarla()
+            self.arama_entry.focus_set()
+
+    def _grubun_tamamini_ekle(self) -> None:
+        """Seçili stok rapor grubunun tamamını hedef hızlı satış grubuna pinler.
+
+        Arama ve marka filtresi uygulanmaz; önizlemede belirtilir.
+        """
+        if self._islem_suruyor:
+            return
+        filtre = self.stok_grup_filtre.get().strip()
+        if filtre in (FILTRE_TUMU, FILTRE_GRUPSUZ, ""):
+            messagebox.showwarning(
+                "Stok grubu",
+                "Grubun Tamamını Ekle için üstte bir stok grubu seçin.",
+                parent=self,
+            )
+            return
+        ad = self.hizli_grup.get().strip()
+        if not ad:
+            messagebox.showwarning(
+                "Hedef grup",
+                "Önce hedef hızlı satış grubunu seçin.",
+                parent=self,
+            )
+            return
+        grup = self._hedef_hizli_grup(filtre)
+        if not grup:
+            return
+        try:
+            oniz = HizliSatisService.pin_stok_rapor_grubu_onizle(
+                filtre,
+                hizli_satis_grubu_id=int(grup["id"]),
+                sadece_stokta=bool(self.stokta_var.get()),
+                alt_gruplar_dahil=bool(self.alt_gruplar_var.get()),
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Önizleme", str(exc), parent=self)
+            return
+        metin = (
+            f"Kaynak stok grubu: {oniz['kaynak_grup']}\n"
+            f"Hedef hızlı satış grubu: {oniz['hedef_grup']}\n"
+            f"Alt gruplar: {'dahil' if oniz.get('alt_gruplar_dahil') else 'yalnız doğrudan'}\n"
+            f"Uygun ürün: {oniz['uygun']}\n"
+            f"Hedefte zaten mevcut: {oniz['mevcut']}\n"
+            f"Yeni kart eklenecek: {oniz['eklenecek']}\n\n"
+            "Not: Metin araması ve marka filtresi bu işlemde kullanılmaz.\n"
+            f"{'Yalnız stokta olanlar açık.' if oniz['sadece_stokta'] else 'Sıfır/eksi stoklu aktif ürünler de dahil.'}"
         )
-        messagebox.showinfo(
-            "Toplu ekleme",
-            (
-                f"Eklenen: {sonuc['eklenen']}\n"
-                f"Atlanan: {sonuc['atlanan']}\n"
-                f"Başarısız: {sonuc['basarisiz']}"
-            ),
+        if oniz["eklenecek"] <= 0:
+            messagebox.showinfo("Grubun Tamamı", metin + "\n\nEklenecek yeni ürün yok.", parent=self)
+            return
+        if not messagebox.askyesno(
+            f"{oniz['eklenecek']} Ürünü Ekle",
+            metin + "\n\nDevam edilsin mi?",
             parent=self,
-        )
-        self._bildir_degisti()
-        self.arama_entry.focus_set()
+        ):
+            return
+        self._islem_suruyor = True
+        self._ekleme_dugmelerini_ayarla()
+        try:
+            sonuc = HizliSatisService.pin_stok_rapor_grubu_ekle(
+                filtre,
+                hizli_satis_grubu_id=int(grup["id"]),
+                sadece_stokta=bool(self.stokta_var.get()),
+                alt_gruplar_dahil=bool(self.alt_gruplar_var.get()),
+                ortak=self._pin_alanlari(coklu=True),
+            )
+            ekstra = ""
+            if sonuc.get("geri_alindi"):
+                hatalar = sonuc.get("detay_hata") or []
+                neden = hatalar[0].get("neden") if hatalar else "bilinmeyen hata"
+                ekstra = f"\nİşlem geri alındı: {neden}"
+            messagebox.showinfo(
+                "Grubun Tamamı",
+                (
+                    f"{sonuc.get('eklenen', 0)} ürün eklendi, "
+                    f"mevcut {sonuc.get('atlanan', oniz['mevcut'])} ürün atlandı.\n"
+                    f"Başarısız: {sonuc.get('basarisiz', 0)}{ekstra}"
+                ),
+                parent=self,
+            )
+            self._bildir_degisti()
+            self.listeyi_yenile()
+        except ValueError as exc:
+            messagebox.showerror("Grubun Tamamı", str(exc), parent=self)
+        finally:
+            self._islem_suruyor = False
+            self._ekleme_dugmelerini_ayarla()
+            self.arama_entry.focus_set()
 
     def _bildir_degisti(self) -> None:
         if self.on_degisti:

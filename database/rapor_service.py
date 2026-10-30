@@ -1181,20 +1181,19 @@ class RaporService:
         baslangic: date,
         bitis: date,
         maliyet_yontemi: str = "FIFO",
+        karsilastirma_baslangic: date | None = None,
+        karsilastirma_bitis: date | None = None,
     ) -> dict[str, Any]:
         """
         Klasik gelir tablosu (P&L) — tarih aralığı.
 
-        Net satış = brüt satışlar − satış iskontoları − satıştan iadeler (KDV hariç).
-        SMM = dönem başı emtia + net alışlar − dönem sonu emtia
-          net alışlar = dönem içi alışlar − alış iskontoları − satınalma iadeleri (KDV hariç).
-        Dönem başı emtia: stok_envanter(başlangıç − 1 gün); dönem sonu: bitiş günü.
-        Stok miktarı hareket bakiyesine göredir; birim maliyet seçilen yöntemin *güncel*
-        kart/lot maliyetidir (tarihsel maliyet katmanı yok).
+        Giderler belge türüne göre değil, gider grubu (kart sınıflandırması) altında bir kez
+        toplanır. Varsayılan son satır «Vergi öncesi yönetim sonucu»dır.
         """
-        from database.models.finans import GiderFisi
-        from database.models.hizmet_faturasi import HizmetFaturasi
-        from database.hizmet_faturasi_service import HizmetFaturasiService
+        from datetime import datetime as _dt
+
+        from database.masraf_dagitim_service import MasrafDagitimService
+        from database.gider_rapor_service import GiderRaporService
 
         if bitis < baslangic:
             raise ValueError("Bitiş, başlangıçtan önce olamaz.")
@@ -1202,230 +1201,356 @@ class RaporService:
         yontem = maliyet_yontemi if maliyet_yontemi in _MALIYET_ANAHTAR else "FIFO"
         sifir = Decimal("0")
 
-        def _satir(etiket: str, tutar, *, seviye: str = "kalem", kaynak: str = "") -> dict[str, Any]:
+        def _satir(
+            etiket: str,
+            tutar,
+            *,
+            seviye: str = "kalem",
+            kaynak: str = "",
+            tutar_b=None,
+        ) -> dict[str, Any]:
             return {
                 "etiket": etiket,
                 "tutar": Decimal(str(tutar or 0)),
+                "tutar_b": None if tutar_b is None else Decimal(str(tutar_b)),
                 "seviye": seviye,
                 "kaynak": kaynak,
             }
 
-        def _net_kdvsiz(toplam: dict) -> Decimal:
-            return Decimal(str(toplam.get("ara_toplam") or 0)) - Decimal(str(toplam.get("iskonto") or 0))
-
-        onceki_gun = date.fromordinal(baslangic.toordinal() - 1)
-        bas_env = RaporService.stok_envanter(
-            tarih=onceki_gun, maliyet_yontemi=yontem, sadece_pozitif=True
-        )
-        son_env = RaporService.stok_envanter(
-            tarih=bitis, maliyet_yontemi=yontem, sadece_pozitif=True
-        )
-        donem_basi_emtia = Decimal(str(bas_env.get("toplam_tutar") or 0))
-        donem_sonu_emtia = Decimal(str(son_env.get("toplam_tutar") or 0))
-
-        brut_satis = satis_iskonto = sifir
-        satis_iade_brut = satis_iade_iskonto = sifir
-        alis_brut = alis_iskonto = sifir
-        alis_iade_brut = alis_iade_iskonto = sifir
-        hizmet_gider = hizmet_gelir = sifir
-        gider_fis_hizmet = gider_fis_faiz = gider_fis_masraf = gider_fis_diger = sifir
-
-        with get_session() as session:
-            for fatura in session.scalars(
-                select(SatisFaturasi)
-                .where(SatisFaturasi.durum != "İPTAL")
-                .options(selectinload(SatisFaturasi.satirlar))
-            ).all():
-                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
-                    continue
-                t = SatisFaturasiService.toplam(fatura.satirlar)
-                brut_satis += Decimal(str(t["ara_toplam"]))
-                satis_iskonto += Decimal(str(t["iskonto"]))
-
-            for iade in session.scalars(
-                select(SatisIadeFaturasi)
-                .where(SatisIadeFaturasi.durum != "İPTAL")
-                .options(selectinload(SatisIadeFaturasi.satirlar))
-            ).all():
-                if iade.iade_tarihi < baslangic or iade.iade_tarihi > bitis:
-                    continue
-                t = SatisIadeFaturasiService.toplam(iade.satirlar)
-                satis_iade_brut += Decimal(str(t["ara_toplam"]))
-                satis_iade_iskonto += Decimal(str(t["iskonto"]))
-
-            for fatura in session.scalars(
-                select(AlisFaturasi)
-                .where(AlisFaturasi.durum != "İPTAL")
-                .options(selectinload(AlisFaturasi.satirlar))
-            ).all():
-                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
-                    continue
-                t = AlisFaturasiService.toplam(fatura.satirlar)
-                alis_brut += Decimal(str(t["ara_toplam"]))
-                alis_iskonto += Decimal(str(t["iskonto"]))
-
-            for iade in session.scalars(
-                select(AlisIadeFaturasi)
-                .where(AlisIadeFaturasi.durum.not_in(("İPTAL", "TASLAK")))
-                .options(selectinload(AlisIadeFaturasi.satirlar))
-            ).all():
-                if iade.iade_tarihi < baslangic or iade.iade_tarihi > bitis:
-                    continue
-                t = AlisIadeFaturasiService.toplam(iade.satirlar)
-                alis_iade_brut += Decimal(str(t["ara_toplam"]))
-                alis_iade_iskonto += Decimal(str(t["iskonto"]))
-
-            for fatura in session.scalars(
-                select(HizmetFaturasi)
-                .where(HizmetFaturasi.durum != "İPTAL")
-                .options(selectinload(HizmetFaturasi.satirlar))
-            ).all():
-                if fatura.fatura_tarihi < baslangic or fatura.fatura_tarihi > bitis:
-                    continue
-                net = _net_kdvsiz(HizmetFaturasiService.toplam(fatura.satirlar))
-                tur = (fatura.fatura_turu or "").upper()
-                if tur == "GIDER":
-                    hizmet_gider += net
-                elif tur == "GELIR":
-                    hizmet_gelir += net
-
-            for fis in session.scalars(
-                select(GiderFisi).where(GiderFisi.durum != "IPTAL")
-            ).all():
-                if fis.tarih < baslangic or fis.tarih > bitis:
-                    continue
-                tutar = Decimal(str(fis.tutar or 0))
-                tur = (fis.gider_turu or "").upper()
-                if tur == "HIZMET":
-                    gider_fis_hizmet += tutar
-                elif tur == "KREDI_FAIZ":
-                    gider_fis_faiz += tutar
-                elif tur == "KREDI_MASRAF":
-                    gider_fis_masraf += tutar
-                else:
-                    gider_fis_diger += tutar
-
-        satis_iade_net = satis_iade_brut - satis_iade_iskonto
-        net_satislar = brut_satis - satis_iskonto - satis_iade_net
-
-        from database.masraf_dagitim_service import MasrafDagitimService
-
-        maliyete_aktarilan = MasrafDagitimService.maliyete_aktarilan_toplam(baslangic, bitis)
-        alis_iade_net = alis_iade_brut - alis_iade_iskonto
-        net_alislar = alis_brut - alis_iskonto - alis_iade_net + maliyete_aktarilan
-
-        smm = donem_basi_emtia + net_alislar - donem_sonu_emtia
-        brut_kar = net_satislar - smm
-
-        toplam_gider_fis = (
-            gider_fis_hizmet + gider_fis_faiz + gider_fis_masraf + gider_fis_diger
-        )
-        toplam_giderler = toplam_gider_fis + hizmet_gider - maliyete_aktarilan
-        net_kar = brut_kar + hizmet_gelir - toplam_giderler
-
-        satirlar: list[dict[str, Any]] = []
-        satirlar.append(_satir("SATIŞLAR", sifir, seviye="baslik"))
-        satirlar.append(_satir("Brüt satışlar", brut_satis, kaynak="brut_satis"))
-        if satis_iskonto:
-            satirlar.append(_satir("Satış iskontoları (−)", -satis_iskonto, kaynak="satis_iskonto"))
-        satirlar.append(
-            _satir("Satıştan iadeler (−)", -satis_iade_net, kaynak="satis_iade")
-        )
-        satirlar.append(
-            _satir("Net satışlar", net_satislar, seviye="ara_toplam", kaynak="net_satis")
-        )
-
-        satirlar.append(_satir("SATILAN MALIN MALİYETİ (SMM)", sifir, seviye="baslik"))
-        satirlar.append(
-            _satir("Dönem başı emtia", donem_basi_emtia, kaynak="donem_basi")
-        )
-        satirlar.append(_satir("Dönem içi alışlar", alis_brut - alis_iskonto, kaynak="alis"))
-        if alis_iade_net:
-            satirlar.append(
-                _satir("Satınalma iadeleri (−)", -alis_iade_net, kaynak="alis_iade")
+        def _tek_donem(b0: date, e0: date) -> dict[str, Any]:
+            onceki_gun = date.fromordinal(b0.toordinal() - 1)
+            bas_env = RaporService.stok_envanter(
+                tarih=onceki_gun, maliyet_yontemi=yontem, sadece_pozitif=True
             )
-        if maliyete_aktarilan:
-            satirlar.append(
-                _satir("Maliyete aktarılan masraflar", maliyete_aktarilan, kaynak="masraf_dagitimi")
+            son_env = RaporService.stok_envanter(
+                tarih=e0, maliyet_yontemi=yontem, sadece_pozitif=True
             )
-        satirlar.append(
-            _satir("Net alışlar", net_alislar, seviye="ara_toplam", kaynak="net_alis")
-        )
-        satirlar.append(
-            _satir("Dönem sonu emtia (−)", -donem_sonu_emtia, kaynak="donem_sonu")
-        )
-        satirlar.append(_satir("Satılan malın maliyeti", smm, seviye="ara_toplam", kaynak="smm"))
+            donem_basi_emtia = Decimal(str(bas_env.get("toplam_tutar") or 0))
+            donem_sonu_emtia = Decimal(str(son_env.get("toplam_tutar") or 0))
 
-        satirlar.append(_satir("Brüt kâr", brut_kar, seviye="toplam", kaynak="brut_kar"))
+            brut_satis = satis_iskonto = sifir
+            satis_iade_brut = satis_iade_iskonto = sifir
+            alis_brut = alis_iskonto = sifir
+            alis_iade_brut = alis_iade_iskonto = sifir
+            hizmet_gelir = sifir
 
-        if hizmet_gelir:
-            satirlar.append(_satir("DİĞER GELİRLER", sifir, seviye="baslik"))
-            satirlar.append(
-                _satir("Hizmet satış gelirleri", hizmet_gelir, kaynak="hizmet_gelir")
-            )
+            with get_session() as session:
+                for fatura in session.scalars(
+                    select(SatisFaturasi)
+                    .where(SatisFaturasi.durum != "İPTAL")
+                    .options(selectinload(SatisFaturasi.satirlar))
+                ).all():
+                    if fatura.fatura_tarihi < b0 or fatura.fatura_tarihi > e0:
+                        continue
+                    t = SatisFaturasiService.toplam(fatura.satirlar)
+                    brut_satis += Decimal(str(t["ara_toplam"]))
+                    satis_iskonto += Decimal(str(t["iskonto"]))
 
-        satirlar.append(_satir("GİDERLER", sifir, seviye="baslik"))
-        if hizmet_gider:
-            satirlar.append(
-                _satir("Hizmet alış (gider) faturaları", hizmet_gider, kaynak="hizmet_gider")
-            )
-        if maliyete_aktarilan:
-            satirlar.append(
-                _satir("Maliyete aktarılan masraflar (−)", -maliyete_aktarilan, kaynak="masraf_dagitimi")
-            )
-        if gider_fis_hizmet:
-            satirlar.append(
-                _satir("Gider fişleri (hizmet)", gider_fis_hizmet, kaynak="gider_fis")
-            )
-        if gider_fis_faiz:
-            satirlar.append(
-                _satir("Kredi / KMH faiz giderleri", gider_fis_faiz, kaynak="faiz")
-            )
-        if gider_fis_masraf:
-            satirlar.append(
-                _satir("Kredi masraf giderleri", gider_fis_masraf, kaynak="masraf")
-            )
-        if gider_fis_diger:
-            satirlar.append(
-                _satir("Diğer gider fişleri", gider_fis_diger, kaynak="gider_diger")
-            )
-        if toplam_giderler == 0:
-            satirlar.append(_satir("Dönem gideri (kayıt yok)", sifir, kaynak="gider"))
-        satirlar.append(
-            _satir("Toplam giderler", toplam_giderler, seviye="ara_toplam", kaynak="toplam_gider")
-        )
+                for iade in session.scalars(
+                    select(SatisIadeFaturasi)
+                    .where(SatisIadeFaturasi.durum != "İPTAL")
+                    .options(selectinload(SatisIadeFaturasi.satirlar))
+                ).all():
+                    if iade.iade_tarihi < b0 or iade.iade_tarihi > e0:
+                        continue
+                    t = SatisIadeFaturasiService.toplam(iade.satirlar)
+                    satis_iade_brut += Decimal(str(t["ara_toplam"]))
+                    satis_iade_iskonto += Decimal(str(t["iskonto"]))
 
-        net_etiket = "Net kâr" if net_kar >= 0 else "Net zarar"
-        satirlar.append(_satir(net_etiket, net_kar, seviye="toplam", kaynak="net_kar"))
+                for fatura in session.scalars(
+                    select(AlisFaturasi)
+                    .where(AlisFaturasi.durum != "İPTAL")
+                    .options(selectinload(AlisFaturasi.satirlar))
+                ).all():
+                    if fatura.fatura_tarihi < b0 or fatura.fatura_tarihi > e0:
+                        continue
+                    t = AlisFaturasiService.toplam(fatura.satirlar)
+                    alis_brut += Decimal(str(t["ara_toplam"]))
+                    alis_iskonto += Decimal(str(t["iskonto"]))
 
-        return {
-            "baslangic": baslangic,
-            "bitis": bitis,
-            "maliyet_yontemi": yontem,
-            "donem_basi_tarih": onceki_gun,
-            "donem_sonu_tarih": bitis,
-            "satirlar": satirlar,
-            "ozet": {
-                "brut_satislar": brut_satis,
+                for iade in session.scalars(
+                    select(AlisIadeFaturasi)
+                    .where(AlisIadeFaturasi.durum.not_in(("İPTAL", "TASLAK")))
+                    .options(selectinload(AlisIadeFaturasi.satirlar))
+                ).all():
+                    if iade.iade_tarihi < b0 or iade.iade_tarihi > e0:
+                        continue
+                    t = AlisIadeFaturasiService.toplam(iade.satirlar)
+                    alis_iade_brut += Decimal(str(t["ara_toplam"]))
+                    alis_iade_iskonto += Decimal(str(t["iskonto"]))
+
+                from database.models.hizmet_faturasi import HizmetFaturasi
+                from database.hizmet_faturasi_service import HizmetFaturasiService
+
+                for fatura in session.scalars(
+                    select(HizmetFaturasi)
+                    .where(HizmetFaturasi.durum != "İPTAL")
+                    .options(selectinload(HizmetFaturasi.satirlar))
+                ).all():
+                    if fatura.fatura_tarihi < b0 or fatura.fatura_tarihi > e0:
+                        continue
+                    net = Decimal(str(HizmetFaturasiService.toplam(fatura.satirlar).get("ara_toplam") or 0)) - Decimal(
+                        str(HizmetFaturasiService.toplam(fatura.satirlar).get("iskonto") or 0)
+                    )
+                    tur = (fatura.fatura_turu or "").upper()
+                    if tur == "GELIR":
+                        hizmet_gelir += net
+                    elif tur == "GELIR_IADE":
+                        hizmet_gelir -= net
+
+            maliyete_aktarilan = MasrafDagitimService.maliyete_aktarilan_toplam(b0, e0)
+            satis_iade_net = satis_iade_brut - satis_iade_iskonto
+            net_satislar = brut_satis - satis_iskonto - satis_iade_net
+            alis_iade_net = alis_iade_brut - alis_iade_iskonto
+            net_alislar = alis_brut - alis_iskonto - alis_iade_net + maliyete_aktarilan
+            smm = donem_basi_emtia + net_alislar - donem_sonu_emtia
+            brut_kar = net_satislar - smm
+
+            kaynak = GiderRaporService.kaynak_satirlari(b0, e0)
+            gider_ozet = GiderRaporService._grupla(kaynak)
+            O = Decimal(str(gider_ozet["O"]))
+            F = Decimal(str(gider_ozet["F"]))
+            # Maliyete aktarılan stokta; aynı tutar O içinde tekrar düşülür
+            O = O - maliyete_aktarilan if O >= maliyete_aktarilan else sifir
+            E = O + F
+            yonetim = brut_kar + hizmet_gelir - E
+
+            return {
+                "baslangic": b0,
+                "bitis": e0,
+                "onceki_gun": onceki_gun,
+                "brut_satis": brut_satis,
                 "satis_iskonto": satis_iskonto,
-                "satis_iadeleri": satis_iade_net,
+                "satis_iade_net": satis_iade_net,
                 "net_satislar": net_satislar,
                 "donem_basi_emtia": donem_basi_emtia,
-                "donem_ici_alislar": alis_brut - alis_iskonto,
-                "alis_iadeleri": alis_iade_net,
-                "maliyete_aktarilan_masraf": maliyete_aktarilan,
+                "alis_net_gosterim": alis_brut - alis_iskonto,
+                "alis_iade_net": alis_iade_net,
+                "maliyete_aktarilan": maliyete_aktarilan,
                 "net_alislar": net_alislar,
                 "donem_sonu_emtia": donem_sonu_emtia,
                 "smm": smm,
                 "brut_kar": brut_kar,
                 "hizmet_gelir": hizmet_gelir,
-                "toplam_giderler": toplam_giderler,
-                "net_kar": net_kar,
+                "O": O,
+                "F": F,
+                "E": E,
+                "yonetim_sonucu": yonetim,
+                "gruplar": gider_ozet["gruplar"],
+                "siniflandirilmamis": gider_ozet["siniflandirilmamis"],
+            }
+
+        a = _tek_donem(baslangic, bitis)
+        b = None
+        if karsilastirma_baslangic is not None and karsilastirma_bitis is not None:
+            if karsilastirma_bitis < karsilastirma_baslangic:
+                raise ValueError("Karşılaştırma bitişi başlangıçtan önce olamaz.")
+            b = _tek_donem(karsilastirma_baslangic, karsilastirma_bitis)
+
+        def _b(alan: str):
+            return None if b is None else b.get(alan)
+
+        satirlar: list[dict[str, Any]] = []
+        satirlar.append(_satir("SATIŞLAR", sifir, seviye="baslik"))
+        satirlar.append(_satir("Brüt satışlar", a["brut_satis"], tutar_b=_b("brut_satis"), kaynak="brut_satis"))
+        if a["satis_iskonto"] or (b and b["satis_iskonto"]):
+            satirlar.append(
+                _satir(
+                    "Satış iskontoları (−)",
+                    -a["satis_iskonto"],
+                    tutar_b=None if b is None else -b["satis_iskonto"],
+                    kaynak="satis_iskonto",
+                )
+            )
+        satirlar.append(
+            _satir(
+                "Satıştan iadeler (−)",
+                -a["satis_iade_net"],
+                tutar_b=None if b is None else -b["satis_iade_net"],
+                kaynak="satis_iade",
+            )
+        )
+        satirlar.append(
+            _satir(
+                "Net satışlar",
+                a["net_satislar"],
+                tutar_b=_b("net_satislar"),
+                seviye="ara_toplam",
+                kaynak="net_satis",
+            )
+        )
+
+        satirlar.append(_satir("SATILAN MALIN MALİYETİ (SMM)", sifir, seviye="baslik"))
+        satirlar.append(
+            _satir("Dönem başı emtia", a["donem_basi_emtia"], tutar_b=_b("donem_basi_emtia"), kaynak="donem_basi")
+        )
+        satirlar.append(
+            _satir("Dönem içi alışlar", a["alis_net_gosterim"], tutar_b=_b("alis_net_gosterim"), kaynak="alis")
+        )
+        if a["alis_iade_net"] or (b and b["alis_iade_net"]):
+            satirlar.append(
+                _satir(
+                    "Satınalma iadeleri (−)",
+                    -a["alis_iade_net"],
+                    tutar_b=None if b is None else -b["alis_iade_net"],
+                    kaynak="alis_iade",
+                )
+            )
+        if a["maliyete_aktarilan"] or (b and b["maliyete_aktarilan"]):
+            satirlar.append(
+                _satir(
+                    "Maliyete aktarılan masraflar",
+                    a["maliyete_aktarilan"],
+                    tutar_b=_b("maliyete_aktarilan"),
+                    kaynak="masraf_dagitimi",
+                )
+            )
+        satirlar.append(
+            _satir("Net alışlar", a["net_alislar"], tutar_b=_b("net_alislar"), seviye="ara_toplam", kaynak="net_alis")
+        )
+        satirlar.append(
+            _satir(
+                "Dönem sonu emtia (−)",
+                -a["donem_sonu_emtia"],
+                tutar_b=None if b is None else -b["donem_sonu_emtia"],
+                kaynak="donem_sonu",
+            )
+        )
+        satirlar.append(
+            _satir("Satılan malın maliyeti", a["smm"], tutar_b=_b("smm"), seviye="ara_toplam", kaynak="smm")
+        )
+        satirlar.append(
+            _satir("Brüt kâr", a["brut_kar"], tutar_b=_b("brut_kar"), seviye="toplam", kaynak="brut_kar")
+        )
+
+        if a["hizmet_gelir"] or (b and b["hizmet_gelir"]):
+            satirlar.append(_satir("DİĞER FAALİYET GELİRLERİ (I)", sifir, seviye="baslik"))
+            satirlar.append(
+                _satir(
+                    "Hizmet satış gelirleri",
+                    a["hizmet_gelir"],
+                    tutar_b=_b("hizmet_gelir"),
+                    kaynak="hizmet_gelir",
+                )
+            )
+
+        # Faaliyet giderleri — grup ağacı (belge türü değil)
+        satirlar.append(_satir("FAALİYET GİDERLERİ (O)", sifir, seviye="baslik"))
+        a_grup = {k: v for k, v in a["gruplar"].items() if v.get("sonuc_yeri") != "F"}
+        b_grup = {k: v for k, v in (b["gruplar"] if b else {}).items() if v.get("sonuc_yeri") != "F"}
+        for kod in sorted(set(a_grup) | set(b_grup), key=lambda k: -(a_grup.get(k, {}).get("net") or sifir)):
+            ga = a_grup.get(kod, {"ad": (b_grup.get(kod) or {}).get("ad", kod), "net": sifir, "alt": {}})
+            gb = b_grup.get(kod)
+            satirlar.append(
+                _satir(
+                    ga.get("ad") or kod,
+                    ga.get("net") or sifir,
+                    tutar_b=None if gb is None else gb.get("net"),
+                    seviye="grup",
+                    kaynak=f"grup:{kod}",
+                )
+            )
+            alt_kodlar = set(ga.get("alt") or {}) | set((gb or {}).get("alt") or {})
+            for ak in sorted(alt_kodlar):
+                aa = (ga.get("alt") or {}).get(ak, {"ad": ak, "net": sifir})
+                bb = ((gb or {}).get("alt") or {}).get(ak)
+                satirlar.append(
+                    _satir(
+                        "  " + (aa.get("ad") or ak),
+                        aa.get("net") or sifir,
+                        tutar_b=None if bb is None else bb.get("net"),
+                        seviye="alt",
+                        kaynak=f"alt:{kod}:{ak}",
+                    )
+                )
+        if a["maliyete_aktarilan"]:
+            satirlar.append(
+                _satir(
+                    "Maliyete aktarılan masraflar (−)",
+                    -a["maliyete_aktarilan"],
+                    tutar_b=None if b is None else -b["maliyete_aktarilan"],
+                    kaynak="masraf_dagitimi",
+                )
+            )
+        satirlar.append(
+            _satir("Faaliyet giderleri toplamı", a["O"], tutar_b=_b("O"), seviye="ara_toplam", kaynak="O")
+        )
+
+        satirlar.append(_satir("FİNANSMAN GİDERLERİ (F)", sifir, seviye="baslik"))
+        a_f = {k: v for k, v in a["gruplar"].items() if v.get("sonuc_yeri") == "F"}
+        b_f = {k: v for k, v in (b["gruplar"] if b else {}).items() if v.get("sonuc_yeri") == "F"}
+        for kod in sorted(set(a_f) | set(b_f), key=lambda k: -(a_f.get(k, {}).get("net") or sifir)):
+            ga = a_f.get(kod, {"ad": kod, "net": sifir})
+            gb = b_f.get(kod)
+            satirlar.append(
+                _satir(
+                    ga.get("ad") or kod,
+                    ga.get("net") or sifir,
+                    tutar_b=None if gb is None else gb.get("net"),
+                    seviye="grup",
+                    kaynak=f"finans:{kod}",
+                )
+            )
+        satirlar.append(
+            _satir("Finansman giderleri toplamı", a["F"], tutar_b=_b("F"), seviye="ara_toplam", kaynak="F")
+        )
+        satirlar.append(
+            _satir("Toplam giderler (E = O + F)", a["E"], tutar_b=_b("E"), seviye="ara_toplam", kaynak="E")
+        )
+        satirlar.append(
+            _satir(
+                "Vergi öncesi yönetim sonucu",
+                a["yonetim_sonucu"],
+                tutar_b=_b("yonetim_sonucu"),
+                seviye="toplam",
+                kaynak="yonetim_sonucu",
+            )
+        )
+
+        sonuc = {
+            "baslangic": baslangic,
+            "bitis": bitis,
+            "maliyet_yontemi": yontem,
+            "donem_basi_tarih": a["onceki_gun"],
+            "donem_sonu_tarih": bitis,
+            "satirlar": satirlar,
+            "hesap_zamani": _dt.now(),
+            "ozet": {
+                "brut_satislar": a["brut_satis"],
+                "satis_iskonto": a["satis_iskonto"],
+                "satis_iadeleri": a["satis_iade_net"],
+                "net_satislar": a["net_satislar"],
+                "donem_basi_emtia": a["donem_basi_emtia"],
+                "donem_ici_alislar": a["alis_net_gosterim"],
+                "alis_iadeleri": a["alis_iade_net"],
+                "maliyete_aktarilan_masraf": a["maliyete_aktarilan"],
+                "net_alislar": a["net_alislar"],
+                "donem_sonu_emtia": a["donem_sonu_emtia"],
+                "smm": a["smm"],
+                "brut_kar": a["brut_kar"],
+                "hizmet_gelir": a["hizmet_gelir"],
+                "toplam_giderler": a["E"],
+                "faaliyet_gider": a["O"],
+                "finansman_gider": a["F"],
+                "yonetim_sonucu": a["yonetim_sonucu"],
+                "net_kar": a["yonetim_sonucu"],  # geriye uyum
             },
             "notlar": (
-                "Tutarlar KDV hariçtir. Dönem başı emtia = başlangıç gününden bir gün önceki "
-                f"envanter ({onceki_gun.strftime('%d.%m.%Y')}); dönem sonu = bitiş günü. "
-                "Stok miktarı hareket bakiyesine göredir; birim maliyet seçilen yöntemin güncel "
-                "değeridir. Alışlar alış faturalarından (irsaliye henüz faturalanmamışsa SMM sapabilir)."
+                "Tutarlar KDV hariçtir. Giderler belge türüne göre değil gider grubu altında bir kez "
+                "toplanır. Son satır vergi öncesi yönetim sonucudur (tahminî vergi üretilmez). "
+                f"Dönem başı emtia {a['onceki_gun'].strftime('%d.%m.%Y')}; dönem sonu bitiş günü."
             ),
         }
+        if b is not None:
+            sonuc["karsilastirma"] = {
+                "baslangic": b["baslangic"],
+                "bitis": b["bitis"],
+                "ozet": {
+                    "net_satislar": b["net_satislar"],
+                    "smm": b["smm"],
+                    "brut_kar": b["brut_kar"],
+                    "toplam_giderler": b["E"],
+                    "yonetim_sonucu": b["yonetim_sonucu"],
+                },
+            }
+        return sonuc

@@ -25,7 +25,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import sessionmaker
 
 from database.database import Base
-from database.butce_service import ButceService, dagit_yillik_esit
+from database.butce_service import (
+    ButceService,
+    KAYNAK_GENEL_MUHASEBE,
+    KAYNAK_ON_MUHASEBE,
+    KAYNAK_YAN_YANA,
+    dagit_yillik_esit,
+)
 from database.models.butce import ButcePlan, ButceSatir, OLCU_SATIS
 import database.butce_service as butce_mod
 
@@ -106,7 +112,7 @@ def butce_db(monkeypatch):
         return _Ctx(Session())
 
     monkeypatch.setattr(butce_mod, "get_session", fake_get_session)
-    monkeypatch.setattr(butce_mod, "engine", engine)
+    monkeypatch.setattr(butce_mod._db, "engine", engine)
     ButceService._schema_hazir = False
     ButceService.ensure_schema(engine)
     yield {"Session": Session, "engine": engine}
@@ -221,3 +227,76 @@ def test_gerceklesen_eksik_ay_sifir_uydurmaz(butce_db):
     assert ger_bos["durum"] == "VERI_YOK"
     assert ger_bos["bos_aylar"] == list(range(1, 13))
     assert ger_bos["belge_sayisi"] == 0
+
+
+def test_nakit_donem_sonu_virman_etkisiz():
+    """20k + 30k − 25k = 25k; iç virman firma nakdini değiştirmez."""
+    o = ButceService.nakit_donem_hesapla(
+        20_000, 30_000, 25_000, ic_virman_giris=4_000, ic_virman_cikis=4_000
+    )
+    assert o["donem_sonu"] == Decimal("25000.00")
+    assert o["ic_virman_giris"] == Decimal("4000.00")
+
+
+def test_yan_yana_on_ve_gm_toplamaz(butce_db, monkeypatch):
+    plan = ButceService.plan_olustur("Test Yan Yana", 2026, firma_id=1)
+    ButceService.yillik_dagit_ve_kaydet(plan["id"], 12_000, olcu_turu=OLCU_SATIS, firma_id=1)
+
+    def _on(mali_yil, *, olcu_turu=OLCU_SATIS, firma_id=None):
+        return {
+            "kaynak": KAYNAK_ON_MUHASEBE,
+            "kaynak_etiket": "Ön Muhasebe",
+            "olcu_turu": olcu_turu,
+            "mali_yil": mali_yil,
+            "aylar": {1: Decimal("10000.00")},
+            "bos_aylar": list(range(2, 13)),
+            "belge_sayisi": 1,
+            "toplam": Decimal("10000.00"),
+            "durum": "OK",
+            "mesaj": None,
+        }
+
+    def _gm(mali_yil, *, olcu_turu=OLCU_SATIS, firma_id=None):
+        return {
+            "kaynak": KAYNAK_GENEL_MUHASEBE,
+            "kaynak_etiket": "Genel Muhasebe",
+            "olcu_turu": olcu_turu,
+            "mali_yil": mali_yil,
+            "aylar": {1: Decimal("10300.00")},
+            "bos_aylar": list(range(2, 13)),
+            "belge_sayisi": 1,
+            "toplam": Decimal("10300.00"),
+            "durum": "OK",
+            "mesaj": None,
+        }
+
+    monkeypatch.setattr(ButceService, "gerceklesen_on_muhasebe", staticmethod(_on))
+    monkeypatch.setattr(ButceService, "gerceklesen_genel_muhasebe", staticmethod(_gm))
+
+    k = ButceService.karsilastirma(
+        plan["id"], olcu_turu=OLCU_SATIS, kaynak=KAYNAK_YAN_YANA, firma_id=1
+    )
+    assert k["on_muhasebe_toplam"] == Decimal("10000.00")
+    assert k["genel_muhasebe_toplam"] == Decimal("10300.00")
+    satir1 = next(s for s in k["satirlar"] if s["ay"] == 1)
+    assert satir1["kaynak_farki"] == Decimal("300.00")
+
+
+def test_excel_idempotent_aktar(butce_db, tmp_path):
+    from openpyxl import Workbook
+
+    plan = ButceService.plan_olustur("Excel Plan", 2026, firma_id=1)
+    yol = tmp_path / "butce.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["kategori", "olcu_turu", "para_birimi", "ay", "tutar"])
+    for ay in range(1, 13):
+        ws.append(["GENEL", "SATIS", "TRY", ay, 100.00])
+    wb.save(yol)
+
+    ButceService.excel_aktar(plan["id"], yol, firma_id=1, cakisma="guncelle")
+    assert len(ButceService.plan_satirlari(plan["id"], olcu_turu="SATIS", firma_id=1)) == 12
+    ButceService.excel_aktar(plan["id"], yol, firma_id=1, cakisma="guncelle")
+    satirlar = ButceService.plan_satirlari(plan["id"], olcu_turu="SATIS", firma_id=1)
+    assert len(satirlar) == 12
+    assert len({(s["kategori"], s["ay"]) for s in satirlar}) == 12

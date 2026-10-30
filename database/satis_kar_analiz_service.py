@@ -121,7 +121,7 @@ class KarAnalizFiltre:
     personel: str | None = None
     sube_id: int | None = None
     kanal: str | None = None  # None | "hizli" | "fatura"
-    stok_grup_id: int | None = None  # ana, tali veya alt grup
+    stok_grup_id: int | set | frozenset | list | tuple | None = None  # tek id veya üst+alt kümesi
     urun_kodu: str | None = None  # birebir ürün kodu (ayrıntı inişi)
 
 
@@ -318,11 +318,26 @@ class SatisKarAnalizService:
         if grup_f and grup_f not in turkce_normalize((stok.rapor_grubu if stok else "") or ""):
             return False
         if filtre.stok_grup_id:
-            gid = int(filtre.stok_grup_id)
-            if stok is None or gid not in {
+            raw = filtre.stok_grup_id
+            if isinstance(raw, (set, list, tuple, frozenset)):
+                izin = set()
+                for x in raw:
+                    if x in (None, ""):
+                        continue
+                    try:
+                        izin.add(int(x))
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                try:
+                    izin = {int(raw)}
+                except (TypeError, ValueError):
+                    izin = set()
+            kart_grup = {
                 getattr(stok, "ana_grup_id", None), getattr(stok, "tali_grup_id", None),
                 getattr(stok, "alt_grup_id", None),
-            }:
+            } if stok is not None else set()
+            if not izin or stok is None or not (izin & kart_grup):
                 return False
         return True
 

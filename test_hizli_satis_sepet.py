@@ -368,6 +368,7 @@ def test_asama8_gun_sonu_ve_log():
     _assert(ozet["odeme_turleri"]["havale"] == Decimal("50.00"), ozet["odeme_turleri"])
     _assert(ozet["iptal_adedi"] == 1 and ozet["iade_adedi"] == 1, ozet)
     _assert(callable(HizliSatisService.gun_sonu_ozeti), "gun_sonu_ozeti")
+    _assert(callable(HizliSatisService.gun_sonu_faturalari), "gun_sonu_faturalari")
     _assert(callable(HizliSatisService.fatura_cikti_verisi), "fatura_cikti_verisi")
     _assert(hasattr(gun_sonu, "HizliSatisGunSonuDialog"), "gun sonu ui")
     _assert(hasattr(cikti, "HizliSatisBasariDialog"), "basari dialog")

@@ -35,10 +35,17 @@ def _stok_menu_isaretle(app):
         dugme.configure(style="SeciliMenu.TButton" if dugme_anahtari == "stoklar" else "Menu.TButton")
 
 
-def _tablo(parent, kolonlar, basliklar, genislikler=None):
+def _tablo(parent, kolonlar, basliklar, genislikler=None, *, filtre_parent=None):
+    """Treeview kurar; ``filtre_parent`` verilirse DOC5 sütun hunisi bağlanır.
+
+    Dönüş: ``(tablo, filtre_durum)`` — ``filtre_durum`` dict: filtre, ham, bag, goster_cb kaydı.
+    """
+    from liste_filtre_ui import satir_kolon_filtre_uygun, treeview_filtre_bagla
+
     cerceve = ttk.Frame(parent)
     cerceve.pack(fill="both", expand=True, pady=(8, 0))
     tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings")
+    baslik_map = dict(zip(kolonlar, basliklar))
     for i, (kolon, baslik) in enumerate(zip(kolonlar, basliklar)):
         tablo.heading(kolon, text=baslik)
         tablo.column(kolon, width=(genislikler[i] if genislikler else 120), anchor="w")
@@ -50,7 +57,59 @@ def _tablo(parent, kolonlar, basliklar, genislikler=None):
     yatay.grid(row=1, column=0, sticky="ew")
     cerceve.rowconfigure(0, weight=1)
     cerceve.columnconfigure(0, weight=1)
+    durum = {"filtre": {}, "ham": [], "bag": None}
+
+    def _yenile_filtre():
+        yenile = durum.get("yenile")
+        if callable(yenile):
+            yenile()
+
+    if filtre_parent is not None:
+        durum["bag"] = treeview_filtre_bagla(
+            tablo,
+            baslik_map,
+            get_filtre_dict=lambda: durum["filtre"],
+            set_filtre_dict=None,
+            yenile_cb=_yenile_filtre,
+            deger_listesi_cb=lambda: durum["ham"],
+            parent=filtre_parent,
+            kolonlar=list(kolonlar),
+        )
+    tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
     return tablo
+
+
+def _tablo_filtreli_doldur(tablo, satirlar, degerler, *, ozet_lbl=None, ozet_ekstra=None):
+    """Ham satırları saklar, kolon filtresine göre doldurur (parçalı değil)."""
+    from liste_filtre_ui import filtre_ozet_metni, satir_kolon_filtre_uygun
+
+    durum = getattr(tablo, "_liste_filtre_durum", None) or {"filtre": {}, "ham": [], "bag": None}
+    kolonlar = list(tablo["columns"])
+    ham = []
+    for s in satirlar:
+        vals = degerler(s)
+        ham.append({"values": vals, "kayit": s})
+    durum["ham"] = ham
+    tablo.delete(*tablo.get_children())
+    gorunen = 0
+    for item in ham:
+        if not satir_kolon_filtre_uygun(item["values"], kolonlar, durum["filtre"]):
+            continue
+        tablo.insert("", "end", values=item["values"])
+        gorunen += 1
+    bag = durum.get("bag")
+    if bag:
+        bag["guncelle_basliklar"]()
+    if ozet_lbl is not None:
+        ozet_lbl.configure(
+            text=filtre_ozet_metni(
+                gorunen=gorunen,
+                toplam=len(ham),
+                aktif_filtre=len(durum["filtre"]),
+                ekstra=ozet_ekstra,
+            )
+        )
+    return gorunen
 
 
 TABLO_PARCA = 400
@@ -270,7 +329,33 @@ def rapor_kar_zarar(app):
         ("fatura", "tarih", "cari", "urun", "adi", "lot", "miktar", "net", "maliyet", "kar", "marj"),
         ("Fatura", "Tarih", "Cari", "Kod", "Ad", "Lot", "Miktar", "Net Satış", "Maliyet", "Kâr", "Marj %"),
         (100, 85, 140, 80, 140, 90, 70, 95, 95, 90, 70),
+        filtre_parent=app,
     )
+    _son_rapor = {"rapor": None}
+
+    def _kar_goster_filtre():
+        rapor = _son_rapor["rapor"]
+        if not rapor:
+            return
+        _tablo_filtreli_doldur(
+            tablo,
+            rapor["satirlar"],
+            lambda s: (
+                s["fatura_no"], _tarih(s["tarih"]),
+                f"{s['cari_kodu']} - {s['cari_unvan']}"[:28],
+                s["urun_kodu"], s["urun_adi"][:24], s["lot"][:18],
+                s["miktar"], _para(s["net_satis"]), _para(s["toplam_maliyet"]),
+                _para(s["kar"]), f"{s['marj']:.1f}",
+            ),
+            ozet_lbl=ozet,
+            ozet_ekstra=[
+                rapor["maliyet_yontemi"],
+                f"Satış: {_para(rapor['toplam_satis'])}",
+                f"Kâr: {_para(rapor['toplam_kar'])}",
+            ],
+        )
+
+    tablo._liste_filtre_durum["yenile"] = _kar_goster_filtre  # type: ignore[attr-defined]
 
     def _secim_veya_bos(kutu):
         deger = (kutu.get() or "").strip()
@@ -309,28 +394,9 @@ def rapor_kar_zarar(app):
         def _ok(rapor):
             if not app.winfo_exists():
                 return
-            ozet.configure(
-                text=(
-                    f"{rapor['maliyet_yontemi']}  |  Satır: {len(rapor['satirlar'])}  |  "
-                    f"Satış: {_para(rapor['toplam_satis'])}  |  "
-                    f"Maliyet: {_para(rapor['toplam_maliyet'])}  |  "
-                    f"Kâr: {_para(rapor['toplam_kar'])}  |  Marj: {rapor['toplam_marj']:.1f}%"
-                )
-            )
-            for item in tablo.get_children():
-                tablo.delete(item)
-            for s in rapor["satirlar"]:
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
-                        s["fatura_no"], _tarih(s["tarih"]),
-                        f"{s['cari_kodu']} - {s['cari_unvan']}"[:28],
-                        s["urun_kodu"], s["urun_adi"][:24], s["lot"][:18],
-                        s["miktar"], _para(s["net_satis"]), _para(s["toplam_maliyet"]),
-                        _para(s["kar"]), f"{s['marj']:.1f}",
-                    ),
-                )
+            tablo._liste_filtre_durum["filtre"].clear()  # type: ignore[attr-defined]
+            _son_rapor["rapor"] = rapor
+            _kar_goster_filtre()
 
         def _err(exc):
             if app.winfo_exists():
@@ -410,7 +476,26 @@ def rapor_hareket(app):
         ("tarih", "tur", "belge", "kod", "ad", "depo", "lot", "yon", "miktar", "maliyet", "tutar"),
         ("Tarih", "Hareket", "Belge", "Kod", "Ad", "Depo", "Lot", "+/−", "Miktar", "Br. Maliyet", "Tutar"),
         (85, 110, 100, 80, 150, 90, 90, 40, 70, 95, 95),
+        filtre_parent=app,
     )
+    _son_hareket = {"rapor": None}
+
+    def _hareket_goster_filtre():
+        rapor = _son_hareket["rapor"]
+        if not rapor:
+            return
+        _tablo_filtreli_doldur(
+            tablo,
+            rapor["satirlar"],
+            lambda s: (
+                _tarih(s["tarih"]), s["hareket_turu"], s["belge_no"],
+                s["stok_kodu"], s["stok_adi"][:22], s["depo"], s["lot_no"],
+                s["yon"], s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
+            ),
+            ozet_lbl=ozet,
+        )
+
+    tablo._liste_filtre_durum["yenile"] = _hareket_goster_filtre  # type: ignore[attr-defined]
 
     def getir():
         try:
@@ -430,12 +515,9 @@ def rapor_hareket(app):
         )
 
         def goster(rapor):
-            ozet.configure(text=f"{len(rapor['satirlar'])} hareket")
-            tabloyu_parcali_doldur(tablo, rapor["satirlar"], lambda s: (
-                _tarih(s["tarih"]), s["hareket_turu"], s["belge_no"],
-                s["stok_kodu"], s["stok_adi"][:22], s["depo"], s["lot_no"],
-                s["yon"], s["miktar"], _para(s["birim_maliyet"]), _para(s["tutar"]),
-            ))
+            tablo._liste_filtre_durum["filtre"].clear()  # type: ignore[attr-defined]
+            _son_hareket["rapor"] = rapor
+            _hareket_goster_filtre()
 
         arka_plan_rapor(app, ozet, buton, lambda: RaporService.stok_hareket_raporu(**parametreler),
                         goster, "Stok hareket raporu")

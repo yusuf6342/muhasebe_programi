@@ -44,20 +44,30 @@ class BorcAlacakOzetMetinTest(unittest.TestCase):
     }
 
     def test_cari_kart_satirlari_son_islem_ve_bekleyen_yok(self):
+        from cari_borc_alacak_ozet import kalan_bakiye_metni
+
         m = ozet_metinleri(self.METRIK)
         self.assertEqual(tuple(m), OZET_SATIRLARI)
         self.assertFalse([b for b in m if "Son" in b or "Bekleyen" in b])
-        self.assertEqual(m["Toplam borç"][0], "2.000,00 TL")
-        self.assertEqual(m["Toplam alacak"][0], "500,00 TL")
-        self.assertEqual(m["Kalan Bakiye"][0], "1.500,00 TL")
-        self.assertEqual(m["Bakiye yönü"][0], "Borçlu")
-        self.assertEqual(m["Ortalama borç kapatma süresi"][0], "12.0 gün")
-        self.assertEqual(m["Ortalama Valör Tarihi"][0], "01.09.2026")
-        self.assertEqual(m["Ortalama Valör Gün Sayısı"][0], "7.5 gün")
+        self.assertEqual(m["Toplam Borç"][0], "2.000,00 TL")
+        self.assertEqual(m["Toplam Alacak"][0], "500,00 TL")
+        self.assertEqual(m["Kalan Bakiye"][0], "1.500,00 TL (B)")
+        self.assertEqual(m["Kalan Bakiye Gün"][0], "7,5 GÜN")
+        self.assertEqual(m["Kapatılan Bakiye Gün"][0], "12 GÜN")
+        # K01–K03 örnekleri
+        self.assertEqual(
+            kalan_bakiye_metni(Decimal("100000"), tedarikci_modu=False),
+            "100.000,00 TL (B)",
+        )
+        self.assertEqual(
+            kalan_bakiye_metni(Decimal("-100000"), tedarikci_modu=False),
+            "100.000,00 TL (A)",
+        )
+        self.assertEqual(kalan_bakiye_metni(Decimal("0")), "0,00 TL")
 
     def test_tedarikci_yonu_ve_bos_metrik(self):
         m = ozet_metinleri(dict(self.METRIK, bakiye_yonu=None), tedarikci_modu=True)
-        self.assertEqual(m["Bakiye yönü"][0], "Alacaklı (tedarikçiye borcumuz)")
+        self.assertIn("(A)", m["Kalan Bakiye"][0])  # pozitif = tedarikçiye borcumuz
         self.assertEqual({v[0] for v in ozet_metinleri(None).values()}, {"—"})
 
 

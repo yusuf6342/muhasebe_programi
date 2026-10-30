@@ -109,10 +109,12 @@ class HizliSatisCanliAramaTest(unittest.TestCase):
         self.assertEqual(p._urun_arama.secili, 0)
 
         p.arama_entry.event_generate("<Return>")
-        self._pompala(0.2)
+        self._pompala(0.4)
         self.assertEqual([s.stok_kodu for s in p.sepet_model.satirlar], ["VD035"])
         self.assertEqual(p.sepet_model.satirlar[0].miktar, Decimal("1"))
-        self.assertEqual(p.arama_entry.get(), "")
+        # Talimat: Ürün Ara sonrası metin korunur ve yeni yazı için seçilir
+        self.assertEqual(p.arama_entry.get(), "sunta")
+        self.assertEqual(p._arama_kaynak, "urun_ara")
         self.assertFalse(p._urun_arama.acik_mi())
         self.assertEqual(self.mesajlar, [])
 

@@ -14,7 +14,7 @@ from birim_hatasi_ui import birim_hatasi_goster
 
 from database.access import AccessError, yetki_var
 from database.cari_service import CariService
-from database.hizli_satis_service import HizliSatisService, VARSAYILAN_DEPO
+from database.hizli_satis_service import HizliSatisService, VARSAYILAN_DEPO, satis_deposu_adi
 from database.session_manager import oturum
 from database.stok_service import StokService
 from hizli_satis_bekleyen_ui import HizliSatisBekleyenDialog
@@ -74,7 +74,10 @@ def _para_parse(metin: str) -> Decimal:
     return Decimal(ham)
 
 
-SEPET_SUTUNLARI = ("sıra", "kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "toplam")
+# Varsayılan görünüm: Ürün Adı en geniş; kod/sıra gizli (tooltip / sütun seçimi ile erişilir)
+SEPET_SUTUNLARI = ("sıra", "kod", "ad", "miktar", "birim", "fiyat", "toplam", "isk", "kdv")
+# Görünür sıra: Ürün Adı | Miktar | Birim | Birim Fiyat | Tutar
+SEPET_GORUNUR = ("ad", "miktar", "birim", "fiyat", "toplam")
 
 
 def _hedef_metni_coz(metin: str) -> Decimal | None:
@@ -120,8 +123,12 @@ def _dialog_hucre_altina(
     gap: int = 4,
     width: int | None = None,
     height: int | None = None,
+    konum: str = "alt",
 ) -> None:
-    """Diyaloğu treeview hücresinin hemen altına yerleştirir; bbox yoksa üst pencere ortası."""
+    """Diyaloğu treeview hücresinin yanında (`yan`) veya altında (`alt`) yerleştirir.
+
+    Sağda/altta yer yoksa sola veya yukarıya kaydırır; tamamı ekranda kalır.
+    """
     try:
         dialog.update_idletasks()
         w = width or dialog.winfo_reqwidth() or dialog.winfo_width()
@@ -156,10 +163,28 @@ def _dialog_hucre_altina(
                 except tk.TclError:
                     box = None
 
+        sw = dialog.winfo_screenwidth()
+        sh = dialog.winfo_screenheight()
         if box:
             bx, by, bw, bh = box
-            x = tree.winfo_rootx() + bx
-            y = tree.winfo_rooty() + by + bh + gap
+            tx, ty = tree.winfo_rootx(), tree.winfo_rooty()
+            if (konum or "alt").lower().startswith("yan"):
+                # Önce hücrenin sağı
+                x = tx + bx + bw + gap
+                y = ty + by
+                if x + w > sw:
+                    x = tx + bx - w - gap  # sola
+                if y + h > sh:
+                    y = ty + by + bh - h  # yukarı hizala
+                if y < 0:
+                    y = ty + by + bh + gap  # alta düş
+            else:
+                x = tx + bx
+                y = ty + by + bh + gap
+                if y + h > sh:
+                    y = ty + by - h - gap  # üste
+                if x + w > sw:
+                    x = sw - w
         else:
             parent = dialog.master
             try:
@@ -171,13 +196,9 @@ def _dialog_hucre_altina(
                 x = y = None
 
         if x is None or y is None:
-            sw = dialog.winfo_screenwidth()
-            sh = dialog.winfo_screenheight()
             x = max(0, (sw - w) // 2)
             y = max(0, (sh - h) // 2)
         else:
-            sw = dialog.winfo_screenwidth()
-            sh = dialog.winfo_screenheight()
             x = min(max(0, int(x)), max(0, sw - w))
             y = min(max(0, int(y)), max(0, sh - h))
 
@@ -286,6 +307,7 @@ class HizliSatisPencere(tk.Toplevel):
         self.fiyat_gunlugu = FiyatDegisiklikGunlugu()
         self._kayit_devam = False
         self._son_fatura_id: int | None = None
+        self._arama_kaynak = "barkod"  # barkod | urun_ara — son kullanılan arama alanı
         self._stil_ayarla()
         self._iskelet_kur()
         self._kisayollar_bagla()
@@ -365,6 +387,7 @@ class HizliSatisPencere(tk.Toplevel):
         self.barkod_entry = ttk.Entry(ust, width=28)
         self.barkod_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.barkod_entry.bind("<Return>", self._barkod_okut)
+        self.barkod_entry.bind("<FocusIn>", lambda _e: self._arama_kaynak_ayarla("barkod"))
 
         from belge_kullanici_ui import aktif_kullanici_adi
 
@@ -443,6 +466,7 @@ class HizliSatisPencere(tk.Toplevel):
         )
         self.arama_entry.bind("<Return>", self._urun_arama_enter)
         self.arama_entry.bind("<KP_Enter>", self._urun_arama_enter)
+        self.arama_entry.bind("<FocusIn>", lambda _e: self._arama_kaynak_ayarla("urun_ara"))
         ttk.Button(ust, text="Ara (F1)", command=self._manuel_arama_ac).grid(
             row=0, column=4, padx=(0, 12)
         )
@@ -473,9 +497,10 @@ class HizliSatisPencere(tk.Toplevel):
         )
         ust.columnconfigure(6, weight=1)
 
-        # Müşteri adının altı: bakiye · valör (sol) | fiyat listesi (sağ)
+        # Satır 1 sağ: bakiye · valör | fiyat listesi (kasiyer / kullanıcı ile çakışmaz)
         musteri_alt = tk.Frame(ust, bg=ACIK_GRI)
-        musteri_alt.grid(row=1, column=6, columnspan=2, sticky="ew", pady=(6, 0))
+        musteri_alt.grid(row=1, column=5, columnspan=3, sticky="ew", pady=(6, 0))
+        musteri_alt.columnconfigure(0, weight=1)
         self.bakiye_lbl = tk.Label(
             musteri_alt, text="", bg=ACIK_GRI, fg=KOYU_GRI, font=("Segoe UI", 9, "bold"), anchor="w"
         )
@@ -491,8 +516,9 @@ class HizliSatisPencere(tk.Toplevel):
             text="Fiyat: SATIŞ FİYATI 1",
             style="HsDurum.TLabel",
         )
-        self.fiyat_grup_lbl.pack(side="right")
+        self.fiyat_grup_lbl.pack(side="right", padx=(8, 0))
 
+        # Durum satırı ayrı — kasiyer / bakiye ile üst üste binmesin
         self.durum_lbl = ttk.Label(
             ust,
             text=(
@@ -501,18 +527,27 @@ class HizliSatisPencere(tk.Toplevel):
             ),
             style="HsDurum.TLabel",
         )
-        self.durum_lbl.grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        self.durum_lbl.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(4, 0))
 
-        # —— Orta: sol gruplar | orta kartlar | sağ sepet ——
+        # —— Orta: kesin %60 ürün (grup+kart) | %40 sepet — sürüklenebilir bölücü YOK
+        # Dış oran Configure ile zorlanır; eski %45/%55 veya minsize kaymaları uygulanmaz.
         orta = tk.Frame(kok, bg=KOYU_GRI)
         orta.grid(row=1, column=0, sticky="nsew")
-        orta.columnconfigure(0, weight=0, minsize=180)
-        orta.columnconfigure(1, weight=3)
-        orta.columnconfigure(2, weight=2, minsize=320)
         orta.rowconfigure(0, weight=1)
+        self._orta_frame = orta
+        self._ORTA_SOL_ORAN = 0.60
+        self._ORTA_SEPET_ORAN = 0.40
+        self._orta_pad_x = 6
+        self._grup_genislik = 168  # soldaki %60 içindeki grup şeridi (kart kalanı alır)
+
+        sol_blok = tk.Frame(orta, bg=KOYU_GRI)
+        sol_blok.rowconfigure(0, weight=1)
+        sol_blok.columnconfigure(0, weight=0, minsize=self._grup_genislik)
+        sol_blok.columnconfigure(1, weight=1)
+        self._sol_blok = sol_blok
 
         sol = tk.LabelFrame(
-            orta,
+            sol_blok,
             text=" Ürün Grupları ",
             bg=ACIK_GRI,
             fg=KOYU_GRI,
@@ -520,10 +555,10 @@ class HizliSatisPencere(tk.Toplevel):
             padx=6,
             pady=6,
         )
-        sol.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        sol.grid(row=0, column=0, sticky="nsew", padx=(0, self._orta_pad_x))
 
         merkez = tk.LabelFrame(
-            orta,
+            sol_blok,
             text=" Ürün Kartları ",
             bg=ACIK_GRI,
             fg=KOYU_GRI,
@@ -531,15 +566,7 @@ class HizliSatisPencere(tk.Toplevel):
             padx=6,
             pady=6,
         )
-        merkez.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
-
-        self.urun_panel = HizliSatisUrunPanel(
-            sol,
-            merkez,
-            on_urun_sec=self._karttan_sepete,
-            bg=ACIK_GRI,
-            parent_for_dialog=self,
-        )
+        merkez.grid(row=0, column=1, sticky="nsew")
 
         sag = tk.LabelFrame(
             orta,
@@ -550,38 +577,104 @@ class HizliSatisPencere(tk.Toplevel):
             padx=6,
             pady=6,
         )
-        sag.grid(row=0, column=2, sticky="nsew")
         sag.rowconfigure(0, weight=1)
         sag.columnconfigure(0, weight=1)
+        self._sag_pane = sag
+
+        # place ile kesin piksel oranı — widget reqwidth sepeti şişiremez
+        orta.bind("<Configure>", self._orta_oran_configure, add="+")
+        self.after(80, self._orta_oran_uygula)
+        self.after(250, self._orta_oran_uygula)
+
+        self.urun_panel = HizliSatisUrunPanel(
+            sol,
+            merkez,
+            on_urun_sec=self._karttan_sepete,
+            bg=ACIK_GRI,
+            parent_for_dialog=self,
+        )
 
         sutunlar = SEPET_SUTUNLARI
-        self.sepet = ttk.Treeview(sag, columns=sutunlar, show="headings", height=12, selectmode="browse")
+        stil = ttk.Style(self)
+        stil.configure(
+            "HsSepet.Treeview",
+            font=("Segoe UI", 12, "bold"),
+            rowheight=38,
+            fieldbackground=ACIK_GRI,
+            background=ACIK_GRI,
+            foreground=KOYU_GRI,
+        )
+        stil.configure(
+            "HsSepet.Treeview.Heading",
+            font=("Segoe UI", 10, "bold"),
+            foreground=KOYU_GRI,
+        )
+        stil.map(
+            "HsSepet.Treeview",
+            background=[("selected", SARİ)],
+            foreground=[("selected", KOYU_GRI)],
+        )
+        self.sepet = ttk.Treeview(
+            sag,
+            columns=sutunlar,
+            displaycolumns=SEPET_GORUNUR,
+            show="headings",
+            height=12,
+            selectmode="browse",
+            style="HsSepet.Treeview",
+        )
         basliklar = {
             "sıra": "Sıra",
             "kod": "Kod",
-            "ad": "Ürün",
+            "ad": "Ürün Adı",
             "miktar": "Miktar",
             "birim": "Birim",
-            "fiyat": "Fiyat",
+            "fiyat": "Birim Fiyat",
             "isk": "İsk %",
             "kdv": "KDV %",
-            "toplam": "Toplam",
+            "toplam": "Tutar",
         }
-        genislik = {
-            "sıra": 36,
-            "kod": 64,
-            "ad": 110,
-            "miktar": 52,
-            "birim": 48,
-            "fiyat": 64,
-            "isk": 44,
-            "kdv": 48,
-            "toplam": 72,
+        # Kompakt sabitler; Birim Fiyat + Tutar başlık/rakam sığsın; kalan → Ürün Adı
+        self._sepet_sabit_w = {"miktar": 58, "birim": 48, "fiyat": 96, "toplam": 90}
+        self._sepet_min_w = {
+            "ad": 72,
+            "miktar": 48,
+            "birim": 40,
+            "fiyat": 88,
+            "toplam": 82,
+            "isk": 40,
+            "kdv": 40,
+            "sıra": 28,
+            "kod": 48,
+        }
+        hiza = {
+            "ad": "w",
+            "miktar": "e",
+            "birim": "center",
+            "fiyat": "e",
+            "isk": "e",
+            "kdv": "e",
+            "toplam": "e",
+            "sıra": "center",
+            "kod": "w",
         }
         for c in sutunlar:
             self.sepet.heading(c, text=basliklar[c])
-            self.sepet.column(c, width=genislik[c], anchor="center" if c != "ad" else "w")
+            # Gizli sütunlar 0 — Treeview yatay taşmasını (Tutar kesilmesini) önler
+            if c in SEPET_GORUNUR:
+                w0 = self._sepet_sabit_w.get(c, 100)
+                mw0 = self._sepet_min_w.get(c, 40)
+            else:
+                w0, mw0 = 0, 0
+            self.sepet.column(
+                c,
+                width=w0,
+                minwidth=mw0,
+                anchor=hiza.get(c, "center"),
+                stretch=False,
+            )
         dikey = ttk.Scrollbar(sag, orient="vertical", command=self.sepet.yview)
+        self._sepet_sb = dikey
         self.sepet.configure(yscrollcommand=dikey.set)
         self.sepet.grid(row=0, column=0, sticky="nsew")
         dikey.grid(row=0, column=1, sticky="ns")
@@ -592,61 +685,73 @@ class HizliSatisPencere(tk.Toplevel):
         self.sepet.bind("<Left>", lambda _e: self._sepet_sutun_kaydir(-1))
         self.sepet.bind("<Right>", lambda _e: self._sepet_sutun_kaydir(1))
         self.sepet.bind("<Return>", self._sepet_enter)
+        self.sepet.bind("<Configure>", self._sepet_sutun_yeniden, add="+")
+        self.sepet.bind("<Motion>", self._sepet_tooltip_hareket, add="+")
+        self.sepet.bind("<Leave>", self._sepet_tooltip_kapat, add="+")
         self._sepet_basliklar = dict(basliklar)
         self._sepet_odak_sutun: str | None = None
+        self._sepet_ad_tam: dict[str, str] = {}
+        self._sepet_tip = None
+        self.after(120, self._sepet_sutun_yeniden)
 
         dugmeler = tk.Frame(sag, bg=ACIK_GRI)
-        dugmeler.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Button(dugmeler, text="−", width=3, command=lambda: self._miktar_delta(-1)).pack(
-            side="left", padx=2
-        )
-        ttk.Button(dugmeler, text="+", width=3, command=lambda: self._miktar_delta(1)).pack(
-            side="left", padx=2
-        )
-        ttk.Button(dugmeler, text="Sil (Del)", command=self._satir_sil).pack(side="left", padx=8)
-        ttk.Button(dugmeler, text="Fiyat", command=self._fiyat_dialog).pack(side="left", padx=4)
-        ttk.Button(dugmeler, text="Birim", command=self._birim_sec).pack(side="left", padx=4)
-        ttk.Button(dugmeler, text="İsk %", command=self._iskonto_dialog).pack(side="left", padx=4)
-        ttk.Button(dugmeler, text="KDV %", command=self._kdv_dialog).pack(side="left", padx=4)
+        dugmeler.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        for metin, cmd, padx in (
+            ("−", lambda: self._miktar_delta(-1), 1),
+            ("+", lambda: self._miktar_delta(1), 1),
+            ("Sil (Del)", self._satir_sil, 4),
+            ("Fiyat", self._fiyat_dialog, 2),
+            ("Birim", self._birim_sec, 2),
+            ("İsk %", self._iskonto_dialog, 2),
+            ("KDV %", self._kdv_dialog, 2),
+        ):
+            ttk.Button(dugmeler, text=metin, width=3 if metin in ("−", "+") else None, command=cmd).pack(
+                side="left", padx=padx
+            )
 
         self.ozet_lbl = tk.Label(
             sag,
             text="Ara: 0,00  |  İsk: 0,00  |  KDV: 0,00",
             bg=ACIK_GRI,
             fg="#555555",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10, "bold"),
             anchor="e",
         )
-        self.ozet_lbl.grid(row=2, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        self.ozet_lbl.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
-        toplam_satir = tk.Frame(sag, bg=ACIK_GRI)
-        toplam_satir.grid(row=3, column=0, columnspan=2, sticky="e", pady=(4, 0))
+        # GENEL TOPLAM + Yeni toplam — sığmazsa alt satıra (sepet paneli içi)
+        toplam_blok = tk.Frame(sag, bg=ACIK_GRI)
+        toplam_blok.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(1, 0))
+        toplam_blok.columnconfigure(0, weight=1)
+        self._toplam_blok = toplam_blok
 
         self.toplam_lbl = tk.Label(
-            toplam_satir,
+            toplam_blok,
             text="GENEL TOPLAM  0,00 TL",
             bg=ACIK_GRI,
             fg=KOYU_GRI,
-            font=("Segoe UI", 16, "bold"),
+            font=("Segoe UI", 18, "bold"),
             anchor="e",
         )
-        self.toplam_lbl.pack(side="left", padx=(0, 12))
+        self.toplam_lbl.grid(row=0, column=0, sticky="e")
 
+        self._hedef_satir = tk.Frame(toplam_blok, bg=ACIK_GRI)
+        self._hedef_satir.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self._hedef_toplam_duzenleniyor = False
         tk.Label(
-            toplam_satir,
+            self._hedef_satir,
             text="Yeni toplam:",
             bg=ACIK_GRI,
             fg="#555555",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10, "bold"),
         ).pack(side="left", padx=(0, 4))
         self.hedef_toplam_var = tk.StringVar(value="0,00")
         self.hedef_toplam_entry = ttk.Entry(
-            toplam_satir,
+            self._hedef_satir,
             textvariable=self.hedef_toplam_var,
-            width=12,
+            width=10,
             justify="right",
-            font=("Segoe UI", 11),
+            font=("Segoe UI", 12, "bold"),
         )
         self.hedef_toplam_entry.pack(side="left")
         self.hedef_toplam_entry.bind("<Return>", self._hedef_toplam_uygula)
@@ -655,19 +760,21 @@ class HizliSatisPencere(tk.Toplevel):
         self._hedef_canli_is = None
         self.hedef_toplam_var.trace_add("write", self._hedef_toplam_yazildi)
         ttk.Button(
-            toplam_satir,
+            self._hedef_satir,
             text="Uygula",
-            width=8,
+            width=7,
             command=self._hedef_toplam_uygula,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(4, 0))
+        toplam_blok.bind("<Configure>", self._toplam_alan_yerles, add="+")
+
         self.duzeltme_lbl = tk.Label(
-            sag, text="", bg=ACIK_GRI, fg="#6B7280", font=("Segoe UI", 8), anchor="e"
+            sag, text="", bg=ACIK_GRI, fg="#6B7280", font=("Segoe UI", 9), anchor="e"
         )
-        self.duzeltme_lbl.grid(row=4, column=0, columnspan=2, sticky="e")
+        self.duzeltme_lbl.grid(row=4, column=0, columnspan=2, sticky="ew")
         self.odenecek_lbl = tk.Label(
-            sag, text="", bg=ACIK_GRI, fg="#1F4E79", font=("Segoe UI", 12, "bold"), anchor="e"
+            sag, text="", bg=ACIK_GRI, fg="#1F4E79", font=("Segoe UI", 10, "bold"), anchor="e"
         )
-        self.odenecek_lbl.grid(row=5, column=0, columnspan=2, sticky="e")
+        self.odenecek_lbl.grid(row=5, column=0, columnspan=2, sticky="ew")
         self._ek_fon_bedeli = {"tutar": Decimal("0"), "kdv": Decimal("0"), "fonlar": [], "eksik_ayar": ""}
 
         # —— Alt: beklet / çağır / iptal / gün sonu / tahsilat / tamamla ——
@@ -804,7 +911,7 @@ class HizliSatisPencere(tk.Toplevel):
             command=self._son_pdf_kaydet,
         ).pack(side="left", padx=2)
 
-        tk.Label(
+        self._kisayol_lbl = tk.Label(
             kok,
             text=(
                 "Esc: kapat · F1: ara · F2: müşteri · F8: beklet · F9: çağır · F10/F12: ödeme · "
@@ -814,11 +921,25 @@ class HizliSatisPencere(tk.Toplevel):
             bg=KOYU_GRI,
             fg=SARİ,
             font=("Segoe UI", 9),
-        ).grid(row=4, column=0, sticky="w", pady=(4, 0))
+            wraplength=1200,
+            justify="left",
+            anchor="w",
+        )
+        self._kisayol_lbl.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        kok.bind(
+            "<Configure>",
+            lambda e: self._kisayol_lbl.configure(wraplength=max(400, int(e.width) - 24))
+            if e.widget is kok
+            else None,
+            add="+",
+        )
 
         self.after(100, lambda: self.barkod_entry.focus_set())
-        # Kart ızgarası genişlik hesaplaması için bir kez yenile
+        # Kart ızgarası gerçek panel genişliğiyle yeniden dizilsin
         self.after(200, lambda: getattr(self, "urun_panel", None) and self.urun_panel.kartlari_yenile())
+        self.after(500, lambda: getattr(self, "urun_panel", None) and self.urun_panel.kartlari_yenile())
+        self.after(150, self._sepet_sutun_yeniden)
+        sag.bind("<Configure>", lambda _e: self.after_idle(self._sepet_sutun_yeniden), add="+")
 
     def _kisayollar_bagla(self) -> None:
         self.bind("<F1>", lambda _e: self._manuel_arama_ac())
@@ -1065,12 +1186,69 @@ class HizliSatisPencere(tk.Toplevel):
 
     # —— Barkod / arama ——
 
+    def _arama_kaynak_ayarla(self, kaynak: str) -> None:
+        if kaynak in ("barkod", "urun_ara"):
+            self._arama_kaynak = kaynak
+
+    def _arama_odak_geri(self, *, metni_sec: bool = False) -> None:
+        """Ürün ekleme sonrası odağı son kullanılan arama alanına döndür."""
+        try:
+            if getattr(self, "_arama_kaynak", "barkod") == "urun_ara":
+                self.arama_entry.focus_set()
+                if metni_sec:
+                    self.arama_entry.selection_range(0, "end")
+            else:
+                self.barkod_entry.focus_set()
+                self.barkod_entry.selection_range(0, "end")
+        except tk.TclError:
+            pass
+
     def _barkod_odak(self) -> None:
+        """Barkod alanına zorla odak — yalnız barkod akışında kullan."""
+        self._arama_kaynak_ayarla("barkod")
         try:
             self.barkod_entry.focus_set()
             self.barkod_entry.selection_range(0, "end")
         except tk.TclError:
             pass
+
+    def _sorulan_urun_veya_arama(self, metin: str) -> None:
+        """Stokta bulunamayan metin — sorulan ürün veya manuel arama (sepet korunur)."""
+        secim = messagebox.askyesnocancel(
+            "Ürün bulunamadı",
+            f"«{metin}» stokta yok.\n\n"
+            "Evet: Sorulan Ürün Ekle\n"
+            "Hayır: Manuel ürün araması\n"
+            "İptal: Vazgeç",
+            parent=self,
+        )
+        if secim is True:
+            from sorulan_urun_ui import sorulan_urun_hizli_kayit
+
+            musteri_adi = ""
+            cari_id = None
+            try:
+                cari_id = getattr(self, "cari_id", None) or getattr(
+                    getattr(self, "sepet", None), "cari_id", None
+                )
+                musteri_adi = (getattr(self, "musteri_adi_var", None) and self.musteri_adi_var.get()) or ""
+            except Exception:
+                pass
+            sorulan_urun_hizli_kayit(
+                self,
+                urun_adi=metin,
+                cari_id=cari_id,
+                musteri_adi=musteri_adi or "",
+                kaynak="HIZLI_SATIS",
+            )
+            self._barkod_odak()
+            return
+        if secim is False:
+            self.arama_entry.delete(0, "end")
+            self.arama_entry.insert(0, metin)
+            self._manuel_arama_ac()
+            return
+        self._barkod_odak()
 
     def _barkod_okut(self, _event=None):
         barkod = self.barkod_entry.get().strip()
@@ -1082,16 +1260,7 @@ class HizliSatisPencere(tk.Toplevel):
         if not bulunan:
             _uyari_sesi()
             self.durum_lbl.configure(text=f"Barkod bulunamadı: {barkod}")
-            if messagebox.askyesno(
-                "Barkod bulunamadı",
-                f"«{barkod}» stokta yok.\nManuel ürün araması açılsın mı?",
-                parent=self,
-            ):
-                self.arama_entry.delete(0, "end")
-                self.arama_entry.insert(0, barkod)
-                self._manuel_arama_ac()
-            else:
-                self._barkod_odak()
+            self._sorulan_urun_veya_arama(barkod)
             return "break"
         if bulunan.get("birim_hatasi"):
             _uyari_sesi()
@@ -1100,16 +1269,18 @@ class HizliSatisPencere(tk.Toplevel):
             self._barkod_odak()
             return "break"
 
-        self._sepete_ekle_kayit(bulunan)
+        self._sepete_ekle_kayit(bulunan, miktar_odak=True)
+        lot_bilgi = ""
+        if bulunan.get("lot_barkod") and bulunan.get("lot_no"):
+            lot_bilgi = f"  |  Lot: {bulunan['lot_no']}"
         self.durum_lbl.configure(
             text=(
                 f"{bulunan['stok_kodu']} — {bulunan['stok_adi']}  |  "
                 f"+{_miktar_goster(bulunan['miktar'])} {bulunan['birim']}  |  "
                 f"Stok: {_miktar_goster(bulunan['mevcut_stok'])}  |  "
-                f"{_para(bulunan['birim_fiyat'])}"
+                f"{_para(bulunan['birim_fiyat'])}{lot_bilgi}"
             )
         )
-        self._barkod_odak()
         return "break"
 
     def _manuel_arama_ac(self, _event=None):
@@ -1144,18 +1315,18 @@ class HizliSatisPencere(tk.Toplevel):
                 "carpan": Decimal("1"),
                 "barkod": None,
                 "mevcut_stok": mevcut,
-            }
+            },
+            miktar_odak=True,
         )
-        self.arama_entry.delete(0, "end")
         self.durum_lbl.configure(
             text=f"{kod} — {ad} sepete eklendi  |  Stok: {_miktar_goster(mevcut)}"
         )
-        self.after_idle(self._barkod_odak)
+        self._arama_kaynak_ayarla("urun_ara")
 
     def _urun_secildi(self, degerler) -> None:
         # UrunSecDialog: (kod, ad, birim, stok, fiyat, kaynak)
         if not degerler:
-            self._barkod_odak()
+            self.after_idle(lambda: self._arama_odak_geri(metni_sec=False))
             return
         kod = str(degerler[0]).strip()
         ad = str(degerler[1]).strip() if len(degerler) > 1 else kod
@@ -1175,7 +1346,7 @@ class HizliSatisPencere(tk.Toplevel):
                 break
         if not stok_id:
             messagebox.showwarning("Ürün", "Seçilen stok kartı bulunamadı.", parent=self)
-            self._barkod_odak()
+            self.after_idle(lambda: self._arama_odak_geri(metni_sec=False))
             return
         self._sepete_ekle_kayit(
             {
@@ -1188,28 +1359,27 @@ class HizliSatisPencere(tk.Toplevel):
                 "carpan": Decimal("1"),
                 "barkod": None,
                 "mevcut_stok": mevcut,
-            }
+            },
+            miktar_odak=True,
         )
-        self.arama_entry.delete(0, "end")
         self.durum_lbl.configure(
             text=f"{kod} — {ad} sepete eklendi  |  Stok: {_miktar_goster(mevcut)}"
         )
-        self._barkod_odak()
+        self._arama_kaynak_ayarla("urun_ara")
 
     def _karttan_sepete(self, urun: dict) -> None:
         """Ürün kartı tıklanınca bellek sepetine 1 birim ekle."""
         if not urun or not urun.get("stok_id"):
             return
-        self._sepete_ekle_kayit(urun)
+        self._sepete_ekle_kayit(urun, miktar_odak=True)
         self.durum_lbl.configure(
             text=(
                 f"{urun.get('stok_kodu')} — {urun.get('stok_adi')} sepete eklendi  |  "
                 f"{_para(urun.get('birim_fiyat') or 0)}"
             )
         )
-        self._barkod_odak()
 
-    def _sepete_ekle_kayit(self, kayit: dict) -> None:
+    def _sepete_ekle_kayit(self, kayit: dict, *, miktar_odak: bool = False) -> int | None:
         fiyat = kayit.get("birim_fiyat")
         liste = self._aktif_fiyat_listesi()
         # Barkod özel fiyatı varsa koru; aksi halde müşteri fiyat listesi
@@ -1222,7 +1392,7 @@ class HizliSatisPencere(tk.Toplevel):
                 )
             except Exception:
                 birim_fiyat = Decimal(str(fiyat or 0))
-        self.sepet_model.ekle(
+        satir = self.sepet_model.ekle(
             stok_id=int(kayit["stok_id"]),
             stok_kodu=kayit["stok_kodu"],
             stok_adi=kayit["stok_adi"],
@@ -1236,8 +1406,18 @@ class HizliSatisPencere(tk.Toplevel):
             ),
             carpan=kayit.get("carpan") or Decimal("1"),
             barkod=kayit.get("barkod"),
+            lot_id=kayit.get("lot_id"),
+            lot_no=kayit.get("lot_no"),
         )
-        self._sepet_yenile()
+        try:
+            idx = self.sepet_model.satirlar.index(satir)
+        except ValueError:
+            idx = len(self.sepet_model.satirlar) - 1
+        self._sepet_yenile(secili=idx)
+        if miktar_odak and idx is not None and idx >= 0:
+            # Barkod okuyucu Enter'ı miktar hücresini hemen onaylamasın
+            self.after(90, lambda i=idx: self._miktar_hucre_ac(i, barkod_koruma=True))
+        return idx
 
     # —— Sepet UI ——
 
@@ -1250,11 +1430,248 @@ class HizliSatisPencere(tk.Toplevel):
         except (TypeError, ValueError):
             return None
 
+    def _orta_oran_configure(self, event=None) -> None:
+        if event is not None and event.widget is not getattr(self, "_orta_frame", None):
+            return
+        if getattr(self, "_orta_oran_is", None):
+            try:
+                self.after_cancel(self._orta_oran_is)
+            except tk.TclError:
+                pass
+        self._orta_oran_is = self.after(40, self._orta_oran_uygula)
+
+    def _orta_oran_uygula(self, _event=None) -> None:
+        """Ana çalışma alanını kesin %60 ürün / %40 sepet olacak şekilde zorla."""
+        self._orta_oran_is = None
+        orta = getattr(self, "_orta_frame", None)
+        sol = getattr(self, "_sol_blok", None)
+        sag = getattr(self, "_sag_pane", None)
+        if orta is None or sol is None or sag is None:
+            return
+        try:
+            orta.update_idletasks()
+            w = int(orta.winfo_width() or 0)
+            h = int(orta.winfo_height() or 0)
+        except tk.TclError:
+            return
+        if w < 400 or h < 120:
+            return
+        pad = int(getattr(self, "_orta_pad_x", 6) or 6)
+        kullanilabilir = max(300, w - pad)
+        sol_oran = float(getattr(self, "_ORTA_SOL_ORAN", 0.60) or 0.60)
+        sol_w = max(220, int(round(kullanilabilir * sol_oran)))
+        sepet_w = max(180, kullanilabilir - sol_w)
+        # Aynı ölçüye tekrar place etme (titreme / döngü olmasın)
+        onceki = getattr(self, "_orta_place_son", None)
+        if onceki == (sol_w, sepet_w, h):
+            return
+        try:
+            sol.place(x=0, y=0, width=sol_w, height=h)
+            sag.place(x=sol_w + pad, y=0, width=sepet_w, height=h)
+            self._orta_place_son = (sol_w, sepet_w, h)
+            self._orta_olculen = {
+                "toplam": w,
+                "sol": sol_w,
+                "sepet": sepet_w,
+                "sol_oran": sol_w / max(1, sol_w + sepet_w),
+            }
+        except tk.TclError:
+            return
+        self.after_idle(self._sepet_sutun_yeniden)
+
+    def _sepet_sutun_yeniden(self, _event=None) -> None:
+        """Mevcut sepet panel genişliğine sütunları sığdır — panel oranına dokunmaz."""
+        tree = getattr(self, "sepet", None)
+        if tree is None:
+            return
+        try:
+            pane = getattr(self, "_sag_pane", None)
+            sb = getattr(self, "_sepet_sb", None)
+            sb_w = 18
+            if sb is not None:
+                try:
+                    sb_w = max(16, int(sb.winfo_width()) or 18)
+                except tk.TclError:
+                    sb_w = 18
+            tree_w = int(tree.winfo_width() or 0)
+            pane_w = int(pane.winfo_width()) if pane is not None else 0
+            # Tree gerçek çizim genişliği varsa onu kullan; yoksa panel − çerçeve/scrollbar
+            if tree_w > 120:
+                kullanilabilir = tree_w - 6
+            elif pane_w > 150:
+                kullanilabilir = pane_w - (18 + sb_w)
+            else:
+                return
+        except tk.TclError:
+            return
+        if kullanilabilir < 120:
+            return
+        kullanilabilir = max(120, kullanilabilir)
+        sabit = getattr(self, "_sepet_sabit_w", {}) or {}
+        min_w = getattr(self, "_sepet_min_w", {}) or {}
+        gen = {
+            "miktar": int(sabit.get("miktar", 58)),
+            "birim": int(sabit.get("birim", 48)),
+            "fiyat": int(sabit.get("fiyat", 96)),
+            "toplam": int(sabit.get("toplam", 90)),
+        }
+        gen["ad"] = max(
+            int(min_w.get("ad", 72)),
+            kullanilabilir - gen["miktar"] - gen["birim"] - gen["fiyat"] - gen["toplam"],
+        )
+        # Taşarsa: ad → miktar/birim → (son çare) fiyat/tutar; toplam her zaman ≤ kullanılabilir
+        hard_min = {"ad": 48, "miktar": 40, "birim": 36, "fiyat": 78, "toplam": 72}
+        while sum(gen[c] for c in SEPET_GORUNUR) > kullanilabilir:
+            if gen["ad"] > hard_min["ad"]:
+                gen["ad"] -= 1
+            elif gen["miktar"] > hard_min["miktar"]:
+                gen["miktar"] -= 1
+            elif gen["birim"] > hard_min["birim"]:
+                gen["birim"] -= 1
+            elif gen["fiyat"] > hard_min["fiyat"]:
+                gen["fiyat"] -= 1
+            elif gen["toplam"] > hard_min["toplam"]:
+                gen["toplam"] -= 1
+            else:
+                # Mutlak: ad kalan alanı alsın (negatif olmasın)
+                gen["ad"] = max(
+                    40,
+                    kullanilabilir
+                    - gen["miktar"]
+                    - gen["birim"]
+                    - gen["fiyat"]
+                    - gen["toplam"],
+                )
+                break
+        # Yuvarlama sonrası taşmayı kes
+        fazla = sum(gen[c] for c in SEPET_GORUNUR) - kullanilabilir
+        if fazla > 0:
+            gen["ad"] = max(40, gen["ad"] - fazla)
+        for c in SEPET_SUTUNLARI:
+            try:
+                if c in SEPET_GORUNUR:
+                    tree.column(
+                        c,
+                        width=gen[c],
+                        minwidth=int(min_w.get(c, 40)),
+                        stretch=False,
+                    )
+                else:
+                    tree.column(c, width=0, minwidth=0, stretch=False)
+            except tk.TclError:
+                pass
+        self._sepet_ad_genislik = gen["ad"]
+        if getattr(self, "_sepet_ad_tam", None):
+            for iid, tam in list(self._sepet_ad_tam.items()):
+                try:
+                    vals = list(tree.item(iid, "values"))
+                    if len(vals) >= 3:
+                        vals[2] = self._sepet_ad_kisalt(tam)
+                        tree.item(iid, values=vals)
+                except tk.TclError:
+                    pass
+
+    def _sepet_ad_kisalt(self, ad: str) -> str:
+        metin = (ad or "").strip()
+        # ~10 px/karakter (12pt bold)
+        gen = int(getattr(self, "_sepet_ad_genislik", 160) or 160)
+        limit = max(8, gen // 10)
+        if len(metin) <= limit:
+            return metin
+        return metin[: max(1, limit - 1)] + "…"
+
+    def _sepet_tooltip_hareket(self, event) -> None:
+        try:
+            if self.sepet.identify_region(event.x, event.y) != "cell":
+                self._sepet_tooltip_kapat()
+                return
+            col = self.sepet.identify_column(event.x)
+            row = self.sepet.identify_row(event.y)
+            if not row or not col:
+                self._sepet_tooltip_kapat()
+                return
+            # displaycolumns: #1=ad
+            gorunen = list(self.sepet.cget("displaycolumns") or SEPET_GORUNUR)
+            if gorunen == ["#all"] or gorunen == "#all":
+                gorunen = list(SEPET_GORUNUR)
+            idx = int(str(col).lstrip("#")) - 1
+            if idx < 0 or idx >= len(gorunen) or gorunen[idx] != "ad":
+                self._sepet_tooltip_kapat()
+                return
+            tam = (getattr(self, "_sepet_ad_tam", {}) or {}).get(row) or ""
+            goster = ""
+            try:
+                vals = self.sepet.item(row, "values")
+                goster = vals[2] if vals and len(vals) > 2 else ""
+            except tk.TclError:
+                pass
+            if not tam or tam == goster or "…" not in str(goster):
+                self._sepet_tooltip_kapat()
+                return
+            tip = getattr(self, "_sepet_tip", None)
+            if tip is None or not tip.winfo_exists():
+                tip = tk.Toplevel(self)
+                tip.wm_overrideredirect(True)
+                tip.attributes("-topmost", True)
+                lbl = tk.Label(
+                    tip,
+                    text=tam,
+                    bg="#FFFDE7",
+                    fg=KOYU_GRI,
+                    font=("Segoe UI", 10),
+                    relief="solid",
+                    bd=1,
+                    padx=6,
+                    pady=3,
+                    justify="left",
+                    wraplength=360,
+                )
+                lbl.pack()
+                tip._lbl = lbl  # noqa: SLF001
+                self._sepet_tip = tip
+            else:
+                tip._lbl.configure(text=tam)  # noqa: SLF001
+            tip.geometry(f"+{event.x_root + 12}+{event.y_root + 14}")
+        except tk.TclError:
+            self._sepet_tooltip_kapat()
+
+    def _sepet_tooltip_kapat(self, _event=None) -> None:
+        tip = getattr(self, "_sepet_tip", None)
+        if tip is not None:
+            try:
+                tip.destroy()
+            except tk.TclError:
+                pass
+            self._sepet_tip = None
+
+    def _toplam_alan_yerles(self, _event=None) -> None:
+        """Yeni toplam GENEL TOPLAM ile çakışırsa / daralsa sepet içinde alt satıra al."""
+        blok = getattr(self, "_toplam_blok", None)
+        hedef = getattr(self, "_hedef_satir", None)
+        if blok is None or hedef is None:
+            return
+        try:
+            blok.update_idletasks()
+            w = int(blok.winfo_width())
+            ihtiyac = int(self.toplam_lbl.winfo_reqwidth()) + int(hedef.winfo_reqwidth()) + 28
+            if w < 80:
+                return
+            # Dar sepet veya sıkışık satır → alt satır (panel oranı değişmez)
+            if ihtiyac > w or w < 520:
+                hedef.grid_configure(row=1, column=0, columnspan=2, sticky="e", padx=0, pady=(2, 0))
+            else:
+                hedef.grid_configure(row=0, column=1, sticky="e", padx=(8, 0), pady=0)
+        except tk.TclError:
+            pass
+
     def _sepet_yenile(self, secili: int | None = None) -> None:
         onceki = self._secili_index() if secili is None else secili
         for item in self.sepet.get_children():
             self.sepet.delete(item)
+        self._sepet_ad_tam = {}
         for i, s in enumerate(self.sepet_model.satirlar):
+            tam_ad = (s.stok_adi or "").strip()
+            self._sepet_ad_tam[str(i)] = tam_ad
             self.sepet.insert(
                 "",
                 "end",
@@ -1262,15 +1679,17 @@ class HizliSatisPencere(tk.Toplevel):
                 values=(
                     i + 1,
                     s.stok_kodu,
-                    s.stok_adi,
+                    self._sepet_ad_kisalt(tam_ad),
                     _miktar_goster(s.miktar),
                     s.birim,
                     f"{float(s.birim_fiyat):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    f"{float(s.satir_toplam):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                     _miktar_goster(s.iskonto_orani),
                     _miktar_goster(s.kdv_orani),
-                    f"{float(s.satir_toplam):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 ),
             )
+        self.after_idle(self._sepet_sutun_yeniden)
+        self.after_idle(self._toplam_alan_yerles)
         if onceki is not None and 0 <= onceki < len(self.sepet_model):
             iid = str(onceki)
             self.sepet.selection_set(iid)
@@ -1285,14 +1704,15 @@ class HizliSatisPencere(tk.Toplevel):
                 + self._fon_onizleme_metni(toplam["genel_toplam"])
             )
         )
-        # Genel Toplam = referans; Yeni Toplam = son satış tutarı (cariye işlenen)
-        self.toplam_lbl.configure(text=f"GENEL TOPLAM  {_para(toplam['referans_toplam'])}")
+        # GENEL TOPLAM = kayda/tahsilata giden nihai tutar (Yeni Toplam ile aynı)
+        self.toplam_lbl.configure(text=f"GENEL TOPLAM  {_para(toplam['genel_toplam'])}")
         self._hedef_toplam_alani_yaz(toplam["genel_toplam"])
         fark = toplam["genel_toplam"] - toplam["referans_toplam"]
         try:
             self.duzeltme_lbl.configure(
                 text=(
-                    f"Yeni Toplam düzeltmesi: {_para(fark)} — satır fiyatları referanstan dağıtıldı"
+                    f"Liste/referans: {_para(toplam['referans_toplam'])}  ·  "
+                    f"Düzeltme: {_para(fark)}"
                     if self.sepet_model.duzeltme_aktif
                     else ""
                 )
@@ -1540,8 +1960,14 @@ class HizliSatisPencere(tk.Toplevel):
             return None, None
         idx = int(satir) if str(satir).strip().isdigit() else None
         try:
-            sutun = SEPET_SUTUNLARI[int(str(kolon).lstrip("#")) - 1]
-        except (ValueError, IndexError):
+            # identify_column görünür (displaycolumns) sırasını verir
+            gorunen = self.sepet.cget("displaycolumns")
+            if not gorunen or gorunen == ("#all",) or gorunen == "#all":
+                sirali = list(SEPET_SUTUNLARI)
+            else:
+                sirali = list(gorunen)
+            sutun = sirali[int(str(kolon).lstrip("#")) - 1]
+        except (ValueError, IndexError, tk.TclError):
             sutun = None
         return idx, sutun
 
@@ -1559,17 +1985,23 @@ class HizliSatisPencere(tk.Toplevel):
                 return None
         except tk.TclError:
             return None
-        _idx, sutun = self._sepet_hucre(event)
+        idx, sutun = self._sepet_hucre(event)
         if sutun:
             self._sepet_odak_ayarla(sutun)
+        if sutun == "fiyat" and idx is not None:
+            self._sepet_satiri_sec(idx)
+            # Tek tık: birim fiyat düzenleme (Fiyat butonu ile aynı işlev)
+            self.after(1, lambda i=idx, e=event: self._fiyat_dialog(e, idx=i))
+            return "break"
         return None
 
     def _sepet_sutun_kaydir(self, yon: int):
-        mevcut = self._sepet_odak_sutun if self._sepet_odak_sutun in SEPET_SUTUNLARI else "ad"
-        i = SEPET_SUTUNLARI.index(mevcut)
+        sirali = list(SEPET_GORUNUR)
+        mevcut = self._sepet_odak_sutun if self._sepet_odak_sutun in sirali else "ad"
+        i = sirali.index(mevcut)
         if self._sepet_odak_sutun is not None:
-            i = max(0, min(len(SEPET_SUTUNLARI) - 1, i + yon))
-        self._sepet_odak_ayarla(SEPET_SUTUNLARI[i])
+            i = max(0, min(len(sirali) - 1, i + yon))
+        self._sepet_odak_ayarla(sirali[i])
         return "break"
 
     def _sepet_satiri_sec(self, idx: int) -> None:
@@ -2191,7 +2623,98 @@ class HizliSatisPencere(tk.Toplevel):
         self._barkod_odak()
         return "break"
 
+    def _miktar_editor_kapat(self) -> None:
+        ed = getattr(self, "_miktar_editor", None)
+        if ed is None:
+            return
+        try:
+            ed.destroy()
+        except tk.TclError:
+            pass
+        self._miktar_editor = None
+        self._miktar_editor_idx = None
+
+    def _miktar_hucre_ac(self, idx: int, *, barkod_koruma: bool = False, event=None) -> None:
+        """Sepet Miktar hücresinde satır içi düzenleme; mevcut miktarın tamamı seçili."""
+        if idx is None or not (0 <= idx < len(self.sepet_model.satirlar)):
+            return
+        self._miktar_editor_kapat()
+        self._sepet_satiri_sec(idx)
+        self._sepet_odak_ayarla("miktar")
+        try:
+            self.update_idletasks()
+            box = self.sepet.bbox(str(idx), "miktar")
+        except tk.TclError:
+            box = None
+        if not box:
+            # Hücre henüz görünmüyorsa kısa gecikmeyle tekrar dene
+            self.after(40, lambda: self._miktar_hucre_ac(idx, barkod_koruma=barkod_koruma))
+            return
+        bx, by, bw, bh = box
+        onceki = self.sepet_model.satirlar[idx].miktar
+        editor = ttk.Entry(self.sepet, justify="right", font=("Segoe UI", 12, "bold"))
+        editor.insert(0, _miktar_goster(onceki))
+        editor.place(x=bx, y=by, width=max(bw, 52), height=max(bh, 28))
+        editor.focus_set()
+        editor.selection_range(0, "end")
+        self._miktar_editor = editor
+        self._miktar_editor_idx = idx
+        self._miktar_enter_koruma = bool(barkod_koruma)
+        if barkod_koruma:
+            self.after(150, lambda: setattr(self, "_miktar_enter_koruma", False))
+
+        def iptal(_e=None):
+            self._miktar_editor_kapat()
+            self._barkod_odak()
+            return "break"
+
+        def uygula(_e=None):
+            if getattr(self, "_miktar_enter_koruma", False):
+                return "break"
+            ham = editor.get().strip().replace(",", ".")
+            if not ham:
+                iptal()
+                return "break"
+            try:
+                yeni = Decimal(ham)
+            except Exception:
+                messagebox.showerror("Miktar", "Geçersiz miktar.", parent=self)
+                editor.focus_set()
+                editor.selection_range(0, "end")
+                return "break"
+            if yeni < 0:
+                messagebox.showerror("Miktar", "Miktar negatif olamaz.", parent=self)
+                return "break"
+            hedef = getattr(self, "_miktar_editor_idx", idx)
+            self._miktar_editor_kapat()
+            if yeni == 0:
+                self.sepet_model.sil(hedef)
+                self._sepet_yenile()
+            else:
+                self.sepet_model.miktar_ayarla(hedef, yeni)
+                self._sepet_yenile(secili=hedef)
+            self._barkod_odak()
+            return "break"
+
+        editor.bind("<Return>", uygula)
+        editor.bind("<KP_Enter>", uygula)
+        editor.bind("<Escape>", iptal)
+        editor.bind("<FocusOut>", lambda _e: self.after(10, self._miktar_editor_focusout))
+
+    def _miktar_editor_focusout(self) -> None:
+        """Odak başka yere giderse düzenlemeyi iptal et (Esc ile aynı: eski miktar)."""
+        ed = getattr(self, "_miktar_editor", None)
+        if ed is None:
+            return
+        try:
+            if ed.focus_get() is ed:
+                return
+        except (tk.TclError, KeyError):
+            pass
+        self._miktar_editor_kapat()
+
     def _miktar_dialog(self, event=None):
+        """Çift tık / Enter — satır içi miktar (ayrı pencere yok)."""
         idx = self._secili_index()
         if event is not None:
             try:
@@ -2202,55 +2725,15 @@ class HizliSatisPencere(tk.Toplevel):
                 pass
         if idx is None or not (0 <= idx < len(self.sepet_model.satirlar)):
             return
-        satir = self.sepet_model.satirlar[idx]
-        dialog = tk.Toplevel(self)
-        dialog.title("Miktar")
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.geometry("280x120")
-        ttk.Label(dialog, text=f"{satir.stok_kodu} — {satir.stok_adi}").pack(padx=12, pady=(12, 4))
-        satir_frame = ttk.Frame(dialog)
-        satir_frame.pack(padx=12, pady=4)
-        ttk.Label(satir_frame, text="Miktar").pack(side="left", padx=(0, 8))
-        miktar_var = tk.StringVar(value=_miktar_goster(satir.miktar))
-        entry = ttk.Entry(satir_frame, textvariable=miktar_var, width=14)
-        entry.pack(side="left")
-        entry.focus_set()
-        entry.selection_range(0, "end")
+        self._miktar_hucre_ac(idx, barkod_koruma=False, event=event)
 
-        def uygula(_e=None):
-            ham = miktar_var.get().strip().replace(",", ".")
-            try:
-                yeni = Decimal(ham)
-            except Exception:
-                messagebox.showerror("Miktar", "Geçersiz miktar.", parent=dialog)
-                return
-            if yeni <= 0:
-                self.sepet_model.sil(idx)
-                self._sepet_yenile()
-            else:
-                self.sepet_model.miktar_ayarla(idx, yeni)
-                self._sepet_yenile(secili=idx)
-            dialog.destroy()
-            self._barkod_odak()
-
-        entry.bind("<Return>", uygula)
-        ttk.Button(dialog, text="Tamam", command=uygula).pack(pady=8)
-        dialog.bind("<Escape>", lambda _e: dialog.destroy())
-        _dialog_hucre_altina(
-            dialog,
-            self.sepet,
-            item=str(idx),
-            column="miktar",
-            event=event,
-            width=280,
-            height=120,
-        )
-
-    def _fiyat_dialog(self, _event=None):
-        idx = self._secili_index()
+    def _fiyat_dialog(self, event=None, idx: int | None = None):
+        if idx is None:
+            idx = self._secili_index()
         if idx is None:
             messagebox.showinfo("Fiyat", "Önce bir sepet satırı seçin.", parent=self)
+            return
+        if not (0 <= idx < len(self.sepet_model.satirlar)):
             return
         if not fiyat_degistirme_izinli():
             messagebox.showwarning(
@@ -2259,12 +2742,13 @@ class HizliSatisPencere(tk.Toplevel):
                 parent=self,
             )
             return
+        self._sepet_satiri_sec(idx)
         satir = self.sepet_model.satirlar[idx]
         dialog = tk.Toplevel(self)
         dialog.title("Birim Fiyat")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.geometry("300x130")
+        dialog.resizable(False, False)
         ttk.Label(dialog, text=f"{satir.stok_kodu} — {satir.stok_adi}").pack(
             padx=12, pady=(12, 4)
         )
@@ -2280,15 +2764,17 @@ class HizliSatisPencere(tk.Toplevel):
         )
         entry = ttk.Entry(satir_frame, textvariable=fiyat_var, width=14)
         entry.pack(side="left")
-        entry.focus_set()
-        entry.selection_range(0, "end")
 
         def uygula(_e=None):
-            ham = fiyat_var.get().strip().replace(",", ".")
+            ham0 = fiyat_var.get().strip()
+            if "," in ham0 and "." in ham0:
+                ham = ham0.replace(".", "").replace(",", ".")
+            else:
+                ham = ham0.replace(",", ".")
             try:
                 yeni = Decimal(ham)
             except Exception:
-                messagebox.showerror("Fiyat", "Geçersiz fiyat.", parent=dialog)
+                messagebox.showerror("Fiyat", "Geçersiz fiyat. Örnek: 1,25", parent=dialog)
                 return
             if yeni < 0:
                 messagebox.showerror("Fiyat", "Fiyat negatif olamaz.", parent=dialog)
@@ -2307,9 +2793,26 @@ class HizliSatisPencere(tk.Toplevel):
             dialog.destroy()
             self._barkod_odak()
 
+        def iptal(_e=None):
+            dialog.destroy()
+            self._sepet_odaga_don(idx)
+
         entry.bind("<Return>", uygula)
         ttk.Button(dialog, text="Tamam", command=uygula).pack(pady=8)
-        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        dialog.bind("<Escape>", iptal)
+        _dialog_hucre_altina(
+            dialog,
+            self.sepet,
+            item=str(idx),
+            column="fiyat",
+            event=event,
+            width=320,
+            height=140,
+            konum="yan",
+        )
+        entry.focus_set()
+        entry.selection_range(0, "end")
+        dialog.after(30, lambda: (entry.focus_set(), entry.selection_range(0, "end")))
 
     def _iskonto_dialog(self, _event=None):
         idx = self._secili_index()
@@ -2506,6 +3009,8 @@ class HizliSatisPencere(tk.Toplevel):
                 kdv_orani=s.get("kdv_orani") if s.get("kdv_orani") is not None else VARSAYILAN_KDV,
                 carpan=s.get("carpan") or 1,
                 barkod=s.get("barkod"),
+                lot_id=s.get("lot_id"),
+                lot_no=s.get("lot_no"),
                 birlestir=False,
                 referans_birim_fiyat=s.get("referans_birim_fiyat"),
                 geri_yukleme=True,
@@ -2572,9 +3077,10 @@ class HizliSatisPencere(tk.Toplevel):
             messagebox.showwarning("Tutar", "Satış tutarı sıfır olamaz.", parent=self)
             return "break"
 
-        # UI stok kontrolü
+        # UI stok kontrolü — kartla aynı depo çözümleme (boş ada düşülmez)
+        depo_adi = satis_deposu_adi()
         hatalar = HizliSatisService.stok_yeterlilik_kontrol(
-            self.sepet_model.satirlar, depo=VARSAYILAN_DEPO
+            self.sepet_model.satirlar, depo=depo_adi
         )
         if hatalar:
             messagebox.showerror(
@@ -2627,7 +3133,7 @@ class HizliSatisPencere(tk.Toplevel):
                 cari_id=int(cari["id"]),
                 tahsilatlar=tahsilatlar,
                 idempotency_token=token,
-                depo=VARSAYILAN_DEPO,
+                depo=satis_deposu_adi(),
                 aciklama="Hızlı Satış",
                 musteri_bakiye=cari.get("bakiye"),
                 risk_limiti=cari.get("acik_hesap_risk_limiti"),

@@ -184,8 +184,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self._ust_baslik()
         self._arac_cubugu()
         self._kaydirilabilir_govde()
-        self._baslik_alanlari()
-        self._sevk_adres_alanlari()
+        self._ust_iki_panel()
         self._satir_alani()
         self._notlar_ve_toplam()
         self._kisayollar()
@@ -345,51 +344,81 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.girdiler[field] = widget
         return widget
 
-    def _baslik_alanlari(self):
-        frame = self._panel("Belge ve Müşteri")
-        self._baslik_kaplari = [frame]
-        self._girdi(frame, 0, 0, "İrsaliye No", "irsaliye_no", YENI_NO_METNI, width=20)
+    def _ust_iki_panel(self):
+        """Sol ~%48 belge/müşteri/depo; sağ ~%52 sevkiyat/teslimat (talimat §2)."""
+        satir = tk.Frame(self.icerik, bg=ACIK_BG)
+        satir.pack(fill="x", pady=4, padx=2)
+        satir.columnconfigure(0, weight=48, uniform="irs_ust")
+        satir.columnconfigure(1, weight=52, uniform="irs_ust")
+        self._baslik_kaplari = []
+        sol = self._yan_panel(satir, "Belge ve Müşteri")
+        sol.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        sag = self._yan_panel(satir, "Sevkiyat ve Teslimat Bilgileri")
+        sag.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        self._baslik_alanlari(sol)
+        self._sevk_adres_alanlari(sag)
+
+    def _yan_panel(self, parent, baslik: str) -> tk.Frame:
+        dis = tk.Frame(parent, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
+        ust = tk.Frame(dis, bg=BEYAZ)
+        ust.pack(fill="x")
+        tk.Frame(ust, bg=SARI, width=4).pack(side="left", fill="y")
+        tk.Label(
+            ust, text=baslik, bg=BEYAZ, fg=LACIVERT, font=font(11, "bold", self)
+        ).pack(side="left", padx=8, pady=4)
+        ic = tk.Frame(dis, bg=BEYAZ)
+        ic.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        self._baslik_kaplari.append(ic)
+        return ic
+
+    def _baslik_alanlari(self, frame=None):
+        frame = frame or self._panel("Belge ve Müşteri")
+        self._girdi(frame, 0, 0, "İrsaliye No", "irsaliye_no", YENI_NO_METNI, width=18)
         self._girdi(
             frame, 0, 1, "İrsaliye Tarihi", "irsaliye_tarihi", date.today().strftime("%d.%m.%Y"),
-            width=14, zorunlu=True,
+            width=12, zorunlu=True,
         )
-        self._etiket(frame, "Depo", 0, 4, True)
+        self._etiket(frame, "Depo", 1, 0, True)
         self.depo = ttk.Combobox(frame, values=self.depolar, width=18, state="readonly")
-        self.depo.grid(row=0, column=5, padx=4, pady=3, sticky="ew")
+        self.depo.grid(row=1, column=1, padx=4, pady=3, sticky="ew")
         self.depo.set(self.depolar[0] if self.depolar else "ANA DEPO")
 
-        self._etiket(frame, "Müşteri", 1, 0, True)
+        self._etiket(frame, "Müşteri", 2, 0, True)
         mf = tk.Frame(frame, bg=BEYAZ)
-        mf.grid(row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
+        mf.grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
         self.musteri = ttk.Entry(mf, textvariable=self._musteri_var, state="readonly")
         self.musteri.pack(side="left", fill="x", expand=True)
         self.musteri.bind("<Double-1>", lambda _e: self.musteri_sec())
         self._musteri_btn = tk_buton(mf, "Müşteri Ara (F10)", self.musteri_sec, rol="ara")
         self._musteri_btn.pack(side="left", padx=(6, 0))
-        self._girdi(frame, 1, 2, "Bakiye", "bakiye", "0,00 TL", width=16)
+        self._girdi(frame, 3, 0, "Bakiye", "bakiye", "0,00 TL", width=16)
         self.girdiler["bakiye"].configure(state="readonly")
 
-        self._etiket(frame, "Bağlı Sipariş", 2, 0)
+        self._etiket(frame, "Bağlı Sipariş", 4, 0)
         self.siparis_secimi = ttk.Entry(frame, textvariable=self._siparis_var, state="readonly")
-        self.siparis_secimi.grid(row=2, column=1, columnspan=3, padx=4, pady=3, sticky="ew")
-        for c in (1, 3, 5):
+        self.siparis_secimi.grid(row=4, column=1, columnspan=3, padx=4, pady=3, sticky="ew")
+        self._etiket(frame, "Bağlantı", 5, 0)
+        self._baglanti_lbl = tk.Label(
+            frame, text="—", bg=BEYAZ, fg=IKINCIL, font=font(9, root=self), anchor="w"
+        )
+        self._baglanti_lbl.grid(row=5, column=1, columnspan=3, sticky="ew", padx=4, pady=2)
+        for c in (1, 3):
             frame.columnconfigure(c, weight=1)
 
-    def _sevk_adres_alanlari(self):
-        frame = self._panel("Teslimat / Sevk Bilgileri")
-        self._baslik_kaplari.append(frame)
-        self._girdi(frame, 0, 0, "Teslimat Adresi", "sevk_adresi", width=40, colspan=3)
-        self._girdi(frame, 1, 0, "İl", "sevk_il", width=16)
-        self._girdi(frame, 1, 1, "İlçe", "sevk_ilce", width=16)
-        self._girdi(frame, 1, 2, "Planlanan Teslim", "planlanan_teslim", width=14)
-        self._girdi(frame, 2, 0, "Teslim Alacak Kişi", "teslim_kisi")
-        self._girdi(frame, 2, 1, "Telefon", "teslim_telefon")
-        self._girdi(frame, 2, 2, "Sevkiyat Yöntemi", "sevkiyat_yontemi")
-        self._girdi(frame, 3, 0, "Nakliyeci", "nakliyeci")
-        self._girdi(frame, 3, 1, "Plaka", "arac_plaka", width=14)
-        self._girdi(frame, 3, 2, "Şoför", "sofor_adi")
-        self._girdi(frame, 4, 0, "Şoför Telefonu", "sofor_telefon")
-        self._girdi(frame, 4, 1, "Takip No", "takip_no")
+    def _sevk_adres_alanlari(self, frame=None):
+        frame = frame or self._panel("Teslimat / Sevk Bilgileri")
+        self._girdi(frame, 0, 0, "Teslimat Adresi", "sevk_adresi", width=36, colspan=3)
+        self._girdi(frame, 1, 0, "İl", "sevk_il", width=14)
+        self._girdi(frame, 1, 1, "İlçe", "sevk_ilce", width=14)
+        self._girdi(frame, 1, 2, "Planlanan Teslim", "planlanan_teslim", width=12)
+        self._girdi(frame, 2, 0, "Teslim Alacak Kişi", "teslim_kisi", width=16)
+        self._girdi(frame, 2, 1, "Telefon", "teslim_telefon", width=14)
+        self._girdi(frame, 2, 2, "Sevkiyat Yöntemi", "sevkiyat_yontemi", width=14)
+        self._girdi(frame, 3, 0, "Nakliyeci", "nakliyeci", width=16)
+        self._girdi(frame, 3, 1, "Plaka", "arac_plaka", width=12)
+        self._girdi(frame, 3, 2, "Şoför", "sofor_adi", width=14)
+        self._girdi(frame, 4, 0, "Şoför Telefonu", "sofor_telefon", width=14)
+        self._girdi(frame, 4, 1, "Takip No", "takip_no", width=14)
         for c in (1, 3, 5):
             frame.columnconfigure(c, weight=1)
 
@@ -1257,8 +1286,28 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
             )
         self.satir_temizle()
         self.satir_listesini_yenile()
+        self._baglanti_yenile()
         self._kayit_imzasi = self._imza()
         self._kilit_uygula()
+
+    def _baglanti_yenile(self):
+        lbl = getattr(self, "_baglanti_lbl", None)
+        if lbl is None:
+            return
+        ir = self.irsaliye
+        if ir is None:
+            lbl.configure(text="—")
+            return
+        parcalar = []
+        if getattr(ir, "siparis_id", None) or any(s.get("siparis_satiri_id") for s in self.satirlar):
+            parcalar.append("Sipariş bağlı")
+        if self._faturali():
+            parcalar.append("Fatura bağlı")
+        elif getattr(ir, "stok_cikis_yapildi", False):
+            parcalar.append("Sevk edildi — faturalanabilir")
+        else:
+            parcalar.append("Taslak / sevk bekliyor")
+        lbl.configure(text=" · ".join(parcalar) if parcalar else "—")
 
     def _kilitsiz_ac(self):
         """Yükleme öncesi alanları yazılabilir yap (kilit en sonda yeniden uygulanır)."""

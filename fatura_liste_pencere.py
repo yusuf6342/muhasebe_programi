@@ -136,6 +136,9 @@ class FaturaListePencere(tk.Toplevel):
         self._sayfa = 0
         self._ara_after = None
         self._siralama = ("fatura_tarihi", True)  # kolon, reverse
+        self._kolon_filtre: dict[str, set[str]] = {}
+        self._filtre_popup = None
+        self._satir_deger_cache: dict[int, tuple] = {}
 
         satis = document_type == DOC_SATIS
         self.title("Satış Fatura Listesi" if satis else "Alış Fatura Listesi")
@@ -246,10 +249,15 @@ class FaturaListePencere(tk.Toplevel):
         if not satis:
             self.kolonlar = ("no", "ted_no") + self.kolonlar[1:]
             basliklar = ("Kayıt No", "Tedarikçi Fatura No") + basliklar[1:]
+        self._basliklar = dict(zip(self.kolonlar, basliklar))
         self.tablo = ttk.Treeview(orta, columns=self.kolonlar, show="headings", selectmode="browse")
         para_kolonlari = {"matrah", "kdv", "toplam", "kapanan", "acik"}
+        from liste_filtre_ui import baslik_filtre_metni
+
         for k, b in zip(self.kolonlar, basliklar):
-            self.tablo.heading(k, text=b, command=lambda c=k: self._sirala(c))
+            self.tablo.heading(
+                k, text=baslik_filtre_metni(b), command=lambda c=k: self._sirala(c)
+            )
             self.tablo.column(
                 k,
                 width=180 if k == "cari_ad" else (100 if k in para_kolonlari or k == "odeme" else 90),
@@ -262,6 +270,7 @@ class FaturaListePencere(tk.Toplevel):
         self.tablo.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
         self.tablo.bind("<Double-1>", lambda _e: self.seciliyi_ac())
+        self.tablo.bind("<Button-3>", self._baslik_sag_tik)
 
         alt = ttk.Frame(self, padding=8)
         alt.pack(fill="x")
@@ -323,6 +332,7 @@ class FaturaListePencere(tk.Toplevel):
         muhasebe = toplu_durum(evrak, [r.get("id") for r in self._ham])
         for r in self._ham:
             r["muhasebe_durumu"] = muhasebe.get(r.get("id"), "")
+        self._satir_deger_cache = {}
         self._sayfa = 0
         self._filtre_uygula()
 
@@ -334,12 +344,130 @@ class FaturaListePencere(tk.Toplevel):
         self.tutar_max.delete(0, "end")
         self.durum.set("")
         self.odeme_filtre.set("Tümü")
+        self._kolon_filtre = {}
         bugun = date.today()
         self.tarih_bas.delete(0, "end")
         self.tarih_bas.insert(0, (bugun - timedelta(days=30)).strftime("%d.%m.%Y"))
         self.tarih_bit.delete(0, "end")
         self.tarih_bit.insert(0, bugun.strftime("%d.%m.%Y"))
         self.yenile()
+
+    def _satir_degerleri(self, r: dict) -> tuple:
+        rid = r.get("id")
+        if rid in self._satir_deger_cache:
+            return self._satir_deger_cache[rid]
+        personel = r.get("sales_person_full_name") or r.get("created_by_full_name") or ""
+        degerler = (
+            r.get("fatura_no") or "",
+            _tarih_goster(r.get("fatura_tarihi")),
+            r.get("cari_kodu") or "",
+            r.get("cari_ad") or r.get("musteri") or "",
+            r.get("vergi_no") or "",
+            r.get("evrak_durumu") or r.get("durum") or "",
+            r.get("muhasebe_durumu") or "",
+            _para(r.get("matrah")),
+            _para(r.get("kdv")),
+            _para(r.get("genel_toplam")),
+            _para(r.get("kapanan_tutar")) if "kapanan_tutar" in r else "",
+            _para(r.get("acik_tutar")) if "acik_tutar" in r else "",
+            r.get("odeme_durumu") or "",
+            r.get("para_birimi") or "TRY",
+            personel,
+            _tarih_goster(r.get("olusturma_tarihi")),
+        )
+        if "ted_no" in self.kolonlar:
+            degerler = (degerler[0], r.get("tedarikci_fatura_no") or "") + degerler[1:]
+        self._satir_deger_cache[rid] = degerler
+        return degerler
+
+    def _baslik_sag_tik(self, event):
+        if self.tablo.identify_region(event.x, event.y) != "heading":
+            return
+        kolon_id = self.tablo.identify_column(event.x)
+        try:
+            idx = int(kolon_id.replace("#", "")) - 1
+            kolon = self.kolonlar[idx]
+        except (ValueError, IndexError):
+            return
+        self._kolon_filtre_ac(kolon)
+        return "break"
+
+    def _kolon_filtre_haric_satirlar(self, haric_kolon: str) -> list[dict]:
+        """Belirtilen kolon hariç mevcut filtrelerle satır listesi (UI güncellemez)."""
+        onceki = self._kolon_filtre
+        self._kolon_filtre = {
+            k: v for k, v in onceki.items() if k != haric_kolon and v is not None
+        }
+        try:
+            # _filtre_uygula tabloyu da doldurur; aday için geçici kullanıp geri yükleriz
+            self._filtre_uygula()
+            return list(self._filtreli)
+        finally:
+            self._kolon_filtre = onceki
+
+    def _kolon_filtre_ac(self, kolon):
+        from liste_filtre_ui import TreeviewKolonFiltrePopup
+
+        eski = self._filtre_popup
+        if eski is not None:
+            try:
+                if eski.winfo_exists():
+                    eski.destroy()
+            except tk.TclError:
+                pass
+        try:
+            idx = self.kolonlar.index(kolon)
+        except ValueError:
+            return
+        adaylar = self._kolon_filtre_haric_satirlar(kolon)
+        self._filtre_uygula()  # görüntüyü geri yükle
+        degerler = {str(self._satir_degerleri(r)[idx] or "") for r in adaylar}
+        mevcut = self._kolon_filtre.get(kolon)
+        pop = TreeviewKolonFiltrePopup(
+            self,
+            self._basliklar.get(kolon, kolon),
+            degerler,
+            secili=mevcut,
+            uygula_cb=lambda secilen, c=kolon: self._kolon_filtre_uygula(c, secilen),
+            temizle_cb=lambda c=kolon: self._kolon_filtre_temizle(c),
+        )
+        self._filtre_popup = pop
+
+    def _kolon_filtre_uygula(self, kolon, secilen):
+        try:
+            idx = self.kolonlar.index(kolon)
+        except ValueError:
+            return
+        adaylar = self._kolon_filtre_haric_satirlar(kolon)
+        tum = {str(self._satir_degerleri(r)[idx] or "") for r in adaylar}
+        if not secilen:
+            self._kolon_filtre[kolon] = set()
+        elif tum and secilen >= tum:
+            self._kolon_filtre.pop(kolon, None)
+        else:
+            self._kolon_filtre[kolon] = set(secilen)
+        self._sayfa = 0
+        self._filtre_uygula()
+
+    def _kolon_filtre_temizle(self, kolon):
+        self._kolon_filtre.pop(kolon, None)
+        self._sayfa = 0
+        self._filtre_uygula()
+
+    def _basliklari_guncelle(self):
+        from liste_filtre_ui import baslik_filtre_metni
+
+        for kolon, baslik in self._basliklar.items():
+            try:
+                self.tablo.heading(
+                    kolon,
+                    text=baslik_filtre_metni(
+                        baslik,
+                        filtre_aktif=kolon in self._kolon_filtre,
+                    ),
+                )
+            except tk.TclError:
+                pass
 
     def _gecikmeli_filtre(self, _e=None):
         if self._ara_after:
@@ -398,6 +526,18 @@ class FaturaListePencere(tk.Toplevel):
                 continue
             if tmax is not None and genel > tmax:
                 continue
+            if self._kolon_filtre:
+                vals = self._satir_degerleri(r)
+                uygun = True
+                for i, kolon in enumerate(self.kolonlar):
+                    if kolon not in self._kolon_filtre:
+                        continue
+                    deger = "" if i >= len(vals) or vals[i] is None else str(vals[i])
+                    if deger not in self._kolon_filtre[kolon]:
+                        uygun = False
+                        break
+                if not uygun:
+                    continue
             sonuc.append(r)
         kolon, reverse = self._siralama
         def _anahtar(row):
@@ -459,33 +599,26 @@ class FaturaListePencere(tk.Toplevel):
         bas = self._sayfa * SAYFA_BOYUTU
         dilim = self._filtreli[bas : bas + SAYFA_BOYUTU]
         for r in dilim:
-            personel = r.get("sales_person_full_name") or r.get("created_by_full_name") or ""
-            degerler = (
-                r.get("fatura_no") or "",
-                _tarih_goster(r.get("fatura_tarihi")),
-                r.get("cari_kodu") or "",
-                r.get("cari_ad") or r.get("musteri") or "",
-                r.get("vergi_no") or "",
-                r.get("evrak_durumu") or r.get("durum") or "",
-                r.get("muhasebe_durumu") or "",
-                _para(r.get("matrah")),
-                _para(r.get("kdv")),
-                _para(r.get("genel_toplam")),
-                _para(r.get("kapanan_tutar")) if "kapanan_tutar" in r else "",
-                _para(r.get("acik_tutar")) if "acik_tutar" in r else "",
-                r.get("odeme_durumu") or "",
-                r.get("para_birimi") or "TRY",
-                personel,
-                _tarih_goster(r.get("olusturma_tarihi")),
-            )
-            if "ted_no" in self.kolonlar:
-                degerler = (degerler[0], r.get("tedarikci_fatura_no") or "") + degerler[1:]
-            self.tablo.insert("", "end", iid=str(r["id"]), values=degerler)
+            self.tablo.insert("", "end", iid=str(r["id"]), values=self._satir_degerleri(r))
+        self._basliklari_guncelle()
         toplam = len(self._filtreli)
         sayfa_say = max(1, (toplam + SAYFA_BOYUTU - 1) // SAYFA_BOYUTU)
-        self.ozet.configure(
-            text=f"{toplam} kayıt  |  Sayfa {self._sayfa + 1}/{sayfa_say}  |  {SAYFA_BOYUTU}/sayfa"
-        )
+        sigma = Decimal("0")
+        for r in self._filtreli:
+            try:
+                sigma += Decimal(str(r.get("genel_toplam") or 0))
+            except Exception:
+                pass
+        aktif = len(self._kolon_filtre)
+        parcalar = [
+            f"{toplam} kayıt",
+            f"Sayfa {self._sayfa + 1}/{sayfa_say}",
+            f"{SAYFA_BOYUTU}/sayfa",
+            f"Σ Toplam: {_para(sigma)}",
+        ]
+        if aktif:
+            parcalar.append(f"Kolon filtre: {aktif}")
+        self.ozet.configure(text="  |  ".join(parcalar))
 
     def _onceki(self):
         if self._sayfa > 0:

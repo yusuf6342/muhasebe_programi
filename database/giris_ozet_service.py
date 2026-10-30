@@ -28,7 +28,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from database.access import yetki_var
@@ -226,6 +226,14 @@ class _Baglam:
                 self.silinmis.add(int(i))
         self._hesaplar = None
         self._bakiye = None
+        self._evo_rapor = None
+
+    def evo_rapor(self):
+        if self._evo_rapor is None:
+            from database.evo_rapor_baglantilari import EvoRaporBaglantilari
+
+            self._evo_rapor = EvoRaporBaglantilari(self.s, donemler(self.d)["onceki_ay"][0], self.d)
+        return self._evo_rapor
 
     def cari_adi(self, cid) -> str:
         c = self.cariler.get(int(cid)) if cid is not None else None
@@ -357,10 +365,10 @@ def satis_bolumu(b: _Baglam) -> dict:
                                cari=b.cari_adi(f.cari_id), aciklama=aciklama, tur="satis", kdv_haric=kdv_haric,
                                gercek_borc=False))
 
-    iade_kayit = {bn: _d(a) for bn, a in b.s.execute(
-        select(CariIslem.belge_no, func.sum(CariIslem.alacak)).where(
+    iade_kayit = {(cid, tarih, bn): _d(a) for cid, tarih, bn, a in b.s.execute(
+        select(CariIslem.cari_id, CariIslem.tarih, CariIslem.belge_no, func.sum(CariIslem.alacak)).where(
             CariIslem.islem_turu == "Satış İadesi", CariIslem.tarih >= bas, CariIslem.tarih <= bit)
-        .group_by(CariIslem.belge_no)).all()}
+        .group_by(CariIslem.cari_id, CariIslem.tarih, CariIslem.belge_no)).all()}
     iadeler = b.s.scalars(
         select(SatisIadeFaturasi).options(selectinload(SatisIadeFaturasi.satirlar))
         .where(SatisIadeFaturasi.iade_tarihi >= bas, SatisIadeFaturasi.iade_tarihi <= bit)).all()
@@ -370,9 +378,17 @@ def satis_bolumu(b: _Baglam) -> dict:
             continue
         if b.sube_id is not None and i.sube_id != b.sube_id:
             continue
+        evo_iade = b.evo_rapor().iadeler.get(int(i.id))
+        if evo_iade and not evo_iade["onay"]:
+            haric["kaynakta onaysız/doğrulanamayan iade"] += 1
+            if evo_iade["hata"]:
+                uyarilar.append(f"{i.iade_no}: {evo_iade['hata']}; iade özete katılmadı.")
+            continue
         hesap = _q2(SatisIadeFaturasiService.toplam(i.satirlar)["genel_toplam"]
                     + SatisIadeFaturasiService.ek_fon_bedeli_toplami(i))
-        tutar = iade_kayit.get(i.iade_no)
+        tutar = iade_kayit.get((i.cari_id, i.iade_tarihi, i.iade_no))
+        if tutar is None and evo_iade:
+            tutar = evo_iade["cari_tutar"]
         if tutar is None:
             tutar = hesap
             uyarilar.append(f"{i.iade_no}: iadenin cari kaydı yok; iade servis toplamı kullanıldı.")
@@ -440,11 +456,13 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
                CariIslem.alacak, CariIslem.hesap_adi)
         .where(CariIslem.tarih >= bas, CariIslem.tarih <= bit)).all()
     tum_cari_belge = {bn for bn, *_ in islemler}
+    evo = b.evo_rapor()
     hareketler = b.s.execute(
-        select(FinansHareketi.belge_no, FinansHareketi.hesap_id, FinansHareketi.tarih, FinansHareketi.hareket_turu,
+        select(FinansHareketi.id, FinansHareketi.belge_no, FinansHareketi.hesap_id, FinansHareketi.tarih, FinansHareketi.hareket_turu,
                FinansHareketi.tutar, FinansHareketi.sube_id)
         .where(FinansHareketi.tarih >= bas, FinansHareketi.tarih <= bit,
-               FinansHareketi.hareket_turu.in_(TAHSILAT_FH + IADE_ODEME_FH))).all()
+               or_(FinansHareketi.hareket_turu.in_(TAHSILAT_FH + IADE_ODEME_FH),
+                   FinansHareketi.id.in_(list(evo.finans) or [-1])))).all()
     fh_by = defaultdict(list)
     for h in hareketler:
         fh_by[h.belge_no].append(h)
@@ -475,11 +493,17 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
 
     def bacaklardan(belge, tarih, cari_id, toplam, hesap_adi, isaret, kaynak, sube):
         legs = fh_by.get(belge) or []
-        legs = [h for h in legs if (h.hareket_turu in TAHSILAT_FH) == (isaret > 0)]
+        legs = [h for h in legs if (
+            (h.hareket_turu in TAHSILAT_FH if isaret > 0 else h.hareket_turu in IADE_ODEME_FH)
+            or evo.cari_bacagi(h, cari_id, toplam, isaret))]
+        if any(int(h.id) in evo.finans for h in legs) and _q2(sum((_d(h.tutar) for h in legs), SIFIR)) != _q2(toplam):
+            legs = []
         if legs:
             for h in legs:
                 hs = hesaplar.get(int(h.hesap_id))
-                yontem = KART if h.hareket_turu == "POS TAHSİLAT" else (_hesap_yontemi(hs) if hs else None)
+                bag = evo.cari_bacagi(h, cari_id, toplam, isaret)
+                yontem = bag["yontem"] if bag else (
+                    KART if h.hareket_turu == "POS TAHSİLAT" else (_hesap_yontemi(hs) if hs else None))
                 satirlar.append(_kalem(kaynak, isaret * _d(h.tutar), belge_no=belge, tarih=h.tarih,
                                        cari=b.cari_adi(cari_id), yontem=yontem or BELIRSIZ,
                                        aciklama=getattr(hs, "hesap_adi", "") or "", gercek_borc=False))
@@ -928,19 +952,42 @@ def _hesap_varliklari(b: _Baglam) -> tuple[Decimal, Decimal, list[dict], list[st
     for hid, bakiye in b.finans_bakiyeleri().items():
         h = hesaplar[hid]
         sinif = hesap_sinifi(h)
+        pb = (getattr(h, "para_birimi", None) or "TRY").strip().upper() or "TRY"
         if sinif == "KASA":
             if bakiye < 0:
                 uyarilar.append(f"{h.hesap_adi}: kasa bakiyesi eksi ({_tl(bakiye)}) — kayıt hatası; varlığa katılmadı.")
                 continue
+            if pb != "TRY":
+                # Farklı PB tutarları TL özetine eklenmez (Doc5: TRY/USD/EUR toplanmaz)
+                from database.finans_service import FinansService
+
+                tl_kayit = FinansService.tl_kayit_bakiyesi(h)
+                uyarilar.append(
+                    f"{h.hesap_adi}: {pb} {bakiye:,.2f} (TL kayıt {tl_kayit:,.2f}); "
+                    "likit TRY toplamına katılmadı."
+                )
+                continue
             kasa_banka += bakiye
             kalemler.append(_kalem("Kasa", bakiye, belge_no=h.hesap_adi, yontem="Kasa", gercek_borc=False))
         elif sinif in ("BANKA", "KMH") and bakiye > 0:
+            if pb != "TRY":
+                from database.finans_service import FinansService
+
+                tl_kayit = FinansService.tl_kayit_bakiyesi(h)
+                uyarilar.append(
+                    f"{h.hesap_adi}: {pb} {bakiye:,.2f} (TL kayıt {tl_kayit:,.2f}); "
+                    "likit TRY toplamına katılmadı."
+                )
+                continue
             kasa_banka += bakiye
             kalemler.append(_kalem("Banka mevduatı", bakiye, belge_no=h.hesap_adi, cari=h.banka_adi or "",
                                    yontem=sinif, gercek_borc=False))
         elif sinif == "POS" and bakiye != 0:
             if bakiye < 0:
                 uyarilar.append(f"{h.hesap_adi}: POS hesabı eksi ({_tl(bakiye)}); varlığa katılmadı.")
+                continue
+            if pb != "TRY":
+                uyarilar.append(f"{h.hesap_adi}: {pb} POS bakiyesi likit TRY toplamına katılmadı.")
                 continue
             diger += bakiye
             kalemler.append(_kalem("Bankaya geçmemiş POS", bakiye, belge_no=h.hesap_adi, cari=h.banka_adi or "",

@@ -73,9 +73,72 @@ def schema_hazirla(motor=None) -> None:
         for t in mvp_tablolar:
             t.create(e, checkfirst=True)
 
+    def _v4(e) -> None:
+        """Dönem durum makinesi + bordro ek ödeme bağlantı alanları (ensure_schema)."""
+        for t in mvp_tablolar:
+            t.create(e, checkfirst=True)
+        _sutun_ekle(
+            e,
+            "personel_prim_donem",
+            {
+                "olcut_surum": "VARCHAR(40)",
+                "onaylayan": "VARCHAR(120)",
+                "onay_zamani": "DATETIME",
+                "iptal_eden": "VARCHAR(120)",
+                "iptal_zamani": "DATETIME",
+            },
+        )
+        _sutun_ekle(
+            e,
+            "personel_prim_pay",
+            {
+                "hakedis_id": "INTEGER",
+                "bordro_baglanti_id": "VARCHAR(80)",
+                "odenen": "NUMERIC(18, 2) DEFAULT 0",
+            },
+        )
+
+    def _v5(e) -> None:
+        """Aylık prim: fatura H dondurma (aylik_donem_id) + bordro_kaynagi tekillik indeksi."""
+        m.PersonelFaturaHDonuk.__table__.create(e, checkfirst=True)
+        _sutun_ekle(
+            e,
+            "personel_fatura_h_donuk",
+            {
+                "aylik_donem_id": "INTEGER",
+            },
+        )
+        # donem_id nullable (eski NOT NULL → soft; SQLite'ta tip/NULL gevşek)
+        with e.begin() as conn:
+            try:
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "uq_personel_hakedis_bordro_kaynagi "
+                        "ON personel_hakedisleri (bordro_kaynagi) "
+                        "WHERE bordro_kaynagi IS NOT NULL AND bordro_kaynagi != ''"
+                    )
+                )
+            except Exception:
+                # SQLite dışı / eski sürüm: servis katmanı idempotent kalır
+                pass
+            try:
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "uq_pfatura_h_aylik "
+                        "ON personel_fatura_h_donuk (aylik_donem_id, fatura_id) "
+                        "WHERE aylik_donem_id IS NOT NULL"
+                    )
+                )
+            except Exception:
+                pass
+
     surum_uygula(motor, "personel_performans", 1, _v1)
     surum_uygula(motor, "personel_performans", 2, _v2)
     surum_uygula(motor, "personel_performans", 3, _v3)
+    surum_uygula(motor, "personel_performans", 4, _v4)
+    surum_uygula(motor, "personel_performans", 5, _v5)
     _HAZIR.add(motor)
 
 

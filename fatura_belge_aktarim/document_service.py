@@ -17,6 +17,8 @@ from fatura_belge_aktarim.models import InvoiceImportAudit, InvoiceImportDraft, 
 from fatura_belge_aktarim.normalize import (
     ALLOWED_EXT,
     MAX_BYTES,
+    belge_kimlik_anahtari,
+    normalize_belge_no,
     normalize_vkn,
     safe_filename,
     sha256_bytes,
@@ -107,6 +109,9 @@ def _log_donusum_hatasi(
 class InvoiceDocumentService:
     @staticmethod
     def yukleme(dosya_yolu: str | Path, *, menu_yon: str = "ALIS") -> InvoiceImportDraft:
+        from fatura_belge_aktarim.draft_service import InvoiceDraftService
+
+        InvoiceDraftService.ensure_schema()
         yol = Path(dosya_yolu)
         if not yol.is_file():
             raise ValueError("Dosya bulunamadı.")
@@ -225,6 +230,76 @@ class InvoiceDocumentService:
                     uyarilar.append(
                         f"Aynı ETTN ile taslak/fatura mevcut (#{ayni.id}). Mükerrer kontrolü gerekli."
                     )
+
+        # Belge kimliği: yön + karşı taraf VKN + normalize belge no
+        karsi_vkn = (
+            (extracted.satici or {}).get("vkn")
+            if yon == "ALIS"
+            else (extracted.alici or {}).get("vkn")
+        ) or (extracted.satici or {}).get("vkn") or (extracted.alici or {}).get("vkn")
+        anahtar = belge_kimlik_anahtari(
+            yon=yon, vkn=karsi_vkn, belge_no=extracted.belge_no
+        )
+        if anahtar:
+            with get_session() as session:
+                adaylar = session.scalars(
+                    select(InvoiceImportDraft).where(
+                        InvoiceImportDraft.yon == yon,
+                        InvoiceImportDraft.is_deleted.is_(False),
+                        InvoiceImportDraft.durum.notin_(["iptal_edildi"]),
+                        InvoiceImportDraft.belge_no.is_not(None),
+                    )
+                ).all()
+                for d in adaylar:
+                    d_vkn = d.satici_vkn if yon == "ALIS" else d.alici_vkn
+                    d_vkn = d_vkn or d.satici_vkn or d.alici_vkn
+                    if (
+                        belge_kimlik_anahtari(
+                            yon=d.yon, vkn=d_vkn, belge_no=d.belge_no
+                        )
+                        == anahtar
+                    ):
+                        uyarilar.append(
+                            f"Aynı belge kimliği (VKN+no) ile taslak mevcut (#{d.id}). "
+                            "İkinci kayıt oluşturmadan önce bağlayın veya iptal edin."
+                        )
+                        break
+                # Kayıtlı alış faturasında tedarikçi fatura no
+                if yon == "ALIS" and normalize_vkn(karsi_vkn) and extracted.belge_no:
+                    try:
+                        from database.models.alis_faturasi import AlisFaturasi
+                        from database.models.cari import Cari
+
+                        vkn_n = normalize_vkn(karsi_vkn)
+                        bel_n = normalize_belge_no(extracted.belge_no)
+                        cariler = session.scalars(
+                            select(Cari).where(
+                                Cari.is_deleted.is_(False),
+                                Cari.vergi_numarasi.is_not(None),
+                            )
+                        ).all()
+                        cari_ids = [
+                            int(c.id)
+                            for c in cariler
+                            if normalize_vkn(c.vergi_numarasi) == vkn_n
+                        ]
+                        if cari_ids:
+                            faturalar = session.scalars(
+                                select(AlisFaturasi).where(
+                                    AlisFaturasi.cari_id.in_(cari_ids),
+                                    AlisFaturasi.durum != "İPTAL",
+                                    AlisFaturasi.tedarikci_fatura_no.is_not(None),
+                                )
+                            ).all()
+                            for f in faturalar:
+                                if normalize_belge_no(f.tedarikci_fatura_no) == bel_n:
+                                    uyarilar.append(
+                                        f"Aynı tedarikçi fatura no kayıtlı alışta var "
+                                        f"({f.fatura_no}). Mükerrer riski."
+                                    )
+                                    break
+                    except Exception:
+                        pass
 
         extracted_payload = {
             "satici": extracted.satici,

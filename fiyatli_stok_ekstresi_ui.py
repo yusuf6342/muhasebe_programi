@@ -250,6 +250,9 @@ class _FiyatliEkstrePanel(ttk.Frame):
         self._stok_id = int(stok_id) if stok_id else None
         self._sonuc = None
         self._satir_meta: dict[str, dict] = {}
+        self._ham_satirlar: list = []
+        self._liste_filtre: dict = {}
+        self._filtre_bag = None
         self._evrak_aciliyor = False
         self._ozet_etiketleri: dict[str, ttk.Label] = {}
         self._maliyet_cerceveleri: list[ttk.Frame] = []
@@ -381,6 +384,24 @@ class _FiyatliEkstrePanel(ttk.Frame):
         self.tablo.tag_configure("notr", foreground="#627D98")
         self.tablo.tag_configure("devri", background="#1E3A5F", foreground="white")
         self.tablo.bind("<Double-1>", self._cift_tikla)
+
+        from liste_filtre_ui import treeview_filtre_bagla
+
+        # DOC5: kalan / fifo_kalan çalışan miktar-değer — hunisi kapalı, saklı değer korunur
+        self._filtre_bag = treeview_filtre_bagla(
+            self.tablo,
+            dict(zip(_KOLONLAR, _BASLIKLAR)),
+            get_filtre_dict=lambda: self._liste_filtre,
+            set_filtre_dict=None,
+            yenile_cb=self._filtre_gorunumu,
+            deger_listesi_cb=lambda: [
+                s for s in self._ham_satirlar if not s.get("devri")
+            ],
+            parent=self.host,
+            kolonlar=_KOLONLAR,
+            haric_kolonlar=("kalan", "fifo_kalan"),
+            sag_tik_filtre=True,
+        )
 
         self.durum = ttk.Label(self, text="Stok seçip Yenile ile ekstreyi getirin.")
         self.durum.pack(anchor="w", pady=(4, 0))
@@ -540,59 +561,91 @@ class _FiyatliEkstrePanel(ttk.Frame):
             else:
                 lbl.configure(text=_para(deger) if deger is not None else "—")
 
-    def _tabloyu_doldur(self, sonuc: dict):
+    def _satir_values(self, s: dict, *, maliyet_ok: bool) -> tuple:
+        yon = s.get("yon") or "notr"
+        cikis_mf = _para(s.get("cikis_maliyet_fiyat")) if maliyet_ok else ""
+        giris_t = _para(s.get("giris_tutari")) if maliyet_ok else ""
+        cikis_mal = _para(s.get("cikis_maliyeti")) if maliyet_ok else ""
+        fifo_kalan = _para(s.get("kalan_deger")) if maliyet_ok else ""
+        net_g = s.get("net_giris_birim_fiyat", s.get("giris_birim_fiyat"))
+        net_c = s.get("net_cikis_birim_fiyat", s.get("cikis_satis_fiyat"))
+        fiyat_yok = bool(s.get("fiyat_yok"))
+        net_g_txt = _para(net_g) if net_g is not None else (
+            "Fiyat yok" if fiyat_yok and yon == "giris" else ""
+        )
+        net_c_txt = _para(net_c) if net_c is not None else (
+            "Fiyat yok" if fiyat_yok and yon == "cikis" else ""
+        )
+        return (
+            _tarih_goster(s.get("tarih")),
+            s.get("saat") or "",
+            s.get("hareket_turu") or "",
+            s.get("belge_turu") or "",
+            s.get("belge_no") or "",
+            s.get("cari_kodu") or "",
+            s.get("cari_adi") or "",
+            s.get("depo") or "",
+            s.get("etiket") or "",
+            _mik(s.get("giren")),
+            net_g_txt,
+            _mik(s.get("cikan")),
+            net_c_txt,
+            _mik(s.get("kalan")),  # saklı çalışan kalan
+            fifo_kalan,
+            cikis_mf,
+            giris_t,
+            _para(s.get("cikis_tutari")),
+            cikis_mal,
+            s.get("para_birimi") or "",
+            _para(s.get("kur")) if s.get("kur") is not None else "",
+            s.get("uyari") or s.get("fiyat_kaynak") or "",
+        )
+
+    def _filtre_gorunumu(self):
+        from liste_filtre_ui import filtre_ozet_metni, satir_kolon_filtre_uygun
+
         for item in self.tablo.get_children():
             self.tablo.delete(item)
         self._satir_meta.clear()
+        gorunen = 0
+        for item in self._ham_satirlar:
+            if item.get("devri"):
+                # Devir satırı her zaman görünsün
+                pass
+            elif not satir_kolon_filtre_uygun(item["values"], _KOLONLAR, self._liste_filtre):
+                continue
+            iid = item["iid"]
+            self._satir_meta[iid] = item["kayit"]
+            self.tablo.insert("", "end", iid=iid, values=item["values"], tags=item["tags"])
+            gorunen += 1
+        if self._filtre_bag:
+            self._filtre_bag["guncelle_basliklar"]()
+        if self._sonuc and self._liste_filtre:
+            self.durum.configure(
+                text=filtre_ozet_metni(
+                    gorunen=gorunen,
+                    toplam=len(self._ham_satirlar),
+                    aktif_filtre=len(self._liste_filtre),
+                    ekstra=["Kalan sütunları saklı değer (yeniden hesaplanmaz)"],
+                )
+            )
+
+    def _tabloyu_doldur(self, sonuc: dict):
+        self._liste_filtre.clear()
+        self._ham_satirlar.clear()
         maliyet_ok = bool(sonuc.get("maliyet_gorunur"))
         for sira, s in enumerate(sonuc.get("satirlar") or []):
             yon = s.get("yon") or "notr"
             tag = "devri" if yon == "devri" or s.get("satir_turu") == "devri" else yon
             iid = f"r{sira}"
-            self._satir_meta[iid] = s
-            cikis_mf = _para(s.get("cikis_maliyet_fiyat")) if maliyet_ok else ""
-            giris_t = _para(s.get("giris_tutari")) if maliyet_ok else ""
-            cikis_mal = _para(s.get("cikis_maliyeti")) if maliyet_ok else ""
-            fifo_kalan = _para(s.get("kalan_deger")) if maliyet_ok else ""
-            net_g = s.get("net_giris_birim_fiyat", s.get("giris_birim_fiyat"))
-            net_c = s.get("net_cikis_birim_fiyat", s.get("cikis_satis_fiyat"))
-            fiyat_yok = bool(s.get("fiyat_yok"))
-            net_g_txt = _para(net_g) if net_g is not None else (
-                "Fiyat yok" if fiyat_yok and yon == "giris" else ""
-            )
-            net_c_txt = _para(net_c) if net_c is not None else (
-                "Fiyat yok" if fiyat_yok and yon == "cikis" else ""
-            )
-            self.tablo.insert(
-                "",
-                "end",
-                iid=iid,
-                values=(
-                    _tarih_goster(s.get("tarih")),
-                    s.get("saat") or "",
-                    s.get("hareket_turu") or "",
-                    s.get("belge_turu") or "",
-                    s.get("belge_no") or "",
-                    s.get("cari_kodu") or "",
-                    s.get("cari_adi") or "",
-                    s.get("depo") or "",
-                    s.get("etiket") or "",
-                    _mik(s.get("giren")),
-                    net_g_txt,
-                    _mik(s.get("cikan")),
-                    net_c_txt,
-                    _mik(s.get("kalan")),
-                    fifo_kalan,
-                    cikis_mf,
-                    giris_t,
-                    _para(s.get("cikis_tutari")),
-                    cikis_mal,
-                    s.get("para_birimi") or "",
-                    _para(s.get("kur")) if s.get("kur") is not None else "",
-                    s.get("uyari") or s.get("fiyat_kaynak") or "",
-                ),
-                tags=(tag,),
-            )
+            self._ham_satirlar.append({
+                "iid": iid,
+                "kayit": s,
+                "values": self._satir_values(s, maliyet_ok=maliyet_ok),
+                "tags": (tag,),
+                "devri": tag == "devri",
+            })
+        self._filtre_gorunumu()
 
     def _secili_satir(self) -> dict | None:
         secim = self.tablo.selection()

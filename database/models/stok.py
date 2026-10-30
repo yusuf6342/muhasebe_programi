@@ -81,6 +81,13 @@ class StokKarti(Base):
     varsayilan_alis_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
     varsayilan_satis_birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
     kart_turu: Mapped[str] = mapped_column(String(50), nullable=False, default="Ticari Mal")
+    # Ana / Alt kart türü (tanım tablosu); kart_turu geriye uyum metni
+    ana_kart_turu_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kart_ana_turleri.id"), nullable=True, index=True
+    )
+    alt_kart_turu_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kart_alt_turleri.id"), nullable=True, index=True
+    )
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
     muhasebe_stok_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     muhasebe_alis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -145,6 +152,21 @@ class StokKarti(Base):
     )
 
 
+class SatisFiyatListesi(Base):
+    """Firma kapsamında ortak satış fiyat listesi tanımı.
+
+    ``kod`` kalıcı kimliktir (örn. SATIŞ FİYATI 1); stok fiyatları ve cari
+    varsayılanları bu koda bağlanır. ``ad`` yalnızca görünen addır.
+    """
+
+    __tablename__ = "satis_fiyat_listeleri"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kod: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    ad: Mapped[str] = mapped_column(String(100), nullable=False)
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class StokFiyati(Base):
     __tablename__ = "stok_fiyatlari"
     __table_args__ = (UniqueConstraint("stok_id", "fiyat_adi", name="uq_stok_fiyat_adi"),)
@@ -155,6 +177,10 @@ class StokFiyati(Base):
     para_birimi: Mapped[str] = mapped_column(String(10), nullable=False, default="TL")
     # "HARIC" / "DAHIL"; NULL = KDV durumu belirtilmemiş (eski kayıtlar)
     kdv_durumu: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # MANUEL | LISTE — satış fiyatı için; alış/fabrika etkilenmez
+    hesaplama_modu: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUEL")
+    # Liste Fiyatına Bağlı satış iskontosu % (alış iskontolarından bağımsız)
+    satis_iskonto: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     stok: Mapped["StokKarti"] = relationship("StokKarti", back_populates="fiyatlar")
 
 

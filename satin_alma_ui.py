@@ -50,7 +50,9 @@ LISTE_KARTLARI: tuple[tuple[str, str, str], ...] = (
 TANIM_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("TEDARİKÇİ KARTLARI", "Boş tedarikçi kartı açılır; kodla veya isimle hızlı arayın", "tedarikci"),
     ("TEDARİKÇİ FİYAT LİSTELERİ", "Güncel alış fiyatı ve iskonto koşulları", "fiyat"),
+    ("KONSİNYE TAKİBİ", "Aldığımız konsinye giriş, kesin alım ve iade", "konsinye"),
     ("MASRAF DAĞITIMI", "Nakliye ve diğer giderleri maliyete dağıt", "masraf"),
+    ("SORULAN ÜRÜNLER", "Çeşitte/stokta olmayan müşteri talepleri (stok hareketi yok)", "sorulan"),
     ("PDF / E-FATURA AKTARIM", "PDF/OCR ve gelen e-faturalar", "belge"),
     ("EXCEL VERİ AKTARIM", "Tedarikçi cari ve virman aktarımı", "excel"),
 )
@@ -471,6 +473,11 @@ def _hub_komutlar(app) -> dict[str, Callable]:
             geri_fn=lambda: satin_alma_hub_goster(app),
         )
 
+    def sorulan():
+        from sorulan_urun_ui import sorulan_urunler_goster
+
+        sorulan_urunler_goster(app)
+
     return {
         "fatura_yeni": lambda: alis_faturasi_yeni(app),
         "siparis_yeni": lambda: alis_siparisi_yeni(app),
@@ -483,12 +490,16 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "teklif": lambda: tedarikci_teklifleri_goster(app),
         "siparis": app.alis_siparisleri_goster,
         "irsaliye": app.alis_irsaliyeleri_goster,
+        "konsinye": lambda: __import__(
+            "konsinye_ui", fromlist=["konsinye_takibi_goster"]
+        ).konsinye_takibi_goster(app, yon="ALINAN"),
         "fatura": app.alis_faturalari_goster,
         "iade_yeni": app.alis_iade_faturasi_ac,
         "iade": app.alis_iade_faturalari_goster,
         "masraf": lambda: masraf_dagitimi_goster(app),
         "fiyat": lambda: tedarikci_fiyat_listeleri_goster(app),
         "rapor": lambda: satin_alma_raporlar_hub_goster(app),
+        "sorulan": sorulan,
         "belge": belge,
         "excel": excel,
     }

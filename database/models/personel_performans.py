@@ -344,15 +344,23 @@ PersonelPrimPayLegacy = PersonelPrimPayDetay
 
 
 class PersonelFaturaHDonuk(Base):
-    """Fatura bazında dondurulmuş H — dönem farkı hesabı için."""
+    """Fatura bazında dondurulmuş H — dönem farkı hesabı için.
+
+    Tarih aralıklı dönem: donem_id dolu. Aylık MVP: aylik_donem_id dolu.
+    """
 
     __tablename__ = "personel_fatura_h_donuk"
     __table_args__ = (
         UniqueConstraint("donem_id", "fatura_id", name="uq_pfatura_h"),
+        Index("ix_pfatura_h_aylik", "aylik_donem_id", "fatura_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    donem_id: Mapped[int] = mapped_column(ForeignKey("personel_prim_donemleri.id"), nullable=False)
+    donem_id: Mapped[int | None] = mapped_column(
+        ForeignKey("personel_prim_donemleri.id"), nullable=True
+    )
+    # Aylık PersonelPrimDonem.id — soft FK (firma verisini silmeden eklenir)
+    aylik_donem_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fatura_id: Mapped[int] = mapped_column(Integer, nullable=False)
     fatura_no: Mapped[str | None] = mapped_column(String(60), nullable=True)
     S: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
@@ -369,21 +377,40 @@ class PersonelFaturaHDonuk(Base):
 
 
 # ---------------------------------------------------------------------------
-# MVP: Ölçme / Prim — sade modeller (aylık dönem + politika_json)
+# Aylık prim dönemi (politika_json) — Word kapsamı durum makinesi
 # ---------------------------------------------------------------------------
 
-PRIM_MVP_TASLAK = "TASLAK"
-PRIM_MVP_HESAPLANDI = "HESAPLANDI"
-PRIM_MVP_ONAYLANDI = "ONAYLANDI"
-PRIM_MVP_DURUMLARI = (
-    (PRIM_MVP_TASLAK, "Taslak"),
-    (PRIM_MVP_HESAPLANDI, "Hesaplandı"),
-    (PRIM_MVP_ONAYLANDI, "Onaylandı"),
+# Geriye uyumluluk takma adları (eski MVP sabitleri)
+PRIM_MVP_TASLAK = PRIM_TASLAK
+PRIM_MVP_HESAPLANDI = PRIM_HESAPLANDI
+PRIM_MVP_ONAYLANDI = PRIM_ONAYLI
+PRIM_MVP_DURUMLARI = PRIM_DURUMLARI
+
+# Açık dönemler: yeniden hesap / politika güncellemesi serbest
+PRIM_ACIK_DURUMLAR = frozenset(
+    {PRIM_TASLAK, PRIM_EKSIK, PRIM_HESAPLANDI, PRIM_INCELEME}
 )
+# Kapalı: sessiz yeniden yazım yok
+PRIM_KAPALI_DURUMLAR = frozenset(
+    {PRIM_ONAYLI, PRIM_BORDRO, PRIM_ODENDI}
+)
+
+# Geçiş tablosu: kaynak → izinli hedefler
+PRIM_GECISLER: dict[str, frozenset[str]] = {
+    PRIM_TASLAK: frozenset({PRIM_EKSIK, PRIM_HESAPLANDI}),
+    PRIM_EKSIK: frozenset({PRIM_TASLAK, PRIM_HESAPLANDI}),
+    PRIM_HESAPLANDI: frozenset({PRIM_INCELEME, PRIM_ONAYLI, PRIM_EKSIK, PRIM_TASLAK}),
+    PRIM_INCELEME: frozenset({PRIM_HESAPLANDI, PRIM_ONAYLI, PRIM_EKSIK}),
+    PRIM_ONAYLI: frozenset({PRIM_BORDRO, PRIM_HESAPLANDI}),  # iptal → hesaplandı
+    PRIM_BORDRO: frozenset({PRIM_ODENDI, PRIM_ONAYLI, PRIM_HESAPLANDI}),  # iptal geri
+    PRIM_ODENDI: frozenset(),  # terminal
+}
 
 VARSAYILAN_POLITIKA_JSON = (
     '{"ekip":50,"katki":30,"kidem":20}'
 )
+VARSAYILAN_OLCUT_SURUM = "2026-10-16"
+BORDRO_KAYNAK_ON_EK = "PRIM_DONEM"
 
 
 class PersonelGorev(Base):
@@ -425,7 +452,7 @@ class PersonelKatki(Base):
 
 
 class PersonelPrimDonem(Base):
-    """MVP aylık prim dönemi — havuz + politika_json (50/30/20 varsayılan)."""
+    """Aylık prim dönemi — havuz + dönem başında dondurulmuş politika_json / ölçüt sürümü."""
 
     __tablename__ = "personel_prim_donem"
     __table_args__ = (
@@ -435,18 +462,24 @@ class PersonelPrimDonem(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     yil: Mapped[int] = mapped_column(Integer, nullable=False)
     ay: Mapped[int] = mapped_column(Integer, nullable=False)
-    durum: Mapped[str] = mapped_column(String(30), nullable=False, default=PRIM_MVP_TASLAK)
+    durum: Mapped[str] = mapped_column(String(30), nullable=False, default=PRIM_TASLAK)
     havuz: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     politika_json: Mapped[str] = mapped_column(
         String(500), nullable=False, default=VARSAYILAN_POLITIKA_JSON
     )
+    # Dönem başında sabitlenen ölçüt sürümü — kapalı dönemde sessiz değişmez
+    olcut_surum: Mapped[str | None] = mapped_column(String(40), nullable=True)
     hesaplayan: Mapped[str | None] = mapped_column(String(120), nullable=True)
     hesap_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    onaylayan: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    onay_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    iptal_eden: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    iptal_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class PersonelPrimPay(Base):
-    """MVP kişi payı — tutar = ekip_pay + katki_pay + kidem_pay."""
+    """Kişi payı — tutar = ekip_pay + katki_pay + kidem_pay; bordro ek ödeme bağlantısı."""
 
     __tablename__ = "personel_prim_pay"
     __table_args__ = (
@@ -460,3 +493,7 @@ class PersonelPrimPay(Base):
     ekip_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     katki_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     kidem_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Standart PersonelHakedis.ek_odeme bağlantısı (dönem+personel tek borç)
+    hakedis_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bordro_baglanti_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    odenen: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)

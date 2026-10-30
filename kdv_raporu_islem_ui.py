@@ -267,22 +267,66 @@ def hatali_fis_penceresi(app, bas: date, bit: date, ekran=None) -> tk.Toplevel |
                 ("fis_no", "Fiş no", 95), ("duz", "Düzeltme fişi", 95), ("fis_kdv", "Fişteki KDV", 100),
                 ("beklenen", "Beklenen KDV", 100), ("fark", "Fark", 90), ("durum", "Durum", 190),
                 ("aciklama", "Açıklama", 400))
+    kolon_idler = [k for k, _b, _g in kolonlar]
+    baslik_map = {k: b for k, b, _g in kolonlar}
     agac = _liste(pencere, kolonlar, height=16, coklu=True)
     rows = sonuc["satirlar"]
+    liste_filtre: dict = {}
+    filtre_bag: dict | None = None
 
-    def doldur():
-        agac.delete(*agac.get_children())
-        for i, r in enumerate(rows):
-            agac.insert("", "end", iid=str(i), tags=(r.get("_etiket"),) if r.get("_etiket") else (), values=(
-                r["tarih"].strftime("%d.%m.%Y"), r["tur_adi"], r["no"], r["cari"], r["fis_no"],
-                r["duzeltme_fis_no"], bicimle(r["fis_kdv"], "para"), bicimle(r["beklenen_kdv"], "para"),
-                bicimle(r["fark"], "para"), r["durum"], r["aciklama"]))
+    def _satir_vals(r: dict) -> tuple:
+        return (
+            r["tarih"].strftime("%d.%m.%Y"), r["tur_adi"], r["no"], r["cari"], r["fis_no"],
+            r["duzeltme_fis_no"], bicimle(r["fis_kdv"], "para"), bicimle(r["beklenen_kdv"], "para"),
+            bicimle(r["fark"], "para"), r["durum"], r["aciklama"],
+        )
 
-    doldur()
     agac.pack(fill="both", expand=True, padx=12)
     bilgi = tk.Label(pencere, text=sonuc.get("mesaj") or f"{len(rows)} belge listelendi.", bg=ACIK_BG, fg=IKINCIL,
                      font=font(9, "normal", app))
     bilgi.pack(anchor="w", padx=12)
+
+    def doldur():
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
+        agac.delete(*agac.get_children())
+        gosterilen = 0
+        for i, r in enumerate(rows):
+            vals = _satir_vals(r)
+            if not satir_kolon_filtre_uygun(vals, kolon_idler, liste_filtre):
+                continue
+            agac.insert(
+                "",
+                "end",
+                iid=str(i),
+                tags=(r.get("_etiket"),) if r.get("_etiket") else (),
+                values=vals,
+            )
+            gosterilen += 1
+        if liste_filtre:
+            bilgi.configure(
+                text=f"Gösterilen: {gosterilen} / {len(rows)} | Aktif kolon filtresi: {len(liste_filtre)}"
+            )
+        else:
+            bilgi.configure(text=sonuc.get("mesaj") or f"{len(rows)} belge listelendi.")
+        if filtre_bag:
+            filtre_bag["guncelle_basliklar"]()
+
+    from liste_filtre_ui import treeview_filtre_bagla
+
+    filtre_bag = treeview_filtre_bagla(
+        agac,
+        baslik_map,
+        get_filtre_dict=lambda: liste_filtre,
+        set_filtre_dict=None,
+        yenile_cb=doldur,
+        deger_listesi_cb=lambda: [{"values": _satir_vals(r)} for r in rows],
+        parent=pencere,
+        kolonlar=kolon_idler,
+        haric_kolonlar=("fis_kdv", "beklenen", "fark"),
+        sag_tik_filtre=True,
+    )
+    doldur()
 
     def secili() -> list[dict]:
         return [rows[int(i)] for i in agac.selection()]

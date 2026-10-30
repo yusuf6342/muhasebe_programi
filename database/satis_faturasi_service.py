@@ -9,7 +9,12 @@ from sqlalchemy.orm import selectinload, joinedload
 from database.database import get_session
 from database.access import yazma_zorunlu, yetki_zorunlu
 from database.models.cari import Cari, SatisHareketi
-from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri, SatisFaturasiTahsilati
+from database.models.satis_faturasi import (
+    SatisFaturasi,
+    SatisFaturasiSatiri,
+    SatisFaturasiTahsilati,
+    SatisFaturaSevkiyati,
+)
 from database.models.satis_irsaliyesi import SatisIrsaliyesi, SatisIrsaliyesiSatiri
 from database.models.satis_siparisi import SatisSiparisi, SatisSiparisiSatiri
 from database.satis_siparisi_service import decimal
@@ -1441,3 +1446,129 @@ class SatisFaturasiService:
                     if kuyruk.isdigit():
                         max_sira = max(max_sira, int(kuyruk))
             return f"{onek}{max_sira + 1:05d}"
+
+    # ── Sevkiyat / teslimat kopyaları (faturaya kalıcı, kaynak irsaliyeden bağımsız) ──
+
+    _SEVKIYAT_ALANLAR = (
+        "irsaliye_id",
+        "irsaliye_no",
+        "irsaliye_tarihi",
+        "sevk_adresi",
+        "sevk_il",
+        "sevk_ilce",
+        "planlanan_teslim",
+        "teslim_kisi",
+        "teslim_telefon",
+        "sevkiyat_yontemi",
+        "nakliyeci",
+        "arac_plaka",
+        "sofor_adi",
+        "sofor_telefon",
+        "takip_no",
+        "sevk_notu",
+        "fiili_sevk_tarihi",
+    )
+
+    _schema_sevkiyat_hazir = False
+
+    @staticmethod
+    def sevkiyat_schema_hazirla() -> None:
+        if SatisFaturasiService._schema_sevkiyat_hazir:
+            return
+        from database.database import Base, engine
+
+        if engine is None:
+            return
+        import database.models.satis_faturasi  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[SatisFaturaSevkiyati.__table__])
+        SatisFaturasiService._schema_sevkiyat_hazir = True
+
+    @staticmethod
+    def sevkiyat_irsaliyeden(irsaliye) -> dict[str, Any]:
+        """İrsaliye sevkiyat alanlarından fatura kopyası sözlüğü üretir."""
+        if irsaliye is None:
+            return {}
+        veri: dict[str, Any] = {
+            "irsaliye_id": getattr(irsaliye, "id", None),
+            "irsaliye_no": getattr(irsaliye, "irsaliye_no", None) or None,
+            "irsaliye_tarihi": getattr(irsaliye, "irsaliye_tarihi", None),
+        }
+        for alan in SatisFaturasiService._SEVKIYAT_ALANLAR:
+            if alan in ("irsaliye_id", "irsaliye_no", "irsaliye_tarihi"):
+                continue
+            veri[alan] = getattr(irsaliye, alan, None)
+        return veri
+
+    @staticmethod
+    def sevkiyat_blok_ekle(mevcut: list[dict] | None, yeni: dict) -> list[dict]:
+        """Aynı irsaliye_id varsa günceller; yoksa ekler. Önceki blokları silmez."""
+        liste = [dict(x) for x in (mevcut or [])]
+        if not yeni:
+            return liste
+        kaynak_id = yeni.get("irsaliye_id")
+        if kaynak_id is not None:
+            for i, eski in enumerate(liste):
+                if eski.get("irsaliye_id") == kaynak_id:
+                    guncel = dict(eski)
+                    guncel.update(yeni)
+                    liste[i] = guncel
+                    return liste
+        liste.append(dict(yeni))
+        return liste
+
+    @staticmethod
+    def _sevkiyat_satir_dict(kayit: SatisFaturaSevkiyati) -> dict[str, Any]:
+        return {
+            "id": kayit.id,
+            "sira": kayit.sira,
+            **{alan: getattr(kayit, alan, None) for alan in SatisFaturasiService._SEVKIYAT_ALANLAR},
+        }
+
+    @staticmethod
+    def sevkiyat_listele(fatura_id: int) -> list[dict[str, Any]]:
+        SatisFaturasiService.sevkiyat_schema_hazirla()
+        with get_session() as session:
+            kayitlar = session.scalars(
+                select(SatisFaturaSevkiyati)
+                .where(SatisFaturaSevkiyati.fatura_id == int(fatura_id))
+                .order_by(SatisFaturaSevkiyati.sira, SatisFaturaSevkiyati.id)
+            ).all()
+            return [SatisFaturasiService._sevkiyat_satir_dict(k) for k in kayitlar]
+
+    @staticmethod
+    def sevkiyat_kaydet(fatura_id: int, bloklar: list[dict] | None) -> list[dict[str, Any]]:
+        """Faturanın sevkiyat kopyalarını tamamen yeniler (taslak iptalinde çağrılmaz)."""
+        SatisFaturasiService.sevkiyat_schema_hazirla()
+        fid = int(fatura_id)
+        with get_session() as session:
+            fatura = session.get(SatisFaturasi, fid)
+            if fatura is None:
+                raise ValueError("Fatura bulunamadı.")
+            session.execute(delete(SatisFaturaSevkiyati).where(SatisFaturaSevkiyati.fatura_id == fid))
+            sonuc: list[dict[str, Any]] = []
+            for sira, blok in enumerate(bloklar or []):
+                kayit = SatisFaturaSevkiyati(fatura_id=fid, sira=sira)
+                for alan in SatisFaturasiService._SEVKIYAT_ALANLAR:
+                    deger = blok.get(alan)
+                    if alan in ("irsaliye_id",) and deger not in (None, ""):
+                        deger = int(deger)
+                    elif alan in ("irsaliye_tarihi", "planlanan_teslim", "fiili_sevk_tarihi"):
+                        if isinstance(deger, str) and deger.strip():
+                            for bicim in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                                try:
+                                    deger = datetime.strptime(deger.strip(), bicim).date()
+                                    break
+                                except ValueError:
+                                    continue
+                            else:
+                                deger = None
+                        elif deger == "":
+                            deger = None
+                    elif isinstance(deger, str):
+                        deger = deger.strip() or None
+                    setattr(kayit, alan, deger)
+                session.add(kayit)
+                session.flush()
+                sonuc.append(SatisFaturasiService._sevkiyat_satir_dict(kayit))
+            return sonuc

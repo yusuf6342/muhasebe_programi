@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.iskonto_hesap_service import satir_iskonto_hesapla
 from database.session_manager import oturum
 
 _LOG = logging.getLogger("cari_fatura_detay")
@@ -380,18 +381,38 @@ class CariFaturaDetayService:
                 isk2 = getattr(satir, "iskonto_orani_2", 0) or 0
                 isk3 = getattr(satir, "iskonto_orani_3", 0) or 0
                 kdv_o = Decimal(str(getattr(satir, "kdv_orani", 0) or 0))
+                hesap = satir_iskonto_hesapla(
+                    miktar=miktar,
+                    brut_birim_fiyat=fiyat,
+                    iskonto1=isk1,
+                    iskonto2=isk2,
+                    iskonto3=isk3,
+                    kdv_orani=kdv_o,
+                    kdv_dahil=False,
+                )
                 net = getattr(satir, "tl_tutar", None)
                 if net is None or Decimal(str(net or 0)) == 0:
-                    net = _satir_net(miktar, fiyat, isk1, isk2, isk3)
+                    net = Decimal(str(hesap["iskonto_sonrasi_satir"]))
                 else:
                     net = Decimal(str(net))
-                kdv_tutar = _kurus(net * kdv_o / Decimal("100"))
+                # Net birim = iskonto sonrası KDV hariç birim (brüt birim fiyatı değil)
+                if miktar:
+                    net_birim = _kurus(net / miktar)
+                else:
+                    net_birim = Decimal(str(hesap["iskonto_sonrasi_birim_fiyat"]))
+                kdv_tutar = Decimal(str(hesap["kdv_tutari"]))
+                if getattr(satir, "tl_tutar", None) is not None and Decimal(
+                    str(getattr(satir, "tl_tutar") or 0)
+                ):
+                    # Kayıtlı matrah varsa KDV'yi matrahtan türet
+                    kdv_tutar = _kurus(net * kdv_o / Decimal("100"))
                 brut = _kurus(net + kdv_tutar)
                 isk_metin = f"{float(isk1):g}"
                 if Decimal(str(isk2 or 0)) or Decimal(str(isk3 or 0)):
                     isk_metin = "+".join(
                         f"{float(x):g}" for x in (isk1, isk2, isk3) if Decimal(str(x or 0))
                     )
+                isk_tutar = Decimal(str(hesap["iskonto_tutari"]))
 
                 kod = (getattr(satir, "urun_kodu", None) or "").strip()
                 sid = kod_to_stok_id.get(kod)
@@ -442,7 +463,11 @@ class CariFaturaDetayService:
                         "lot": str(lot or "")[:40],
                         "birim_fiyat": fiyat,
                         "birim_fiyat_goster": _para(fiyat),
+                        "net_birim_fiyat": net_birim,
+                        "net_birim_fiyat_goster": _para(net_birim),
                         "iskonto": isk_metin,
+                        "iskonto_tutari": isk_tutar,
+                        "iskonto_tutari_goster": _para(isk_tutar),
                         "kdv_orani": kdv_o,
                         "kdv_orani_goster": f"%{float(kdv_o):g}",
                         "net_tutar": net,

@@ -20,9 +20,14 @@ from fatura_belge_aktarim.matching import PartyMatchingService, ProductMatchingS
 from fatura_belge_aktarim.models import (
     InvoiceImportAudit,
     InvoiceImportDraft,
+    InvoiceImportFile,
     InvoiceImportLine,
+    PartyMatchRule,
+    ProductMatchRule,
 )
 from fatura_belge_aktarim.normalize import tarih_tr
+
+MAL_KABUL_DURUMLARI = ("mal_geldi", "mal_bekleniyor", "irsaliyeden")
 
 
 def _q2(v: Decimal) -> Decimal:
@@ -30,8 +35,51 @@ def _q2(v: Decimal) -> Decimal:
 
 
 class InvoiceDraftService:
+    _schema_hazir = False
+
+    @classmethod
+    def ensure_schema(cls, eng=None) -> None:
+        """create_all + eski DB için mal_kabul_durumu kolonu."""
+        if cls._schema_hazir and eng is None:
+            return
+        from database.database import Base, engine as default_engine
+        from sqlalchemy import text
+
+        bag = eng if eng is not None else default_engine
+        if bag is None:
+            return
+        Base.metadata.create_all(
+            bind=bag,
+            tables=[
+                InvoiceImportDraft.__table__,
+                InvoiceImportFile.__table__,
+                InvoiceImportLine.__table__,
+                InvoiceImportAudit.__table__,
+                PartyMatchRule.__table__,
+                ProductMatchRule.__table__,
+            ],
+        )
+        alterler = (
+            'ALTER TABLE "invoice_import_drafts" ADD COLUMN "mal_kabul_durumu" VARCHAR(40)',
+            'ALTER TABLE "invoice_import_drafts" ADD COLUMN "linked_irsaliye_id" INTEGER',
+            'ALTER TABLE "invoice_import_lines" ADD COLUMN "teslim_miktar" NUMERIC(18, 4)',
+            'ALTER TABLE "invoice_import_lines" ADD COLUMN "irsaliye_satiri_id" INTEGER',
+        )
+        try:
+            with bag.begin() as conn:
+                for sql in alterler:
+                    try:
+                        conn.execute(text(sql))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if eng is None:
+            cls._schema_hazir = True
+
     @staticmethod
     def listele(*, yon: str | None = None, durum: str | None = None, limit: int = 100) -> list[InvoiceImportDraft]:
+        InvoiceDraftService.ensure_schema()
         with get_session() as session:
             q = select(InvoiceImportDraft).where(InvoiceImportDraft.is_deleted.is_(False))
             if yon:
@@ -42,7 +90,157 @@ class InvoiceDraftService:
             return list(session.scalars(q))
 
     @staticmethod
+    def mal_kabul_ata(draft_id: int, durum: str) -> None:
+        drm = (durum or "").strip().lower()
+        if drm not in MAL_KABUL_DURUMLARI:
+            raise ValueError(
+                "Mal kabul durumu Mal Geldi, Mal Bekleniyor veya İrsaliyeden Alındı olmalı."
+            )
+        with get_session() as session:
+            d = session.get(InvoiceImportDraft, draft_id)
+            if not d or d.is_deleted:
+                raise ValueError("Taslak bulunamadı.")
+            if d.durum == "fatura_olusturuldu":
+                raise ValueError("Kesinleşmiş taslakta mal kabul değiştirilemez.")
+            d.mal_kabul_durumu = drm
+            d.updated_at = datetime.now()
+            session.add(
+                InvoiceImportAudit(
+                    draft_id=draft_id,
+                    kullanici=oturum.kullanici_adi,
+                    aksiyon="mal_kabul",
+                    sonraki_json=dumps_accounting({"mal_kabul_durumu": drm}),
+                )
+            )
+            session.flush()
+
+    @staticmethod
+    def satir_teslim_ata(line_id: int, teslim_miktar: Decimal | None) -> None:
+        """Kısmi mal kabul: satır teslim miktarı (None = tam belge miktarı)."""
+        InvoiceDraftService.ensure_schema()
+        with get_session() as session:
+            line = session.get(InvoiceImportLine, line_id)
+            if not line:
+                raise ValueError("Satır bulunamadı.")
+            belge = line.miktar or Decimal("0")
+            if teslim_miktar is not None:
+                t = Decimal(str(teslim_miktar))
+                if t < 0:
+                    raise ValueError("Teslim miktarı negatif olamaz.")
+                if t > belge:
+                    raise ValueError(
+                        f"Teslim miktarı ({t}) belge miktarını ({belge}) aşamaz."
+                    )
+                line.teslim_miktar = t
+            else:
+                line.teslim_miktar = None
+            session.flush()
+
+    @staticmethod
+    def irsaliye_bagla(draft_id: int, irsaliye_id: int | None) -> dict[str, Any]:
+        """ALIS taslağına açık alış irsaliyesi bağla; satırları stok koduyla eşleştir."""
+        InvoiceDraftService.ensure_schema()
+        data = InvoiceDraftService.getir(draft_id)
+        draft: InvoiceImportDraft = data["draft"]
+        if draft.yon != "ALIS":
+            raise ValueError("İrsaliye bağlantısı yalnız alış taslaklarında.")
+        if draft.durum == "fatura_olusturuldu":
+            raise ValueError("Kesinleşmiş taslakta irsaliye değiştirilemez.")
+
+        eslesen = 0
+        with get_session() as session:
+            d = session.get(InvoiceImportDraft, draft_id)
+            if not d:
+                raise ValueError("Taslak bulunamadı.")
+            d.linked_irsaliye_id = int(irsaliye_id) if irsaliye_id else None
+            d.updated_at = datetime.now()
+            satirlar = list(
+                session.scalars(
+                    select(InvoiceImportLine).where(InvoiceImportLine.draft_id == draft_id)
+                )
+            )
+            for line in satirlar:
+                line.irsaliye_satiri_id = None
+
+            if irsaliye_id:
+                from database.models.alis_irsaliyesi import AlisIrsaliyesi, AlisIrsaliyesiSatiri
+
+                irs = session.get(AlisIrsaliyesi, int(irsaliye_id))
+                if not irs:
+                    raise ValueError("İrsaliye bulunamadı.")
+                if draft.cari_id and irs.cari_id and int(irs.cari_id) != int(draft.cari_id):
+                    raise ValueError("İrsaliye carisi taslak carisiyle uyuşmuyor.")
+                irs_satirlar = list(
+                    session.scalars(
+                        select(AlisIrsaliyesiSatiri).where(
+                            AlisIrsaliyesiSatiri.irsaliye_id == int(irsaliye_id)
+                        )
+                    )
+                )
+                # stok_kodu → kalan miktarı olan ilk satır
+                havuz: dict[str, list] = {}
+                for is_ in irs_satirlar:
+                    kod = (is_.urun_kodu or "").strip()
+                    if not kod:
+                        continue
+                    kalan = (is_.miktar or Decimal("0")) - (is_.faturalanan_miktar or Decimal("0"))
+                    if kalan <= 0:
+                        continue
+                    havuz.setdefault(kod, []).append(is_)
+                for line in satirlar:
+                    if line.match_status == "haric":
+                        continue
+                    kod = (line.stok_kodu or "").strip()
+                    if not kod or kod not in havuz or not havuz[kod]:
+                        continue
+                    is_ = havuz[kod].pop(0)
+                    line.irsaliye_satiri_id = int(is_.id)
+                    eslesen += 1
+
+            session.add(
+                InvoiceImportAudit(
+                    draft_id=draft_id,
+                    kullanici=oturum.kullanici_adi,
+                    aksiyon="irsaliye_bagla",
+                    sonraki_json=dumps_accounting(
+                        {"irsaliye_id": irsaliye_id, "eslesen_satir": eslesen}
+                    ),
+                )
+            )
+            session.flush()
+        return {"irsaliye_id": irsaliye_id, "eslesen_satir": eslesen}
+
+    @staticmethod
+    def acik_irsaliyeler_cari(cari_id: int | None) -> list[dict[str, Any]]:
+        """Cariye ait faturalanabilir alış irsaliyeleri (önizleme listesi)."""
+        from database.alis_faturasi_service import AlisFaturasiService
+
+        out = []
+        for irs in AlisFaturasiService.acik_irsaliyeler():
+            if cari_id and getattr(irs, "cari_id", None) and int(irs.cari_id) != int(cari_id):
+                continue
+            kalan_satir = 0
+            for s in getattr(irs, "satirlar", None) or []:
+                kalan = (s.miktar or Decimal("0")) - (s.faturalanan_miktar or Decimal("0"))
+                if kalan > 0:
+                    kalan_satir += 1
+            if kalan_satir <= 0:
+                continue
+            out.append(
+                {
+                    "id": int(irs.id),
+                    "irsaliye_no": irs.irsaliye_no,
+                    "tarih": str(getattr(irs, "irsaliye_tarihi", "") or ""),
+                    "cari_id": getattr(irs, "cari_id", None),
+                    "durum": irs.durum,
+                    "kalan_satir": kalan_satir,
+                }
+            )
+        return out
+
+    @staticmethod
     def getir(draft_id: int) -> dict[str, Any]:
+        InvoiceDraftService.ensure_schema()
         with get_session() as session:
             draft = session.get(InvoiceImportDraft, draft_id)
             if not draft or draft.is_deleted:
@@ -86,7 +284,11 @@ class InvoiceDraftService:
             satirlar = list(
                 session.scalars(select(InvoiceImportLine).where(InvoiceImportLine.draft_id == draft_id))
             )
+            _ESLESME_TAMAM = {"eslesti", "yeni_stok", "hizmet", "gider", "haric"}
             for line in satirlar:
+                # Kullanıcı eşleştirmesini / yeni kart bağını otomatik ezme
+                if line.match_status in _ESLESME_TAMAM:
+                    continue
                 sonuc = ProductMatchingService.satir_eslestir(line, tedarikci_cari_id=d.cari_id)
                 if sonuc.get("status") == "eslesti":
                     line.match_status = "eslesti"
@@ -99,7 +301,7 @@ class InvoiceDraftService:
                     line.guven = sonuc.get("guven")
                 else:
                     line.match_status = "bulunamadi"
-            if d.cari_id and all(s.match_status == "eslesti" for s in satirlar):
+            if d.cari_id and all(s.match_status in _ESLESME_TAMAM for s in satirlar):
                 d.durum = "kontrol_bekliyor"
             else:
                 d.durum = "eslestirme_bekliyor"
@@ -124,7 +326,17 @@ class InvoiceDraftService:
             PartyMatchingService.hafizaya_yaz(vkn, cari_id, draft.satici_unvan or draft.alici_unvan)
 
     @staticmethod
-    def satir_stok_ata(line_id: int, stok_id: int, stok_kodu: str, *, carpan: Decimal = Decimal("1")) -> None:
+    def satir_stok_ata(
+        line_id: int,
+        stok_id: int,
+        stok_kodu: str,
+        *,
+        carpan: Decimal = Decimal("1"),
+        match_status: str = "eslesti",
+    ) -> None:
+        durum = (match_status or "eslesti").strip() or "eslesti"
+        if durum not in {"eslesti", "yeni_stok"}:
+            durum = "eslesti"
         with get_session() as session:
             line = session.get(InvoiceImportLine, line_id)
             if not line:
@@ -132,7 +344,7 @@ class InvoiceDraftService:
             line.stok_id = int(stok_id)
             line.stok_kodu = stok_kodu
             line.birim_carpan = carpan
-            line.match_status = "eslesti"
+            line.match_status = durum
             line.guven = Decimal("100")
             draft = session.get(InvoiceImportDraft, line.draft_id)
             tedarikci = draft.cari_id if draft else None
@@ -179,8 +391,7 @@ class InvoiceDraftService:
                 jc = {}
             if not (jc.get("unvan") or "").strip():
                 hatalar.append("Yeni cari taslağında ünvan zorunlu.")
-            if not (jc.get("vergi_numarasi") or jc.get("tc_kimlik")):
-                hatalar.append("Yeni cari taslağında vergi/T.C. no zorunlu.")
+            # VKN/TCKN zorunlu değil; boş kimlik ile gerçek kart açılabilir.
 
         if not satirlar:
             hatalar.append(
@@ -192,16 +403,24 @@ class InvoiceDraftService:
                 )
 
         for s in satirlar:
-            if s.match_status not in {"eslesti", "hizmet", "gider", "haric"}:
+            if s.match_status not in {"eslesti", "yeni_stok", "hizmet", "gider", "haric"}:
                 hatalar.append(f"Satır {s.sira}: stok/hizmet eşleşmesi tamamlanmadı.")
             if s.match_status == "haric":
                 continue
+            if s.match_status in {"eslesti", "yeni_stok"} and not s.stok_id:
+                hatalar.append(f"Satır {s.sira}: stok eşleşmesi var ama stok kimliği eksik.")
             if s.miktar is None or s.miktar <= 0:
                 hatalar.append(f"Satır {s.sira}: miktar geçersiz.")
             fiyat_ok = s.birim_fiyat is not None and s.birim_fiyat >= 0
             toplam_ok = s.satir_toplam is not None and s.satir_toplam >= 0
             if not fiyat_ok and not toplam_ok:
                 hatalar.append(f"Satır {s.sira}: birim fiyat ve satır toplamı birlikte boş.")
+            # Birim dönüşümü: fatura birimi ile stok bağında çarpan yoksa uyarı
+            if s.match_status in {"eslesti", "yeni_stok"} and s.birim_carpan is None:
+                uyarilar.append(
+                    f"Satır {s.sira}: birim çarpanı boş; 1 kabul edilecek. "
+                    "Koli/paket için dönüşümü kontrol edin."
+                )
 
         hesaplanan = Decimal("0")
         for s in satirlar:
@@ -412,36 +631,63 @@ class InvoicePostingService:
             vade = tarih + timedelta(days=0)
             aktif_satirlar = [s for s in satirlar if s.match_status != "haric"]
             satir_verileri = []
+            kismi_teslim = False
             for s in aktif_satirlar:
                 carpan = s.birim_carpan or Decimal("1")
                 miktar = (s.miktar or Decimal("0")) * carpan
-                satir_verileri.append(
-                    {
-                        "urun_kodu": s.stok_kodu,
-                        "urun_adi": s.aciklama or s.stok_kodu,
-                        "miktar": miktar,
-                        "birim": "Adet",
-                        "birim_fiyat": s.birim_fiyat or Decimal("0"),
-                        "iskonto_orani": s.iskonto_orani or Decimal("0"),
-                        "kdv_orani": s.kdv_orani or Decimal("20"),
-                        "barkod": s.barkod,
-                    }
-                )
+                belge_mik = s.miktar or Decimal("0")
+                if s.teslim_miktar is not None and s.teslim_miktar < belge_mik:
+                    kismi_teslim = True
+                row = {
+                    "urun_kodu": s.stok_kodu,
+                    "urun_adi": s.aciklama or s.stok_kodu,
+                    "miktar": miktar,
+                    "birim": "Adet",
+                    "birim_fiyat": s.birim_fiyat or Decimal("0"),
+                    "iskonto_orani": s.iskonto_orani or Decimal("0"),
+                    "kdv_orani": s.kdv_orani or Decimal("20"),
+                    "barkod": s.barkod,
+                }
+                if getattr(s, "irsaliye_satiri_id", None):
+                    row["irsaliye_satiri_id"] = int(s.irsaliye_satiri_id)
+                satir_verileri.append(row)
+
+            mal_kabul = (getattr(draft, "mal_kabul_durumu", None) or "mal_bekleniyor").strip().lower()
+            if mal_kabul not in MAL_KABUL_DURUMLARI:
+                mal_kabul = "mal_bekleniyor"
+            if mal_kabul == "irsaliyeden" and not getattr(draft, "linked_irsaliye_id", None):
+                bagli = any(getattr(s, "irsaliye_satiri_id", None) for s in aktif_satirlar)
+                if not bagli:
+                    raise ValueError(
+                        "İrsaliyeden Alındı seçildi fakat irsaliye bağlanmadı. "
+                        "Önce açık irsaliyeyi seçin."
+                    )
+            # Mal Geldi + tam teslim → stok şimdi. Kısmi teslim / bekleniyor / irsaliye → stok yazma
+            # (kısmi: fatura mali kaydı oluşur; kalan fiziksel kabul sonra bağlanır).
+            hareket_yaz = (
+                draft.yon == "ALIS"
+                and mal_kabul == "mal_geldi"
+                and not kismi_teslim
+            )
 
             if draft.yon == "ALIS":
-                fatura = AlisFaturasiService.kaydet(
-                    {
-                        "fatura_no": draft.belge_no,
-                        "fatura_tarihi": tarih,
-                        "vade_tarihi": vade,
-                        "cari_id": cari_id,
-                        "depo": "ANA DEPO",
-                        "para_birimi": draft.para_birimi or "TRY",
-                        "kur": draft.kur or Decimal("1"),
-                        "aciklama": f"e-Fatura aktarım ETTN={draft.ettn or '-'}",
-                    },
-                    satir_verileri,
-                )
+                acik = f"e-Fatura aktarım ETTN={draft.ettn or '-'} | mal_kabul={mal_kabul}"
+                if kismi_teslim:
+                    acik += " | kismi_teslim"
+                kayit = {
+                    "fatura_no": draft.belge_no,
+                    "fatura_tarihi": tarih,
+                    "vade_tarihi": vade,
+                    "cari_id": cari_id,
+                    "depo": "ANA DEPO",
+                    "para_birimi": draft.para_birimi or "TRY",
+                    "kur": draft.kur or Decimal("1"),
+                    "aciklama": acik,
+                    "hareket_yaz": hareket_yaz,
+                }
+                if getattr(draft, "linked_irsaliye_id", None):
+                    kayit["irsaliye_id"] = int(draft.linked_irsaliye_id)
+                fatura = AlisFaturasiService.kaydet(kayit, satir_verileri)
                 fatura_id = fatura.id if hasattr(fatura, "id") else getattr(fatura, "fatura_id", None)
                 tur = "ALIS"
             else:
@@ -469,6 +715,8 @@ class InvoicePostingService:
                 d.linked_invoice_id = fatura_id
                 d.linked_invoice_tur = tur
                 d.cari_id = cari_id
+                if draft.yon == "ALIS":
+                    d.mal_kabul_durumu = mal_kabul
                 d.updated_at = datetime.now()
                 session.add(
                     InvoiceImportAudit(
@@ -476,13 +724,28 @@ class InvoicePostingService:
                         kullanici=oturum.kullanici_adi,
                         aksiyon="kesin_kayit",
                         sonraki_json=dumps_accounting(
-                            {"fatura_id": fatura_id, "tur": tur},
+                            {
+                                "fatura_id": fatura_id,
+                                "tur": tur,
+                                "mal_kabul_durumu": mal_kabul if draft.yon == "ALIS" else None,
+                                "hareket_yaz": hareket_yaz,
+                                "kismi_teslim": kismi_teslim,
+                                "irsaliye_id": getattr(draft, "linked_irsaliye_id", None),
+                            },
                         ),
                     )
                 )
                 session.flush()
 
-            return {"fatura_id": fatura_id, "tur": tur, "belge_no": draft.belge_no}
+            return {
+                "fatura_id": fatura_id,
+                "tur": tur,
+                "belge_no": draft.belge_no,
+                "mal_kabul_durumu": mal_kabul if draft.yon == "ALIS" else None,
+                "hareket_yaz": hareket_yaz,
+                "kismi_teslim": kismi_teslim,
+                "irsaliye_id": getattr(draft, "linked_irsaliye_id", None),
+            }
         except Exception:
             with get_session() as session:
                 d = session.get(InvoiceImportDraft, draft_id)

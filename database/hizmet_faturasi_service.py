@@ -25,6 +25,18 @@ TAHSILAT_SEKILLERI = ("KASA TAHSİLAT", "ALINAN HAVALE", "KREDİ KARTIYLA TAHSİ
 
 HAREKET_GIDER = "HİZMET ALIŞ (GİDER)"
 HAREKET_GELIR = "HİZMET SATIŞ (GELİR)"
+HAREKET_GIDER_IADE = "HİZMET ALIŞ İADE"
+HAREKET_GELIR_IADE = "HİZMET SATIŞ İADE"
+
+FATURA_TURLERI = ("GIDER", "GELIR", "GIDER_IADE", "GELIR_IADE")
+
+
+def _kart_turu(fatura_turu: str) -> str:
+    """İade faturaları ilgili yönün hizmet kartını kullanır."""
+    tur = (fatura_turu or "GIDER").upper()
+    if tur in ("GIDER", "GIDER_IADE"):
+        return "GIDER"
+    return "GELIR"
 
 
 class HizmetFaturasiService:
@@ -60,7 +72,13 @@ class HizmetFaturasiService:
 
     @staticmethod
     def fatura_no(fatura_turu: str) -> str:
-        onek = "HSG" if (fatura_turu or "").upper() == "GELIR" else "HAG"
+        tur = (fatura_turu or "GIDER").upper()
+        onek = {
+            "GELIR": "HSG",
+            "GELIR_IADE": "HSI",
+            "GIDER": "HAG",
+            "GIDER_IADE": "HAI",
+        }.get(tur, "HAG")
         with get_session() as session:
             numaralar = session.scalars(
                 select(HizmetFaturasi.fatura_no).where(
@@ -185,8 +203,9 @@ class HizmetFaturasiService:
         tarih = veriler["fatura_tarihi"]
         vade = veriler["vade_tarihi"]
         tur = (veriler.get("fatura_turu") or "GIDER").strip().upper()
-        if tur not in ("GIDER", "GELIR"):
-            raise ValueError("Fatura türü GIDER veya GELIR olmalıdır.")
+        if tur not in FATURA_TURLERI:
+            raise ValueError("Fatura türü GIDER, GELIR veya ilgili iade olmalıdır.")
+        kart_turu = _kart_turu(tur)
         if tarih > date.today():
             raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
         if vade < tarih:
@@ -255,8 +274,14 @@ class HizmetFaturasiService:
             fatura.kur_sabitlendi = bool(veriler.get("kur_sabitlendi", pb != "TRY"))
             fatura.borc_esasi = veriler.get("borc_esasi") or "TL_SABIT"
 
-            hareket_turu = HAREKET_GELIR if tur == "GELIR" else HAREKET_GIDER
-            isaret = 1 if tur == "GELIR" else -1
+            hareket_turu = {
+                "GELIR": HAREKET_GELIR,
+                "GIDER": HAREKET_GIDER,
+                "GELIR_IADE": HAREKET_GELIR_IADE,
+                "GIDER_IADE": HAREKET_GIDER_IADE,
+            }[tur]
+            # Gider −1, gelir +1; iade ters işaret (gider iadesi eksi gider = +1)
+            isaret = {"GELIR": 1, "GIDER": -1, "GELIR_IADE": -1, "GIDER_IADE": 1}[tur]
             doviz_ara = Decimal("0")
 
             for veri in satir_verileri:
@@ -268,7 +293,7 @@ class HizmetFaturasiService:
                 )
                 if not hizmet:
                     raise ValueError(f"{kod} kodlu hizmet kartı bulunamadı.")
-                if (hizmet.hizmet_turu or "").upper() != tur:
+                if (hizmet.hizmet_turu or "").upper() != kart_turu:
                     raise ValueError(
                         f"{kod} bu fatura türü için uygun değil "
                         f"({hizmet.hizmet_turu})."
@@ -327,7 +352,7 @@ class HizmetFaturasiService:
                         aciklama=(veri.get("aciklama") or "").strip() or None,
                     )
                 )
-                if tur == "GIDER":
+                if kart_turu == "GIDER":
                     hizmet.alis_fiyati = birim_fiyat
                 else:
                     hizmet.satis_fiyati = birim_fiyat
@@ -339,7 +364,7 @@ class HizmetFaturasiService:
             fatura.tl_genel_toplam = toplam
             fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
             if fatura.odeme_tutari > toplam:
-                etiket = "Tahsilat" if tur == "GELIR" else "Ödeme"
+                etiket = "Tahsilat" if kart_turu == "GELIR" else "Ödeme"
                 raise ValueError(f"{etiket} tutarı fatura toplamından büyük olamaz.")
             fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
             session.flush()

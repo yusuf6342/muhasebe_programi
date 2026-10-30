@@ -190,6 +190,9 @@ class MetaVeDetayTest(unittest.TestCase):
         self.assertEqual(len(detay["satirlar"]), 1)
         self.assertEqual(detay["satirlar"][0]["urun_kodu"], "U1")
         self.assertIn("ÇIKIŞ", detay["satirlar"][0]["stok_yonu"])
+        # Brüt birim 100, iskonto yok → net birim 100 (brüt fiyat net sütununda gösterilmez)
+        self.assertEqual(detay["satirlar"][0]["net_birim_fiyat"], Decimal("100.00"))
+        self.assertEqual(detay["satirlar"][0]["birim_fiyat"], Decimal("100"))
 
         bos = CariFaturaDetayService.load_invoice_details(
             self.fatura_id, "satis_faturasi", cari_id=999999

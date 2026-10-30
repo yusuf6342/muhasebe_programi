@@ -49,6 +49,7 @@ class HizliSatisServiceTest(unittest.TestCase):
         event.listen(eng, "connect", _sqlite_pragma)
 
         import database.models.cari  # noqa: F401
+        import database.models.kart_turu  # noqa: F401
         import database.models.stok  # noqa: F401
         import database.models.satis_siparisi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401
@@ -636,6 +637,23 @@ class HizliSatisServiceTest(unittest.TestCase):
         self.assertGreaterEqual(ozet["odeme_turleri"]["nakit"], Decimal("29.00"))  # 24+5
         self.assertGreaterEqual(ozet["acik_hesap"], Decimal("7.00"))  # 12-5
         self.assertGreaterEqual(ozet["tahsilat_toplami"], Decimal("29.00"))
+
+        # Fatura bazlı liste: her belge tek satır; bekleyen yok; son satış üstte
+        paket = HizliSatisService.gun_sonu_faturalari(date.today())
+        self.assertGreaterEqual(paket["gecerli_adet"], 2)
+        fatura_ids = [f["fatura_id"] for f in paket["faturalar"] if not f.get("iptal")]
+        self.assertEqual(len(fatura_ids), len(set(fatura_ids)))
+        self.assertIn(s1["fatura_id"], fatura_ids)
+        self.assertIn(s2["fatura_id"], fatura_ids)
+        # En yeni (s2) listenin başında (iptaller karışabilir; aktif sırada s2 >= s1 id)
+        aktif = [f for f in paket["faturalar"] if not f.get("iptal")]
+        self.assertGreaterEqual(aktif[0]["fatura_id"], aktif[-1]["fatura_id"])
+        for f in paket["faturalar"]:
+            self.assertIn("musteri", f)
+            self.assertIn("kullanici", f)
+            self.assertIn("odeme", f)
+            self.assertIn("durum", f)
+
         # İptal edilen satış gün sonu aktif listeden düşer
         HizliSatisService.satisi_iptal(s1["fatura_id"], neden="gün sonu test iptal")
         ozet2 = HizliSatisService.gun_sonu_ozeti(date.today())
@@ -644,6 +662,12 @@ class HizliSatisServiceTest(unittest.TestCase):
         # Kalan aktif satış s2 (s1 iptal)
         self.assertIn(s2["fatura_id"], ids)
         self.assertGreaterEqual(ozet2["satis_toplami"], Decimal("12.00"))
+        paket2 = HizliSatisService.gun_sonu_faturalari(date.today())
+        iptal_satir = next(f for f in paket2["faturalar"] if f["fatura_id"] == s1["fatura_id"])
+        self.assertTrue(iptal_satir["iptal"])
+        self.assertNotIn(s1["fatura_id"], [f["fatura_id"] for f in paket2["faturalar"] if not f["iptal"]])
+        self.assertEqual(paket2["gecerli_adet"], ozet2["satis_adedi"])
+        self.assertEqual(paket2["gecerli_toplam"], ozet2["satis_toplami"])
 
     def test_s23_yazici_hatasi_satisi_geri_almaz(self):
         """Yazıcı/çıktı hatası satış kaydını geri almaz."""

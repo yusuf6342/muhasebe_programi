@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
@@ -64,6 +64,16 @@ class HizmetKarti(Base):
     hizmet_turu: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     # ISLETME | PERSONEL | FINANS_MALI | ARAC — yalnızca GIDER kartlarında dolu
     gider_sinifi: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # Raporlama (talimat 3) — boşsa sınıflandırılmamış; onaylı eski evrak yeniden yazılmaz
+    rapor_ana_grup: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    rapor_alt_grup: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # O = faaliyet | F = finansman | I/J gelir yerleri (gelir kartı)
+    sonuc_yeri: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    # SABIT | DEGISKEN | KARMA | BELIRSIZ
+    maliyet_davranisi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # DUZENLI | TEK
+    duzenlilik: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    dagitim_anahtar_kod: Mapped[str | None] = mapped_column(String(40), nullable=True)
     birim: Mapped[str] = mapped_column(String(30), nullable=False, default="Adet")
     alis_fiyati: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     satis_fiyati: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
@@ -75,6 +85,11 @@ class HizmetKarti(Base):
     muhasebe_kdv_satis_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # EvoBulut / dış kaynak izi — id ve kaynak kimliği sabit kalır; kod/ad değişebilir
+    kaynak_sistem: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    kaynak_kimlik: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    # Kullanıcı ad/sınıf düzenlediyse sonraki aktarım ezmesin
+    kullanici_duzenledi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     olusturma_zamani: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     hareketler: Mapped[list["HizmetHareketi"]] = relationship(
         "HizmetHareketi",
@@ -82,6 +97,23 @@ class HizmetKarti(Base):
         cascade="all, delete-orphan",
         order_by="HizmetHareketi.id",
     )
+
+
+class HizmetKaynakEngel(Base):
+    """Kullanıcının sildiği veya reddettiği dış kaynak kartı — yeniden oluşturulmasın."""
+
+    __tablename__ = "hizmet_kaynak_engelleri"
+    __table_args__ = (
+        UniqueConstraint("kaynak_sistem", "kaynak_kimlik", name="uq_hizmet_kaynak_engel"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kaynak_sistem: Mapped[str] = mapped_column(String(40), nullable=False)
+    kaynak_kimlik: Mapped[str] = mapped_column(String(80), nullable=False)
+    hizmet_kodu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    hizmet_adi: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    neden: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    olusturma_zamani: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 class HizmetHareketi(Base):

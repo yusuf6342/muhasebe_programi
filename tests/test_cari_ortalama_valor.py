@@ -61,6 +61,55 @@ def _mock_islem(iid, tarih, belge, alacak=0, borc=0, tur="Tahsilat"):
 class OrtalamaValorBirimTest(unittest.TestCase):
     """FIFO / ağırlıklı ortalama — DB'siz mock hareketler."""
 
+    def test_00_cihat_byk_kontrol_hesabi_islem_tarihi(self):
+        """SAF04090 + SAF06132 → ~38,2 gün (vade değil işlem tarihi).
+
+        Hesap tarihi 27.10.2026. Eski 14,69 TL dahil edilmeden kontrol:
+        (28800×69 + 33870×12) / 62670 = 38,19435.
+        """
+        referans = date(2026, 10, 27)
+        hareketler = [
+            _mock_hareket(1, date(2026, 8, 19), "SAF04090", 28800),
+            _mock_hareket(2, date(2026, 10, 15), "SAF06132", 33870),
+        ]
+        # Vade farklı olsa bile borç valörü işlem tarihinden
+        vade_harita = {
+            "SAF04090": date(2026, 5, 1),
+            "SAF06132": date(2026, 6, 1),
+        }
+        _tam, acik, _dil, _al = fifo_valor_paketi_hesapla(
+            hareketler,
+            [],
+            cari_turu="Müşteri",
+            vade_harita=vade_harita,
+            referans=referans,
+        )
+        self.assertEqual(len(acik), 2)
+        self.assertEqual(acik[0]["gun"], 69)  # 27.10 − 19.08
+        self.assertEqual(acik[1]["gun"], 12)  # 27.10 − 15.10
+        from database.cari_ortalama_valor_service import _sonuc_olustur
+
+        sonuc = _sonuc_olustur(Decimal("62670"), acik, _al, referans)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.19435, places=4)
+        # Ağırlıklı ortalama işlem tarihi ≈ 19.09.2026
+        self.assertEqual(sonuc["ortalama_valor_tarihi"], date(2026, 9, 19))
+
+    def test_00b_eski_bakiye_dahil_yaklasik_38_2(self):
+        """14,69 TL @ 26.05.2026 sentetik dahil → ~38,22 gün (gerçek cariye yazılmaz)."""
+        referans = date(2026, 10, 27)
+        hareketler = [
+            _mock_hareket(1, date(2026, 5, 26), "DEVIR-1469", Decimal("14.69")),
+            _mock_hareket(2, date(2026, 8, 19), "SAF04090", 28800),
+            _mock_hareket(3, date(2026, 10, 15), "SAF06132", 33870),
+        ]
+        _tam, acik, _dil, _al = fifo_valor_paketi_hesapla(
+            hareketler, [], cari_turu="Müşteri", referans=referans
+        )
+        from database.cari_ortalama_valor_service import _sonuc_olustur
+
+        sonuc = _sonuc_olustur(Decimal("62684.69"), acik, _al, referans)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.22149, delta=0.02)
+
     def test_01_alacak_bakiyesi_ortalama_tarih(self):
         """10000@10.10.2026 + 5000@20.10.2026 → ~13.10.2026."""
         rapor = date(2026, 10, 13)
@@ -151,6 +200,42 @@ class OrtalamaValorBirimTest(unittest.TestCase):
         self.assertEqual(acik[0]["borc_vadesi"], date(2026, 10, 5))
         self.assertEqual(acik[0]["gun"], 10)
 
+    def test_07b_devir_cari_islem_ile_kalan_gun(self):
+        """Devir yalnızca CariIslem'de iken avans+son satış → kalan yaş = satış günü.
+
+        M0041 senaryosu: eski Devir (SatisHareketi yok) + erken tahsilatlar satışlardan
+        önce olduğu için birincil FIFO'da açık borç/alacak şişer; netleştirmede Devir
+        eksikse tüm borç silinip 0 gün çıkar. Devir kuyruğa girince kalan 208,99 → 8 gün.
+        """
+        referans = date(2026, 10, 30)
+        from database.cari_ortalama_valor_service import _sonuc_olustur
+
+        hareketler = [
+            _mock_hareket(1, date(2026, 10, 20), "SAF06289", 2000),
+            _mock_hareket(2, date(2026, 10, 22), "SAF06333", 2520),
+        ]
+        islemler = [
+            _mock_islem(10, date(2025, 9, 2), "EVB-DEVIR-1195", borc=305.99, alacak=0, tur="Devir"),
+            _mock_islem(11, date(2026, 6, 13), "EVB-BN-12791", alacak=2000),
+            _mock_islem(12, date(2026, 10, 22), "EVB-BN-21241", alacak=2000),
+            _mock_islem(13, date(2026, 10, 22), "EVB-BN-21242", alacak=617),
+            # Satış CariIslem kopyaları (çift sayılmamalı)
+            _mock_islem(14, date(2026, 10, 20), "SAF06289", borc=2000, tur="Satış"),
+            _mock_islem(15, date(2026, 10, 22), "SAF06333", borc=2520, tur="Satış"),
+        ]
+        # Bakiye: 305.99+2000+2520 - (2000+2000+617) = 208.99
+        bakiye = Decimal("208.99")
+        _tam, acik_b, _d, acik_a = fifo_valor_paketi_hesapla(
+            hareketler, islemler, cari_turu="Müşteri", referans=referans
+        )
+        sonuc = _sonuc_olustur(bakiye, acik_b, acik_a, referans)
+        self.assertEqual(sonuc["valor_turu"], "BORC")
+        self.assertEqual(sonuc["toplam_acik_tutar"], Decimal("208.99"))
+        self.assertEqual(len(sonuc["acik_kalemler"]), 1)
+        self.assertEqual(sonuc["acik_kalemler"][0]["borc_belge_no"], "SAF06333")
+        self.assertEqual(sonuc["ortalama_valor_gun"], 8.0)
+        self.assertEqual(sonuc["ortalama_valor_tarihi"], date(2026, 10, 22))
+
 
 class OrtalamaValorDbTest(unittest.TestCase):
     def setUp(self):
@@ -171,6 +256,7 @@ class OrtalamaValorDbTest(unittest.TestCase):
         import database.models.donem  # noqa: F401
         import database.models.finans  # noqa: F401
         import database.models.firma  # noqa: F401
+        import database.models.kart_turu  # noqa: F401 — cari/stok ana_kart_turu FK
         import database.models.satis_faturasi  # noqa: F401
         import database.models.satis_iade_faturasi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401

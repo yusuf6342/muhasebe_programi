@@ -52,6 +52,69 @@ class BackupService:
         return p
 
     @staticmethod
+    def geri_yukle_dogrula(
+        yedek_yolu: str | Path,
+        *,
+        hedef_kopya: str | Path | None = None,
+    ) -> dict:
+        """Yedeği geçici kopyaya açıp okunabilirliğini doğrular.
+
+        Canlı firma DB'sine yazmaz / üzerine yazmaz. Yalnızca kopya üzerinde
+        SQLite integrity + temel tablo sayımları yapılır.
+        """
+        import sqlite3
+        import tempfile
+
+        kaynak = BackupService.dogrula_yedek(Path(yedek_yolu))
+        if hedef_kopya is None:
+            tmp = Path(tempfile.gettempdir()) / "cin_devir_yedek_test"
+            tmp.mkdir(parents=True, exist_ok=True)
+            hedef = tmp / f"restore_check_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        else:
+            hedef = Path(hedef_kopya)
+            hedef.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(kaynak, hedef)
+        for ek in ("-wal", "-shm"):
+            k = Path(str(kaynak) + ek)
+            if k.is_file():
+                shutil.copy2(k, Path(str(hedef) + ek))
+
+        sayimlar: dict[str, int] = {}
+        with sqlite3.connect(f"file:{hedef}?mode=ro", uri=True) as conn:
+            ok = conn.execute("PRAGMA integrity_check").fetchone()
+            if not ok or str(ok[0]).lower() != "ok":
+                raise ValueError(f"Yedek integrity_check başarısız: {ok}")
+            tablolar = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            ]
+            for ad in (
+                "cari_kartlar",
+                "cari_satis_hareketleri",
+                "finans_hesaplari",
+                "finans_hareketleri",
+                "stok_kartlari",
+                "donemler",
+                "devir_isleri",
+                "devir_eslesmeler",
+            ):
+                if ad in tablolar:
+                    sayimlar[ad] = int(
+                        conn.execute(f'SELECT COUNT(*) FROM "{ad}"').fetchone()[0]
+                    )
+        return {
+            "yedek": str(kaynak),
+            "kopya": str(hedef),
+            "boyut": kaynak.stat().st_size,
+            "integrity": "ok",
+            "tablo_sayisi": len(tablolar),
+            "sayimlar": sayimlar,
+            "canli_db_degismedi": True,
+        }
+
+    @staticmethod
     def servis_oncesi_yedek_al(hedef_klasor: str | Path | None = None) -> Path:
         """Onarım öncesi yedek — mevcut kopyalama mantığı, ServisOncesi adı.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import tempfile
 import tkinter as tk
 import webbrowser
@@ -13,6 +14,18 @@ from decimal import Decimal
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Iterable
 
+from liste_filtre_ui import (
+    SolSabitTablo,
+    gruplama_alani_ekle,
+    istatistik_grafik_bagla,
+    istatistik_seridi_ekle,
+    kayitli_gorunum_arac_cubugu,
+    kimlik_kolonlari_sec,
+    liste_grafik_gorunum_ekle,
+    satir_gruplari_olustur,
+    treeview_filtre_bagla,
+    treeview_grup_surukle_bagla,
+)
 from satis_tema import ACIK_BG, BEYAZ, IKINCIL, LACIVERT, font, tk_buton, treeview_stil
 
 # Kolon tipleri: metin, tarih, para, miktar, fiyat, yuzde, gun, gun1 (tek ondalıklı gün ortalaması),
@@ -41,7 +54,7 @@ class Tablo:
 
 @dataclass
 class Filtre:
-    tur: str            # tarih | tedarikci | musteri | metin | combo | check | sayi | donemler
+    tur: str            # tarih | tedarikci | musteri | metin | combo | check | sayi | donemler | grup_agac
     anahtar: str
     etiket: str
     varsayilan: Any = None
@@ -135,8 +148,19 @@ class RaporEkrani:
         self._hafiza = hafiza
         self.son_kolon: str | None = None
         self._gizli: dict[str, set[str]] = {}
+        # DOC5: sütun hunisi — tablo anahtarı → {kolon: seçili değer seti}
+        self._kolon_filtre: dict[str, dict[str, set]] = {}
+        self._ham_satirlar: dict[str, list[dict]] = {}
+        self._sol_sabit: dict[str, SolSabitTablo | None] = {}
+        self._sol_sabit_aktif: dict[str, bool] = {}
+        self._istatistik: dict[str, dict] = {}
+        self._grafik_gorunum: dict | None = None
+        self._grup_secim: dict[str, set] = {}
+        self._grup_kolonlari: dict[str, list[str]] = {}
+        self._grup_alani: dict[str, Any] = {}
         self._tur: dict[str, str] = {f.anahtar: f.tur for f in filtreler}
         self._etiket: dict[str, str] = {f.anahtar: f.etiket for f in filtreler}
+        self._rapor_anahtari = hafiza or re.sub(r"\W+", "_", baslik.casefold())[:48]
         if ust is None:
             from satin_alma_ui import _liste_ust
 
@@ -165,10 +189,23 @@ class RaporEkrani:
         tk_buton(butonlar, "PDF'e Aktar", self.pdf_aktar, rol="duzenle").pack(side="left", padx=6)
         tk_buton(butonlar, "Yazdır / Önizle", self.yazdir, rol="yazdir").pack(side="left", padx=6)
         tk_buton(butonlar, "Sütunlar", self.kolon_secici, rol="duzenle").pack(side="left", padx=6)
+        tk_buton(butonlar, "Sol sabitle", self._sol_sabitle_degistir, rol="duzenle").pack(side="left", padx=6)
         for metin, komut, rol in ek_butonlar or []:
             tk_buton(butonlar, metin, lambda k=komut: k(self), rol=rol).pack(side="left", padx=6)
+        kayitli_gorunum_arac_cubugu(
+            butonlar,
+            self._rapor_anahtari,
+            get_durum=self._gorunum_durumu,
+            uygula_durum=self._gorunum_uygula,
+            pack_side="left",
+        )
         self.durum = tk.Label(butonlar, text="", bg=ACIK_BG, fg=IKINCIL, font=font(9, "normal", app))
         self.durum.pack(side="right")
+
+        # DOC5: sürükle / menü ile sütun gruplama (hiyerarşik mali tablolarda kullanılmaz)
+        self._grup_seridi = tk.Frame(self.kok, bg=ACIK_BG)
+        self._grup_seridi.pack(fill="x", padx=16, pady=(0, 2))
+        self._gruplama_kur()
 
         self.toplam = tk.Label(self.kok, text="", bg=ACIK_BG, fg=LACIVERT, anchor="w", justify="left",
                                font=font(10, "bold", app))
@@ -176,14 +213,20 @@ class RaporEkrani:
                                wraplength=1100, font=font(9, "normal", app))
         self.notlar.pack(side="bottom", fill="x", padx=18, pady=(0, 8))
         self.toplam.pack(side="bottom", fill="x", padx=18, pady=(2, 2))
+        self._istatistik_cerceve = tk.Frame(self.kok, bg=ACIK_BG)
+        self._istatistik_cerceve.pack(side="bottom", fill="x", padx=12, pady=(0, 2))
 
         govde = tk.Frame(self.kok, bg=ACIK_BG)
         govde.pack(fill="both", expand=True, padx=16, pady=4)
+        self._govde = govde
+        self._liste_alani = tk.Frame(govde, bg=ACIK_BG)
+        self._liste_alani.pack(fill="both", expand=True)
         self.tablolar: dict[str, ttk.Treeview] = {}
         self._satirlar: dict[str, list[dict]] = {}
+        self._filtre_bag: dict[str, dict] = {}
         self._sirala: dict[str, tuple[str | None, bool]] = {}
         if len(tablolar) > 1:
-            self.defter = ttk.Notebook(govde)
+            self.defter = ttk.Notebook(self._liste_alani)
             self.defter.pack(fill="both", expand=True)
             for t in tablolar:
                 sayfa = ttk.Frame(self.defter)
@@ -191,7 +234,8 @@ class RaporEkrani:
                 self.tablolar[t.anahtar] = self._tablo_kur(sayfa, t)
         else:
             self.defter = None
-            self.tablolar[tablolar[0].anahtar] = self._tablo_kur(govde, tablolar[0])
+            self.tablolar[tablolar[0].anahtar] = self._tablo_kur(self._liste_alani, tablolar[0])
+        self._istatistik_kur()
         if otomatik:
             self.kok.after(50, self.raporla)
 
@@ -245,6 +289,42 @@ class RaporEkrani:
             sp.set(str(f.varsayilan or 0))
             sp.pack(side="left")
             self.girdiler[f.anahtar] = sp
+        elif f.tur == "grup_agac":
+            self._grup_secim.setdefault(f.anahtar, set())
+            if f.varsayilan:
+                try:
+                    self._grup_secim[f.anahtar] = {int(f.varsayilan)}
+                except (TypeError, ValueError):
+                    self._grup_secim[f.anahtar] = set()
+            from liste_filtre_ui import GrupAgaciSecici
+
+            ozet = tk.Label(kutu, text="(Tümü)", bg=ACIK_BG, fg=IKINCIL, font=font(9, "normal", self.app))
+            ozet.pack(side="left")
+
+            def _ozet_yaz(a=f.anahtar, lbl=ozet):
+                s = self._grup_secim.get(a) or set()
+                lbl.configure(text="(Tümü)" if not s else (f"{len(s)} grup" if len(s) != 1 else "1 grup"))
+
+            def _ac(a=f.anahtar):
+                try:
+                    from database.stok_grup_service import StokGrupService
+
+                    dugumler = StokGrupService.agac(aktif_only=True)
+                except Exception:  # noqa: BLE001
+                    dugumler = []
+                GrupAgaciSecici(
+                    self.app,
+                    dugumler,
+                    secili=self._grup_secim.get(a) or (),
+                    uygula_cb=lambda s, ana=a: (
+                        self._grup_secim.__setitem__(ana, set(s)),
+                        _ozet_yaz(),
+                    ),
+                )
+
+            ttk.Button(kutu, text="Seç…", command=_ac).pack(side="left", padx=4)
+            _ozet_yaz()
+            self.girdiler[f.anahtar] = ("grup_agac", f.anahtar, ozet)
         else:
             ent = ttk.Entry(kutu, width=22)
             if f.varsayilan:
@@ -260,6 +340,15 @@ class RaporEkrani:
                 sonuc[anahtar] = w.deger()
             elif isinstance(w, tk.BooleanVar):
                 sonuc[anahtar] = bool(w.get())
+            elif isinstance(w, tuple) and w and w[0] == "grup_agac":
+                secili = self._grup_secim.get(anahtar) or set()
+                # Tek seçimde skaler (eski API); çoklu / üst+alt → id kümesi
+                if not secili:
+                    sonuc[anahtar] = None
+                elif len(secili) == 1:
+                    sonuc[anahtar] = next(iter(secili))
+                else:
+                    sonuc[anahtar] = set(secili)
             elif isinstance(w, ttk.Combobox) and hasattr(w, "_secenekler"):
                 etiket = w.get()
                 sonuc[anahtar] = next((v for v, e in w._secenekler if e == etiket), w._secenekler[0][0])
@@ -287,6 +376,11 @@ class RaporEkrani:
             if isinstance(w, tk.BooleanVar):
                 if w.get():
                     parcalar.append(self._etiket.get(anahtar, anahtar))
+                continue
+            if isinstance(w, tuple) and w and w[0] == "grup_agac":
+                s = self._grup_secim.get(anahtar) or set()
+                if s:
+                    parcalar.append(f"{self._etiket.get(anahtar, anahtar)}: {len(s)} grup")
                 continue
             deger = w.get()
             if isinstance(w, DonemEditoru):
@@ -318,7 +412,14 @@ class RaporEkrani:
         for anahtar, deger in kayit.items():
             w = self.girdiler.get(anahtar)
             try:
-                if isinstance(w, DonemEditoru):
+                if isinstance(w, tuple) and w and w[0] == "grup_agac":
+                    self._grup_secim[anahtar] = {int(x) for x in (deger or [])}
+                    ozet = w[2]
+                    s = self._grup_secim[anahtar]
+                    ozet.configure(
+                        text="(Tümü)" if not s else (f"{len(s)} grup" if len(s) != 1 else "1 grup")
+                    )
+                elif isinstance(w, DonemEditoru):
                     w.hafizadan(deger)
                 elif isinstance(w, tk.BooleanVar):
                     w.set(bool(deger))
@@ -338,6 +439,9 @@ class RaporEkrani:
         for anahtar, w in self.girdiler.items():
             if self._tur.get(anahtar) == "tarih":
                 continue
+            if isinstance(w, tuple) and w and w[0] == "grup_agac":
+                kayit[anahtar] = sorted(self._grup_secim.get(anahtar) or [])
+                continue
             try:
                 kayit[anahtar] = w.hafiza() if isinstance(w, DonemEditoru) else w.get()
             except tk.TclError:
@@ -351,33 +455,364 @@ class RaporEkrani:
         except Exception:  # noqa: BLE001
             pass
 
+    def _gorunum_durumu(self) -> dict:
+        """DOC5 kayıtlı görünüm: filtreler, kolon hunisi, gizlenenler, sıralama, genişlik."""
+        kriter: dict[str, Any] = {}
+        for anahtar, w in self.girdiler.items():
+            if isinstance(w, tuple) and w and w[0] == "grup_agac":
+                kriter[anahtar] = sorted(self._grup_secim.get(anahtar) or [])
+                continue
+            if isinstance(w, DonemEditoru):
+                kriter[anahtar] = w.hafiza()
+                continue
+            if isinstance(w, tk.BooleanVar):
+                kriter[anahtar] = bool(w.get())
+                continue
+            try:
+                kriter[anahtar] = w.get()
+            except tk.TclError:
+                continue
+        genislikler: dict[str, dict[str, int]] = {}
+        for t in self.tablolar_tanim:
+            tablo = self.tablolar.get(t.anahtar)
+            if not tablo:
+                continue
+            genislikler[t.anahtar] = {}
+            for k in t.kolonlar:
+                try:
+                    genislikler[t.anahtar][k.anahtar] = int(tablo.column(k.anahtar, "width"))
+                except tk.TclError:
+                    genislikler[t.anahtar][k.anahtar] = k.genislik
+        return {
+            "filtreler": kriter,
+            "kolon_filtre": {
+                t: {k: sorted(v) for k, v in (f or {}).items()}
+                for t, f in self._kolon_filtre.items()
+            },
+            "gizli_kolonlar": {t: sorted(v) for t, v in self._gizli.items() if v},
+            "siralama": {t: list(s) for t, s in self._sirala.items() if s and s[0]},
+            "kolon_genislik": genislikler,
+            "sol_sabit": dict(self._sol_sabit_aktif),
+            "grup_kolonlari": {t: list(v) for t, v in self._grup_kolonlari.items() if v},
+        }
+
+    def _gorunum_uygula(self, durum: dict) -> None:
+        if not isinstance(durum, dict):
+            return
+        kriter = durum.get("filtreler") or {}
+        for anahtar, deger in kriter.items():
+            w = self.girdiler.get(anahtar)
+            try:
+                if isinstance(w, tuple) and w and w[0] == "grup_agac":
+                    self._grup_secim[anahtar] = {int(x) for x in (deger or [])}
+                    ozet = w[2]
+                    s = self._grup_secim[anahtar]
+                    ozet.configure(
+                        text="(Tümü)" if not s else (f"{len(s)} grup" if len(s) != 1 else "1 grup")
+                    )
+                elif isinstance(w, DonemEditoru):
+                    w.hafizadan(deger)
+                elif isinstance(w, tk.BooleanVar):
+                    w.set(bool(deger))
+                elif isinstance(w, (ttk.Combobox, ttk.Spinbox)):
+                    if not isinstance(w, ttk.Combobox) or deger in tuple(w.cget("values")):
+                        w.set(deger)
+                elif isinstance(w, ttk.Entry):
+                    w.delete(0, "end")
+                    w.insert(0, "" if deger is None else str(deger))
+            except (tk.TclError, TypeError, ValueError):
+                continue
+        kf = durum.get("kolon_filtre") or {}
+        self._kolon_filtre = {}
+        for t, f in kf.items():
+            if isinstance(f, dict):
+                self._kolon_filtre[str(t)] = {
+                    str(k): set(map(str, v)) if isinstance(v, (list, set, tuple)) else set()
+                    for k, v in f.items()
+                }
+        gizli = durum.get("gizli_kolonlar") or {}
+        if isinstance(gizli, dict):
+            self._gizli = {str(t): set(map(str, v)) for t, v in gizli.items() if isinstance(v, list)}
+            for t in self.tablolar_tanim:
+                self.kolonlari_gizle(t.anahtar, self._gizli.get(t.anahtar, set()))
+        for t, s in (durum.get("siralama") or {}).items():
+            if isinstance(s, (list, tuple)) and s:
+                self._sirala[str(t)] = (s[0], bool(s[1]) if len(s) > 1 else False)
+        for t, gen in (durum.get("kolon_genislik") or {}).items():
+            tablo = self.tablolar.get(str(t))
+            if not tablo or not isinstance(gen, dict):
+                continue
+            for kolon, genislik in gen.items():
+                try:
+                    tablo.column(kolon, width=int(genislik))
+                except (tk.TclError, TypeError, ValueError):
+                    pass
+        gk = durum.get("grup_kolonlari") or {}
+        if isinstance(gk, dict):
+            self._grup_kolonlari = {
+                str(t): [str(k) for k in (v or [])][:2]
+                for t, v in gk.items()
+                if isinstance(v, (list, tuple))
+            }
+            for anahtar, alan in self._grup_alani.items():
+                if callable(alan.get("yenile")):
+                    alan["yenile"]()
+        self.raporla()
+
+    def _gruplama_kur(self) -> None:
+        """DOC5 gruplama şeridi: sürükleme + Grupla menüsü aynı durumu paylaşır."""
+        for child in self._grup_seridi.winfo_children():
+            child.destroy()
+        self._grup_alani.clear()
+        t = self.tablolar_tanim[0]
+        basliklar = {k.anahtar: k.baslik for k in t.kolonlar}
+        # Metin/tarih/durum + bilinen kimlik kolonları; yürüyen bakiye/tutar toplamları hariç
+        haric = {"bakiye", "tl_bakiye", "usd_bakiye", "fifo_kalan", "kalan"}
+        izinli = [
+            k.anahtar for k in t.kolonlar
+            if k.anahtar.casefold() not in haric
+            and (
+                k.tip in ("metin", "tarih", "durum")
+                or k.anahtar in (
+                    "pb", "para_birimi", "durum", "tur", "belge_turu",
+                    "cari", "musteri", "tedarikci", "urun", "grup", "ay", "yil",
+                )
+            )
+        ]
+        if not izinli:
+            izinli = [
+                k.anahtar for k in t.kolonlar
+                if k.tip not in ("para", "miktar", "fiyat", "yuzde", "oran")
+                and k.anahtar.casefold() not in haric
+            ][:6]
+        self._grup_kolonlari.setdefault(t.anahtar, [])
+
+        def _yenile_tablo():
+            if self._ham_satirlar.get(t.anahtar) is not None:
+                self._doldur(t, self._filtreli_satirlar(t))
+
+        alan = gruplama_alani_ekle(
+            self._grup_seridi,
+            get_gruplar=lambda a=t.anahtar: self._grup_kolonlari.setdefault(a, []),
+            set_gruplar=lambda g, a=t.anahtar: self._grup_kolonlari.__setitem__(a, list(g)),
+            basliklar=basliklar,
+            izinli_kolonlar=izinli,
+            on_degisti=_yenile_tablo,
+            en_fazla=2,
+            bg=ACIK_BG,
+        )
+        self._grup_alani[t.anahtar] = alan
+
+    def _istatistik_kur(self) -> None:
+        for child in self._istatistik_cerceve.winfo_children():
+            child.destroy()
+        self._istatistik.clear()
+        if self._grafik_gorunum and self._grafik_gorunum.get("arac"):
+            try:
+                self._grafik_gorunum["arac"].destroy()
+            except tk.TclError:
+                pass
+            try:
+                self._grafik_gorunum["cerceve"].destroy()
+            except tk.TclError:
+                pass
+            self._grafik_gorunum = None
+            # Liste alanını yeniden paketle (grafik destroy sonrası)
+            try:
+                if self._liste_alani.winfo_manager() != "pack":
+                    self._liste_alani.pack(fill="both", expand=True)
+            except tk.TclError:
+                pass
+        # İlk (veya etkin) tablo için seçilebilir istatistik şeridi
+        t = self.tablolar_tanim[0]
+        tanim = [(k.anahtar, k.baslik, k.tip) for k in t.kolonlar]
+        get_satirlar = lambda a=t.anahtar: [
+            r for r in (self._satirlar.get(a) or []) if not r.get("_sabit")
+        ]
+        ist = istatistik_seridi_ekle(
+            self._istatistik_cerceve,
+            kolon_tanim=tanim,
+            get_satirlar=get_satirlar,
+            pack_opts={"fill": "x", "padx": 4, "pady": 0},
+        )
+        self._istatistik[t.anahtar] = ist
+        self._grafik_gorunum = liste_grafik_gorunum_ekle(
+            self._govde,
+            self._liste_alani,
+            get_satirlar=get_satirlar,
+            get_secimler=lambda: ist["secimler"],
+            kolon_baslik={a: b for a, b, _t in tanim},
+            kolon_tip={a: tip for a, _b, tip in tanim},
+            arac_parent=self.rapor_btn.master if hasattr(self, "rapor_btn") else self._govde,
+        )
+        istatistik_grafik_bagla(ist, self._grafik_gorunum)
+
+    def _sol_sabitle_degistir(self) -> None:
+        t = self._etkin_tablo()
+        self._sol_sabit_aktif[t.anahtar] = not self._sol_sabit_aktif.get(t.anahtar, False)
+        tablo = self.tablolar[t.anahtar]
+        panel = self._sol_sabit.get(t.anahtar)
+        dis = panel.cerceve.master if panel is not None else tablo.master
+        ust = dis.master
+        dis.destroy()
+        self._sol_sabit[t.anahtar] = None
+        self.tablolar[t.anahtar] = self._tablo_kur(ust, t)
+        if self._ham_satirlar.get(t.anahtar) is not None:
+            self._doldur(t, self._filtreli_satirlar(t))
+        durum = "açık" if self._sol_sabit_aktif.get(t.anahtar) else "kapalı"
+        self.durum.configure(text=f"Sol sabitleme {durum}")
+
     # ------------------------------------------------------------------ tablo
     def _tablo_kur(self, parent, t: Tablo) -> ttk.Treeview:
         cerceve = ttk.Frame(parent)
         cerceve.pack(fill="both", expand=True)
-        tablo = ttk.Treeview(cerceve, columns=[k.anahtar for k in t.kolonlar], show="headings",
-                             selectmode="extended" if t.coklu_secim else "browse")
-        _tablo_stil(tablo)
-        for k in t.kolonlar:
-            tablo.heading(k.anahtar, text=k.baslik, command=lambda a=k.anahtar, tt=t: self._sirala_tikla(tt, a))
-            tablo.column(k.anahtar, width=k.genislik, anchor="e" if k.tip in _SAG else "w", stretch=False)
-        tablo.configure(displaycolumns=[k.anahtar for k in self.gorunen_kolonlar(t)])
-        dikey = ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview)
-        yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=tablo.xview)
-        tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
-        tablo.grid(row=0, column=0, sticky="nsew")
-        dikey.grid(row=0, column=1, sticky="ns")
-        yatay.grid(row=1, column=0, sticky="ew")
-        cerceve.rowconfigure(0, weight=1)
-        cerceve.columnconfigure(0, weight=1)
-        tablo.tag_configure("uyari", foreground="#B42318")
-        tablo.tag_configure("iyi", foreground="#067647")
-        tablo.tag_configure("soluk", foreground="#667085")
-        tablo.tag_configure("toplam", background="#E8ECF4", font=font(9, "bold", self.app))
+        kolon_idler = [k.anahtar for k in t.kolonlar]
+        tip_map = {k.anahtar: k.tip for k in t.kolonlar}
+        basliklar = {k.anahtar: k.baslik for k in t.kolonlar}
+        genislikler = {k.anahtar: k.genislik for k in t.kolonlar}
+        hizalar = {k.anahtar: ("e" if k.tip in _SAG else "w") for k in t.kolonlar}
+        sabit_aday = kimlik_kolonlari_sec(kolon_idler, tip_map=tip_map, en_fazla=2)
+        kullan_sabit = bool(self._sol_sabit_aktif.get(t.anahtar)) and len(sabit_aday) >= 1 and len(kolon_idler) > 3
+
+        if kullan_sabit:
+            diger = [k for k in kolon_idler if k not in sabit_aday]
+            panel = SolSabitTablo(
+                cerceve,
+                sabit_kolonlar=sabit_aday,
+                diger_kolonlar=diger,
+                basliklar=basliklar,
+                genislikler=genislikler,
+                hizalar=hizalar,
+                selectmode="extended" if t.coklu_secim else "browse",
+            )
+            panel.cerceve.pack(fill="both", expand=True)
+            self._sol_sabit[t.anahtar] = panel
+            tablo = panel.ana_tablo
+            _tablo_stil(tablo)
+            _tablo_stil(panel.sol)
+            for k in t.kolonlar:
+                hedef = panel.sol if k.anahtar in sabit_aday else tablo
+                hedef.heading(
+                    k.anahtar,
+                    text=k.baslik,
+                    command=lambda a=k.anahtar, tt=t: self._sirala_tikla(tt, a),
+                )
+            for tv in (panel.sol, tablo):
+                tv.tag_configure("uyari", foreground="#B42318")
+                tv.tag_configure("iyi", foreground="#067647")
+                tv.tag_configure("soluk", foreground="#667085")
+                tv.tag_configure("toplam", background="#E8ECF4", font=font(9, "bold", self.app))
+        else:
+            self._sol_sabit[t.anahtar] = None
+            tablo = ttk.Treeview(
+                cerceve,
+                columns=kolon_idler,
+                show="headings",
+                selectmode="extended" if t.coklu_secim else "browse",
+            )
+            _tablo_stil(tablo)
+            for k in t.kolonlar:
+                tablo.heading(k.anahtar, text=k.baslik, command=lambda a=k.anahtar, tt=t: self._sirala_tikla(tt, a))
+                tablo.column(k.anahtar, width=k.genislik, anchor="e" if k.tip in _SAG else "w", stretch=False)
+            tablo.configure(displaycolumns=[k.anahtar for k in self.gorunen_kolonlar(t)])
+            dikey = ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview)
+            yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=tablo.xview)
+            tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
+            tablo.grid(row=0, column=0, sticky="nsew")
+            dikey.grid(row=0, column=1, sticky="ns")
+            yatay.grid(row=1, column=0, sticky="ew")
+            cerceve.rowconfigure(0, weight=1)
+            cerceve.columnconfigure(0, weight=1)
+            tablo.tag_configure("uyari", foreground="#B42318")
+            tablo.tag_configure("iyi", foreground="#067647")
+            tablo.tag_configure("soluk", foreground="#667085")
+            tablo.tag_configure("toplam", background="#E8ECF4", font=font(9, "bold", self.app))
+
         if t.cift_tik is not None:
             tablo.bind("<Double-1>", lambda e, tt=t: self._cift_tik(tt, e))
             tablo.bind("<Return>", lambda _e, tt=t: self._cift_tik(tt))
+            panel = self._sol_sabit.get(t.anahtar)
+            if panel is not None:
+                panel.sol.bind("<Double-1>", lambda e, tt=t: self._cift_tik(tt, e))
+        self._kolon_filtre.setdefault(t.anahtar, {})
+        self._filtre_bagla(t, tablo)
+        # DOC5: başlık sürükleyerek gruplama (Grupla menüsüyle aynı durum)
+        alan = self._grup_alani.get(t.anahtar) or self._grup_alani.get(self.tablolar_tanim[0].anahtar)
+        if alan is not None:
+            treeview_grup_surukle_bagla(
+                tablo,
+                [k.anahtar for k in t.kolonlar],
+                on_birak=lambda kolon, a=alan: a["kolon_ekle"](kolon),
+                drop_hedefi_mi=alan.get("drop_hedefi_mi"),
+                haric_kolonlar=("bakiye", "tl_bakiye", "usd_bakiye", "fifo_kalan"),
+            )
+            panel = self._sol_sabit.get(t.anahtar)
+            if panel is not None:
+                treeview_grup_surukle_bagla(
+                    panel.sol,
+                    list(panel.sabit_kolonlar),
+                    on_birak=lambda kolon, a=alan: a["kolon_ekle"](kolon),
+                    drop_hedefi_mi=alan.get("drop_hedefi_mi"),
+                )
         return tablo
+
+    def _filtre_bagla(self, t: Tablo, tablo: ttk.Treeview) -> None:
+        """DOC5: sağ tık → sütun hunisi; sol tık sıralama korunur."""
+        basliklar = {k.anahtar: k.baslik for k in t.kolonlar}
+        panel = self._sol_sabit.get(t.anahtar)
+        # Sol sabit panelde sağ Treeview yalnız kayan kolonlara sahip
+        if panel is not None:
+            kolonlar = list(panel.diger_kolonlar)
+            tip_by = {k.anahtar: k.tip for k in t.kolonlar}
+
+            def _values(r, kolonlar_=kolonlar, tip_by_=tip_by):
+                return [bicimle(r.get(k), tip_by_.get(k, "metin")) for k in kolonlar_]
+        else:
+            kolonlar = [k.anahtar for k in t.kolonlar]
+
+            def _values(r, tt=t):
+                return [bicimle(r.get(k.anahtar), k.tip) for k in tt.kolonlar]
+
+        self._filtre_bag[t.anahtar] = treeview_filtre_bagla(
+            tablo,
+            basliklar,
+            get_filtre_dict=lambda a=t.anahtar: self._kolon_filtre.setdefault(a, {}),
+            set_filtre_dict=None,
+            yenile_cb=lambda tt=t: self._doldur(tt, self._filtreli_satirlar(tt)),
+            deger_listesi_cb=lambda a=t.anahtar: [
+                r for r in (self._ham_satirlar.get(a) or []) if not r.get("_sabit")
+            ],
+            parent=self.app,
+            kolonlar=kolonlar,
+            values_key=_values,
+            sag_tik_filtre=True,
+            siralama_cb=lambda a, tt=t: self._sirala_tikla(tt, a),
+            popup_owner=self,
+            popup_ref_attr=f"_filtre_popup_{t.anahtar}",
+        )
+        if panel is not None and panel.sabit_kolonlar:
+            tip_by = {k.anahtar: k.tip for k in t.kolonlar}
+
+            def _sol_values(r, kolonlar_=panel.sabit_kolonlar, tip_by_=tip_by):
+                return [bicimle(r.get(k), tip_by_.get(k, "metin")) for k in kolonlar_]
+
+            treeview_filtre_bagla(
+                panel.sol,
+                basliklar,
+                get_filtre_dict=lambda a=t.anahtar: self._kolon_filtre.setdefault(a, {}),
+                set_filtre_dict=None,
+                yenile_cb=lambda tt=t: self._doldur(tt, self._filtreli_satirlar(tt)),
+                deger_listesi_cb=lambda a=t.anahtar: [
+                    r for r in (self._ham_satirlar.get(a) or []) if not r.get("_sabit")
+                ],
+                parent=self.app,
+                kolonlar=list(panel.sabit_kolonlar),
+                values_key=_sol_values,
+                sag_tik_filtre=True,
+                siralama_cb=lambda a, tt=t: self._sirala_tikla(tt, a),
+                popup_owner=self,
+                popup_ref_attr=f"_filtre_popup_sol_{t.anahtar}",
+            )
 
     def kolonlari_ayarla(self, anahtar: str, kolonlar: list[Kolon]) -> None:
         """Sonuca göre değişen kolonlar (ör. seçilen dönem sayısı kadar dönem sütunu)."""
@@ -392,6 +827,8 @@ class RaporEkrani:
         for k in t.kolonlar:
             tablo.heading(k.anahtar, text=k.baslik, command=lambda a=k.anahtar, tt=t: self._sirala_tikla(tt, a))
             tablo.column(k.anahtar, width=k.genislik, anchor="e" if k.tip in _SAG else "w", stretch=False)
+        self._kolon_filtre[anahtar] = {}
+        self._filtre_bagla(t, tablo)
 
     def gorunen_kolonlar(self, t: Tablo) -> list[Kolon]:
         gizli = self._gizli.get(t.anahtar, set())
@@ -478,7 +915,7 @@ class RaporEkrani:
         onceki, azalan = self._sirala.get(t.anahtar, (None, False))
         azalan = (not azalan) if onceki == kolon else False
         self._sirala[t.anahtar] = (kolon, azalan)
-        satirlar = self._satirlar.get(t.anahtar, [])
+        satirlar = list(self._ham_satirlar.get(t.anahtar) or self._satirlar.get(t.anahtar, []))
         sabit = [r for r in satirlar if r.get("_sabit")]
         satirlar = [r for r in satirlar if not r.get("_sabit")]
         tip = next((k.tip for k in t.kolonlar if k.anahtar == kolon), "metin")
@@ -492,16 +929,106 @@ class RaporEkrani:
             dolu.sort(key=lambda r: r[kolon], reverse=azalan)
         except TypeError:
             dolu.sort(key=lambda r: str(r[kolon]), reverse=azalan)
-        self._doldur(t, dolu + bos + sabit)
+        self._ham_satirlar[t.anahtar] = dolu + bos + sabit
+        self._doldur(t, self._filtreli_satirlar(t))
+
+    def _filtreli_satirlar(self, t: Tablo) -> list[dict]:
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
+        ham = list(self._ham_satirlar.get(t.anahtar) or [])
+        filtre = self._kolon_filtre.get(t.anahtar) or {}
+        if not filtre:
+            return ham
+        kolon_idler = [k.anahtar for k in t.kolonlar]
+        sonuc = []
+        for r in ham:
+            if r.get("_sabit"):
+                sonuc.append(r)
+                continue
+            values = [bicimle(r.get(k.anahtar), k.tip) for k in t.kolonlar]
+            if satir_kolon_filtre_uygun(values, kolon_idler, filtre):
+                sonuc.append(r)
+        return sonuc
 
     def _doldur(self, t: Tablo, satirlar: list[dict]) -> None:
         tablo = self.tablolar[t.anahtar]
-        self._satirlar[t.anahtar] = satirlar
-        tablo.delete(*tablo.get_children())
-        for i, r in enumerate(satirlar):
-            etiket = t.etiket(r) if t.etiket else None
-            tablo.insert("", "end", iid=str(i), tags=(etiket,) if etiket else (),
-                         values=[bicimle(r.get(k.anahtar), k.tip) for k in t.kolonlar])
+        # İstatistik / kayıt sayısı ham (grup başlıksız) listeden
+        self._satirlar[t.anahtar] = [r for r in satirlar if not r.get("_grup")]
+        gruplar = self._grup_kolonlari.get(t.anahtar) or self._grup_kolonlari.get(
+            self.tablolar_tanim[0].anahtar, []
+        )
+        gosterilecek = satir_gruplari_olustur(satirlar, gruplar) if gruplar else satirlar
+        panel = self._sol_sabit.get(t.anahtar)
+        try:
+            tablo.tag_configure("grup", background="#E8ECF4", font=font(9, "bold", self.app))
+        except tk.TclError:
+            pass
+        if panel is not None:
+            panel.temizle()
+            for i, r in enumerate(gosterilecek):
+                etiket = "grup" if r.get("_grup") else (t.etiket(r) if t.etiket else None)
+                values_map = {k.anahtar: bicimle(r.get(k.anahtar), k.tip) for k in t.kolonlar}
+                if r.get("_grup"):
+                    kolon = r.get("_grup_kolon")
+                    if kolon:
+                        values_map[kolon] = f"{r.get('_grup_deger', '')}  ({r.get('_grup_adet', 0)})"
+                panel.satir_ekle(str(i), values_map, tags=(etiket,) if etiket else ())
+        else:
+            tablo.delete(*tablo.get_children())
+            for i, r in enumerate(gosterilecek):
+                etiket = "grup" if r.get("_grup") else (t.etiket(r) if t.etiket else None)
+                values = [bicimle(r.get(k.anahtar), k.tip) for k in t.kolonlar]
+                if r.get("_grup"):
+                    kolon = r.get("_grup_kolon")
+                    if kolon:
+                        try:
+                            idx = [k.anahtar for k in t.kolonlar].index(kolon)
+                            values[idx] = f"{r.get('_grup_deger', '')}  ({r.get('_grup_adet', 0)})"
+                        except ValueError:
+                            pass
+                tablo.insert(
+                    "", "end", iid=str(i),
+                    tags=(etiket,) if etiket else (),
+                    values=values,
+                )
+        bag = self._filtre_bag.get(t.anahtar)
+        if bag:
+            siralama = self._sirala.get(t.anahtar)
+            bag["guncelle_basliklar"](
+                (siralama[0], siralama[1]) if siralama and siralama[0] else None
+            )
+            # Sol sabit panel başlıklarını da işaretle
+            if panel is not None:
+                for k in panel.sabit_kolonlar:
+                    aktif_f = k in (self._kolon_filtre.get(t.anahtar) or {})
+                    from liste_filtre_ui import baslik_filtre_metni
+
+                    sir = self._sirala.get(t.anahtar)
+                    panel.baslik_guncelle(
+                        k,
+                        baslik_filtre_metni(
+                            next((c.baslik for c in t.kolonlar if c.anahtar == k), k),
+                            filtre_aktif=aktif_f,
+                            siralama=(sir[0], sir[1]) if sir and sir[0] else None,
+                            kolon=k,
+                        ),
+                    )
+        veri_sayisi = len([r for r in satirlar if not r.get("_sabit") and not r.get("_grup")])
+        ham_sayisi = len([
+            r for r in (self._ham_satirlar.get(t.anahtar) or [])
+            if not r.get("_sabit") and not r.get("_grup")
+        ])
+        aktif = len(self._kolon_filtre.get(t.anahtar) or {})
+        parcalar = [f"Gösterilen: {veri_sayisi} / {ham_sayisi}"]
+        if aktif:
+            parcalar.append(f"Aktif filtre: {aktif}")
+        if gruplar:
+            parcalar.append(f"Grup: {' › '.join(gruplar)}")
+        if aktif or gruplar:
+            self.durum.configure(text=" | ".join(parcalar))
+        ist = self._istatistik.get(t.anahtar) or self._istatistik.get(self.tablolar_tanim[0].anahtar)
+        if ist and callable(ist.get("guncelle")):
+            ist["guncelle"]()
 
     # ------------------------------------------------------------------ çalıştırma
     def raporla(self, senkron: bool = False) -> None:
@@ -528,11 +1055,18 @@ class RaporEkrani:
             self.kolonlari_ayarla(t, kolonlar)
         for t in self.tablolar_tanim:
             satirlar = list(self.sonuc.get(t.anahtar) or [])
-            toplam_satir += len(satirlar)
-            self._doldur(t, satirlar)
+            self._ham_satirlar[t.anahtar] = satirlar
+            # Rapor yenilenince kolon hunisini koru ama ham değişti
+            gorunen = self._filtreli_satirlar(t)
+            toplam_satir += len([r for r in gorunen if not r.get("_sabit")])
+            self._doldur(t, gorunen)
             if self.defter is not None:
-                self.defter.tab(self.tablolar_tanim.index(t), text=f"{t.baslik} ({len(satirlar)})")
-        self.durum.configure(text=f"{toplam_satir} satır")
+                self.defter.tab(
+                    self.tablolar_tanim.index(t),
+                    text=f"{t.baslik} ({len([r for r in gorunen if not r.get('_sabit')])})",
+                )
+        if not any(self._kolon_filtre.values()):
+            self.durum.configure(text=f"{toplam_satir} satır")
         self.toplam.configure(text=self.toplam_metni(self.sonuc) if self.toplam_metni else "")
         self.notlar.configure(text="\n".join(f"• {n}" for n in self.sonuc.get("notlar", [])))
 

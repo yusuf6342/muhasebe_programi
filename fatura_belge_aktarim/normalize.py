@@ -120,6 +120,23 @@ def tarih_tr(deger: Any) -> date | None:
     return None
 
 
+def normalize_belge_no(deger: Any) -> str:
+    """Fatura/belge no karşılaştırma anahtarı (boşluk/ayraç duyarsız)."""
+    s = str(deger or "").strip().upper()
+    s = re.sub(r"[\s\-_/\\.]+", "", s)
+    return s
+
+
+def belge_kimlik_anahtari(*, yon: str, vkn: str | None, belge_no: str | None) -> str | None:
+    """VKN + yön + normalize belge no. Eksik parçadaysa None."""
+    yon_u = (yon or "").strip().upper()
+    v = normalize_vkn(vkn)
+    b = normalize_belge_no(belge_no)
+    if yon_u not in {"ALIS", "SATIS"} or not v or not b:
+        return None
+    return f"{yon_u}|{v}|{b}"
+
+
 def birim_normalize(birim: str | None) -> str:
     b = normalize_text(birim or "")
     es = {

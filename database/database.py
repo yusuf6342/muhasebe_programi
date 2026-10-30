@@ -324,11 +324,55 @@ def firma_db_ac(company_id: int, db_path: str | Path) -> None:
         company_db._company_id = company_id
         company_db._db_path = yol
         firma_arama_indekslerini_hazirla()
+        try:
+            finans_hesap_schemasini_guncelle(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("finans_hesap schema (firma_db_ac aynı yol)")
+        # Aynı yolda bile fiyat kolonları eksik kalmış olabilir (eski sürüm / stale engine)
+        try:
+            from database.satis_fiyat_listesi_service import SatisFiyatListesiService
+
+            SatisFiyatListesiService._hazir_engine_id = None
+            SatisFiyatListesiService.ensure_schema(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "satis_fiyat_listesi schema (firma_db_ac aynı yol)"
+            )
         return
 
     yeni = company_db.open(company_id, yol)
     _aktif_engine_bagla(yeni)
     firma_arama_indekslerini_hazirla()
+    # Sorgular (Bankalar, likit varlıklar) öncesi kritik kolonlar — firma DB'ye özel
+    try:
+        finans_hesap_schemasini_guncelle(engine)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("finans_hesap schema (firma_db_ac)")
+    try:
+        from database.satis_fiyat_listesi_service import SatisFiyatListesiService
+
+        # Güncel engine ile (stale import değil); ürün/fiyat sorgularından önce
+        SatisFiyatListesiService._hazir_engine_id = None
+        SatisFiyatListesiService.ensure_schema(engine)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("satis_fiyat_listesi schema (firma_db_ac)")
+    try:
+        from database.kart_turu_service import KartTuruService
+
+        KartTuruService._schema_hazir = False
+        KartTuruService.schema_ve_seed()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("kart_turu schema (firma_db_ac)")
 
 
 def firma_db_kapat() -> None:
@@ -489,6 +533,242 @@ def kasa_makbuz_schemasini_guncelle(hedef_engine) -> None:
         )
 
 
+def _para_birimi_normalize(kod: str | None) -> str | None:
+    """Kaynak kodunu ISO benzeri PB'ye çevir; bilinmeyen boş bırakılır (TRY zorlanmaz)."""
+    import re
+
+    ham = (kod or "").strip().upper().replace(" ", "")
+    if not ham:
+        return None
+    if ham in {"TL", "TRY", "YTL"}:
+        return "TRY"
+    if ham in {"US$", "$", "USD", "DOLAR", "DOLLAR"}:
+        return "USD"
+    if ham in {"€", "EUR", "EURO"}:
+        return "EUR"
+    if ham in {"£", "GBP", "STERLIN"}:
+        return "GBP"
+    if re.fullmatch(r"[A-Z]{3}", ham):
+        return ham
+    return None
+
+
+def _para_birimi_metinden(*metinler: str | None) -> str | None:
+    """Açıklama / hesap adından döviz ipucu; yoksa None (TL varsayımı yok)."""
+    import re
+
+    for metin in metinler:
+        if not metin:
+            continue
+        m = re.search(r"D[oö]viz\s*:\s*([A-Za-z€£$]{2,8})", metin, re.IGNORECASE)
+        if m:
+            pb = _para_birimi_normalize(m.group(1))
+            if pb:
+                return pb
+        m = re.search(r"\b(USD|EUR|GBP|CHF|JPY|AUD|CAD|SEK|NOK|DKK|RUB|CNY)\b", metin, re.I)
+        if m:
+            return _para_birimi_normalize(m.group(1))
+    return None
+
+
+def finans_hesap_schemasini_guncelle(hedef_engine=None) -> None:
+    """finans_hesaplari eksik kolonları + PB geri doldurma (veri silmeden, tekrar güvenli).
+
+    para_birimi / acilis_tarihi yoksa ekler. PB yalnız kaynak ipucundan veya
+    açıkça TRY bilinen kayıtlardan doldurulur; döviz hesapları topluca TL yapılmaz.
+    """
+    eng = hedef_engine if hedef_engine is not None else engine
+    if eng is None:
+        return
+    finans_tablo = "finans_hesaplari"
+    if not inspect(eng).has_table(finans_tablo):
+        return
+    # SQLite inspect önbelleği: her çağrıda taze oku
+    insp = inspect(eng)
+    finans_sutunlar = {sutun["name"] for sutun in insp.get_columns(finans_tablo)}
+    finans_eklenecekler = {
+        "banka_adi": "VARCHAR(100)",
+        "sube": "VARCHAR(100)",
+        "iban": "VARCHAR(34)",
+        "aciklama": "VARCHAR(500)",
+        "banka_karti_id": "INTEGER",
+        "alt_hesap_turu": "VARCHAR(30)",
+        "muhasebe_hesap_id": "INTEGER",
+        "muhasebe_komisyon_hesap_id": "INTEGER",
+        "para_birimi": "VARCHAR(10) DEFAULT 'TRY'",
+        "acilis_tarihi": "DATE",
+        "acilis_kuru": "NUMERIC(18, 6)",
+        "acilis_tl_karsiligi": "NUMERIC(18, 2)",
+        "sube_kodu": "VARCHAR(30)",
+        "hesap_no": "VARCHAR(50)",
+        "bloke_tutari": "NUMERIC(18, 2) DEFAULT 0",
+        "varsayilan": "BOOLEAN DEFAULT 0",
+    }
+    with eng.begin() as connection:
+        for alan, tip in finans_eklenecekler.items():
+            if alan not in finans_sutunlar:
+                connection.execute(text(f'ALTER TABLE "{finans_tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    # Kolon eklendikten sonra taze şema
+    finans_sutunlar = {s["name"] for s in inspect(eng).get_columns(finans_tablo)}
+    if "para_birimi" not in finans_sutunlar:
+        return
+
+    banka_var = inspect(eng).has_table("banka_kartlari")
+    with eng.begin() as connection:
+        # 1) Hesap / banka açıklama ve adından döviz ipucu
+        if banka_var:
+            satirlar = connection.execute(
+                text(
+                    "SELECT h.id, h.hesap_adi, h.aciklama AS h_aciklama, "
+                    "b.banka_adi, b.aciklama AS b_aciklama "
+                    "FROM finans_hesaplari h "
+                    "LEFT JOIN banka_kartlari b ON b.id = h.banka_karti_id "
+                    "WHERE h.para_birimi IS NULL OR trim(h.para_birimi) = ''"
+                )
+            ).mappings().all()
+        else:
+            satirlar = connection.execute(
+                text(
+                    "SELECT id, hesap_adi, aciklama AS h_aciklama, "
+                    "NULL AS banka_adi, NULL AS b_aciklama "
+                    "FROM finans_hesaplari "
+                    "WHERE para_birimi IS NULL OR trim(para_birimi) = ''"
+                )
+            ).mappings().all()
+        for s in satirlar:
+            pb = _para_birimi_metinden(
+                s.get("h_aciklama"),
+                s.get("hesap_adi"),
+                s.get("b_aciklama"),
+                s.get("banka_adi"),
+            )
+            if pb:
+                connection.execute(
+                    text('UPDATE "finans_hesaplari" SET "para_birimi" = :pb WHERE "id" = :id'),
+                    {"pb": pb, "id": int(s["id"])},
+                )
+        # 2) Hâlâ boş olanlar: kaynakta döviz yok → TRY (yalnız boş hücre; dolu FX dokunulmaz)
+        connection.execute(
+            text(
+                "UPDATE \"finans_hesaplari\" SET \"para_birimi\" = 'TRY' "
+                "WHERE para_birimi IS NULL OR trim(para_birimi) = ''"
+            )
+        )
+        # 3) TRY açılış kur/TL geri doldurma (döviz açılışları elle/kur servisi ile kalır)
+        if "acilis_kuru" in finans_sutunlar and "acilis_tl_karsiligi" in finans_sutunlar:
+            connection.execute(
+                text(
+                    "UPDATE \"finans_hesaplari\" SET "
+                    "\"acilis_kuru\" = 1, "
+                    "\"acilis_tl_karsiligi\" = \"acilis_bakiyesi\" "
+                    "WHERE upper(coalesce(para_birimi, 'TRY')) = 'TRY' "
+                    "AND (acilis_kuru IS NULL OR acilis_tl_karsiligi IS NULL)"
+                )
+            )
+
+    # finans_hareketleri: PB + kayıt kuru + TL karşılığı
+    hareket_tablo = "finans_hareketleri"
+    if inspect(eng).has_table(hareket_tablo):
+        har_sutunlar = {s["name"] for s in inspect(eng).get_columns(hareket_tablo)}
+        hareket_eklenecekler = {
+            "para_birimi": "VARCHAR(10) DEFAULT 'TRY'",
+            "kur": "NUMERIC(18, 6)",
+            "kur_tarihi": "DATE",
+            "tl_karsiligi": "NUMERIC(18, 2)",
+        }
+        with eng.begin() as connection:
+            for alan, tip in hareket_eklenecekler.items():
+                if alan not in har_sutunlar:
+                    connection.execute(
+                        text(f'ALTER TABLE "{hareket_tablo}" ADD COLUMN "{alan}" {tip}')
+                    )
+        har_sutunlar = {s["name"] for s in inspect(eng).get_columns(hareket_tablo)}
+        if "para_birimi" in har_sutunlar and "tl_karsiligi" in har_sutunlar:
+            with eng.begin() as connection:
+                # Hesap PB'sinden doldur; TRY satırlarda kur=1, tl=tutar
+                connection.execute(
+                    text(
+                        "UPDATE finans_hareketleri SET para_birimi = ("
+                        "  SELECT coalesce(nullif(trim(h.para_birimi), ''), 'TRY') "
+                        "  FROM finans_hesaplari h WHERE h.id = finans_hareketleri.hesap_id"
+                        ") "
+                        "WHERE para_birimi IS NULL OR trim(para_birimi) = ''"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "UPDATE finans_hareketleri SET "
+                        "kur = 1, kur_tarihi = tarih, tl_karsiligi = tutar "
+                        "WHERE upper(coalesce(para_birimi, 'TRY')) = 'TRY' "
+                        "AND (kur IS NULL OR tl_karsiligi IS NULL)"
+                    )
+                )
+
+    # Banka kartındaki IBAN/şube/hesap_no → boş mevduat alt hesaba taşı (Doc5)
+    if inspect(eng).has_table("banka_kartlari") and "hesap_no" in {
+        s["name"] for s in inspect(eng).get_columns(finans_tablo)
+    }:
+        with eng.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE finans_hesaplari SET "
+                    "iban = coalesce(nullif(trim(iban), ''), "
+                    "  (SELECT b.iban FROM banka_kartlari b WHERE b.id = finans_hesaplari.banka_karti_id)), "
+                    "sube = coalesce(nullif(trim(sube), ''), "
+                    "  (SELECT b.sube FROM banka_kartlari b WHERE b.id = finans_hesaplari.banka_karti_id)), "
+                    "hesap_no = coalesce(nullif(trim(hesap_no), ''), "
+                    "  (SELECT b.hesap_no FROM banka_kartlari b WHERE b.id = finans_hesaplari.banka_karti_id)) "
+                    "WHERE upper(coalesce(alt_hesap_turu, '')) = 'MEVDUAT' "
+                    "AND banka_karti_id IS NOT NULL"
+                )
+            )
+
+    pos_sozlesme_schemasini_guncelle(eng)
+
+
+def pos_sozlesme_schemasini_guncelle(hedef_engine=None) -> None:
+    """POS hedef hesap / iş günü valör / otomatik mahsup kolonları (tekrar güvenli)."""
+    eng = hedef_engine if hedef_engine is not None else engine
+    if eng is None:
+        return
+    banka_tablo = "banka_kartlari"
+    if inspect(eng).has_table(banka_tablo):
+        banka_sutunlar = {s["name"] for s in inspect(eng).get_columns(banka_tablo)}
+        banka_eklenecekler = {
+            "pos_hedef_hesap_turu": "VARCHAR(20) DEFAULT 'MEVDUAT'",
+            "pos_valor_is_gunu": "BOOLEAN DEFAULT 1",
+            "pos_otomatik_mahsup": "BOOLEAN DEFAULT 0",
+        }
+        with eng.begin() as connection:
+            for alan, tip in banka_eklenecekler.items():
+                if alan not in banka_sutunlar:
+                    connection.execute(text(f'ALTER TABLE "{banka_tablo}" ADD COLUMN "{alan}" {tip}'))
+
+    valor_tablo = "pos_valor_kayitlari"
+    if not inspect(eng).has_table(valor_tablo):
+        return
+    valor_sutunlar = {s["name"] for s in inspect(eng).get_columns(valor_tablo)}
+    valor_eklenecekler = {
+        "hedef_hesap_id": "INTEGER",
+        "gercek_yatis_tarihi": "DATE",
+        "gercek_yatis_tutari": "NUMERIC(18, 2)",
+    }
+    with eng.begin() as connection:
+        for alan, tip in valor_eklenecekler.items():
+            if alan not in valor_sutunlar:
+                connection.execute(text(f'ALTER TABLE "{valor_tablo}" ADD COLUMN "{alan}" {tip}'))
+    valor_sutunlar = {s["name"] for s in inspect(eng).get_columns(valor_tablo)}
+    if "hedef_hesap_id" in valor_sutunlar:
+        with eng.begin() as connection:
+            connection.execute(
+                text(
+                    f'UPDATE "{valor_tablo}" SET "hedef_hesap_id" = "kmh_hesap_id" '
+                    'WHERE "hedef_hesap_id" IS NULL'
+                )
+            )
+
+
 def cari_kart_schemasini_guncelle() -> None:
     """Eksik cari alanlarını mevcut SQLite tablosuna veri kaybetmeden ekler."""
     from database.models.firma import Firma
@@ -556,6 +836,7 @@ def cari_kart_schemasini_guncelle() -> None:
         "ilce": "VARCHAR(50)",
         "telefon2": "VARCHAR(30)",
         "telefon3": "VARCHAR(30)",
+        "whatsapp": "VARCHAR(30)",
         "adres_tipi": "VARCHAR(40)",
         "adres2": "VARCHAR(500)",
         "il2": "VARCHAR(50)",
@@ -937,24 +1218,49 @@ def cari_kart_schemasini_guncelle() -> None:
         if "teslim_depo" not in sutunlar:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "teslim_depo" VARCHAR(100)'))
+        if "valor_gun" not in sutunlar:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "valor_gun" INTEGER'))
 
-    finans_tablo = "finans_hesaplari"
-    if inspect(engine).has_table(finans_tablo):
-        finans_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(finans_tablo)}
-        finans_eklenecekler = {
-            "banka_adi": "VARCHAR(100)",
-            "sube": "VARCHAR(100)",
-            "iban": "VARCHAR(34)",
-            "aciklama": "VARCHAR(500)",
-            "banka_karti_id": "INTEGER",
-            "alt_hesap_turu": "VARCHAR(30)",
-            "muhasebe_hesap_id": "INTEGER",
-            "muhasebe_komisyon_hesap_id": "INTEGER",
+    if inspect(engine).has_table("alis_siparisi_satirlari"):
+        as_sutunlar = {s["name"] for s in inspect(engine).get_columns("alis_siparisi_satirlari")}
+        for alan in ("iskonto_orani_2", "iskonto_orani_3"):
+            if alan not in as_sutunlar:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "alis_siparisi_satirlari" '
+                            f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
+                        )
+                    )
+
+    # Alış irsaliyesi: giriş deposu, harici irsaliye ve teslim alma / sevkiyat alanları
+    if inspect(engine).has_table("alis_irsaliyeleri"):
+        ai_sutunlar = {s["name"] for s in inspect(engine).get_columns("alis_irsaliyeleri")}
+        ai_eklenecekler = {
+            "giris_depo": "VARCHAR(100)",
+            "harici_irsaliye_no": "VARCHAR(50)",
+            "harici_irsaliye_tarihi": "DATE",
+            "teslim_adresi": "VARCHAR(500)",
+            "teslim_il": "VARCHAR(50)",
+            "teslim_ilce": "VARCHAR(50)",
+            "planlanan_teslim": "DATE",
+            "teslim_kisi": "VARCHAR(100)",
+            "teslim_telefon": "VARCHAR(30)",
+            "sevkiyat_yontemi": "VARCHAR(50)",
+            "nakliyeci": "VARCHAR(100)",
+            "arac_plaka": "VARCHAR(20)",
+            "sofor_adi": "VARCHAR(100)",
+            "sofor_telefon": "VARCHAR(30)",
+            "takip_no": "VARCHAR(50)",
         }
-        with engine.begin() as connection:
-            for alan, tip in finans_eklenecekler.items():
-                if alan not in finans_sutunlar:
-                    connection.execute(text(f'ALTER TABLE "{finans_tablo}" ADD COLUMN "{alan}" {tip}'))
+        eksik_ai = {a: t for a, t in ai_eklenecekler.items() if a not in ai_sutunlar}
+        if eksik_ai:
+            with engine.begin() as connection:
+                for alan, tip in eksik_ai.items():
+                    connection.execute(text(f'ALTER TABLE "alis_irsaliyeleri" ADD COLUMN "{alan}" {tip}'))
+
+    finans_hesap_schemasini_guncelle(engine)
 
     banka_tablo = "banka_kartlari"
     if inspect(engine).has_table(banka_tablo):
@@ -963,6 +1269,9 @@ def cari_kart_schemasini_guncelle() -> None:
             "kk_komisyon_orani": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "banka_karti_komisyon_orani": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "pos_valor_gun": "INTEGER DEFAULT 1 NOT NULL",
+            "pos_hedef_hesap_turu": "VARCHAR(20) DEFAULT 'MEVDUAT'",
+            "pos_valor_is_gunu": "BOOLEAN DEFAULT 1",
+            "pos_otomatik_mahsup": "BOOLEAN DEFAULT 0",
             "kmh_limiti": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
         }
         with engine.begin() as connection:
@@ -973,12 +1282,25 @@ def cari_kart_schemasini_guncelle() -> None:
     valor_tablo = "pos_valor_kayitlari"
     if inspect(engine).has_table(valor_tablo):
         valor_sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(valor_tablo)}
-        if "taksit_sayisi" not in valor_sutunlar:
+        valor_eklenecekler = {
+            "taksit_sayisi": "INTEGER DEFAULT 1 NOT NULL",
+            "hedef_hesap_id": "INTEGER",
+            "gercek_yatis_tarihi": "DATE",
+            "gercek_yatis_tutari": "NUMERIC(18, 2)",
+        }
+        with engine.begin() as connection:
+            for alan, tip in valor_eklenecekler.items():
+                if alan not in valor_sutunlar:
+                    connection.execute(
+                        text(f'ALTER TABLE "{valor_tablo}" ADD COLUMN "{alan}" {tip}')
+                    )
+        valor_sutunlar = {s["name"] for s in inspect(engine).get_columns(valor_tablo)}
+        if "hedef_hesap_id" in valor_sutunlar:
             with engine.begin() as connection:
                 connection.execute(
                     text(
-                        f'ALTER TABLE "{valor_tablo}" '
-                        'ADD COLUMN "taksit_sayisi" INTEGER DEFAULT 1 NOT NULL'
+                        f'UPDATE "{valor_tablo}" SET "hedef_hesap_id" = "kmh_hesap_id" '
+                        'WHERE "hedef_hesap_id" IS NULL'
                     )
                 )
 
@@ -1011,6 +1333,59 @@ def cari_kart_schemasini_guncelle() -> None:
                 connection.execute(
                     text(f'ALTER TABLE "{hizmet_tablo}" ADD COLUMN "gider_sinifi" VARCHAR(20)')
                 )
+        hizmet_rapor_alanlari = {
+            "rapor_ana_grup": "VARCHAR(40)",
+            "rapor_alt_grup": "VARCHAR(40)",
+            "sonuc_yeri": "VARCHAR(5)",
+            "maliyet_davranisi": "VARCHAR(20)",
+            "duzenlilik": "VARCHAR(20)",
+            "dagitim_anahtar_kod": "VARCHAR(40)",
+            "kaynak_sistem": "VARCHAR(40)",
+            "kaynak_kimlik": "VARCHAR(80)",
+            "kullanici_duzenledi": "BOOLEAN DEFAULT 0",
+        }
+        with engine.begin() as connection:
+            for alan, tip in hizmet_rapor_alanlari.items():
+                if alan not in hizmet_sutunlar:
+                    connection.execute(
+                        text(f'ALTER TABLE "{hizmet_tablo}" ADD COLUMN "{alan}" {tip}')
+                    )
+        try:
+            from database.hizmet_service import HizmetService
+
+            HizmetService.ensure_schema(engine)
+        except Exception:
+            pass
+    try:
+        from database.gider_rapor_service import GiderRaporService
+
+        GiderRaporService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.butce_service import ButceService
+
+        ButceService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.devir_service import DevirService
+
+        DevirService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.proje_service import ProjeService
+
+        ProjeService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.stok_service import StokService
+
+        StokService.stok_hareket_indeksleri_hazirla(engine)
+    except Exception:
+        pass
 
     gider_fisi_tablo = "gider_fisleri"
     if inspect(engine).has_table(gider_fisi_tablo):
@@ -1049,6 +1424,32 @@ def cari_kart_schemasini_guncelle() -> None:
     except Exception:
         pass
     try:
+        from database.lot_barkod_service import LotBarkodService
+
+        LotBarkodService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.uretim_service import UretimService
+
+        UretimService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.aktivite_service import AktiviteService
+
+        AktiviteService.ensure_schema()
+    except Exception:
+        pass
+    try:
+        from database.sorulan_urun_service import SorulanUrunService
+
+        SorulanUrunService.ensure_schema()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("sorulan_urun schema")
+    try:
         from database.teklif_service import QuoteService
 
         QuoteService.schema_hazirla()
@@ -1058,6 +1459,12 @@ def cari_kart_schemasini_guncelle() -> None:
         from database.satis_irsaliyesi_service import SatisIrsaliyesiService
 
         SatisIrsaliyesiService.schema_hazirla()
+    except Exception:
+        pass
+    try:
+        from database.satis_faturasi_service import SatisFaturasiService
+
+        SatisFaturasiService.sevkiyat_schema_hazirla()
     except Exception:
         pass
     try:
@@ -1078,6 +1485,14 @@ def cari_kart_schemasini_guncelle() -> None:
         OdemeSozuService.schema_hazirla(engine)
     except Exception:
         pass
+    try:
+        from database.kart_turu_service import KartTuruService
+
+        KartTuruService.schema_ve_seed()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("kart_turu schema/seed")
     performans_indekslerini_hazirla()
 
 
@@ -1235,7 +1650,23 @@ def doviz_schema_guncelle() -> None:
     _ekle("satis_iade_faturalari", fon_ek_bedel)
     _ekle("satis_faturasi_satirlari", satir_doviz)
     _ekle("satis_faturasi_satirlari", {"referans_birim_fiyat": "NUMERIC(18, 4)"})
-    _ekle("stok_fiyatlari", {"kdv_durumu": "VARCHAR(10)"})
+    _ekle(
+        "stok_fiyatlari",
+        {
+            "kdv_durumu": "VARCHAR(10)",
+            "hesaplama_modu": "VARCHAR(20) DEFAULT 'MANUEL' NOT NULL",
+            "satis_iskonto": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
+        },
+    )
+    try:
+        from database.satis_fiyat_listesi_service import SatisFiyatListesiService
+
+        SatisFiyatListesiService._hazir_engine_id = None
+        SatisFiyatListesiService.ensure_schema(engine)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("satis_fiyat_listesi schema (doviz_schema_guncelle)")
     _ekle("alis_faturasi_satirlari", {
         k: v for k, v in satir_doviz.items() if k not in ("manuel_fiyat", "dagitima_kapali")
     })

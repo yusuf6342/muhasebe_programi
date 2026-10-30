@@ -143,7 +143,8 @@ def _ortak_filtreler(*, urun=True, grup=True, depo=True, kanal=True, maliyet=Tru
     if urun:
         f.append(Filtre("metin", "urun", "Ürün kodu / adı"))
     if grup:
-        f.append(Filtre("combo", "stok_grup_id", "Stok grubu", "", _grup_secenekleri()))
+        # DOC5: aramalı çoklu grup ağacı (üst → alt dahil); sürüklemeli Evobulut gruplama yok
+        f.append(Filtre("grup_agac", "stok_grup_id", "Stok grubu"))
     if depo:
         f.append(Filtre("combo", "depo", "Depo", "", _depo_secenekleri()))
     subeler = _sube_secenekleri()
@@ -159,8 +160,25 @@ def _ortak_filtreler(*, urun=True, grup=True, depo=True, kanal=True, maliyet=Tru
 
 def _servis_filtresi(f: dict) -> dict:
     out = dict(f)
-    for anahtar in ("stok_grup_id", "sube_id"):
-        out[anahtar] = int(out[anahtar]) if out.get(anahtar) else None
+    sg = out.get("stok_grup_id")
+    if isinstance(sg, (set, list, tuple, frozenset)):
+        izin = set()
+        for x in sg:
+            if x in (None, ""):
+                continue
+            try:
+                izin.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        out["stok_grup_id"] = izin or None
+    elif sg not in (None, ""):
+        try:
+            out["stok_grup_id"] = int(sg)
+        except (TypeError, ValueError):
+            out["stok_grup_id"] = None
+    else:
+        out["stok_grup_id"] = None
+    out["sube_id"] = int(out["sube_id"]) if out.get("sube_id") else None
     return out
 
 
@@ -743,7 +761,7 @@ def urun_satis_hizi_goster(app, **kw) -> RaporEkrani | None:
                                                                ("stoksuz_satan", "Stokta yok ama satılan")]),
                        Filtre("sayi", "yavas_gun", "Yavaş: yeterlilik > gün", 180),
                        Filtre("metin", "urun", "Ürün kodu / adı"),
-                       Filtre("combo", "stok_grup_id", "Stok grubu", "", _grup_secenekleri()),
+                       Filtre("grup_agac", "stok_grup_id", "Stok grubu"),
                        Filtre("combo", "depo", "Depo", "", _depo_secenekleri())],
             tablolar=[Tablo("satirlar", "Ürünler", kolonlar, etiket=lambda r: (
                 "uyari" if r.get("aciklama") == "Stokta yok ama satılıyor" else (

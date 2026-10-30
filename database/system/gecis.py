@@ -47,6 +47,11 @@ def _ayar_oku(session, anahtar: str) -> str | None:
 def _ayar_yaz(session, anahtar: str, deger: str) -> None:
     kayit = session.scalar(select(AppSetting).where(AppSetting.anahtar == anahtar))
     if kayit is None:
+        for obj in session.new:
+            if isinstance(obj, AppSetting) and obj.anahtar == anahtar:
+                kayit = obj
+                break
+    if kayit is None:
         session.add(AppSetting(anahtar=anahtar, deger=deger))
     else:
         kayit.deger = deger

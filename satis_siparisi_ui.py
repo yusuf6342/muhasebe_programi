@@ -131,10 +131,22 @@ class SatisSiparisiKarti(tk.Toplevel):
             self.para_birimleri.insert(0, "TRY")
 
         self.configure(bg=ACIK_BG)
+        self._mevcut_bakiye = Decimal("0")
         self._ust_baslik()
         self._arac_cubugu()
         self._kaydirilabilir_govde()
-        self._baslik_alanlari()
+        # Üst: sol evrak+döviz, sağ müşteri hesap özeti (talimat: tahmini bakiye)
+        self._ust_iki_kolon = tk.Frame(self.icerik, bg=ACIK_BG)
+        self._ust_iki_kolon.pack(fill="x", pady=2)
+        self._ust_iki_kolon.columnconfigure(0, weight=3)
+        self._ust_iki_kolon.columnconfigure(1, weight=2)
+        sol = tk.Frame(self._ust_iki_kolon, bg=ACIK_BG)
+        sol.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        sag = tk.Frame(self._ust_iki_kolon, bg=ACIK_BG)
+        sag.grid(row=0, column=1, sticky="nsew")
+        self._baslik_alanlari(sol)
+        self._doviz_bilgileri(sol)
+        self._musteri_hesap_ozeti(sag)
         self._teslimat_alanlari()
         self._satir_alani()
         self._aciklama_ve_toplam()
@@ -264,8 +276,15 @@ class SatisSiparisiKarti(tk.Toplevel):
         self.girdiler[field] = widget
         return widget
 
-    def _baslik_alanlari(self):
-        frame = self._panel("Sipariş ve Müşteri")
+    def _baslik_alanlari(self, parent=None):
+        """Sipariş Bilgileri — bakiye sağ özet panelinde (çift gösterim yok)."""
+        onceki_icerik = self.icerik
+        if parent is not None:
+            self.icerik = parent
+        try:
+            frame = self._panel("Sipariş Bilgileri")
+        finally:
+            self.icerik = onceki_icerik
         self._baslik_kaplari = [frame]
         self._girdi(frame, 0, 0, "Sipariş No", "siparis_no", YENI_NO_METNI, width=20)
         self._girdi(frame, 0, 1, "Sipariş Tarihi", "siparis_tarihi", date.today().strftime("%d.%m.%Y"), width=14, zorunlu=True)
@@ -273,37 +292,94 @@ class SatisSiparisiKarti(tk.Toplevel):
 
         self._etiket(frame, "Müşteri Kodu / Adı", 1, 0, True)
         mf = tk.Frame(frame, bg=BEYAZ)
-        mf.grid(row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
+        mf.grid(row=1, column=1, columnspan=5, sticky="ew", padx=4, pady=3)
         self.musteri = ttk.Entry(mf, textvariable=self._musteri_var)
         self.musteri.pack(side="left", fill="x", expand=True)
         self.musteri.bind("<Return>", self.musteri_ara)
         self._musteri_btn = tk_buton(mf, "Müşteri Ara (F10)", self.musteri_sec, rol="ara")
         self._musteri_btn.pack(side="left", padx=(6, 0))
-        self._girdi(frame, 1, 2, "Bakiye", "bakiye", "0,00 TL", width=16)
-        self.girdiler["bakiye"].configure(state="readonly")
 
         self._etiket(frame, "Depo", 2, 0, True)
         self.depo = ttk.Combobox(frame, values=self.depolar, width=18, state="readonly")
         self.depo.grid(row=2, column=1, padx=4, pady=3, sticky="ew")
         self.depo.set(self.depolar[0] if self.depolar else "ANA DEPO")
-        self._etiket(frame, "Para Birimi", 2, 2)
-        self.para_birimi = ttk.Combobox(frame, values=self.para_birimleri, width=8, state="readonly")
-        self.para_birimi.grid(row=2, column=3, padx=4, pady=3, sticky="w")
-        self.para_birimi.set("TRY")
-        self.para_birimi.bind("<<ComboboxSelected>>", self._para_birimi_degisti)
-        self._girdi(frame, 2, 2, "Kur", "kur", "1", width=12)
-
-        self._girdi(frame, 3, 0, "Müşteri Sipariş No", "musteri_siparis_no", width=20)
-        self._girdi(frame, 3, 1, "Alınan Avans", "avans", "", width=14)
-        self.girdiler["avans"].configure(state="readonly")
+        self._girdi(frame, 2, 1, "Müşteri Sipariş No", "musteri_siparis_no", width=20)
+        # Uyumluluk: eski kod yolları bakiye/avans girdilerini bekleyebilir
+        self.girdiler["bakiye"] = ttk.Entry(frame)
+        self.girdiler["avans"] = ttk.Entry(frame)
         for c in (1, 3, 5):
             frame.columnconfigure(c, weight=1)
-        sira = [self.musteri, self.depo, self.para_birimi, self.girdiler["kur"], self.girdiler["musteri_siparis_no"]]
         self.girdiler["siparis_tarihi"].bind("<Return>", lambda _e: self._odak(self.girdiler["termin_tarihi"]))
         self.girdiler["termin_tarihi"].bind("<Return>", lambda _e: self._odak(self.musteri))
-        for onceki, sonraki in zip(sira[1:], sira[2:]):
-            onceki.bind("<Return>", lambda _e, s=sonraki: self._odak(s))
-        self.girdiler["musteri_siparis_no"].bind("<Return>", lambda _e: self._odak(self.girdiler["teslimat_adresi"]))
+        self.depo.bind("<Return>", lambda _e: self._odak(self.girdiler["musteri_siparis_no"]))
+        self.girdiler["musteri_siparis_no"].bind("<Return>", lambda _e: self._odak(self.girdiler.get("kur") or self.girdiler["teslimat_adresi"]))
+
+    def _doviz_bilgileri(self, parent):
+        onceki = self.icerik
+        self.icerik = parent
+        try:
+            frame = self._panel("Döviz Bilgileri")
+        finally:
+            self.icerik = onceki
+        self._baslik_kaplari.append(frame)
+        self._etiket(frame, "Para Birimi", 0, 0)
+        self.para_birimi = ttk.Combobox(frame, values=self.para_birimleri, width=8, state="readonly")
+        self.para_birimi.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+        self.para_birimi.set("TRY")
+        self.para_birimi.bind("<<ComboboxSelected>>", self._para_birimi_degisti)
+        self._girdi(frame, 0, 1, "Kur (1 PB = … TL)", "kur", "1", width=14)
+        for c in (1, 3):
+            frame.columnconfigure(c, weight=1)
+        self.girdiler["kur"].bind("<KeyRelease>", lambda _e: self.toplam_guncelle(), add="+")
+        self.girdiler["kur"].bind("<FocusOut>", lambda _e: self.toplam_guncelle(), add="+")
+
+    def _musteri_hesap_ozeti(self, parent):
+        """Sağ sabit özet: mevcut bakiye + sipariş dahil tahmini (cariye yazılmaz)."""
+        onceki = self.icerik
+        self.icerik = parent
+        try:
+            frame = self._panel("Müşteri Hesap Özeti")
+        finally:
+            self.icerik = onceki
+        self._ozet_lbl: dict[str, tk.Label] = {}
+        satirlar = (
+            ("mevcut", "Mevcut Cari Bakiye"),
+            ("siparis", "Bu Siparişin Genel Toplamı"),
+            ("islenmemis", "Cariye İşlenmemiş Tutar"),
+            ("avans", "Alınan Avans"),
+            ("tahmini", "Sipariş Dâhil Tahmini Bakiye"),
+        )
+        for i, (anahtar, baslik) in enumerate(satirlar):
+            tk.Label(
+                frame, text=baslik, bg=BEYAZ, fg=IKINCIL, font=font(9, root=self), anchor="w"
+            ).grid(row=i, column=0, sticky="w", padx=4, pady=3)
+            lbl = tk.Label(
+                frame,
+                text="—",
+                bg=BEYAZ,
+                fg=LACIVERT,
+                font=font(
+                    11 if anahtar in ("mevcut", "tahmini") else 10,
+                    "bold" if anahtar == "tahmini" else "normal",
+                    root=self,
+                ),
+                anchor="e",
+            )
+            lbl.grid(row=i, column=1, sticky="ew", padx=4, pady=3)
+            self._ozet_lbl[anahtar] = lbl
+        frame.columnconfigure(1, weight=1)
+        self._ozet_yon = tk.Label(frame, text="", bg=BEYAZ, fg=IKINCIL, font=font(8, root=self), anchor="w")
+        self._ozet_yon.grid(row=len(satirlar), column=0, columnspan=2, sticky="ew", padx=4, pady=(2, 0))
+        tk.Label(
+            frame,
+            text="Sipariş henüz cari hesaba işlenmez. Bu tutar tahmini bakiye bilgisidir.",
+            bg=BEYAZ,
+            fg=IKINCIL,
+            font=font(8, root=self),
+            wraplength=320,
+            justify="left",
+            anchor="w",
+        ).grid(row=len(satirlar) + 1, column=0, columnspan=2, sticky="ew", padx=4, pady=(6, 2))
 
     def _teslimat_alanlari(self):
         frame = self._panel("Teslimat ve Koşullar")
@@ -653,11 +729,74 @@ class SatisSiparisiKarti(tk.Toplevel):
             bakiye = SatisIrsaliyesiService.mevcut_bakiye(self.cari.id) if self.cari else Decimal("0")
         except Exception:
             bakiye = Decimal("0")
+        self._mevcut_bakiye = bakiye
         w = self.girdiler["bakiye"]
         w.configure(state="normal")
         w.delete(0, "end")
         w.insert(0, para_metni(bakiye))
         w.configure(state="readonly")
+        self._hesap_ozeti_yenile()
+
+    def _islenmemis_genel_toplam(self) -> Decimal:
+        """Faturalanmamış kalan miktarın KDV dâhil tutarı (cariye henüz girmeyen)."""
+        toplam = Decimal("0")
+        for veri in self.satirlar:
+            miktar = decimal(veri.get("miktar") or 0, "Miktar")
+            if miktar <= 0:
+                continue
+            fat = decimal(veri.get("faturalanan") or 0, "F")
+            kalan = miktar - fat
+            if kalan <= 0:
+                continue
+            h = satir_hesapla(
+                miktar, veri.get("birim_fiyat") or 0, veri.get("iskonto_orani") or 0,
+                veri.get("iskonto_orani_2") or 0, veri.get("iskonto_orani_3") or 0, veri.get("kdv_orani") or 0,
+            )
+            toplam += (h["toplam"] * kalan / miktar)
+        return toplam.quantize(Decimal("0.01"))
+
+    def _belge_tutarini_tl(self, tutar: Decimal) -> Decimal:
+        pb = (self.para_birimi.get() or "TRY").upper()
+        if pb in ("TRY", "TL"):
+            return tutar
+        kur = self._kur_degeri()
+        if kur <= 0:
+            return Decimal("0")
+        return (tutar * kur).quantize(Decimal("0.01"))
+
+    def _hesap_ozeti_yenile(self, genel_toplam: Decimal | None = None):
+        if not getattr(self, "_ozet_lbl", None):
+            return
+        if not self.cari:
+            for anahtar in self._ozet_lbl:
+                self._ozet_lbl[anahtar].configure(text="Müşteri seçiniz" if anahtar == "mevcut" else "—")
+            self._ozet_yon.configure(text="")
+            return
+        if genel_toplam is None:
+            genel_toplam = belge_toplamlari([dict(s) for s in self.satirlar])["genel_toplam"]
+        islenmemis = self._islenmemis_genel_toplam()
+        avans = getattr(self, "_avans", Decimal("0")) or Decimal("0")
+        pb = (self.para_birimi.get() or "TRY").upper()
+        self._ozet_lbl["mevcut"].configure(text=para_metni(self._mevcut_bakiye))
+        self._ozet_lbl["siparis"].configure(text=para_metni(genel_toplam, pb))
+        self._ozet_lbl["islenmemis"].configure(text=para_metni(islenmemis, pb))
+        if avans:
+            self._ozet_lbl["avans"].configure(text=f"{para_metni(avans, pb)} (bakiyeye dâhil)")
+        else:
+            self._ozet_lbl["avans"].configure(text="—")
+        # Avans cari bakiyeye yansımış kabul; tahmini = mevcut + işlenmemiş (çift düşüm yok)
+        if pb not in ("TRY", "TL") and self._kur_degeri() <= 0:
+            self._ozet_lbl["tahmini"].configure(text="Kur eksik")
+            self._ozet_yon.configure(text="TL tahmini hesaplanamadı", fg=TURUNCU)
+            return
+        tahmini = (self._mevcut_bakiye + self._belge_tutarini_tl(islenmemis)).quantize(Decimal("0.01"))
+        self._ozet_lbl["tahmini"].configure(text=para_metni(tahmini))
+        if tahmini > 0:
+            self._ozet_yon.configure(text="(Borç)", fg=KIRMIZI)
+        elif tahmini < 0:
+            self._ozet_yon.configure(text="(Alacak)", fg=YESIL)
+        else:
+            self._ozet_yon.configure(text="(Sıfır)", fg=IKINCIL)
 
     def _para_birimi_degisti(self, _event=None):
         pb = self.para_birimi.get() or "TRY"
@@ -1138,6 +1277,7 @@ class SatisSiparisiKarti(tk.Toplevel):
         }
         for anahtar, metin in degerler.items():
             self._toplam_lbl[anahtar].configure(text=metin)
+        self._hesap_ozeti_yenile(t["genel_toplam"])
         return t
 
     def satir_duzenle(self):

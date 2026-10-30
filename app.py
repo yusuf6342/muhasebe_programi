@@ -925,7 +925,10 @@ class CariVirmanDialog(tk.Toplevel):
         cariler = CariService.aktif_cariler()
         etiketler = [f"{c.cari_kodu} - {c.unvan} ({c.cari_turu})" for c in cariler]
         self.cari_map = {f"{c.cari_kodu} - {c.unvan} ({c.cari_turu})": c for c in cariler}
-        bakiyeler = {o["cari"].id: o["bakiye"] for o in CariService.listele(hizli=True)}
+        bakiyeler = {
+            o["cari"].id: o["bakiye"]
+            for o in CariService.listele(hizli=True, valor=False)
+        }
         self.bakiyeler = bakiyeler
 
         self.girdiler = {}
@@ -1129,7 +1132,10 @@ class KkCekimiDialog(tk.Toplevel):
         tedarikciler = CariService.aktif_tedarikciler()
         self.musteri_map = {f"{c.cari_kodu} - {c.unvan}": c for c in musteriler}
         self.tedarikci_map = {f"{c.cari_kodu} - {c.unvan}": c for c in tedarikciler}
-        self.bakiyeler = {o["cari"].id: o["bakiye"] for o in CariService.listele(hizli=True)}
+        self.bakiyeler = {
+            o["cari"].id: o["bakiye"]
+            for o in CariService.listele(hizli=True, valor=False)
+        }
 
         self.girdiler = {}
         satir = 2
@@ -5263,6 +5269,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self._sevkiyat_btn,
             "İrsaliye sevkiyat kopyaları / manuel teslimat (ana forma yayılmaz)",
         )
+        self._dosyadan_aktar_btn = ftema.tk_buton(
+            sag, "Dosyadan Aktar", self._fatura_dosyadan_aktar, rol="ikincil"
+        )
+        self._dosyadan_aktar_btn.pack(side="left", padx=3)
+        self._tooltip_bagla(
+            self._dosyadan_aktar_btn,
+            "Excel / PDF / XML — bu faturaya kalem veya yeni taslak",
+        )
 
         ftema.tk_buton(sag, "Kapat (Esc)", self._fatura_esc_kapat, rol="ikincil").pack(
             side="left", padx=(8, 0)
@@ -5517,12 +5531,40 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 tahsilat_verileri=self.tahsilatlar,
             )
             self.fatura = SatisFaturasiService.getir(self.result.id) or self.result
+            self._fatura_proje_bagla()
             self._fatura_form_kirli = False
             self._kayit_sonrasi_forma_yukle(yazdir_sor=False, bildirim=False)
             return True
         except ValueError as hata:
             birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
             return False
+
+    def _fatura_proje_bagla(self) -> None:
+        """Seçili projeyi satış faturasına analitik etiket olarak bağlar (tutar değişmez)."""
+        fatura = getattr(self, "fatura", None) or getattr(self, "result", None)
+        if fatura is None or not getattr(fatura, "id", None):
+            return
+        cmb = getattr(self, "fatura_proje", None)
+        if cmb is None:
+            return
+        try:
+            etiket = (cmb.get() or "").strip()
+        except Exception:
+            return
+        pid = int((getattr(self, "_fatura_proje_map", {}) or {}).get(etiket) or 0)
+        if pid <= 0:
+            return
+        try:
+            from database.proje_service import ProjeService
+
+            ProjeService.belge_bagla(
+                pid,
+                kaynak_tip="satis_fatura",
+                kaynak_id=str(fatura.id),
+                kaynak_no=getattr(fatura, "fatura_no", None),
+            )
+        except Exception:
+            pass
 
     def bagli_listeden_fatura_ac(self, fatura_id: int, *, document_type: str):
         """Liste penceresinden seçilen satış faturasını bu ekranda aç."""
@@ -5643,6 +5685,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             )
             fatura_id = kayit.id
             self.fatura = SatisFaturasiService.getir(fatura_id) or kayit
+            self._fatura_proje_bagla()
             self._sevkiyat_kalici_yaz()
             self.result = SatisFaturasiService.onayla(fatura_id)
             self._risk_olayi_yaz(risk_kaydi)
@@ -6937,6 +6980,58 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         )
         self.durum.set(durum_deger)
         self.durum.grid(row=0, column=3, padx=0, pady=py, sticky="w", ipady=_ipady)
+
+        # Proje (analitik etiket — tutar yeniden yazılmaz)
+        ttk.Label(bolum1, text="Proje", style="FaturaUst.TLabel").grid(
+            row=4, column=0, padx=(0, 6), pady=py, sticky="w"
+        )
+        self._fatura_proje_map: dict[str, int] = {"": 0}
+        proje_degerler = [""]
+        try:
+            from database.proje_service import ProjeService
+
+            ProjeService.ensure_schema()
+            for p in ProjeService.listele() or []:
+                etiket = f"{p.get('kod') or ''} — {p.get('ad') or ''}".strip(" —")
+                if not etiket:
+                    continue
+                proje_degerler.append(etiket)
+                self._fatura_proje_map[etiket] = int(p["id"])
+        except Exception:
+            pass
+        self.fatura_proje = ttk.Combobox(
+            bolum1,
+            values=proje_degerler,
+            state="readonly",
+            width=28,
+            style="FaturaUst.TCombobox",
+        )
+        self.fatura_proje.set("")
+        self.fatura_proje.grid(
+            row=4, column=1, columnspan=3, padx=0, pady=py, sticky="we", ipady=_ipady
+        )
+        try:
+            if self.fatura is not None:
+                from database.proje_service import ProjeService
+                from sqlalchemy import select
+                from database.database import get_session
+                from database.models.proje import ProjeBelgeBaglanti
+
+                with get_session() as _s:
+                    bag = _s.scalar(
+                        select(ProjeBelgeBaglanti).where(
+                            ProjeBelgeBaglanti.kaynak_tip == "satis_fatura",
+                            ProjeBelgeBaglanti.kaynak_id == str(self.fatura.id),
+                            ProjeBelgeBaglanti.aktif.is_(True),
+                        )
+                    )
+                    if bag is not None:
+                        for etiket, pid in self._fatura_proje_map.items():
+                            if pid == int(bag.proje_id):
+                                self.fatura_proje.set(etiket)
+                                break
+        except Exception:
+            pass
 
         # Satır 2: Fatura Tarihi | İşlem Saati
         tarih_fr = ttk.Frame(bolum1)
@@ -11604,6 +11699,15 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             self._fatura_form_kirli = True
             self._sevkiyat_buton_metnini_guncelle()
 
+    def _fatura_dosyadan_aktar(self):
+        from fatura_dosyadan_aktar_ui import fatura_dosyadan_aktar_calistir
+
+        try:
+            kart_dolu = bool(self.satir_tablosu.get_children())
+        except Exception:
+            kart_dolu = bool(self.fatura)
+        fatura_dosyadan_aktar_calistir(self, yon="SATIS", kart_dolu=kart_dolu)
+
     def _sevkiyat_kalici_yaz(self):
         """Kayıtlı fatura id'sine sevkiyat kopyalarını yazar."""
         fatura = self.fatura
@@ -13939,9 +14043,58 @@ class MuhasebeApp(tk.Tk):
         self.lift()
         self.focus_force()
         self._cin_basarili = True
+        try:
+            from ui_tema import oturum_temasini_yukle
+
+            oturum_temasini_yukle(self)
+        except Exception:
+            pass
         self.after(500, self._pos_valor_kontrol)
         self.after(60_000, self._pos_valor_dongu)
         self.after(800, self._aktarim_durum_guncelle)
+        # Kontrol: CIN_KONTROL_STOK_KART / CIN_KONTROL_TEMA
+        try:
+            import os as _os
+
+            env = (_os.environ.get("CIN_KONTROL_STOK_KART") or "").strip().lower()
+            if env in ("1", "true", "evet"):
+                self.after(600, self.yeni_stok)
+            if (_os.environ.get("CIN_KONTROL_TEMA") or "").strip().lower() in (
+                "1",
+                "true",
+                "evet",
+            ):
+                self.after(700, lambda: __import__("tema_ayar_ui", fromlist=["tema_ayarlari_ac"]).tema_ayarlari_ac(self))
+            if (_os.environ.get("CIN_KONTROL_BUTCE") or "").strip().lower() in (
+                "1",
+                "true",
+                "evet",
+            ):
+                def _ac_butce():
+                    try:
+                        from butce_ui import butce_yeni_goster
+
+                        butce_yeni_goster(self)
+                    except Exception:
+                        pass
+
+                self.after(800, _ac_butce)
+            if (_os.environ.get("CIN_KONTROL_GIDER") or "").strip().lower() in (
+                "1",
+                "true",
+                "evet",
+            ):
+                def _ac_gider_hizmet():
+                    try:
+                        from gelir_gider_ui import hizmet_kartlari_sayfasi
+
+                        hizmet_kartlari_sayfasi(self, "GIDER")
+                    except Exception:
+                        pass
+
+                self.after(900, _ac_gider_hizmet)
+        except Exception:
+            pass
         # Hakkında için sürüm referansı
         self.app_version = APP_VERSION
         try:
@@ -13990,6 +14143,9 @@ class MuhasebeApp(tk.Tk):
                 "finans_goruntuleme", "satis_goruntuleme", "goruntuleme"
             ),
             "butce": lambda: yetki_var(
+                "finans_goruntuleme", "satis_goruntuleme", "goruntuleme"
+            ),
+            "proje_takip": lambda: yetki_var(
                 "finans_goruntuleme", "satis_goruntuleme", "goruntuleme"
             ),
             "raporlar": lambda: yetki_var(
@@ -14705,12 +14861,14 @@ class MuhasebeApp(tk.Tk):
             "satislar": ("satis_goruntuleme", "goruntuleme"),
             "satin_alma": ("alis_goruntuleme",),
             "stoklar": ("stok_goruntuleme", "goruntuleme"),
+            "aktivite": ("satis_goruntuleme", "goruntuleme"),
             "finans": ("finans_goruntuleme", "goruntuleme"),
             "gelir_gider": ("finans_goruntuleme", "goruntuleme"),
             "genel_muhasebe": ("muhasebe_goruntuleme", "goruntuleme"),
             "cek_senet": ("finans_goruntuleme", "goruntuleme"),
             "ozet_tablolar": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
             "butce": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
+            "proje_takip": ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme"),
             "raporlar": ("finans_goruntuleme", "satis_goruntuleme", "stok_goruntuleme", "goruntuleme"),
             "hizli_satis": ("satis_duzenleme", "satis_goruntuleme", "goruntuleme"),
             "sistem": ("kullanici_yonetme", "firma_yonetme", "sistem_ayarlari"),
@@ -14799,6 +14957,7 @@ class MuhasebeApp(tk.Tk):
                 "satislar": "SATIŞLAR",
                 "satin_alma": "SATIN ALMA",
                 "stoklar": "STOKLAR",
+                "aktivite": "AKTİVİTE",
                 "finans": "FİNANS",
                 "gelir_gider": "GELİR VE GİDERLER",
                 "personel": "PERSONEL",
@@ -14806,6 +14965,7 @@ class MuhasebeApp(tk.Tk):
                 "cek_senet": "ÇEK VE SENET",
                 "ozet_tablolar": "ÖZET TABLOLAR",
                 "butce": "BÜTÇE",
+                "proje_takip": "PROJE TAKİP",
                 "raporlar": "RAPORLAR",
                 "hizli_satis": "HIZLI SATIŞ",
                 "sistem": "KULLANICI VE FİRMA YÖNETİMİ",
@@ -14821,12 +14981,14 @@ class MuhasebeApp(tk.Tk):
                 "genel_muhasebe",
                 "ozet_tablolar",
                 "butce",
+                "proje_takip",
                 "cek_senet",
                 "raporlar",
                 "ayarlar",
                 "sistem",
                 "servis",
                 "satislar",
+                "aktivite",
             ):
                 ttk.Label(
                     self.icerik, text=basliklar.get(anahtar, anahtar.upper()), style="Baslik.TLabel"
@@ -14841,6 +15003,10 @@ class MuhasebeApp(tk.Tk):
                 self.satin_alma_menusu_goster()
             elif anahtar == "stoklar":
                 self.stoklar_menusu_goster()
+            elif anahtar == "aktivite":
+                from aktivite_ui import aktivite_hub_goster
+
+                aktivite_hub_goster(self)
             elif anahtar == "finans":
                 self.finans_goster()
             elif anahtar == "gelir_gider":
@@ -14859,6 +15025,10 @@ class MuhasebeApp(tk.Tk):
                 ozet_tablolar_menusu_goster(self)
             elif anahtar == "butce":
                 butce_menusu_goster(self)
+            elif anahtar == "proje_takip":
+                from proje_ui import proje_hub_goster
+
+                proje_hub_goster(self)
             elif anahtar == "raporlar":
                 from ana_panel_ui import raporlar_menusu_goster
 
@@ -15539,14 +15709,24 @@ class MuhasebeApp(tk.Tk):
 
         arka_planda(self, _yukle, on_ok=_doldur, on_err=_hata)
 
-    def _secili_stok(self):
-        secim = self.stok_tablosu.selection()
+    def _secili_stok_id(self):
+        """Listeden seçili stok kimliği — ağır ilişki yüklemez."""
+        tablo = getattr(self, "stok_tablosu", None)
+        if tablo is None:
+            return None
+        secim = tablo.selection()
         if not secim:
             messagebox.showinfo("Stok seçimi", "Lütfen bir stok kartı seçin.", parent=self)
             return None
         try:
-            stok_id = int(secim[0])
+            return int(secim[0])
         except (TypeError, ValueError):
+            return None
+
+    def _secili_stok(self):
+        """Etiket / giriş / silme için hafif yükleme (lotlar yok — kart açılışını yavaşlatmasın)."""
+        stok_id = self._secili_stok_id()
+        if not stok_id:
             return None
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -15560,7 +15740,6 @@ class MuhasebeApp(tk.Tk):
                 .where(StokKarti.id == stok_id)
                 .options(
                     selectinload(StokKarti.fiyatlar),
-                    selectinload(StokKarti.lotlar),
                     selectinload(StokKarti.birimler),
                     selectinload(StokKarti.barkodlar),
                     selectinload(StokKarti.resimler),
@@ -15593,9 +15772,11 @@ class MuhasebeApp(tk.Tk):
             self.stok_listesini_yenile()
 
     def stok_duzenle(self):
-        stok = self._secili_stok()
-        if stok:
-            StokKartiDialog(self, stok, on_saved=self._stok_listesi_aciksa_yenile)
+        # Çift yükleme yok: yalnız id → StokKartiDialog tek kez kart_acilis ile okur
+        stok_id = self._secili_stok_id()
+        if stok_id:
+            stok_ref = type("StokRef", (), {"id": int(stok_id)})()
+            StokKartiDialog(self, stok_ref, on_saved=self._stok_listesi_aciksa_yenile)
 
     def stok_soft_sil(self):
         stok = self._secili_stok()
@@ -15756,6 +15937,7 @@ class MuhasebeApp(tk.Tk):
         self.virman_tablosu.configure(yscrollcommand=dikey.set)
         self.virman_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
+        self._treeview_filtre_bagla_hizli(self.virman_tablosu, dict(zip(kolonlar, basliklar)), kolonlar=kolonlar)
 
         alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=10)
@@ -15777,18 +15959,21 @@ class MuhasebeApp(tk.Tk):
     def virman_listesini_yenile(self):
         if not hasattr(self, "virman_tablosu"):
             return
-        for item in self.virman_tablosu.get_children():
-            self.virman_tablosu.delete(item)
         arama = self.virman_arama.get().strip() if hasattr(self, "virman_arama") else ""
+        ham = []
         for kayit in CariService.virman_listele(arama):
-            self.virman_tablosu.insert("", "end", iid=kayit["belge_no"], values=(
-                kayit["belge_no"],
-                tarih_goster(kayit["tarih"]),
-                f"{kayit['kaynak_kodu']} - {kayit['kaynak_unvan']}",
-                f"{kayit['hedef_kodu']} - {kayit['hedef_unvan']}",
-                para_goster(kayit["tutar"]),
-                kayit["aciklama"],
-            ))
+            ham.append({
+                "iid": kayit["belge_no"],
+                "values": (
+                    kayit["belge_no"],
+                    tarih_goster(kayit["tarih"]),
+                    f"{kayit['kaynak_kodu']} - {kayit['kaynak_unvan']}",
+                    f"{kayit['hedef_kodu']} - {kayit['hedef_unvan']}",
+                    para_goster(kayit["tutar"]),
+                    kayit["aciklama"],
+                ),
+            })
+        self._rapor_tablo_ham_doldur(self.virman_tablosu, ham)
 
     def yeni_virman(self):
         dialog = CariVirmanDialog(self)
@@ -15871,6 +16056,7 @@ class MuhasebeApp(tk.Tk):
         self.kk_tablosu.configure(yscrollcommand=dikey.set)
         self.kk_tablosu.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
+        self._treeview_filtre_bagla_hizli(self.kk_tablosu, dict(zip(kolonlar, basliklar)), kolonlar=kolonlar)
 
         alt = ttk.Frame(govde)
         alt.pack(fill="x", pady=10)
@@ -15884,21 +16070,24 @@ class MuhasebeApp(tk.Tk):
     def kk_listesini_yenile(self):
         if not hasattr(self, "kk_tablosu"):
             return
-        for item in self.kk_tablosu.get_children():
-            self.kk_tablosu.delete(item)
         arama = self.kk_arama.get().strip() if hasattr(self, "kk_arama") else ""
+        ham = []
         for kayit in KkCekimiService.listele(arama):
-            self.kk_tablosu.insert("", "end", iid=kayit["belge_no"], values=(
-                kayit["belge_no"],
-                tarih_goster(kayit["tarih"]),
-                f"{kayit['musteri_kodu']} - {kayit['musteri_unvan']}",
-                f"{kayit['tedarikci_kodu']} - {kayit['tedarikci_unvan']}",
-                para_goster(kayit["tutar"]),
-                kayit["banka"],
-                kayit["cekim_turu"],
-                kayit["taksit_sayisi"],
-                kayit["aciklama"],
-            ))
+            ham.append({
+                "iid": kayit["belge_no"],
+                "values": (
+                    kayit["belge_no"],
+                    tarih_goster(kayit["tarih"]),
+                    f"{kayit['musteri_kodu']} - {kayit['musteri_unvan']}",
+                    f"{kayit['tedarikci_kodu']} - {kayit['tedarikci_unvan']}",
+                    para_goster(kayit["tutar"]),
+                    kayit["banka"],
+                    kayit["cekim_turu"],
+                    kayit["taksit_sayisi"],
+                    kayit["aciklama"],
+                ),
+            })
+        self._rapor_tablo_ham_doldur(self.kk_tablosu, ham)
 
     def yeni_kk_cekimi(self):
         dialog = KkCekimiDialog(self)
@@ -16047,13 +16236,13 @@ class MuhasebeApp(tk.Tk):
             except ValueError as hata:
                 messagebox.showerror("Kalan Siparişler", str(hata), parent=self)
                 return
-            for i in tablo.get_children():
-                tablo.delete(i)
+            parcalar = [
+                f"{pb}: {para_goster(t)}" for pb, t in (veri["toplamlar"] or {}).items()
+            ]
+            ham = []
             for r in veri["satirlar"]:
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
+                ham.append({
+                    "values": (
                         tarih_goster(r["siparis_tarihi"]),
                         tarih_goster(r["termin_tarihi"]),
                         r["siparis_no"],
@@ -16071,17 +16260,19 @@ class MuhasebeApp(tk.Tk):
                         r["durum"],
                         r["fatura_nolari"],
                     ),
+                })
+
+            def _ozet(gorunen, ham_all, filtre):
+                ekstra = " | ".join(parcalar) if parcalar else "Toplam: 0"
+                ozet.configure(
+                    text=(
+                        f"Gösterilen: {len(gorunen)} / {len(ham_all)} | {ekstra}"
+                        + (" | Aktif kolon filtresi" if filtre else "")
+                        + "  (Sevk kalanı ≠ fatura kalanı; doğrudan fatura sevk sayılmaz)"
+                    )
                 )
-            parcalar = [
-                f"{pb}: {para_goster(t)}" for pb, t in (veri["toplamlar"] or {}).items()
-            ]
-            ozet.configure(
-                text=(
-                    f"Satır: {len(veri['satirlar'])} | "
-                    + (" | ".join(parcalar) if parcalar else "Toplam: 0")
-                    + "  (Sevk kalanı ≠ fatura kalanı; doğrudan fatura sevk sayılmaz)"
-                )
-            )
+
+            self._rapor_tablo_ham_doldur(tablo, ham, ozet_cb=_ozet)
 
         ttk.Button(filtre, text="Getir", command=getir).pack(side="left", padx=8)
         getir()
@@ -16148,13 +16339,13 @@ class MuhasebeApp(tk.Tk):
             except ValueError as hata:
                 messagebox.showerror("Kalan İrsaliyeler", str(hata), parent=self)
                 return
-            for i in tablo.get_children():
-                tablo.delete(i)
+            parcalar = [
+                f"{pb}: {para_goster(t)}" for pb, t in (veri["toplamlar"] or {}).items()
+            ]
+            ham = []
             for r in veri["satirlar"]:
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
+                ham.append({
+                    "values": (
                         tarih_goster(r["irsaliye_tarihi"]),
                         r["irsaliye_no"],
                         r["siparis_no"],
@@ -16169,16 +16360,18 @@ class MuhasebeApp(tk.Tk):
                         r["durum"],
                         r["fatura_nolari"],
                     ),
+                })
+
+            def _ozet(gorunen, ham_all, filtre):
+                ekstra = " | ".join(parcalar) if parcalar else "Toplam: 0"
+                ozet.configure(
+                    text=(
+                        f"Gösterilen: {len(gorunen)} / {len(ham_all)} | {ekstra}"
+                        + (" | Aktif kolon filtresi" if filtre else "")
+                    )
                 )
-            parcalar = [
-                f"{pb}: {para_goster(t)}" for pb, t in (veri["toplamlar"] or {}).items()
-            ]
-            ozet.configure(
-                text=(
-                    f"Satır: {len(veri['satirlar'])} | "
-                    + (" | ".join(parcalar) if parcalar else "Toplam: 0")
-                )
-            )
+
+            self._rapor_tablo_ham_doldur(tablo, ham, ozet_cb=_ozet)
 
         ttk.Button(filtre, text="Getir", command=getir).pack(side="left", padx=8)
         getir()
@@ -16201,10 +16394,14 @@ class MuhasebeApp(tk.Tk):
             tk_buton(sag, "← Raporlar", self.satis_raporlari_goster, rol="geri").pack()
         return ust
 
-    def _rapor_tablo(self, parent, kolonlar, basliklar, genislikler=None):
+    def _rapor_tablo(self, parent, kolonlar, basliklar, genislikler=None, *, haric_kolonlar=None, filtre=True):
+        """DOC5: gömülü rapor Treeview + isteğe bağlı sütun hunisi (bakiye hariç tutulabilir)."""
+        from liste_filtre_ui import treeview_filtre_bagla
+
         cerceve = ttk.Frame(parent)
         cerceve.pack(fill="both", expand=True, pady=(8, 0))
         tablo = ttk.Treeview(cerceve, columns=kolonlar, show="headings")
+        baslik_map = dict(zip(kolonlar, basliklar))
         for i, (kolon, baslik) in enumerate(zip(kolonlar, basliklar)):
             tablo.heading(kolon, text=baslik)
             tablo.column(kolon, width=(genislikler[i] if genislikler else 130))
@@ -16216,7 +16413,101 @@ class MuhasebeApp(tk.Tk):
         yatay.grid(row=1, column=0, sticky="ew")
         cerceve.rowconfigure(0, weight=1)
         cerceve.columnconfigure(0, weight=1)
+        durum = {"filtre": {}, "ham": [], "bag": None, "yenile": None, "ozet_cb": None}
+
+        def _yenile_filtre():
+            yenile = durum.get("yenile")
+            if callable(yenile):
+                yenile()
+
+        if filtre:
+            durum["bag"] = treeview_filtre_bagla(
+                tablo,
+                baslik_map,
+                get_filtre_dict=lambda: durum["filtre"],
+                set_filtre_dict=None,
+                yenile_cb=_yenile_filtre,
+                deger_listesi_cb=lambda: durum["ham"],
+                parent=self,
+                kolonlar=list(kolonlar),
+                haric_kolonlar=tuple(haric_kolonlar or ()),
+            )
+        tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
         return tablo
+
+    def _rapor_tablo_ham_doldur(self, tablo, ham_satirlar, *, ozet_cb=None):
+        """Ham satırları saklar; kolon filtresine göre doldurur. Canlı kayıt değiştirmez.
+
+        ``ham_satirlar``: ``{"values": tuple, "iid": opsiyonel, ...}`` listesi.
+        """
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
+        durum = getattr(tablo, "_liste_filtre_durum", None)
+        if durum is None:
+            durum = {"filtre": {}, "ham": [], "bag": None}
+            tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
+        kolonlar = list(tablo["columns"])
+        durum["ham"] = list(ham_satirlar or [])
+        if ozet_cb is not None:
+            durum["ozet_cb"] = ozet_cb
+
+        def yenile():
+            tablo.delete(*tablo.get_children())
+            filtre = durum.get("filtre") or {}
+            gorunen = []
+            for item in durum["ham"]:
+                vals = item.get("values") if isinstance(item, dict) else item
+                if not satir_kolon_filtre_uygun(vals, kolonlar, filtre):
+                    continue
+                kwargs = {}
+                if isinstance(item, dict) and item.get("iid") is not None:
+                    kwargs["iid"] = item["iid"]
+                if isinstance(item, dict) and item.get("tags") is not None:
+                    kwargs["tags"] = item["tags"]
+                try:
+                    tablo.insert("", "end", values=vals, **kwargs)
+                except tk.TclError:
+                    tablo.insert("", "end", values=vals)
+                gorunen.append(item)
+            bag = durum.get("bag")
+            if bag:
+                bag["guncelle_basliklar"]()
+            cb = durum.get("ozet_cb")
+            if callable(cb):
+                cb(gorunen, durum["ham"], filtre)
+            return gorunen
+
+        durum["yenile"] = yenile
+        return yenile()
+
+    def _treeview_filtre_bagla_hizli(self, tablo, basliklar, *, haric_kolonlar=None, kolonlar=None):
+        """_rapor_tablo dışı Treeview'lara DOC5 hunisi (virman, KK, stok ekstre)."""
+        from liste_filtre_ui import treeview_filtre_bagla
+
+        kolon_list = list(kolonlar) if kolonlar is not None else list(tablo["columns"])
+        baslik_map = dict(basliklar) if isinstance(basliklar, dict) else dict(zip(kolon_list, basliklar))
+        durum = getattr(tablo, "_liste_filtre_durum", None) or {
+            "filtre": {}, "ham": [], "bag": None, "yenile": None, "ozet_cb": None,
+        }
+        tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
+
+        def _yenile_filtre():
+            yenile = durum.get("yenile")
+            if callable(yenile):
+                yenile()
+
+        durum["bag"] = treeview_filtre_bagla(
+            tablo,
+            baslik_map,
+            get_filtre_dict=lambda: durum["filtre"],
+            set_filtre_dict=None,
+            yenile_cb=_yenile_filtre,
+            deger_listesi_cb=lambda: durum["ham"],
+            parent=self,
+            kolonlar=kolon_list,
+            haric_kolonlar=tuple(haric_kolonlar or ()),
+        )
+        return durum
 
     def _rapor_cari_secim(self, parent, komut):
         etiketler, eslesme = self._cari_secenekleri()
@@ -16347,25 +16638,33 @@ class MuhasebeApp(tk.Tk):
         elif siralama == "Cari kodu (A-Z)":
             kayitlar.sort(key=lambda k: k["cari_kodu"])
 
-        for item in self.bakiye_durum_tablo.get_children():
-            self.bakiye_durum_tablo.delete(item)
-        toplam = sum((k["bakiye"] for k in kayitlar), Decimal("0"))
-        geciken_sayisi = sum(1 for k in kayitlar if k["geciken_gun"] > 0)
-        self.bakiye_durum_ozet.configure(
-            text=(
-                f"{len(kayitlar)} cari  |  Toplam bakiye: {para_goster(toplam)}  |  "
-                f"Geciken cari: {geciken_sayisi}"
-            )
-        )
+        ham = []
         for s in kayitlar:
-            self.bakiye_durum_tablo.insert("", "end", values=(
-                s["cari_kodu"], s["unvan"], s["cari_turu"],
-                para_goster(s["bakiye"]),
-                f"{s['ortalama_gun']:.1f}",
-                f"{s['agirlikli_ortalama_gun']:.1f}",
-                tarih_goster(s["ortalama_vade"]) if s["ortalama_vade"] else "-",
-                s["geciken_gun"],
-            ))
+            ham.append({
+                "values": (
+                    s["cari_kodu"], s["unvan"], s["cari_turu"],
+                    para_goster(s["bakiye"]),
+                    f"{s['ortalama_gun']:.1f}",
+                    f"{s['agirlikli_ortalama_gun']:.1f}",
+                    tarih_goster(s["ortalama_vade"]) if s["ortalama_vade"] else "-",
+                    s["geciken_gun"],
+                ),
+                "bakiye": s["bakiye"],
+                "geciken_gun": s["geciken_gun"],
+            })
+
+        def _ozet(gorunen, ham_all, filtre):
+            toplam = sum((g.get("bakiye") or Decimal("0") for g in gorunen), Decimal("0"))
+            geciken_sayisi = sum(1 for g in gorunen if (g.get("geciken_gun") or 0) > 0)
+            self.bakiye_durum_ozet.configure(
+                text=(
+                    f"{len(gorunen)}/{len(ham_all)} cari  |  Toplam bakiye: {para_goster(toplam)}  |  "
+                    f"Geciken cari: {geciken_sayisi}"
+                    + (f"  |  Aktif kolon filtresi: {len(filtre)}" if filtre else "")
+                )
+            )
+
+        self._rapor_tablo_ham_doldur(self.bakiye_durum_tablo, ham, ozet_cb=_ozet)
 
     def rapor_musteri_ekstresi(self):
         self._icerigi_temizle()
@@ -16426,11 +16725,13 @@ class MuhasebeApp(tk.Tk):
         self._ekstre_govde.pack(fill="both", expand=True)
         self._ekstre_tl_kutu = ttk.Frame(self._ekstre_govde)
         self._ekstre_tl_kutu.pack(fill="both", expand=True)
+        # DOC5 balance-safe: yürüyen bakiye kolonunda hunisi yok
         self.ekstre_tablo = self._rapor_tablo(
             self._ekstre_tl_kutu,
             ("tarih", "tur", "belge", "aciklama", "pb", "doviz", "kur", "borc", "alacak", "bakiye", "gun"),
             ("Tarih", "Tür", "Belge No", "Açıklama", "PB", "Döviz", "Kur", "Borç", "Alacak", "Bakiye", "Gün"),
             (85, 95, 120, 150, 40, 85, 75, 100, 100, 110, 55),
+            haric_kolonlar=("bakiye",),
         )
 
     def _ekstre_tarihleri(self):
@@ -16522,19 +16823,8 @@ class MuhasebeApp(tk.Tk):
             satirlar.append(s)
 
         vade = tarih_goster(rapor["ortalama_vade"]) if rapor["ortalama_vade"] else "-"
-        borc_t = sum((s["borc"] for s in satirlar), Decimal("0"))
-        alacak_t = sum((s["alacak"] for s in satirlar), Decimal("0"))
-        self.ekstre_ozet.configure(
-            text=(
-                f"{rapor['cari'].cari_kodu} - {rapor['cari'].unvan}  |  "
-                f"Genel bakiye: {para_goster(rapor['bakiye'])}  |  "
-                f"Ağırlıklı valör: {rapor['agirlikli_ortalama_gun']:.1f} gün  |  "
-                f"Ort. vade: {vade}  |  "
-                f"Filtre: {len(satirlar)} hareket  |  Borç: {para_goster(borc_t)}  |  Alacak: {para_goster(alacak_t)}"
-            )
-        )
-        for item in self.ekstre_tablo.get_children():
-            self.ekstre_tablo.delete(item)
+        gercek_kapanis = rapor["bakiye"]
+        ham = []
         for s in satirlar:
             pb = (s.get("para_birimi") or "TRY").upper()
             doviz = s.get("doviz_tutari") or 0
@@ -16549,13 +16839,36 @@ class MuhasebeApp(tk.Tk):
                 if pb != "TRY"
                 else ""
             )
-            self.ekstre_tablo.insert("", "end", values=(
-                tarih_goster(s["tarih"]), s["tur"], s["belge_no"], s["aciklama"],
-                pb if pb != "TRY" else "",
-                doviz_metin,
-                kur_metin,
-                para_goster(s["borc"]), para_goster(s["alacak"]), para_goster(s["bakiye"]), s["gun"],
-            ))
+            ham.append({
+                "values": (
+                    tarih_goster(s["tarih"]), s["tur"], s["belge_no"], s["aciklama"],
+                    pb if pb != "TRY" else "",
+                    doviz_metin,
+                    kur_metin,
+                    para_goster(s["borc"]), para_goster(s["alacak"]), para_goster(s["bakiye"]), s["gun"],
+                ),
+                "borc": s["borc"] or Decimal("0"),
+                "alacak": s["alacak"] or Decimal("0"),
+            })
+
+        def _ozet(gorunen, ham_all, filtre):
+            borc_t = sum((g.get("borc") or Decimal("0") for g in gorunen), Decimal("0"))
+            alacak_t = sum((g.get("alacak") or Decimal("0") for g in gorunen), Decimal("0"))
+            metin = (
+                f"{rapor['cari'].cari_kodu} - {rapor['cari'].unvan}  |  "
+                f"Gerçek kapanış bakiyesi: {para_goster(gercek_kapanis)}  |  "
+                f"Ağırlıklı valör: {rapor['agirlikli_ortalama_gun']:.1f} gün  |  "
+                f"Ort. vade: {vade}  |  "
+                f"Gösterilen: {len(gorunen)}/{len(ham_all)}  |  "
+                f"Borç: {para_goster(borc_t)}  |  Alacak: {para_goster(alacak_t)}"
+            )
+            if filtre:
+                metin += (
+                    f"  |  Filtrelenen hareket neti: {para_goster(borc_t - alacak_t)}"
+                )
+            self.ekstre_ozet.configure(text=metin)
+
+        self._rapor_tablo_ham_doldur(self.ekstre_tablo, ham, ozet_cb=_ozet)
 
     def rapor_stok_detayli_ekstre(self):
         self._icerigi_temizle()
@@ -16600,6 +16913,10 @@ class MuhasebeApp(tk.Tk):
             command=lambda: self._stok_ekstre_yenile(eslesme),
         ).pack(side="left", padx=4)
 
+        self._stok_ekstre_tablo_kur()
+
+    def _stok_ekstre_tablo_kur(self):
+        """Stok detaylı ekstre Treeview + DOC5 hunisi (bakiye hariç)."""
         cerceve = ttk.Frame(self.icerik)
         cerceve.pack(fill="both", expand=True, pady=(8, 0))
         kolonlar = (
@@ -16631,6 +16948,9 @@ class MuhasebeApp(tk.Tk):
         cerceve.columnconfigure(0, weight=1)
         self.stok_ekstre_tablo.tag_configure("belge", font=("Segoe UI", 9, "bold"))
         self.stok_ekstre_tablo.tag_configure("stok", foreground="#333333")
+        self._treeview_filtre_bagla_hizli(
+            self.stok_ekstre_tablo, basliklar, haric_kolonlar=("bakiye",), kolonlar=kolonlar
+        )
 
     def _stok_ekstre_yenile(self, eslesme):
         cari = eslesme.get(self.stok_ekstre_musteri.get())
@@ -16666,13 +16986,9 @@ class MuhasebeApp(tk.Tk):
 
         stok_filtre = turkce_normalize(self.stok_ekstre_stok.get().strip())
         tur_filtre = self.stok_ekstre_tur.get().strip()
+        from liste_filtre_ui import satir_kolon_filtre_uygun
 
-        for item in self.stok_ekstre_tablo.get_children():
-            self.stok_ekstre_tablo.delete(item)
-
-        gosterilen = 0
-        borc_t = Decimal("0")
-        alacak_t = Decimal("0")
+        ham = []
         for belge in rapor["belgeler"]:
             if baslangic and belge["tarih"] < baslangic:
                 continue
@@ -16689,63 +17005,88 @@ class MuhasebeApp(tk.Tk):
                     if stok_filtre in turkce_normalize(s["urun_kodu"] or "")
                     or stok_filtre in turkce_normalize(s["urun_adi"] or "")
                 ]
-                # Stok filtresi varken tahsilat vb. gizlenir; stoklu belgede eşleşme yoksa belge de gizlenir.
                 if stoklu_tur and not stok_satirlari:
                     continue
                 if not stoklu_tur:
                     continue
 
-            parent = self.stok_ekstre_tablo.insert(
-                "", "end",
-                values=(
-                    tarih_goster(belge["tarih"]),
-                    belge["tur"],
-                    belge["belge_no"],
-                    belge.get("aciklama") or "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    para_goster(belge["borc"]) if belge["borc"] else "",
-                    para_goster(belge["alacak"]) if belge["alacak"] else "",
-                    para_goster(belge["bakiye"]),
-                ),
-                tags=("belge",),
-                open=True,
+            belge_vals = (
+                tarih_goster(belge["tarih"]),
+                belge["tur"],
+                belge["belge_no"],
+                belge.get("aciklama") or "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                para_goster(belge["borc"]) if belge["borc"] else "",
+                para_goster(belge["alacak"]) if belge["alacak"] else "",
+                para_goster(belge["bakiye"]),
             )
-            gosterilen += 1
-            borc_t += belge["borc"] or Decimal("0")
-            alacak_t += belge["alacak"] or Decimal("0")
-
+            cocuklar = []
             for s in stok_satirlari:
-                self.stok_ekstre_tablo.insert(
-                    parent, "end",
-                    values=(
-                        "",
-                        "",
-                        "",
-                        "",
-                        f"{s['urun_kodu']} - {s['urun_adi']}",
-                        f"{s['miktar']} {s['birim']}",
-                        para_goster(s["birim_fiyat"]),
-                        para_goster(s["genel"]),
-                        s.get("lot_cikisi") or "",
-                        "",
-                        "",
-                        "",
-                    ),
-                    tags=("stok",),
-                )
+                cocuklar.append((
+                    "",
+                    "",
+                    "",
+                    "",
+                    f"{s['urun_kodu']} - {s['urun_adi']}",
+                    f"{s['miktar']} {s['birim']}",
+                    para_goster(s["birim_fiyat"]),
+                    para_goster(s["genel"]),
+                    s.get("lot_cikisi") or "",
+                    "",
+                    "",
+                    "",
+                ))
+            ham.append({
+                "values": belge_vals,
+                "borc": belge["borc"] or Decimal("0"),
+                "alacak": belge["alacak"] or Decimal("0"),
+                "children": cocuklar,
+            })
 
-        self.stok_ekstre_ozet.configure(
-            text=(
+        durum = getattr(self.stok_ekstre_tablo, "_liste_filtre_durum", None) or {
+            "filtre": {}, "ham": [], "bag": None,
+        }
+        self.stok_ekstre_tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
+        durum["ham"] = ham
+        kolonlar = list(self.stok_ekstre_tablo["columns"])
+        gercek_kapanis = rapor["bakiye"]
+
+        def yenile():
+            self.stok_ekstre_tablo.delete(*self.stok_ekstre_tablo.get_children())
+            filtre = durum.get("filtre") or {}
+            gorunen = 0
+            borc_t = Decimal("0")
+            alacak_t = Decimal("0")
+            for item in durum["ham"]:
+                if not satir_kolon_filtre_uygun(item["values"], kolonlar, filtre):
+                    continue
+                parent = self.stok_ekstre_tablo.insert(
+                    "", "end", values=item["values"], tags=("belge",), open=True,
+                )
+                gorunen += 1
+                borc_t += item.get("borc") or Decimal("0")
+                alacak_t += item.get("alacak") or Decimal("0")
+                for cocuk in item.get("children") or []:
+                    self.stok_ekstre_tablo.insert(parent, "end", values=cocuk, tags=("stok",))
+            bag = durum.get("bag")
+            if bag:
+                bag["guncelle_basliklar"]()
+            metin = (
                 f"{rapor['cari'].cari_kodu} - {rapor['cari'].unvan}  |  "
-                f"Genel bakiye: {para_goster(rapor['bakiye'])}  |  "
-                f"Gösterilen belge: {gosterilen}  |  "
+                f"Gerçek kapanış bakiyesi: {para_goster(gercek_kapanis)}  |  "
+                f"Gösterilen belge: {gorunen}/{len(durum['ham'])}  |  "
                 f"Borç: {para_goster(borc_t)}  |  Alacak: {para_goster(alacak_t)}"
             )
-        )
+            if filtre:
+                metin += f"  |  Filtrelenen hareket neti: {para_goster(borc_t - alacak_t)}"
+            self.stok_ekstre_ozet.configure(text=metin)
+
+        durum["yenile"] = yenile
+        yenile()
 
     def rapor_tahsilat_odeme(self):
         self._icerigi_temizle()
@@ -16785,23 +17126,29 @@ class MuhasebeApp(tk.Tk):
                 return
             tur_kod = {"Hepsi": "hepsi", "Tahsilat": "tahsilat", "Ödeme": "odeme"}[tur.get()]
             rapor = RaporService.tarih_aralikli_tahsilat_odeme(b, e, tur_kod)
-            self.tahsilat_odeme_ozet.configure(
-                text=(
-                    f"{tarih_goster(b)} – {tarih_goster(e)}  |  "
-                    f"Tahsilat: {para_goster(rapor['toplam_tahsilat'])}  |  "
-                    f"Ödeme: {para_goster(rapor['toplam_odeme'])}  |  "
-                    f"Kayıt: {len(rapor['satirlar'])}"
-                )
-            )
-            for item in self.tahsilat_odeme_tablo.get_children():
-                self.tahsilat_odeme_tablo.delete(item)
+            ham = []
             for s in rapor["satirlar"]:
                 karsi = f"{s['karsi_kodu']} - {s['karsi_unvan']}".strip(" -") if s["karsi_kodu"] else ""
-                self.tahsilat_odeme_tablo.insert("", "end", values=(
-                    tarih_goster(s["tarih"]), s["tur"], s["belge_no"],
-                    f"{s['cari_kodu']} - {s['cari_unvan']}", karsi, s["hesap"],
-                    para_goster(s["borc"]), para_goster(s["alacak"]), s["aciklama"],
-                ))
+                ham.append({
+                    "values": (
+                        tarih_goster(s["tarih"]), s["tur"], s["belge_no"],
+                        f"{s['cari_kodu']} - {s['cari_unvan']}", karsi, s["hesap"],
+                        para_goster(s["borc"]), para_goster(s["alacak"]), s["aciklama"],
+                    ),
+                })
+
+            def _ozet(gorunen, ham_all, filtre):
+                self.tahsilat_odeme_ozet.configure(
+                    text=(
+                        f"{tarih_goster(b)} – {tarih_goster(e)}  |  "
+                        f"Tahsilat: {para_goster(rapor['toplam_tahsilat'])}  |  "
+                        f"Ödeme: {para_goster(rapor['toplam_odeme'])}  |  "
+                        f"Gösterilen: {len(gorunen)}/{len(ham_all)}"
+                        + (f"  |  Aktif kolon filtresi: {len(filtre)}" if filtre else "")
+                    )
+                )
+
+            self._rapor_tablo_ham_doldur(self.tahsilat_odeme_tablo, ham, ozet_cb=_ozet)
 
         ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=10)
         getir()
@@ -16858,24 +17205,30 @@ class MuhasebeApp(tk.Tk):
             except ValueError as hata:
                 messagebox.showerror("Rapor", str(hata), parent=self)
                 return
-            self.kar_ozet.configure(
-                text=(
-                    f"{rapor['cari'].cari_kodu} - {rapor['cari'].unvan}  |  "
-                    f"Satır: {len(rapor['satirlar'])}  |  "
-                    f"Satış: {para_goster(rapor['toplam_satis'])}  |  "
-                    f"Maliyet: {para_goster(rapor['toplam_maliyet'])}  |  "
-                    f"Kâr: {para_goster(rapor['toplam_kar'])}  |  "
-                    f"Marj: {rapor['toplam_marj']:.1f}%"
-                )
-            )
-            for item in self.kar_tablo.get_children():
-                self.kar_tablo.delete(item)
+            ham = []
             for s in rapor["satirlar"]:
-                self.kar_tablo.insert("", "end", values=(
-                    s["fatura_no"], tarih_goster(s["tarih"]), s["urun_kodu"], s["urun_adi"],
-                    s["miktar"], para_goster(s["net_satis"]), para_goster(s["fifo_birim_maliyeti"]),
-                    para_goster(s["toplam_maliyet"]), para_goster(s["kar"]), f"{s['marj']:.1f}",
-                ))
+                ham.append({
+                    "values": (
+                        s["fatura_no"], tarih_goster(s["tarih"]), s["urun_kodu"], s["urun_adi"],
+                        s["miktar"], para_goster(s["net_satis"]), para_goster(s["fifo_birim_maliyeti"]),
+                        para_goster(s["toplam_maliyet"]), para_goster(s["kar"]), f"{s['marj']:.1f}",
+                    ),
+                })
+
+            def _ozet(gorunen, ham_all, filtre):
+                self.kar_ozet.configure(
+                    text=(
+                        f"{rapor['cari'].cari_kodu} - {rapor['cari'].unvan}  |  "
+                        f"Gösterilen: {len(gorunen)}/{len(ham_all)}  |  "
+                        f"Satış: {para_goster(rapor['toplam_satis'])}  |  "
+                        f"Maliyet: {para_goster(rapor['toplam_maliyet'])}  |  "
+                        f"Kâr: {para_goster(rapor['toplam_kar'])}  |  "
+                        f"Marj: {rapor['toplam_marj']:.1f}%"
+                        + (f"  |  Aktif kolon filtresi: {len(filtre)}" if filtre else "")
+                    )
+                )
+
+            self._rapor_tablo_ham_doldur(self.kar_tablo, ham, ozet_cb=_ozet)
 
         ttk.Button(filtre, text="Raporu Getir", command=getir).pack(side="left", padx=4)
 
@@ -16911,15 +17264,12 @@ class MuhasebeApp(tk.Tk):
             t = uid_e.get().strip()
             if t.isdigit():
                 uid = int(t)
-            for i in tablo.get_children():
-                tablo.delete(i)
+            ham = []
             for r in kullanici_bazli_satis_raporu(user_id=uid):
                 kar = "—" if r.get("kar") is None else para_goster(r["kar"])
                 marj = "—" if r.get("kar_marji") is None else str(r["kar_marji"])
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
+                ham.append({
+                    "values": (
                         r["kullanici"],
                         r["siparis_adedi"],
                         r["fatura_adedi"],
@@ -16930,7 +17280,8 @@ class MuhasebeApp(tk.Tk):
                         kar,
                         marj,
                     ),
-                )
+                })
+            self._rapor_tablo_ham_doldur(tablo, ham)
 
         ttk.Button(filtre, text="Getir", command=getir).pack(side="left", padx=8)
         getir()
@@ -16961,13 +17312,10 @@ class MuhasebeApp(tk.Tk):
             t = uid_e.get().strip()
             if t.isdigit():
                 uid = int(t)
-            for i in tablo.get_children():
-                tablo.delete(i)
+            ham = []
             for r in kullanici_islem_detay_raporu(user_id=uid):
-                tablo.insert(
-                    "",
-                    "end",
-                    values=(
+                ham.append({
+                    "values": (
                         r["tarih"],
                         r["kullanici"],
                         r["belge_turu"],
@@ -16977,7 +17325,8 @@ class MuhasebeApp(tk.Tk):
                         r["islem_turu"],
                         r["durum"],
                     ),
-                )
+                })
+            self._rapor_tablo_ham_doldur(tablo, ham)
 
         ttk.Button(filtre, text="Getir", command=getir).pack(side="left", padx=8)
         getir()
@@ -16993,11 +17342,10 @@ class MuhasebeApp(tk.Tk):
             ("Belge No", "Tür", "İlk Yapan", "İptal Eden", "İptal Tarihi", "Neden", "Tutar"),
             (120, 90, 120, 120, 130, 180, 90),
         )
+        ham = []
         for r in iptal_iade_raporu():
-            tablo.insert(
-                "",
-                "end",
-                values=(
+            ham.append({
+                "values": (
                     r["belge_no"],
                     r["belge_turu"],
                     r["ilk_yapan"],
@@ -17006,7 +17354,8 @@ class MuhasebeApp(tk.Tk):
                     r["neden"],
                     para_goster(r["tutar"]),
                 ),
-            )
+            })
+        self._rapor_tablo_ham_doldur(tablo, ham)
 
     def _satis_ozet_raporu_doldur(self, parent):
         rapor = CariService.satis_raporu()
@@ -17032,8 +17381,13 @@ class MuhasebeApp(tk.Tk):
         aylik_tablo.column("ay", width=100)
         aylik_tablo.column("tutar", width=140)
         aylik_tablo.pack(fill="both", expand=True)
-        for ay, tutar in rapor["aylik"]:
-            aylik_tablo.insert("", "end", values=(ay, para_goster(tutar)))
+        self._treeview_filtre_bagla_hizli(
+            aylik_tablo, {"ay": "Ay", "tutar": "Ciro"}, kolonlar=("ay", "tutar")
+        )
+        self._rapor_tablo_ham_doldur(
+            aylik_tablo,
+            [{"values": (ay, para_goster(tutar))} for ay, tutar in rapor["aylik"]],
+        )
 
         musteriler = ttk.LabelFrame(orta, text="En Çok Ciro Yapan Müşteriler", padding=8)
         musteriler.pack(side="left", fill="both", expand=True, padx=(4, 0))
@@ -17043,12 +17397,21 @@ class MuhasebeApp(tk.Tk):
         m_tablo.column("musteri", width=260)
         m_tablo.column("tutar", width=140)
         m_tablo.pack(fill="both", expand=True)
-        for unvan, tutar in rapor["top_musteriler"]:
-            m_tablo.insert("", "end", values=(unvan, para_goster(tutar)))
+        self._treeview_filtre_bagla_hizli(
+            m_tablo, {"musteri": "Müşteri", "tutar": "Ciro"}, kolonlar=("musteri", "tutar")
+        )
+        self._rapor_tablo_ham_doldur(
+            m_tablo,
+            [{"values": (unvan, para_goster(tutar))} for unvan, tutar in rapor["top_musteriler"]],
+        )
 
         faturalar = ttk.LabelFrame(parent, text="Fatura Listesi", padding=8)
         faturalar.pack(fill="both", expand=True, pady=(8, 0))
         kolonlar = ("no", "tarih", "musteri", "toplam", "tahsilat", "kalan", "durum")
+        basliklar = {
+            "no": "Fatura No", "tarih": "Tarih", "musteri": "Müşteri",
+            "toplam": "Toplam", "tahsilat": "Tahsilat", "kalan": "Kalan", "durum": "Durum",
+        }
         tablo = ttk.Treeview(faturalar, columns=kolonlar, show="headings")
         for kolon, baslik, genislik in (
             ("no", "Fatura No", 130), ("tarih", "Tarih", 90), ("musteri", "Müşteri", 220),
@@ -17060,11 +17423,17 @@ class MuhasebeApp(tk.Tk):
         tablo.configure(yscrollcommand=kaydirma.set)
         tablo.pack(side="left", fill="both", expand=True)
         kaydirma.pack(side="right", fill="y")
-        for s in rapor["satirlar"]:
-            tablo.insert("", "end", values=(
-                s["fatura_no"], tarih_goster(s["tarih"]), s["musteri"],
-                para_goster(s["toplam"]), para_goster(s["tahsilat"]), para_goster(s["kalan"]), s["durum"],
-            ))
+        self._treeview_filtre_bagla_hizli(tablo, basliklar, kolonlar=kolonlar)
+        self._rapor_tablo_ham_doldur(
+            tablo,
+            [{
+                "values": (
+                    s["fatura_no"], tarih_goster(s["tarih"]), s["musteri"],
+                    para_goster(s["toplam"]), para_goster(s["tahsilat"]),
+                    para_goster(s["kalan"]), s["durum"],
+                ),
+            } for s in rapor["satirlar"]],
+        )
 
     def satis_faturalari_goster(self):
         self._icerigi_temizle()
@@ -19311,7 +19680,8 @@ class MuhasebeApp(tk.Tk):
         kolonlar = list(self.cari_tablosu["columns"])
 
         def _yukle():
-            return CariService.listele(arama, cari_turu=tur, hizli=True)
+            # İlk boyama: bakiye hızlı; Kalan Bakiye Gün ikinci aşamada
+            return CariService.listele(arama, cari_turu=tur, hizli=True, valor=False)
 
         from cari_liste_ui import (
             cari_tur_ad_haritalari,
@@ -19337,13 +19707,17 @@ class MuhasebeApp(tk.Tk):
             # Sıralama için gerçek küsuratlı değer (görüntü biçiminden ayrı)
             self._cari_liste_ham = {}
             self._cari_liste_kayitlar = []
-            for ozet in cariler:
+            # Anlık kopya: sonraki yenileme eski valör sonucunu bu listeye yazmasın
+            ozet_anlik = list(cariler)
+            self._cari_liste_ozetler = ozet_anlik
+            for ozet in ozet_anlik:
                 cari = ozet["cari"]
                 iid = str(cari.id)
                 gun = gecen_gun_sayi(ozet.get("agirlikli_ortalama_gun"))
                 self._cari_liste_ham[iid] = {
                     "agirlikli": 0.0 if gun is None else gun,
                     "agirlikli_bos": gun is None,
+                    "valor_yukleniyor": bool(ozet.get("valor_yukleniyor")),
                     "bakiye": ozet.get("bakiye"),
                     "aktif": bool(cari.aktif),
                     "grup": (cari.musteri_grubu or "").strip(),
@@ -19355,6 +19729,46 @@ class MuhasebeApp(tk.Tk):
                 }
                 self._cari_liste_kayitlar.append((iid, _satir_degerleri(ozet)))
             MuhasebeApp._cari_listesi_filtrele(self)
+
+            def _valor_yukle():
+                if getattr(self, "_cari_yenile_token", 0) != token:
+                    return None
+                return CariService.liste_valor_guncelle(list(ozet_anlik))
+
+            def _valor_uygula(guncel):
+                if guncel is None:
+                    return
+                if getattr(self, "_cari_yenile_token", 0) != token:
+                    return
+                try:
+                    if not self.winfo_exists() or not hasattr(self, "cari_tablosu"):
+                        return
+                    if not self.cari_tablosu.winfo_exists():
+                        return
+                except Exception:
+                    return
+                ham = getattr(self, "_cari_liste_ham", None) or {}
+                kayitlar = []
+                for ozet in guncel or []:
+                    ozet["valor_yukleniyor"] = False
+                    cari = ozet.get("cari")
+                    if cari is None:
+                        continue
+                    iid = str(cari.id)
+                    gun = gecen_gun_sayi(ozet.get("agirlikli_ortalama_gun"))
+                    if iid in ham:
+                        ham[iid]["agirlikli"] = 0.0 if gun is None else gun
+                        ham[iid]["agirlikli_bos"] = gun is None
+                        ham[iid]["valor_yukleniyor"] = False
+                    kayitlar.append((iid, _satir_degerleri(ozet)))
+                # Token hâlâ aynı mı (yenileme arada geldiyse yazma)
+                if getattr(self, "_cari_yenile_token", 0) != token:
+                    return
+                self._cari_liste_kayitlar = kayitlar
+                self._cari_liste_ozetler = list(guncel)
+                MuhasebeApp._cari_listesi_filtrele(self)
+
+            arka_planda(self, _valor_yukle, on_ok=_valor_uygula, on_err=lambda _e: None)
 
         def _hata(exc):
             if getattr(self, "_cari_yenile_token", 0) != token:
@@ -19972,37 +20386,7 @@ class MuhasebeApp(tk.Tk):
             filtre, text="Raporu Getir / Uygula",
             command=lambda: self._stok_ekstre_yenile(eslesme),
         ).pack(side="left", padx=4)
-        cerceve = ttk.Frame(self.icerik)
-        cerceve.pack(fill="both", expand=True, pady=(8, 0))
-        kolonlar = (
-            "tarih", "tur", "belge", "aciklama", "urun", "miktar", "fiyat",
-            "satir_tutar", "lot", "borc", "alacak", "bakiye",
-        )
-        self.stok_ekstre_tablo = ttk.Treeview(cerceve, columns=kolonlar, show="tree headings")
-        basliklar = {
-            "tarih": "Tarih", "tur": "Belge Türü", "belge": "Belge No", "aciklama": "Açıklama",
-            "urun": "Stok", "miktar": "Miktar", "fiyat": "Birim Fiyat", "satir_tutar": "Satır Tutarı",
-            "lot": "Lot", "borc": "Borç", "alacak": "Alacak", "bakiye": "Bakiye",
-        }
-        genislikler = {
-            "tarih": 85, "tur": 110, "belge": 120, "aciklama": 150, "urun": 170, "miktar": 70,
-            "fiyat": 90, "satir_tutar": 95, "lot": 120, "borc": 100, "alacak": 100, "bakiye": 110,
-        }
-        self.stok_ekstre_tablo.heading("#0", text="")
-        self.stok_ekstre_tablo.column("#0", width=22, stretch=False)
-        for kolon in kolonlar:
-            self.stok_ekstre_tablo.heading(kolon, text=basliklar[kolon])
-            self.stok_ekstre_tablo.column(kolon, width=genislikler[kolon])
-        dikey = ttk.Scrollbar(cerceve, orient="vertical", command=self.stok_ekstre_tablo.yview)
-        yatay = ttk.Scrollbar(cerceve, orient="horizontal", command=self.stok_ekstre_tablo.xview)
-        self.stok_ekstre_tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
-        self.stok_ekstre_tablo.grid(row=0, column=0, sticky="nsew")
-        dikey.grid(row=0, column=1, sticky="ns")
-        yatay.grid(row=1, column=0, sticky="ew")
-        cerceve.rowconfigure(0, weight=1)
-        cerceve.columnconfigure(0, weight=1)
-        self.stok_ekstre_tablo.tag_configure("belge", font=("Segoe UI", 9, "bold"))
-        self.stok_ekstre_tablo.tag_configure("stok", foreground="#333333")
+        self._stok_ekstre_tablo_kur()
 
     def rapor_alis_ozeti(self):
         from satin_alma_rapor_ui import alis_iade_ozeti_goster
@@ -20027,18 +20411,18 @@ class MuhasebeApp(tk.Tk):
             ("Ay", "Fatura", "Tedarikçi", "Miktar", "Tutar"),
             (100, 80, 100, 110, 140),
         )
+        ham = []
         for s in satirlar:
-            tablo.insert(
-                "",
-                "end",
-                values=(
+            ham.append({
+                "values": (
                     s["ay"],
                     s["fatura_sayisi"],
                     s["tedarikci_sayisi"],
                     f"{float(s['miktar']):,.4f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", "."),
                     para_goster(s["tutar"]),
                 ),
-            )
+            })
+        self._rapor_tablo_ham_doldur(tablo, ham)
         if not satirlar:
             ttk.Label(self.icerik, text="Bu yıl için alış faturası yok.").pack(anchor="w", pady=8)
 

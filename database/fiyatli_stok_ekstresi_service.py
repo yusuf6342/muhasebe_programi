@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from database.access import maliyet_izinli
 from database.database import get_session
@@ -208,110 +209,168 @@ class FiyatliStokEkstreService:
             if not bn:
                 continue
             tur = h.hareket_turu or ""
-            if tur == "FATURA ÇIKIŞ":
+            # Evo/manuel GİRİŞ-ÇIKIŞ satırları da fatura belge_no taşır; cari için aynı belgelere bak.
+            if tur in ("FATURA ÇIKIŞ", "ÇIKIŞ"):
                 nos_sf.add(bn)
                 nos_ai.add(bn)
             elif tur == "ALIŞ İADE ÇIKIŞ":
                 nos_ai.add(bn)
-            elif tur == "FATURA GİRİŞ":
+            elif tur in ("FATURA GİRİŞ", "GİRİŞ"):
                 nos_af.add(bn)
+                nos_si.add(bn)
             elif tur == "İADE GİRİŞ":
                 nos_si.add(bn)
 
         sonuc: dict[tuple[str, str], dict] = {}
-
-        def _cari_bilgi(cari_id):
-            if not cari_id:
-                return None, None, None
-            c = session.get(Cari, int(cari_id))
-            if not c:
-                return None, None, None
-            return int(c.id), (c.cari_kodu or "").strip(), (c.unvan or "").strip()
+        # Önce faturaları topla, cari kimliklerini tek sorguda yükle (N+1 yok)
+        fatura_kayitlari: list[tuple[tuple[str, str], object, dict]] = []
 
         if nos_sf:
             for f in session.scalars(
-                select(SatisFaturasi).where(SatisFaturasi.fatura_no.in_(nos_sf))
+                select(SatisFaturasi)
+                .options(selectinload(SatisFaturasi.satirlar))
+                .where(SatisFaturasi.fatura_no.in_(nos_sf))
             ).all():
                 if getattr(f, "is_deleted", False):
                     continue
                 if (f.durum or "").upper() in ("TASLAK", "İPTAL", "IPTAL"):
                     continue
-                cid, kod, ad = _cari_bilgi(f.cari_id)
-                sonuc[("FATURA ÇIKIŞ", f.fatura_no)] = {
-                    "belge_turu": "Satış Faturası",
-                    "belge_id": int(f.id),
-                    "belge_modul": "satis_fatura",
-                    "cari_id": cid,
-                    "cari_kodu": kod or "",
-                    "cari_adi": ad or "",
-                    "para_birimi": getattr(f, "para_birimi", None) or "TRY",
-                    "kur": _d(getattr(f, "kur", 1) or 1),
-                    "durum": f.durum,
-                    "_fatura": f,
-                }
+                fatura_kayitlari.append(
+                    (
+                        ("FATURA ÇIKIŞ", f.fatura_no),
+                        f,
+                        {
+                            "belge_turu": "Satış Faturası",
+                            "belge_id": int(f.id),
+                            "belge_modul": "satis_fatura",
+                            "para_birimi": getattr(f, "para_birimi", None) or "TRY",
+                            "kur": _d(getattr(f, "kur", 1) or 1),
+                            "durum": f.durum,
+                            "_fatura": f,
+                            "_cari_id": f.cari_id,
+                        },
+                    )
+                )
 
         if nos_af:
             for f in session.scalars(
-                select(AlisFaturasi).where(AlisFaturasi.fatura_no.in_(nos_af))
+                select(AlisFaturasi)
+                .options(selectinload(AlisFaturasi.satirlar))
+                .where(AlisFaturasi.fatura_no.in_(nos_af))
             ).all():
                 if (f.durum or "").upper() in ("TASLAK", "İPTAL", "IPTAL"):
                     continue
-                cid, kod, ad = _cari_bilgi(f.cari_id)
-                sonuc[("FATURA GİRİŞ", f.fatura_no)] = {
-                    "belge_turu": "Alış Faturası",
-                    "belge_id": int(f.id),
-                    "belge_modul": "alis_fatura",
-                    "cari_id": cid,
-                    "cari_kodu": kod or "",
-                    "cari_adi": ad or "",
-                    "para_birimi": getattr(f, "para_birimi", None) or "TRY",
-                    "kur": _d(getattr(f, "kur", 1) or 1),
-                    "durum": f.durum,
-                    "_fatura": f,
-                }
+                fatura_kayitlari.append(
+                    (
+                        ("FATURA GİRİŞ", f.fatura_no),
+                        f,
+                        {
+                            "belge_turu": "Alış Faturası",
+                            "belge_id": int(f.id),
+                            "belge_modul": "alis_fatura",
+                            "para_birimi": getattr(f, "para_birimi", None) or "TRY",
+                            "kur": _d(getattr(f, "kur", 1) or 1),
+                            "durum": f.durum,
+                            "_fatura": f,
+                            "_cari_id": f.cari_id,
+                        },
+                    )
+                )
 
         if nos_si:
             for f in session.scalars(
-                select(SatisIadeFaturasi).where(SatisIadeFaturasi.iade_no.in_(nos_si))
+                select(SatisIadeFaturasi)
+                .options(selectinload(SatisIadeFaturasi.satirlar))
+                .where(SatisIadeFaturasi.iade_no.in_(nos_si))
             ).all():
-                cid, kod, ad = _cari_bilgi(f.cari_id)
-                sonuc[("İADE GİRİŞ", f.iade_no)] = {
-                    "belge_turu": "Satış İadesi",
-                    "belge_id": int(f.id),
-                    "belge_modul": "satis_iade",
-                    "cari_id": cid,
-                    "cari_kodu": kod or "",
-                    "cari_adi": ad or "",
-                    "para_birimi": getattr(f, "para_birimi", None) or "TRY",
-                    "kur": _d(getattr(f, "kur", 1) or 1),
-                    "durum": getattr(f, "durum", None),
-                    "_fatura": f,
-                }
+                fatura_kayitlari.append(
+                    (
+                        ("İADE GİRİŞ", f.iade_no),
+                        f,
+                        {
+                            "belge_turu": "Satış İadesi",
+                            "belge_id": int(f.id),
+                            "belge_modul": "satis_iade",
+                            "para_birimi": getattr(f, "para_birimi", None) or "TRY",
+                            "kur": _d(getattr(f, "kur", 1) or 1),
+                            "durum": getattr(f, "durum", None),
+                            "_fatura": f,
+                            "_cari_id": f.cari_id,
+                        },
+                    )
+                )
 
         if nos_ai:
             for f in session.scalars(
-                select(AlisIadeFaturasi).where(AlisIadeFaturasi.iade_no.in_(nos_ai))
+                select(AlisIadeFaturasi)
+                .options(selectinload(AlisIadeFaturasi.satirlar))
+                .where(AlisIadeFaturasi.iade_no.in_(nos_ai))
             ).all():
-                cid, kod, ad = _cari_bilgi(f.cari_id)
-                for key in (("ALIŞ İADE ÇIKIŞ", f.iade_no), ("FATURA ÇIKIŞ", f.iade_no)):
-                    if key in sonuc:
-                        continue
-                    sonuc[key] = {
-                        "belge_turu": "Alış İadesi",
-                        "belge_id": int(f.id),
-                        "belge_modul": "alis_iade",
-                        "cari_id": cid,
-                        "cari_kodu": kod or "",
-                        "cari_adi": ad or "",
-                        "para_birimi": getattr(f, "para_birimi", None) or "TRY",
-                        "kur": _d(getattr(f, "kur", 1) or 1),
-                        "durum": getattr(f, "durum", None),
-                        "_fatura": f,
-                    }
+                fatura_kayitlari.append(
+                    (
+                        ("ALIŞ İADE ÇIKIŞ", f.iade_no),
+                        f,
+                        {
+                            "belge_turu": "Alış İadesi",
+                            "belge_id": int(f.id),
+                            "belge_modul": "alis_iade",
+                            "para_birimi": getattr(f, "para_birimi", None) or "TRY",
+                            "kur": _d(getattr(f, "kur", 1) or 1),
+                            "durum": getattr(f, "durum", None),
+                            "_fatura": f,
+                            "_cari_id": f.cari_id,
+                        },
+                    )
+                )
+
+        cari_ids = {
+            int(meta["_cari_id"])
+            for _k, _f, meta in fatura_kayitlari
+            if meta.get("_cari_id")
+        }
+        cari_map: dict[int, tuple] = {}
+        if cari_ids:
+            for c in session.scalars(select(Cari).where(Cari.id.in_(cari_ids))).all():
+                cari_map[int(c.id)] = (
+                    int(c.id),
+                    (c.cari_kodu or "").strip(),
+                    (c.unvan or "").strip(),
+                )
+
+        def _cari_bilgi(cari_id):
+            if not cari_id:
+                return None, None, None
+            return cari_map.get(int(cari_id), (None, None, None))
+
+        for key, _f, meta in fatura_kayitlari:
+            cid, kod, ad = _cari_bilgi(meta.pop("_cari_id", None))
+            meta["cari_id"] = cid
+            meta["cari_kodu"] = kod or ""
+            meta["cari_adi"] = ad or ""
+            sonuc[key] = meta
+            # Alış iade: ÇIKIŞ hareketleri belge_no ile FATURA ÇIKIŞ anahtarını da arayabilir
+            if key[0] == "ALIŞ İADE ÇIKIŞ":
+                alt = ("FATURA ÇIKIŞ", key[1])
+                if alt not in sonuc:
+                    sonuc[alt] = dict(meta)
 
         for meta in sonuc.values():
             fat = meta.pop("_fatura", None)
             meta["_satirlar"] = list(getattr(fat, "satirlar", None) or []) if fat else []
+
+        # GİRİŞ/ÇIKIŞ → aynı belge_no'lu fatura/iade cari meta'sını paylaş (satır sayısı değişmez)
+        for h in hareketler:
+            bn = (h.belge_no or "").strip()
+            tur = h.hareket_turu or ""
+            if not bn or (tur, bn) in sonuc:
+                continue
+            kaynak = None
+            if tur == "ÇIKIŞ":
+                kaynak = sonuc.get(("FATURA ÇIKIŞ", bn)) or sonuc.get(("ALIŞ İADE ÇIKIŞ", bn))
+            elif tur == "GİRİŞ":
+                kaynak = sonuc.get(("FATURA GİRİŞ", bn)) or sonuc.get(("İADE GİRİŞ", bn))
+            if kaynak:
+                sonuc[(tur, bn)] = kaynak
 
         for _key, meta in list(sonuc.items()):
             if meta.get("_satirlar"):
@@ -681,15 +740,8 @@ class FiyatliStokEkstreService:
 
                 cari_kodu = meta.get("cari_kodu") or ""
                 cari_adi = meta.get("cari_adi") or ""
-                if tur in _CARI_YOK_TUR and not cari_adi:
-                    if "TRANSFER" in tur:
-                        cari_adi = "Depo transferi"
-                    elif "SAYIM" in tur:
-                        cari_adi = "Sayım düzeltmesi"
-                    elif tur in ("GİRİŞ", "ÇIKIŞ"):
-                        cari_adi = "Manuel stok fişi"
-                    elif "PAKET" in tur:
-                        cari_adi = "Paket üretimi"
+                # Cari yoksa alan boş kalsın (UI "—"); belge türü zaten Transfer/Sayım/Stok Fişi gösterir.
+                # Eski sahte cari etiketleri (Manuel stok fişi vb.) kullanılmaz.
 
                 saat = ""
                 if h.olusturma_tarihi:

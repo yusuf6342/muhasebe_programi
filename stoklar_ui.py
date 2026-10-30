@@ -32,10 +32,14 @@ STOKLAR_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
     ("DEPOLAR", "Depo kartları ve depo bakiyeleri", "depo"),
     ("DEPO TRANSFERLERİ", "Kaynak depodan hedef depoya aktarım", "transfer"),
     ("STOK SAYIMI", "Sayım, fark önizleme ve düzeltme fişi", "sayim"),
+    ("KONSİNYE TAKİBİ", "Verilen / alınan konsinye, satış bildirimi ve iade", "konsinye"),
     ("BARKOD / BİRİM", "Barkod basımı ve birim dönüştürücü", "barkod"),
+    ("BİRİM DÖNÜŞTÜRÜCÜ", "Ürün seçip birim, fiyat ve barkod tanımları", "birim_donusturucu"),
+    ("ETİKET BEKLEYENLER", "Lot etiket baskı kuyruğu ve yeniden basım", "etiket_bekleyen"),
     ("FİYAT VE MALİYET", "Toplu fiyat güncelleme", "fiyat"),
     ("STOK BİRLEŞTİR", "Kaynak stoğu hedefe güvenli aktarma", "birlestir"),
     ("STOK PAKET", "Paket tanımlama ve üretim", "paket"),
+    ("ÜRETİM", "Reçete, emir, sarf ve mamul girişi", "uretim"),
     ("EXCEL AKTARIM", "İçe/dışa aktarma ve şablonlar", "excel"),
 )
 
@@ -197,10 +201,20 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "depo": lambda: depolar_goster(app),
         "transfer": app.depo_transfer_fisi_goster,
         "sayim": lambda: stok_sayim_goster(app),
+        "konsinye": lambda: __import__(
+            "konsinye_ui", fromlist=["konsinye_takibi_goster"]
+        ).konsinye_takibi_goster(app),
         "barkod": app.stok_barkod_basimi_goster,
+        "birim_donusturucu": lambda: __import__(
+            "stok_ui", fromlist=["birim_donusturucu_urun_sec"]
+        ).birim_donusturucu_urun_sec(app),
+        "etiket_bekleyen": lambda: __import__(
+            "lot_etiket_ui", fromlist=["etiket_bekleyenler_goster"]
+        ).etiket_bekleyenler_goster(app),
         "fiyat": app.toplu_fiyat_degisikligi_goster,
         "birlestir": app.stok_birlestir_goster,
         "paket": app.stok_paket_tanimlama_goster,
+        "uretim": lambda: __import__("uretim_ui", fromlist=["uretim_hub_goster"]).uretim_hub_goster(app),
         "excel": excel,
         "rapor": lambda: stoklar_raporlar_hub_goster(app),
     }
@@ -445,32 +459,50 @@ def stok_sayim_goster(app) -> None:
     tarih_e.insert(0, date.today().strftime("%d.%m.%Y"))
     tarih_e.pack(side="left", padx=4)
 
+    ozet = tk.Label(ust, text="", bg=ACIK_BG, fg=IKINCIL, font=font(9, root=app))
+    ozet.pack(side="right", padx=8)
+
     cerceve = ttk.Frame(kok)
     cerceve.pack(fill="both", expand=True, padx=16, pady=8)
     tablo = ttk.Treeview(
         cerceve,
-        columns=("kod", "ad", "sistem", "sayilan", "fark", "maliyet", "kaynak"),
+        columns=("kod", "ad", "birim", "mevcut", "sayilan", "fark", "durum", "maliyet", "kaynak"),
         show="headings",
         selectmode="browse",
     )
     treeview_stil(tablo)
     for k, b, w in (
-        ("kod", "Kod", 100),
-        ("ad", "Ürün", 220),
-        ("sistem", "Sistem", 90),
-        ("sayilan", "Sayılan", 90),
-        ("fark", "Fark", 90),
-        ("maliyet", "Fazla Birim Maliyet", 120),
-        ("kaynak", "Maliyet Kaynağı", 200),
+        ("kod", "Kod", 90),
+        ("ad", "Ürün", 200),
+        ("birim", "Temel Birim", 80),
+        ("mevcut", "Mevcut", 80),
+        ("sayilan", "Sayılan", 80),
+        ("fark", "Fark", 80),
+        ("durum", "Durum", 110),
+        ("maliyet", "Fazla Birim Maliyet", 110),
+        ("kaynak", "Maliyet Kaynağı", 160),
     ):
         tablo.heading(k, text=b)
-        tablo.column(k, width=w)
+        tablo.column(k, width=w, minwidth=50)
     tablo.pack(side="left", fill="both", expand=True)
     ttk.Scrollbar(cerceve, orient="vertical", command=tablo.yview).pack(side="right", fill="y")
 
     satir_veri: dict[str, dict] = {}
 
+    def _ozet_yenile():
+        toplam = len(satir_veri)
+        sayilan_n = sum(1 for s in satir_veri.values() if s.get("sayildi"))
+        fark_n = sum(
+            1
+            for s in satir_veri.values()
+            if s.get("sayildi") and s["sayilan_miktar"] != s["sistem_miktar"]
+        )
+        ozet.configure(
+            text=f"Toplam {toplam} · Sayılan {sayilan_n} · Sayılmayan {toplam - sayilan_n} · Fark {fark_n}"
+        )
+
     def yukle():
+        """Listeyi yükler; Sayılan boş kalır (mevcut otomatik kopyalanmaz)."""
         satir_veri.clear()
         for i in tablo.get_children():
             tablo.delete(i)
@@ -479,10 +511,13 @@ def stok_sayim_goster(app) -> None:
             return
         for r in StokSayimService.depo_stok_listesi(depo.id):
             iid = str(r["stok_id"])
+            birim = (r.get("birim") or r.get("temel_birim") or "Adet")
             satir_veri[iid] = {
                 "stok_id": r["stok_id"],
                 "sistem_miktar": r["sistem_miktar"],
-                "sayilan_miktar": r["sistem_miktar"],
+                "sayilan_miktar": None,  # sayılmamış ≠ sıfır
+                "sayildi": False,
+                "birim": birim,
             }
             tablo.insert(
                 "",
@@ -491,13 +526,16 @@ def stok_sayim_goster(app) -> None:
                 values=(
                     r["urun_kodu"],
                     r["urun_adi"],
+                    birim,
                     _para(r["sistem_miktar"]),
-                    _para(r["sistem_miktar"]),
-                    "0,00",
+                    "—",
+                    "—",
+                    "Sayılmadı",
                     "",
                     "",
                 ),
             )
+        _ozet_yenile()
 
     def fazla_maliyeti_sor(iid: str, veri: dict) -> bool:
         """Sayım fazlasında maliyet + kaynağı belirler; iptalde False (sessiz 0 maliyet yok)."""
@@ -535,8 +573,8 @@ def stok_sayim_goster(app) -> None:
         veri["birim_maliyet"] = maliyet
         veri["maliyet_kaynagi"] = kaynak
         vals = list(tablo.item(iid, "values"))
-        vals[5] = _para(maliyet)
-        vals[6] = etiket
+        vals[7] = _para(maliyet)
+        vals[8] = etiket
         tablo.item(iid, values=vals)
         return True
 
@@ -549,29 +587,52 @@ def stok_sayim_goster(app) -> None:
         veri = satir_veri.get(iid)
         if not veri:
             return
+        onceki = "" if not veri.get("sayildi") else str(veri["sayilan_miktar"]).replace(".", ",")
         metin = simpledialog.askstring(
             "Sayılan Miktar",
-            f"Sistem: {_para(veri['sistem_miktar'])}\nSayılan miktar:",
+            f"Mevcut (sistem): {_para(veri['sistem_miktar'])} {veri.get('birim') or ''}\n"
+            "Sayılan miktar (boş bırakmayın; 0 = sayıldı ve yok):",
             parent=app,
-            initialvalue=str(veri["sayilan_miktar"]),
+            initialvalue=onceki,
         )
         if metin is None:
+            return
+        metin = metin.strip()
+        if not metin:
+            messagebox.showwarning(
+                "Sayılan",
+                "Boş giriş sayılmamış kabul edilir. Sıfır için 0 yazın.",
+                parent=app,
+            )
             return
         try:
             sayilan = Decimal(metin.replace(",", "."))
         except Exception:
             messagebox.showerror("Miktar", "Geçersiz sayı.", parent=app)
             return
+        if sayilan < 0:
+            messagebox.showerror("Miktar", "Sayılan negatif olamaz.", parent=app)
+            return
         veri["sayilan_miktar"] = sayilan
+        veri["sayildi"] = True
         fark = sayilan - veri["sistem_miktar"]
+        if fark > 0:
+            durum = "Fazla"
+        elif fark < 0:
+            durum = "Eksik"
+        else:
+            durum = "Eşit"
         vals = list(tablo.item(iid, "values"))
-        vals[3] = _para(sayilan)
-        vals[4] = _para(fark)
+        # kod, ad, birim, mevcut, sayilan, fark, durum, maliyet, kaynak
+        vals[4] = _para(sayilan)
+        vals[5] = _para(fark)
+        vals[6] = durum
         if fark <= 0:
             veri.pop("birim_maliyet", None)
             veri.pop("maliyet_kaynagi", None)
-            vals[5] = vals[6] = ""
+            vals[7] = vals[8] = ""
         tablo.item(iid, values=vals)
+        _ozet_yenile()
         if fark > 0:
             fazla_maliyeti_sor(iid, veri)
 
@@ -585,9 +646,19 @@ def stok_sayim_goster(app) -> None:
         except ValueError:
             messagebox.showerror("Tarih", "Tarih GG.AA.YYYY olmalı.", parent=app)
             return
-        satirlar = list(satir_veri.values())
+        # Yalnız sayılan satırlar (sayılmamış ≠ sıfır fark)
+        satirlar = [s for s in satir_veri.values() if s.get("sayildi")]
+        if not satirlar:
+            messagebox.showwarning(
+                "Sayım",
+                "Hiç satır sayılmadı. Önce «Sayılan Gir» ile miktar girin.",
+                parent=app,
+            )
+            return
         farkli = [s for s in satirlar if s["sayilan_miktar"] != s["sistem_miktar"]]
         for iid, s in satir_veri.items():
+            if not s.get("sayildi"):
+                continue
             if s["sayilan_miktar"] > s["sistem_miktar"] and not s.get("birim_maliyet"):
                 tablo.selection_set(iid)
                 tablo.see(iid)
@@ -596,9 +667,11 @@ def stok_sayim_goster(app) -> None:
                         "Sayım", "Sayım fazlası satırlarında birim maliyet belirlenmeden onaylanamaz.", parent=app
                     )
                     return
+        sayilmayan = sum(1 for s in satir_veri.values() if not s.get("sayildi"))
         if not messagebox.askyesno(
             "Onay",
-            f"{len(farkli)} satırda fark var. Sayım onaylanıp stok güncellensin mi?",
+            f"{len(satirlar)} sayılan satır · {len(farkli)} fark · {sayilmayan} sayılmayan (işlenmez).\n"
+            "Sayım onaylanıp stok güncellensin mi?",
             parent=app,
         ):
             return

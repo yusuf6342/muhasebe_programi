@@ -42,6 +42,7 @@ def _modelleri_yukle() -> None:
     import database.models.hizli_satis  # noqa: F401
     import database.models.hizmet  # noqa: F401
     import database.models.hizmet_faturasi  # noqa: F401
+    import database.models.kart_turu  # noqa: F401
     import database.models.masraf_dagitim  # noqa: F401
     import database.models.sabit_gider  # noqa: F401
     import database.models.satis_faturasi  # noqa: F401

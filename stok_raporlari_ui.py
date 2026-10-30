@@ -53,8 +53,9 @@ def _grup_secenek() -> list[tuple[str, str]]:
 
 
 def _ortak_filtreler() -> list[Filtre]:
+    # DOC5: grup_agac — aramalı çoklu seçim, üst grup altları kapsar
     return [Filtre("combo", "depo", "Depo", "", _depo_secenek()),
-            Filtre("combo", "grup_id", "Stok grubu", "", _grup_secenek()),
+            Filtre("grup_agac", "grup_id", "Stok grubu"),
             Filtre("metin", "arama", "Ürün kodu / adı / barkod")]
 
 
@@ -410,12 +411,14 @@ def yatirim_verimliligi_goster(app, **kw) -> RaporEkrani | None:
     def hesapla(f):
         filtre_cache.clear()
         filtre_cache.update(f)
-        return srv.yatirim_verimliligi(
+        rapor = srv.yatirim_verimliligi(
             bas=f["bas"] or date(date.today().year, 1, 1), bit=f["bit"] or date.today(),
             yontem=f.get("yontem") or srv.FIFO, depo=f.get("depo") or None, arama=f.get("arama") or "",
             ana_grup_id=f.get("ana_grup_id") or None, tali_grup_id=f.get("tali_grup_id") or None,
             alt_grup_id=f.get("alt_grup_id") or None, grup_seviyesi=f.get("grup_seviyesi") or "ana",
             siralama=f.get("siralama") or "brut_kar")
+        ft = f.get("fiyat_tarihi") or f.get("bit") or date.today()
+        return srv.yerine_koyma_ekle(rapor, fiyat_tarihi=ft)
 
     def secili(e: RaporEkrani) -> dict | None:
         t = e._etkin_tablo()
@@ -448,19 +451,47 @@ def yatirim_verimliligi_goster(app, **kw) -> RaporEkrani | None:
 
     def toplam(s):
         t = s.get("toplam") or {}
+        yk = s.get("yerine_toplam") or {}
         if not t:
             return ""
-        return (f"Yöntem: {s.get('yontem', '')}   Ürün: {t.get('urun_sayisi', 0)}   "
-                f"Ort. stok: {bicimle(t.get('ort_stok'), 'para')}   Net satış: {bicimle(t.get('net_satis'), 'para')}   "
-                f"Brüt kâr: {bicimle(t.get('brut_kar'), 'para')}   GMROI: {bicimle(t.get('gmroi'), 'oran')}   "
-                f"Devir: {bicimle(t.get('devir'), 'oran')}   Kapsam: {t.get('kapsam', '')}")
+        metin = (f"Yöntem: {s.get('yontem', '')}   Ürün: {t.get('urun_sayisi', 0)}   "
+                 f"Ort. stok: {bicimle(t.get('ort_stok'), 'para')}   Net satış: {bicimle(t.get('net_satis'), 'para')}   "
+                 f"Brüt kâr: {bicimle(t.get('brut_kar'), 'para')}   GMROI: {bicimle(t.get('gmroi'), 'oran')}   "
+                 f"Devir: {bicimle(t.get('devir'), 'oran')}   Kapsam: {t.get('kapsam', '')}")
+        if yk:
+            metin += (
+                f"  |  Yerine koyma katkısı: {bicimle(yk.get('yerine_katki'), 'para')}   "
+                f"Fark D: {bicimle(yk.get('maliyet_farki'), 'para')}   "
+                f"YK oranı: {bicimle(yk.get('yerine_katki_orani'), 'oran')}   "
+                f"Fiyat tar.: {(s.get('fiyat_tarihi') or date.today()):%d.%m.%Y}"
+            )
+        return metin
+
+    yk_kolon = [
+        Kolon("net_miktar", "Net Miktar Q", 90, "miktar"),
+        Kolon("net_satis", "Net Satış N", 110, "para"),
+        Kolon("smm", "Kayıtlı Maliyet C", 120, "para"),
+        Kolon("brut_kar", "Brüt Kâr G", 100, "para"),
+        Kolon("yerine_birim", "R Birim", 90, "para"),
+        Kolon("yerine_tutar", "Yenileme Y", 110, "para"),
+        Kolon("yerine_katki", "Katkı A", 100, "para"),
+        Kolon("maliyet_farki", "Fark D", 100, "para"),
+        Kolon("brut_marj", "G/N %", 70, "yuzde"),
+        Kolon("yerine_marj", "A/N %", 70, "yuzde"),
+        Kolon("ort_stok", "Ort. Stok", 110, "para"),
+        Kolon("gmroi", "GMROI", 70, "oran"),
+        Kolon("yerine_katki_orani", "YK Katkı Oranı", 110, "oran"),
+        Kolon("fiyat_kaynak", "Fiyat Kaynağı", 200),
+        Kolon("hesap_notu", "Not", 280),
+    ]
 
     def kur():
         return RaporEkrani(
             app, baslik="STOK YATIRIM VERİMLİLİĞİ",
-            alt="Stokta bağlı sermayenin ürettiği brüt kâr (GMROI), devir hızı ve stokta kalma süresi",
+            alt="GMROI ve yerine koyma maliyeti — rapor stok/cari hareketi oluşturmaz",
             filtreler=[Filtre("tarih", "bas", "Başlangıç", date(date.today().year, 1, 1)),
                        Filtre("tarih", "bit", "Bitiş", date.today()),
+                       Filtre("tarih", "fiyat_tarihi", "Fiyat tarihi", date.today()),
                        Filtre("combo", "yontem", "Maliyet yöntemi", srv.FIFO, srv.verimlilik_yontemleri()),
                        Filtre("combo", "depo", "Depo", "", _depo_secenek()),
                        Filtre("metin", "arama", "Ürün kodu / adı / barkod"),
@@ -472,6 +503,8 @@ def yatirim_verimliligi_goster(app, **kw) -> RaporEkrani | None:
             tablolar=[
                 Tablo("urunler", "Ürün Bazında", [*urun, *gruplar, *olcu, Kolon("pasif", "Kart", 70),
                                                   Kolon("hesap_notu", "Hesap Notu", 360)],
+                      cift_tik=lambda r: urun_ekstresi_ac(app, r), etiket=_verimlilik_etiketi),
+                Tablo("yerine_koyma", "Yerine Koyma Maliyeti", [*urun, *yk_kolon],
                       cift_tik=lambda r: urun_ekstresi_ac(app, r), etiket=_verimlilik_etiketi),
                 Tablo("gruplar", "Grup Bazında", [*gruplar, Kolon("urun_sayisi", "Ürün", 55, "gun"),
                                                   Kolon("kapsam", "Kapsam (oranlara giren)", 140),

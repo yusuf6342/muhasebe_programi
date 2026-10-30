@@ -44,6 +44,7 @@ MENU_OGELERI: tuple[tuple[str, str, str, bool], ...] = (
     ("Satışlar", "satislar", "+", False),
     ("Satın Alma", "satin_alma", "v", False),
     ("Stoklar", "stoklar", "#", False),
+    ("Aktivite", "aktivite", "A", False),
     ("Finans", "finans", "$", False),
     ("Gelir ve Giderler", "gelir_gider", "+/-", False),
     ("Personel", "personel", "P", False),
@@ -51,6 +52,7 @@ MENU_OGELERI: tuple[tuple[str, str, str, bool], ...] = (
     ("Çek ve Senet", "cek_senet", "~", False),
     ("Özet Tablolar", "ozet_tablolar", "[]", False),
     ("Bütçe", "butce", "B", False),
+    ("Proje Takip", "proje_takip", "Pj", False),
     ("Raporlar", "raporlar", "R", False),
     ("Kullanıcı ve Firma Yönetimi", "sistem", "@", False),
     ("Servis ve Sistem Kontrolü", "servis", "!", False),
@@ -62,6 +64,7 @@ MODUL_KARTLARI: tuple[tuple[str, str, str, str], ...] = (
     ("Satışlar", "satislar", "+", "Faturalar, irsaliyeler, siparişler ve müşteri işlemleri."),
     ("Satın Alma", "satin_alma", "v", "Tedarikçi faturaları, sipariş ve irsaliye yönetimi."),
     ("Stoklar", "stoklar", "#", "Stok kartları, depo, barkod ve fiyat işlemleri."),
+    ("Aktivite", "aktivite", "A", "Görevler, sevkiyat ve dış işler."),
     ("Finans", "finans", "$", "Kasa, banka ve nakit akışı işlemleri."),
     ("Gelir ve Giderler", "gelir_gider", "+/-", "Gelir / gider kayıtları ve takibi."),
     ("Genel Muhasebe", "genel_muhasebe", "=", "Hesap planı, fişler ve muhasebe entegrasyonu."),
@@ -75,6 +78,7 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
     "satislar": (
         ("Satış Faturaları", "satis_faturalari_goster", ("satis_goruntuleme", "goruntuleme")),
         ("Alınan Siparişler", "satis_siparisleri_goster", ("satis_goruntuleme", "goruntuleme")),
+        ("Sorulan Ürünler", "sorulan_urunler", ("satis_goruntuleme", "goruntuleme")),
         ("Müşteri Kartları", "musteri_karti_ac", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
                                                   "goruntuleme")),
     ),
@@ -83,6 +87,12 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         ("Alış Siparişi", "alis_siparisi_yeni", ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
         ("Satın Alma Talepleri", "satin_alma_talebi_yeni",
          ("alis_talep_duzenleme", "alis_talep_goruntuleme", "alis_talep_onay", "alis_duzenleme")),
+        ("Sorulan Ürünler", "sorulan_urunler", ("satis_goruntuleme", "alis_goruntuleme", "goruntuleme")),
+    ),
+    "aktivite": (
+        ("Aktivite Listesi", "aktivite_listesi_ac", ("satis_goruntuleme", "goruntuleme")),
+        ("Dış İşler", "aktivite_dis_isler_ac", ("satis_goruntuleme", "goruntuleme")),
+        ("Günlük Sefer / Rota", "aktivite_sefer_ac", ("satis_goruntuleme", "goruntuleme")),
     ),
     "personel": (
         ("Personel Kartları", "personel_kartlari_ac", ("personel_goruntuleme", "personel_duzenleme", "goruntuleme")),
@@ -107,6 +117,13 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         ("Nakit Bütçesi", "butce_nakit_ac", ("finans_goruntuleme", "goruntuleme")),
         ("Raporlar", "butce_raporlar_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
         ("Ayarlar", "butce_ayarlar_ac", ("finans_goruntuleme", "sistem_ayarlari", "goruntuleme")),
+    ),
+    "proje_takip": (
+        ("Yeni Proje", "proje_yeni_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Proje Listesi", "proje_liste_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Proje Hareketleri", "proje_hareket_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Raporlar", "proje_rapor_ac", ("finans_goruntuleme", "satis_goruntuleme", "goruntuleme")),
+        ("Ayarlar", "proje_ayar_ac", ("finans_goruntuleme", "sistem_ayarlari", "goruntuleme")),
     ),
 }
 SATIS_PENCERELERI = frozenset({"musteri_karti_ac"})
@@ -889,6 +906,29 @@ class AnaPanelKabuk:
         except Exception:
             pass
 
+    def tema_yenile(self) -> None:
+        """ui_tema.uygula sonrası menü renklerini yenile (yeniden oluşturmaz)."""
+        import ana_panel_tema as apt
+
+        try:
+            menu = getattr(self.app, "menu", None)
+            if menu is not None:
+                menu.configure(bg=apt.LACIVERT)
+        except Exception:
+            pass
+        for dugme in getattr(self.app, "menu_dugmeleri", {}).values():
+            try:
+                dugme._yenile_renk()
+            except Exception:
+                pass
+        for grup in getattr(self.app, "menu_gruplari", {}).values():
+            try:
+                grup._yenile_renk()
+                for ad in grup.alt_dugmeler.values():
+                    ad._yenile_renk()
+            except Exception:
+                pass
+
     def menu_secili_guncelle(self, anahtar: str) -> None:
         for k, dugme in self.app.menu_dugmeleri.items():
             if k == anahtar:
@@ -915,8 +955,29 @@ class AnaPanelKabuk:
         """Sol menü alt öğesi: Satın Alma hub kartlarıyla / Satışlar liste ekranlarıyla aynı komutu çalıştırır."""
         import satin_alma_ui
 
+        if alt_anahtar == "sorulan_urunler":
+            from sorulan_urun_ui import sorulan_urunler_goster
+
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                sorulan_urunler_goster(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Sorulan Ürünler", str(hata), parent=self.app)
+            return
         if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI["satislar"]):
             self._satis_listesi_ac(alt_anahtar)
+            return
+        if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI.get("aktivite", ())):
+            from aktivite_ui import aktivite_hub_goster, sefer_ekrani_goster
+
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                if alt_anahtar == "aktivite_sefer_ac":
+                    sefer_ekrani_goster(self.app)
+                else:
+                    aktivite_hub_goster(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Aktivite", str(hata), parent=self.app)
             return
         if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI.get("personel", ())):
             import personel_ui
@@ -944,6 +1005,18 @@ class AnaPanelKabuk:
                 komut(self.app)
             except Exception as hata:  # noqa: BLE001
                 messagebox.showerror("Bütçe", str(hata), parent=self.app)
+            return
+        if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI.get("proje_takip", ())):
+            import proje_ui
+
+            komut = getattr(proje_ui, alt_anahtar, None)
+            if not callable(komut):
+                return
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                komut(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Proje Takip", str(hata), parent=self.app)
             return
         komut = getattr(satin_alma_ui, alt_anahtar, None)
         if not callable(komut):
@@ -1473,11 +1546,23 @@ def ayarlar_goster(app) -> None:
 
         kart_turleri_gruplari_goster(app, geri_fn=lambda: ayarlar_goster(app))
 
+    def _tema():
+        from tema_ayar_ui import tema_ayarlari_ac
+
+        tema_ayarlari_ac(app)
+
+    def _firma_donem():
+        from devir_ui import firma_donem_islemleri_goster
+
+        firma_donem_islemleri_goster(app)
+
     for i, (baslik, komut) in enumerate(
         (
+            ("GÖRÜNÜM / TEMA", _tema),
             ("KART TÜRLERİ VE GRUPLARI", _kart_turleri),
             ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
             ("MUHASEBELEŞTİRME AYARLARI", _muhasebelestirme),
+            ("FİRMA VE DÖNEM İŞLEMLERİ", _firma_donem),
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
             ("DÖNEM DEĞİŞTİR", app.donem_degistir_ac),
             ("KULLANICI DEĞİŞTİR", app.aktif_kullanici_degistir_ac),

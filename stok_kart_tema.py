@@ -96,7 +96,34 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         font=f_bold,
     )
     stil.configure("StokKart.TEntry", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
+    stil.configure(
+        "StokKartReadonly.TEntry",
+        fieldbackground=STRIPE,
+        foreground=LACIVERT,
+        font=f_bold,
+    )
     stil.configure("StokKart.TCombobox", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
+    # Stok Adı: ttk clam stil fontu widget font= argümanını ezer → ayrı stil (11 bold)
+    stil.configure(
+        "StokKartAd.TCombobox",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=font(11, "bold", root=root),
+    )
+    stil.configure(
+        "StokKartKompakt.TLabelframe",
+        background=BEYAZ,
+        foreground=LACIVERT,
+        borderwidth=1,
+        relief="solid",
+        padding=2,
+    )
+    stil.configure(
+        "StokKartKompakt.TLabelframe.Label",
+        background=BEYAZ,
+        foreground=LACIVERT,
+        font=f_bold,
+    )
     stil.configure("StokKart.TNotebook", background=BEYAZ)
     stil.configure("StokKart.TNotebook.Tab", font=f_bold, padding=(14, 6))
 
@@ -137,6 +164,7 @@ def tk_buton(
     *,
     rol: str = "kaydet",
     state: str = "normal",
+    kompakt: bool = False,
     **kwargs,
 ) -> tk.Button:
     stiller = {
@@ -150,7 +178,7 @@ def tk_buton(
     }
     bg, fg, active = stiller.get(rol, stiller["kaydet"])
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
-    kabartma = rol == "kaydet_3d"
+    kabartma = rol == "kaydet_3d" and not kompakt
     btn = tk.Button(
         parent,
         text=metin,
@@ -161,9 +189,9 @@ def tk_buton(
         activeforeground=fg,
         relief="raised" if kabartma else "flat",
         bd=3 if kabartma else 0,
-        padx=18 if kabartma else 12,
-        pady=6,
-        font=font(11 if kabartma else 10, "bold", root),
+        padx=kwargs.pop("padx", 6 if kompakt else (18 if kabartma else 12)),
+        pady=kwargs.pop("pady", 1 if kompakt else 6),
+        font=font(9 if kompakt else (11 if kabartma else 10), "bold", root),
         cursor="hand2" if state == "normal" else "arrow",
         state=state,
         highlightthickness=1 if rol == "ikincil" else 0,
@@ -258,14 +286,22 @@ def baslik_seridi(
     return {"frame": ust, "baslik": lbl_baslik, "alt": lbl_alt, "rozet": rozet_lbl}
 
 
-def form_etiket(parent, metin: str, *, zorunlu: bool = False) -> tk.Label:
+def form_etiket(parent, metin: str, *, zorunlu: bool = False, genislik: int | None = None) -> tk.Label:
     root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
     text = f"{metin} *" if zorunlu else metin
-    return tk.Label(
+    lbl = tk.Label(
         parent,
         text=text,
         bg=BEYAZ,
         fg=LACIVERT if zorunlu else IKINCIL,
         font=font(9, "bold" if zorunlu else "normal", root),
-        anchor="w",
+        anchor="e",
     )
+    if genislik is not None:
+        lbl.configure(width=genislik)
+    return lbl
+
+
+# ~1 mm satır aralığı (96 dpi ≈ 4 px); üst panel kompakt satırlar için
+SATIR_PADY = (0, 1)
+ETIKET_PADX = (2, 4)

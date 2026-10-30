@@ -55,6 +55,9 @@ class SepetSatiri:
     kdv_orani: Decimal = field(default_factory=lambda: VARSAYILAN_KDV)
     carpan: Decimal = field(default_factory=lambda: Decimal("1"))
     barkod: str | None = None
+    # Lot barkodu okutulduysa sabit lot; FIFO ile değiştirilmez
+    lot_id: int | None = None
+    lot_no: str | None = None
     # Yeni Toplam düzeltmesi öncesi birim fiyat; None → etkin fiyat referansla aynı
     referans_birim_fiyat: Decimal | None = None
     # Fiyat listesinden seçilen fiyat türü (birim değişiminde aynı tür kullanılır)
@@ -153,6 +156,8 @@ class HizliSatisSepet:
         kdv_orani: Decimal | str | float | int = VARSAYILAN_KDV,
         carpan: Decimal | str | float | int = 1,
         barkod: str | None = None,
+        lot_id: int | None = None,
+        lot_no: str | None = None,
         birlestir: bool = True,
         referans_birim_fiyat: Decimal | str | float | int | None = None,
         geri_yukleme: bool = False,
@@ -160,12 +165,15 @@ class HizliSatisSepet:
         """Satır ekler; normal eklemede eski Yeni Toplam düzeltmesi kalkar.
 
         ``geri_yukleme=True`` (bekleyen sepet) kayıtlı referans fiyatı ve düzeltmeyi korur.
+        Aynı ürün+birim fakat farklı lot → ayrı satır (lot barkod kuralı).
         """
         miktar_d = _d(miktar, Decimal("1"))
         if miktar_d <= 0:
             raise ValueError("Miktar sıfırdan büyük olmalıdır.")
         birim_norm = (birim or "Adet").strip() or "Adet"
         kod = (stok_kodu or "").strip()
+        lot_id_n = int(lot_id) if lot_id is not None else None
+        lot_no_n = (lot_no or "").strip() or None
 
         if not geri_yukleme:
             self._sepet_degisti()
@@ -173,10 +181,14 @@ class HizliSatisSepet:
 
         if birlestir:
             for satir in self.satirlar:
-                if satir.stok_kodu == kod and (satir.birim or "").strip() == birim_norm:
+                ayni_urun = satir.stok_kodu == kod and (satir.birim or "").strip() == birim_norm
+                ayni_lot = (satir.lot_id or None) == lot_id_n
+                if ayni_urun and ayni_lot:
                     satir.miktar = _d(satir.miktar) + miktar_d
                     if barkod:
                         satir.barkod = barkod
+                    if lot_no_n:
+                        satir.lot_no = lot_no_n
                     return satir
 
         satir = SepetSatiri(
@@ -190,6 +202,8 @@ class HizliSatisSepet:
             kdv_orani=_d(kdv_orani, VARSAYILAN_KDV),
             carpan=_d(carpan, Decimal("1")),
             barkod=(barkod or None),
+            lot_id=lot_id_n,
+            lot_no=lot_no_n,
             referans_birim_fiyat=(
                 None if referans_birim_fiyat is None else _d(referans_birim_fiyat)
             ),

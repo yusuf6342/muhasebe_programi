@@ -99,6 +99,12 @@ class SatisFaturasi(Base):
     tahsilatlar: Mapped[list["SatisFaturasiTahsilati"]] = relationship(
         "SatisFaturasiTahsilati", back_populates="fatura", cascade="all, delete-orphan"
     )
+    sevkiyatlar: Mapped[list["SatisFaturaSevkiyati"]] = relationship(
+        "SatisFaturaSevkiyati",
+        back_populates="fatura",
+        cascade="all, delete-orphan",
+        order_by="SatisFaturaSevkiyati.sira",
+    )
 
 
 class SatisFaturasiSatiri(Base):
@@ -154,3 +160,40 @@ class SatisFaturasiTahsilati(Base):
     odeme_kuru: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
 
     fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="tahsilatlar")
+
+
+class SatisFaturaSevkiyati(Base):
+    """Faturaya ait kalıcı sevkiyat/teslimat kopyası (kaynak irsaliyeden bağımsız).
+
+    Bir faturada birden fazla kayıt olabilir; her biri kendi irsaliye_no / adres /
+    nakliyeci bilgilerini korur. Kaynak irsaliye sonradan değişse kopya değişmez.
+    """
+
+    __tablename__ = "satis_fatura_sevkiyatlari"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fatura_id: Mapped[int] = mapped_column(ForeignKey("satis_faturalari.id"), nullable=False, index=True)
+    sira: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Kaynak irsaliye (manuel kayıtta None)
+    irsaliye_id: Mapped[int | None] = mapped_column(ForeignKey("satis_irsaliyeleri.id"), nullable=True, index=True)
+    irsaliye_no: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    irsaliye_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Adres / teslim
+    sevk_adresi: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sevk_il: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sevk_ilce: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    planlanan_teslim: Mapped[date | None] = mapped_column(Date, nullable=True)
+    teslim_kisi: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    teslim_telefon: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Lojistik
+    sevkiyat_yontemi: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    nakliyeci: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    arac_plaka: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sofor_adi: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sofor_telefon: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    takip_no: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sevk_notu: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fiili_sevk_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+    fatura: Mapped["SatisFaturasi"] = relationship("SatisFaturasi", back_populates="sevkiyatlar")

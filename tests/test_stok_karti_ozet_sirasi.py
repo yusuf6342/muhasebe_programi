@@ -1,5 +1,6 @@
-"""Stok Kartı üst özet kartları — sıra ve veri-başlık eşleşmesi.
+"""Stok Kartı Depo ve Stok Durumu — sıra ve veri-başlık eşleşmesi.
 
+Üst özet şeridi kaldırıldı; değerler Depo panelinde çerçeveli alanlarda.
 Çalıştırma: python tests/test_stok_karti_ozet_sirasi.py
 """
 
@@ -60,6 +61,7 @@ class StokKartiOzetSirasiTest(unittest.TestCase):
         import database.models.finans  # noqa: F401
         import database.models.firma  # noqa: F401
         import database.models.hizli_satis  # noqa: F401
+        import database.models.kart_turu  # noqa: F401 — stok_kartlari FK
         import database.models.satis_faturasi  # noqa: F401
         import database.models.satis_iade_faturasi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401
@@ -188,52 +190,56 @@ class StokKartiOzetSirasiTest(unittest.TestCase):
 
     def test_02_kart_sirasi_kaynak_kodda(self):
         metin = Path(ROOT / "stok_ui.py").read_text(encoding="utf-8")
-        # Sıra literal olarak doğru olmalı
+        # Depo panelindeki sıra literal olarak doğru olmalı
         beklenen = (
-            '"Toplam Giriş",\n'
-            '            "Toplam Çıkış",\n'
-            '            "Kalan Miktar",\n'
-            '            "FIFO Envanter Değeri",'
+            '("Toplam Giriş", "Toplam Giriş"),\n'
+            '            ("Toplam Çıkış", "Toplam Çıkış"),\n'
+            '            ("Mevcut Miktar", "Kalan Miktar"),\n'
+            '            ("FIFO Envanter", "FIFO Envanter Değeri"),'
         )
         self.assertIn(beklenen, metin)
-        # Eski sıra (Kalan başta) olmamalı
-        eski = '("Kalan Miktar", "Toplam Giriş", "Toplam Çıkış", "FIFO Envanter Değeri")'
-        self.assertNotIn(eski, metin)
+        # Üst özet şeridi kaldırılmış olmalı
+        self.assertNotIn("ozet_serit", metin)
+        self.assertNotIn("eski = '(\"Kalan Miktar\", \"Toplam Giriş\"'", metin)
 
     def test_03_ui_etiket_eslesmesi(self):
-        """_ozeti_yenile doğru başlıklara doğru değerleri yazar."""
+        """_ozeti_yenile Depo paneli Entry alanlarına doğru değerleri yazar."""
         import tkinter as tk
+        from tkinter import ttk
 
         from stok_ui import StokKartiDialog, para_goster
 
         root = tk.Tk()
         root.withdraw()
         try:
-            # Minimal stub: sadece özet etiketleri
             dlg = object.__new__(StokKartiDialog)
             dlg.stok = type("S", (), {"id": self.stok_id, "birim": "Adet"})()
             dlg.birimler = []
             dlg.varsayilan_goruntuleme_birim = "Adet"
-            dlg.alanlar = {"birim": type("E", (), {"get": lambda self: "Adet"})(), "raf_yeri": type("E", (), {"get": lambda self: ""})()}
-            dlg.ozet_etiketleri = {
-                b: tk.Label(root, text="") for b in OZET_SIRA
+            dlg.alanlar = {
+                "birim": type("E", (), {"get": lambda self: "Adet"})(),
+                "raf_yeri": type("E", (), {"get": lambda self: ""})(),
             }
-            dlg.ozet_alt_etiketleri = {b: tk.Label(root, text="") for b in OZET_SIRA}
+            dlg.ozet_etiketleri = {}
+            dlg.ozet_alt_etiketleri = {}
+            dlg._panel_depo_lbl = {b: ttk.Entry(root) for b in OZET_SIRA}
+            for e in dlg._panel_depo_lbl.values():
+                e.insert(0, "—")
+                e.configure(state="readonly")
             StokKartiDialog._ozeti_yenile(dlg)
-            self.assertIn("100", dlg.ozet_etiketleri["Toplam Giriş"].cget("text"))
-            self.assertIn("30", dlg.ozet_etiketleri["Toplam Çıkış"].cget("text"))
-            self.assertIn("70", dlg.ozet_etiketleri["Kalan Miktar"].cget("text"))
+            self.assertIn("100", dlg._panel_depo_lbl["Toplam Giriş"].get())
+            self.assertIn("30", dlg._panel_depo_lbl["Toplam Çıkış"].get())
+            self.assertIn("70", dlg._panel_depo_lbl["Kalan Miktar"].get())
             self.assertEqual(
-                dlg.ozet_etiketleri["FIFO Envanter Değeri"].cget("text"),
+                dlg._panel_depo_lbl["FIFO Envanter Değeri"].get(),
                 para_goster(Decimal("700")),
             )
-            # Sıra sabit
-            self.assertEqual(tuple(dlg.ozet_etiketleri.keys()), OZET_SIRA)
+            self.assertEqual(tuple(dlg._panel_depo_lbl.keys()), OZET_SIRA)
         finally:
             root.destroy()
 
-    def test_04_ekran_goruntusu_sirasi(self):
-        """Tam dialog açılışında grid sütun sırası doğrulanır + ekran görüntüsü."""
+    def test_04_depo_panel_sirasi_ve_ust_ozet_yok(self):
+        """Tam dialog: üst özet şeridi yok; Depo paneli değerleri dolu."""
         import tkinter as tk
 
         from stok_ui import StokKartiDialog
@@ -244,35 +250,22 @@ class StokKartiOzetSirasiTest(unittest.TestCase):
         try:
             with patch.object(StokKartiDialog, "_pencere_boyutunu_ayarla", lambda self: None):
                 dlg = StokKartiDialog(root, stok=stok)
+            # Açılış özeti arka planda; test senkron yolla doğrular
+            dlg._ozeti_yenile()
             root.update_idletasks()
-            sirali = []
+            self.assertEqual(dlg.ozet_kartlari, {})
+            self.assertEqual(dlg.ozet_etiketleri, {})
             for baslik in OZET_SIRA:
-                fr = dlg.ozet_kartlari[baslik]["frame"]
-                info = fr.grid_info()
-                sirali.append((int(info["column"]), baslik))
-            sirali.sort()
-            self.assertEqual([b for _, b in sirali], list(OZET_SIRA))
-            # Değer-başlık
-            self.assertIn("100", dlg.ozet_etiketleri["Toplam Giriş"].cget("text"))
-            self.assertIn("30", dlg.ozet_etiketleri["Toplam Çıkış"].cget("text"))
-            self.assertIn("70", dlg.ozet_etiketleri["Kalan Miktar"].cget("text"))
-            # Ekran görüntüsü
-            out = Path(self._tmpdir.name) / "stok_ozet_sirasi.png"
-            try:
-                from PIL import ImageGrab
-
-                dlg.update_idletasks()
-                x = dlg.winfo_rootx()
-                y = dlg.winfo_rooty()
-                w = dlg.winfo_width()
-                h = min(220, dlg.winfo_height())
-                if w > 1 and h > 1:
-                    img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
-                    img.save(out)
-                    self.assertTrue(out.exists() and out.stat().st_size > 0)
-            except Exception:
-                # Ortam ekran yakalamayı desteklemiyorsa atla (grid testi yeterli)
-                pass
+                self.assertIn(baslik, dlg._panel_depo_lbl)
+            self.assertIn("100", dlg._panel_depo_lbl["Toplam Giriş"].get())
+            self.assertIn("30", dlg._panel_depo_lbl["Toplam Çıkış"].get())
+            self.assertIn("70", dlg._panel_depo_lbl["Kalan Miktar"].get())
+            # Tür + üçlü grup satırı
+            self.assertIn("ana_kart_turu", dlg.alanlar)
+            self.assertIn("ana", dlg.grup_alanlari)
+            self.assertIn("tali", dlg.grup_alanlari)
+            self.assertIn("alt", dlg.grup_alanlari)
+            self.assertFalse(dlg.alanlar["alt_kart_turu"].winfo_ismapped())
             dlg.destroy()
         finally:
             root.destroy()

@@ -100,6 +100,9 @@ def stil_uygula(stil: ttk.Style) -> None:
     stil.configure("Status.TFrame", background=KOYU_LACIVERT)
     stil.configure("Status.TLabel", background=KOYU_LACIVERT, foreground=METIN_ACIK, font=FONT_KUCUK)
 
+    # Varsayılan ttk düğme metni — tema sonrası kaybolmasın (açık zemin)
+    stil.configure("TButton", foreground=METIN, padding=(8, 4))
+    stil.map("TButton", foreground=[("disabled", PASIF), ("!disabled", METIN)])
     stil.configure("Menu.TButton", anchor="w", padding=(14, 10))
     stil.configure("AltMenu.TButton", anchor="w", padding=(16, 12))
     stil.configure(

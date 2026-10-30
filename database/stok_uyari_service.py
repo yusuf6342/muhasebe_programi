@@ -55,7 +55,8 @@ NEDEN_ETIKET = {
     NEDEN_KRITIK: "Kritik seviye",
 }
 # Sınıflandırma kuralı değiştiğinde artırılır; eski sürümle değerlendirilmiş firmada bir kez yeniden taranır.
-SINIFLANDIRMA_SURUMU = "2"
+# 3: hizmet / fiziksel stok dışı kartlar ihtiyaç listesine alınmaz; sistem cariler tedarikçi önerilmez.
+SINIFLANDIRMA_SURUMU = "3"
 
 DURUM_INCELENECEK = "İncelenecek"
 DURUM_TASLAK_VAR = "Sipariş taslağı var"
@@ -88,6 +89,36 @@ _tablo_onbellek: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 # Tek işlemde bundan fazla çift etkilenirse (toplu içe aktarma vb.) değerlendirme kuyruğa yazılır.
 SATIR_ICI_SINIR = 300
 _KART_ALANLARI = ("aktif", "is_deleted", "birlestirildi_hedef_id", "minimum_stok", "birim", "varsayilan_alis_birim")
+# Fiziksel stok ihtiyacı dışı (hizmet / gelir kalemleri sipariş listesine girmez).
+_STOK_DISI_TUR = ("hizmet",)
+# Sayım / devir / açılış gibi iç hesaplar gerçek tedarikçi kabul edilmez (ünvan/kod ipucu).
+_SISTEM_TEDARIKCI_IPUCLARI = (
+    "sayim fazlasi", "sayım fazlası", "stok sayim", "stok sayım",
+    "sayim eksi", "sayım eksiği", "devir hesabi", "devir hesabı",
+    "acilis hesabi", "açılış hesabı", "acilish hesabi",
+)
+
+
+def _fiziksel_stok_karti(kart) -> bool:
+    """Satın alma siparişi ihtiyacı yalnız lot tutan ticari ürünler içindir; hizmet kartları hariç."""
+    if kart is None:
+        return False
+    tur = (getattr(kart, "kart_turu", None) or "").casefold()
+    if any(x in tur for x in _STOK_DISI_TUR):
+        return False
+    return True
+
+
+def _sistem_tedarikci_mi(cari_veya_metin) -> bool:
+    """Sayım/devir/açılış iç hesapları tedarikçi önerisi ve seçiminde elenir."""
+    if cari_veya_metin is None:
+        return False
+    if hasattr(cari_veya_metin, "unvan") or hasattr(cari_veya_metin, "cari_kodu"):
+        metin = f"{getattr(cari_veya_metin, 'cari_kodu', '') or ''} {getattr(cari_veya_metin, 'unvan', '') or ''}"
+    else:
+        metin = str(cari_veya_metin)
+    n = _tr_kucuk(metin)
+    return any(i in n for i in (_tr_kucuk(x) for x in _SISTEM_TEDARIKCI_IPUCLARI))
 
 
 def _d(v) -> Decimal:
@@ -523,11 +554,16 @@ class StokUyariService:
             h = StokUyariService.hesapla(session, kart, depo, genel, None, varsayilan_adi)
             aktif = session.scalar(select(StokIhtiyac).where(
                 StokIhtiyac.stok_id == stok_id, StokIhtiyac.depo_id == depo_id, StokIhtiyac.aktif.is_(True)))
-            gerekli = bool(h["nedenler"]) and h["takip"] and h["aktif_kart"]
+            fiziksel_uygun = _fiziksel_stok_karti(kart)
+            gerekli = bool(h["nedenler"]) and h["takip"] and h["aktif_kart"] and fiziksel_uygun
             if not gerekli:
                 if aktif is not None:
-                    neden = ("Ürün pasif" if not h["aktif_kart"] else "Takip kapalı" if not h["takip"]
-                             else "Stok yeterli")
+                    neden = (
+                        "Fiziksel stok dışı (hizmet)" if not fiziksel_uygun
+                        else "Ürün pasif" if not h["aktif_kart"]
+                        else "Takip kapalı" if not h["takip"]
+                        else "Stok yeterli"
+                    )
                     aktif.aktif = False
                     aktif.kapanma_tarihi = simdi
                     aktif.kapanma_nedeni = neden
@@ -624,9 +660,14 @@ class StokUyariService:
     # ------------------------------------------------------------------ toplu tarama
     @staticmethod
     def tarama_ciftleri(session) -> list[tuple[int, int]]:
-        """Aktif kartlar × hareket/lot görülen depolar; hiç hareketi olmayan kart → varsayılan depo."""
-        aktif_idler = {i for (i,) in session.execute(select(StokKarti.id).where(
-            StokKarti.aktif.is_(True), StokKarti.is_deleted.is_(False)))}
+        """Aktif fiziksel stok kartları × hareket/lot görülen depolar; hiç hareketi olmayan kart → varsayılan depo."""
+        aktif_idler = {
+            i for i, tur in session.execute(
+                select(StokKarti.id, StokKarti.kart_turu).where(
+                    StokKarti.aktif.is_(True), StokKarti.is_deleted.is_(False))
+            )
+            if _fiziksel_stok_karti(type("K", (), {"kart_turu": tur})())
+        }
         ciftler = {(s, d) for s, d in session.execute(
             select(StokLotu.stok_id, StokLotu.depo_id).distinct()) if s in aktif_idler}
         ciftler |= {(s, d) for s, d in session.execute(
@@ -1023,11 +1064,15 @@ class StokUyariService:
             donem_satis = StokUyariService.satis_gecmisi(session, kodlar, bas, bit)
             alis_iade, satis_iade = StokUyariService._iade_toplamlari(session, kodlar, bas, bit, kartlar)
             baglar = StokUyariService._bag_ozeti(session, [r[0].id for r in kayitlar])
-            cariler = {c.id: c.unvan for c in session.scalars(select(Cari)).all()} if kayitlar else {}
+            cari_kayitlari = list(session.scalars(select(Cari)).all()) if kayitlar else []
+            cariler = {c.id: c.unvan for c in cari_kayitlari}
+            sistem_idler = {int(c.id) for c in cari_kayitlari if _sistem_tedarikci_mi(c)}
             satirlar = []
             toplam_bedel: dict[str, Decimal] = {}
             bugun = date.today()
             for k, kart, depo in kayitlar:
+                if not _fiziksel_stok_karti(kart):
+                    continue
                 ertelendi = bool(k.erteleme_bitis and k.erteleme_bitis >= bugun)
                 if ertelendi and not filtre.get("ertelenenler") and _d(k.musteri_talebi) <= 0:
                     continue
@@ -1036,10 +1081,16 @@ class StokUyariService:
                 if filtre.get("durum") and filtre["durum"] != durum:
                     continue
                 ayar = StokUyariService.etkin_ayar(session, kart, depo.id, genel, ayarlar_tum.get(kart.id, {}))
-                son_alis = (alislar.get(kart.stok_kodu) or [None])[0]
+                alis_listesi = [
+                    a for a in (alislar.get(kart.stok_kodu) or [])
+                    if a.get("cari_id") not in sistem_idler
+                    and not _sistem_tedarikci_mi(a.get("cari"))
+                ]
+                son_alis = alis_listesi[0] if alis_listesi else None
                 son_satis = (satislar.get(kart.stok_kodu) or [None])[0]
                 tercih = ayar.get("tercih_tedarikci_id")
-                if tercih:
+                tercih_ok = tercih and int(tercih) not in sistem_idler
+                if tercih_ok:
                     ted_id, ted_kaynak = int(tercih), "Tercih edilen"
                 elif son_alis:
                     ted_id, ted_kaynak = son_alis["cari_id"], "Son alış"
@@ -1146,7 +1197,19 @@ class StokUyariService:
             gruplar.setdefault((int(s["tedarikci_id"]), (s.get("teslim_depo") or "").strip()), []).append(s)
         olusan: list[dict] = []
         with get_session() as session:
+            from database.models.cari import Cari
+
             session.info["_stok_uyari_calisiyor"] = True
+            ted_idler = {int(s["tedarikci_id"]) for s in secimler}
+            for tid in ted_idler:
+                cari = session.get(Cari, tid)
+                if cari is None or not cari.aktif:
+                    raise ValueError(f"Tedarikçi #{tid} bulunamadı veya pasif.")
+                if _sistem_tedarikci_mi(cari):
+                    raise ValueError(f"{cari.unvan or tid}: sistem hesabı tedarikçi olarak kullanılamaz.")
+                tur = (cari.cari_turu or "").casefold()
+                if tur in ("müşteri", "musteri", "personel"):
+                    raise ValueError(f"{cari.unvan}: tedarikçi rolü olmayan cari seçilemez.")
             for s in secimler:
                 n = session.execute(
                     update(StokIhtiyac)

@@ -199,8 +199,11 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
             pass
         ttk.Button(filtre, text="Yazdır", command=self._yazdir).pack(side="right", padx=(0, 8))
 
-        tablo_cerceve = ttk.Frame(self, padding=(12, 0, 12, 8))
+        self._govde = ttk.Frame(self, padding=(12, 0, 12, 8))
+        self._govde.pack(fill="both", expand=True)
+        tablo_cerceve = ttk.Frame(self._govde)
         tablo_cerceve.pack(fill="both", expand=True)
+        self._liste_alani = tablo_cerceve
 
         self._stil = ttk.Style(self)
         try:
@@ -268,22 +271,38 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         self.alt_ozet = ttk.Label(alt, text="", font=("Segoe UI", 9, "bold"), foreground="#1a237e")
         self.alt_ozet.pack(side="right")
 
-        # DOC5 istatistik: borç/alacak — bakiye (yürüyen) hariç
-        from liste_filtre_ui import istatistik_seridi_ekle
+        # DOC5 istatistik + Liste|Grafik: borç/alacak — bakiye (yürüyen) hariç
+        from liste_filtre_ui import (
+            istatistik_grafik_bagla,
+            istatistik_seridi_ekle,
+            liste_grafik_gorunum_ekle,
+        )
 
         self._istatistik_satirlari: list[dict] = []
+        kolon_tanim = [
+            ("borc", "Borç", "para"),
+            ("alacak", "Alacak", "para"),
+            ("tutar", "Tutar", "para"),
+            ("miktar", "Miktar", "miktar"),
+        ]
         self._istatistik = istatistik_seridi_ekle(
             self,
-            kolon_tanim=[
-                ("borc", "Borç", "para"),
-                ("alacak", "Alacak", "para"),
-                ("tutar", "Tutar", "para"),
-                ("miktar", "Miktar", "miktar"),
-            ],
+            kolon_tanim=kolon_tanim,
             get_satirlar=lambda: self._istatistik_satirlari,
             yuruyen_haric=("bakiye",),
             pack_opts={"fill": "x", "padx": 12, "pady": (0, 4), "before": alt},
         )
+        self._grafik_gorunum = liste_grafik_gorunum_ekle(
+            self._govde,
+            self._liste_alani,
+            get_satirlar=lambda: self._istatistik_satirlari,
+            get_secimler=lambda: self._istatistik["secimler"],
+            kolon_baslik={a: b for a, b, _t in kolon_tanim},
+            kolon_tip={a: t for a, _b, t in kolon_tanim},
+            yuruyen_haric=("bakiye",),
+            arac_parent=filtre,
+        )
+        istatistik_grafik_bagla(self._istatistik, self._grafik_gorunum)
 
         self.after(50, self.yenile)
 

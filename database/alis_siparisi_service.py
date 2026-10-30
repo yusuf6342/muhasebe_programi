@@ -15,6 +15,7 @@ from database.models.alis_siparisi import (
     AlisSiparisiOdemesi,
     AlisSiparisiSatiri,
 )
+from database.iskonto_hesap_service import satir_iskonto_hesapla
 from database.satis_siparisi_service import decimal
 
 SIPARIS_DURUMLARI = ("TASLAK", "AÇIK", "KISMİ İRSALİYELİ", "İRSALİYELİ", "KISMİ FATURALI", "FATURALI", "İPTAL")
@@ -144,6 +145,9 @@ class AlisSiparisiService:
                 session.add(siparis)
             if "teslim_depo" in veriler:
                 siparis.teslim_depo = (veriler.get("teslim_depo") or "").strip() or None
+            if "valor_gun" in veriler:
+                valor = veriler.get("valor_gun")
+                siparis.valor_gun = int(valor) if valor not in (None, "") else None
             siparis.siparis_tarihi = siparis_tarihi
             siparis.termin_tarihi = termin_tarihi
             siparis.cari_id = int(veriler["cari_id"])
@@ -162,6 +166,8 @@ class AlisSiparisiService:
                     birim=veri["birim"],
                     birim_alis_fiyati=decimal(veri["birim_alis_fiyati"], "Birim alış fiyatı", Decimal("0")),
                     iskonto_orani=decimal(veri.get("iskonto_orani", 0), "İskonto oranı", Decimal("0")),
+                    iskonto_orani_2=decimal(veri.get("iskonto_orani_2", 0) or 0, "İskonto 2", Decimal("0")),
+                    iskonto_orani_3=decimal(veri.get("iskonto_orani_3", 0) or 0, "İskonto 3", Decimal("0")),
                     kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV oranı", Decimal("0")),
                 )
                 satir.irsaliyelenen_miktar = decimal(
@@ -244,12 +250,18 @@ class AlisSiparisiService:
         iskonto = Decimal("0")
         kdv = Decimal("0")
         for satir in satirlar:
-            brut = satir.miktar * satir.birim_alis_fiyati
-            indirim = brut * satir.iskonto_orani / Decimal("100")
-            net = brut - indirim
-            ara += brut
-            iskonto += indirim
-            kdv += net * satir.kdv_orani / Decimal("100")
+            # Ardışık (3 kademeli) iskonto — UI ile aynı motor (kuruş yuvarlamalı)
+            h = satir_iskonto_hesapla(
+                miktar=satir.miktar,
+                brut_birim_fiyat=satir.birim_alis_fiyati,
+                iskonto1=satir.iskonto_orani or 0,
+                iskonto2=getattr(satir, "iskonto_orani_2", 0) or 0,
+                iskonto3=getattr(satir, "iskonto_orani_3", 0) or 0,
+                kdv_orani=satir.kdv_orani or 0,
+            )
+            ara += h["brut_satir"]
+            iskonto += h["iskonto_tutari"]
+            kdv += h["kdv_tutari"]
         net = ara - iskonto
         return {
             "ara_toplam": ara,

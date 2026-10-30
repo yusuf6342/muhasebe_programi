@@ -507,6 +507,11 @@ class AlisFaturasiService:
 
             cari = session.get(Cari, fatura.cari_id)
             tedarikci_adi = cari.unvan if cari else ""
+            # Aktarım taslağı: stok/cari/finans yazılmaz; kullanıcı Onayla ile tamamlar.
+            # Normal alış kaydı (varsayılan) stok girişini kaydet anında üretir.
+            hareket_yaz = bool(veriler.get("hareket_yaz", True))
+            if fatura_id is not None:
+                hareket_yaz = True
 
             for veri in satir_verileri:
                 miktar = decimal(veri["miktar"], "Miktar", Decimal("0.0001"))
@@ -575,22 +580,29 @@ class AlisFaturasiService:
                     stok_maliyeti = decimal(veri["fifo_birim_maliyeti"], "FIFO maliyet", Decimal("0"))
 
                 # Stok ve FIFO lotu temel birimde: 2 Koli (×12) → 24 Adet, maliyet koli fiyatı / 12
-                stok_girisi = StokService.fatura_girisi(
-                    session,
-                    fatura.fatura_no,
-                    tarih,
-                    veri["urun_kodu"].strip(),
-                    fatura.depo,
-                    (miktar * carpan).quantize(Decimal("0.0001")),
-                    (stok_maliyeti / carpan).quantize(Decimal("0.0001")),
-                    tedarikci=tedarikci_adi,
-                    lot_no=veri.get("lot_no") or "",
-                )
-                StokService.alis_fiyatini_guncelle(
-                    session,
-                    veri["urun_kodu"].strip(),
-                    (net_alis_fiyati / carpan).quantize(Decimal("0.0001")),
-                )
+                temel_maliyet = (stok_maliyeti / carpan).quantize(Decimal("0.0001"))
+                if hareket_yaz:
+                    stok_girisi = StokService.fatura_girisi(
+                        session,
+                        fatura.fatura_no,
+                        tarih,
+                        veri["urun_kodu"].strip(),
+                        fatura.depo,
+                        (miktar * carpan).quantize(Decimal("0.0001")),
+                        temel_maliyet,
+                        tedarikci=tedarikci_adi,
+                        lot_no=veri.get("lot_no") or "",
+                    )
+                    StokService.alis_fiyatini_guncelle(
+                        session,
+                        veri["urun_kodu"].strip(),
+                        (net_alis_fiyati / carpan).quantize(Decimal("0.0001")),
+                    )
+                    lot_girisi = stok_girisi["lot_girisi"]
+                    fifo_maliyet = stok_girisi["birim_maliyet"]
+                else:
+                    lot_girisi = (veri.get("lot_no") or "").strip() or None
+                    fifo_maliyet = temel_maliyet
                 fatura.satirlar.append(
                     AlisFaturasiSatiri(
                         siparis_satiri_id=sip_id,
@@ -600,7 +612,7 @@ class AlisFaturasiService:
                         barkod=veri.get("barkod") or None,
                         aciklama=veri.get("aciklama") or None,
                         lot_no=veri.get("lot_no") or None,
-                        lot_girisi=stok_girisi["lot_girisi"],
+                        lot_girisi=lot_girisi,
                         miktar=miktar,
                         birim=veri.get("birim") or "Adet",
                         birim_fiyat=birim_fiyat,
@@ -608,7 +620,7 @@ class AlisFaturasiService:
                         iskonto_orani_2=iskonto_orani_2,
                         iskonto_orani_3=iskonto_orani_3,
                         kdv_orani=decimal(veri.get("kdv_orani", 20), "KDV", Decimal("0")),
-                        fifo_birim_maliyeti=stok_girisi["birim_maliyet"],
+                        fifo_birim_maliyeti=fifo_maliyet,
                         birim_carpani=carpan,
                         birim_fiyat_doviz=birim_fiyat_doviz,
                         tl_birim_fiyat=stok_maliyeti,
@@ -650,44 +662,149 @@ class AlisFaturasiService:
             if fatura.odeme_tutari > toplam:
                 raise ValueError("Ödeme tutarı fatura toplamından büyük olamaz.")
             fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
+            fatura.onaylandi = False
             session.flush()
 
-            hareket = session.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
-            if not hareket:
-                hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
-                session.add(hareket)
-            hareket.cari_id = fatura.cari_id
-            hareket.satis_tarihi = tarih
-            hareket.satis_tutari = toplam
-            hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
-            hareket.para_birimi = pb
-            hareket.kur = kur if pb != "TRY" else Decimal("1")
-            hareket.borc_esasi = "TL_SABIT"
-            hareket.doviz_tutari = (
-                Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0)) if pb != "TRY" else Decimal("0")
-            )
+            if hareket_yaz:
+                AlisFaturasiService._cari_finans_yaz(session, fatura, tarih, toplam, pb, kur)
+                AlisFaturasiService._durumlari_guncelle(session, fatura)
+                from database.acik_kalem_service import AcikKalemService
 
-            FinansService.fatura_odemesi(
-                session,
-                fatura.fatura_no,
-                tarih,
-                fatura.odeme_tutari,
-                fatura.odeme_sekli,
-                fatura.odeme_hesabi,
-            )
-            AlisFaturasiService._durumlari_guncelle(session, fatura)
-            from database.acik_kalem_service import AcikKalemService
-
-            AcikKalemService.avanslari_uygula(session, fatura.cari_id)
+                AcikKalemService.avanslari_uygula(session, fatura.cari_id)
+            else:
+                AlisFaturasiService._durumlari_guncelle(session, fatura)
             try:
                 session.flush()
             except IntegrityError as hata:
                 raise ValueError("Fatura kaydedilemedi.") from hata
             fid = int(fatura.id)
-            from database.muhasebe_entegrasyon import muhasebe_hook
+            fno_hook = fatura.fatura_no
+            urun_kodlari_hook = [
+                (s.urun_kodu or "").strip()
+                for s in fatura.satirlar
+                if (s.urun_kodu or "").strip()
+            ]
+            if hareket_yaz:
+                from database.muhasebe_entegrasyon import muhasebe_hook
 
-            muhasebe_hook("alis_faturasi_fisi", fid, yeniden=True, session=session)
+                muhasebe_hook("alis_faturasi_fisi", fid, yeniden=True, session=session)
+        if hareket_yaz:
+            AlisFaturasiService._sorulan_stok_hooklari(urun_kodlari_hook, f"ALIS:{fno_hook}")
         return AlisFaturasiService.getir(fid)
+
+    @staticmethod
+    def _sorulan_stok_hooklari(urun_kodlari: list[str], olay: str) -> None:
+        """Onaylı alış stok girişinden sonra sorulan arama görevlerini tetikler (bekletmez)."""
+        if not urun_kodlari:
+            return
+        try:
+            from database.models.stok import StokKarti
+        except Exception:
+            return
+        gorulen: set[int] = set()
+        for kod in urun_kodlari:
+            try:
+                with get_session() as session:
+                    stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+                    sid = int(stok.id) if stok else None
+                if sid and sid not in gorulen:
+                    gorulen.add(sid)
+                    StokService._sorulan_arama_hook(sid, olay)
+            except Exception:
+                continue
+
+    @staticmethod
+    def _cari_finans_yaz(session, fatura, tarih, toplam, pb, kur) -> None:
+        hareket = session.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
+        if not hareket:
+            hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
+            session.add(hareket)
+        hareket.cari_id = fatura.cari_id
+        hareket.satis_tarihi = tarih
+        hareket.satis_tutari = toplam
+        hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+        hareket.para_birimi = pb
+        hareket.kur = kur if pb != "TRY" else Decimal("1")
+        hareket.borc_esasi = "TL_SABIT"
+        hareket.doviz_tutari = (
+            Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0)) if pb != "TRY" else Decimal("0")
+        )
+        FinansService.fatura_odemesi(
+            session,
+            fatura.fatura_no,
+            tarih,
+            fatura.odeme_tutari,
+            fatura.odeme_sekli,
+            fatura.odeme_hesabi,
+        )
+
+    @staticmethod
+    def _stok_girisi_var_mi(session, fatura_no: str) -> bool:
+        from database.models.stok import StokHareketi
+
+        adet = session.scalar(
+            select(func.count())
+            .select_from(StokHareketi)
+            .where(
+                StokHareketi.belge_no == fatura_no,
+                StokHareketi.hareket_turu == "FATURA GİRİŞ",
+            )
+        )
+        return int(adet or 0) > 0
+
+    @staticmethod
+    def _aktarim_stok_ve_mali_yaz(session, fatura) -> None:
+        """Excel/PDF aktarımında ertelenmiş stok + cari + finans + muhasebe yazımı."""
+        cari = fatura.cari or session.get(Cari, fatura.cari_id)
+        tedarikci_adi = cari.unvan if cari else ""
+        tarih = fatura.fatura_tarihi
+        pb = (fatura.para_birimi or "TRY").upper()
+        kur = fatura.kur or Decimal("1")
+        for satir in fatura.satirlar:
+            carpan = decimal(getattr(satir, "birim_carpani", None) or 1, "Çarpan", Decimal("1"))
+            if carpan <= 0:
+                carpan = Decimal("1")
+            miktar = decimal(satir.miktar, "Miktar", Decimal("0.0001"))
+            stok_maliyeti = decimal(
+                getattr(satir, "tl_birim_fiyat", None) or satir.birim_fiyat or 0,
+                "Maliyet",
+                Decimal("0"),
+            )
+            temel_maliyet = (stok_maliyeti / carpan).quantize(Decimal("0.0001"))
+            stok_girisi = StokService.fatura_girisi(
+                session,
+                fatura.fatura_no,
+                tarih,
+                satir.urun_kodu,
+                fatura.depo or "ANA DEPO",
+                (miktar * carpan).quantize(Decimal("0.0001")),
+                temel_maliyet,
+                tedarikci=tedarikci_adi,
+                lot_no=satir.lot_no or satir.lot_girisi or "",
+            )
+            net_alis = AlisFaturasiService._net_birim_maliyet(
+                satir.birim_fiyat,
+                satir.iskonto_orani,
+                getattr(satir, "iskonto_orani_2", 0) or 0,
+                getattr(satir, "iskonto_orani_3", 0) or 0,
+            )
+            StokService.alis_fiyatini_guncelle(
+                session,
+                satir.urun_kodu,
+                (net_alis / carpan).quantize(Decimal("0.0001")),
+            )
+            satir.lot_girisi = stok_girisi["lot_girisi"]
+            satir.fifo_birim_maliyeti = stok_girisi["birim_maliyet"]
+
+        toplam = fatura.tl_genel_toplam or Decimal("0")
+        AlisFaturasiService._cari_finans_yaz(session, fatura, tarih, toplam, pb, kur)
+        from database.acik_kalem_service import AcikKalemService
+
+        AcikKalemService.avanslari_uygula(session, fatura.cari_id)
+        session.flush()
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("alis_faturasi_fisi", int(fatura.id), yeniden=True, session=session)
 
     @staticmethod
     def _stok_etkili_degisiklikler(fatura, veriler, satir_verileri) -> list[str]:
@@ -799,8 +916,9 @@ class AlisFaturasiService:
     def onayla(fatura_id, row_version=None):
         """Kaydedilmiş alış faturasını onaylar.
 
-        Stok girişi ve cari borç kayıt sırasında oluşur; onay yalnızca belgeyi doğrulayıp
-        kilitler, yeni hareket üretmez. Zaten onaylı fatura için hata verir (tekrar yok).
+        Normal kayıtta stok/cari kaydet anında oluşur; onay belgeyi kilitler.
+        Excel/PDF aktarım taslağında (hareket_yaz=False) stok/cari henüz yoksa
+        onay sırasında oluşturulur. Zaten onaylı fatura için hata verir.
         """
         yazma_zorunlu("alis_fatura_duzenleme", "alis_duzenleme")
         with get_session() as session:
@@ -832,18 +950,26 @@ class AlisFaturasiService:
             )
             if hatalar:
                 raise ValueError("Fatura onaylanamadı:\n• " + "\n• ".join(hatalar))
+            if not AlisFaturasiService._stok_girisi_var_mi(session, fatura.fatura_no):
+                AlisFaturasiService._aktarim_stok_ve_mali_yaz(session, fatura)
             fatura.onaylandi = True
             fatura.onay_tarihi = datetime.now()
             fatura.row_version = mevcut_v + 1
             session.flush()
             fid = int(fatura.id)
             fno = fatura.fatura_no
+            urun_kodlari_hook = [
+                (s.urun_kodu or "").strip()
+                for s in fatura.satirlar
+                if (s.urun_kodu or "").strip()
+            ]
         try:
             from database.user_audit import audit_document
 
             audit_document("ALIS_FATURA_ONAY", modul="alis", kayit_id=str(fid), belge_no=fno)
         except Exception:
             pass
+        AlisFaturasiService._sorulan_stok_hooklari(urun_kodlari_hook, f"ALIS_ONAY:{fno}")
         return AlisFaturasiService.getir(fid)
 
     @staticmethod

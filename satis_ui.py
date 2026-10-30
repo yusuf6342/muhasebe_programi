@@ -55,6 +55,11 @@ SATIS_HUB_KARTLARI: tuple[tuple[str, str, str], ...] = (
         "irsaliye",
     ),
     (
+        "KONSİNYE TAKİBİ",
+        "Müşteriye verilen konsinye teslim, satış bildirimi ve iade",
+        "konsinye",
+    ),
+    (
         "CARİ HESAP İŞLEMLERİ",
         "Tahsilat, virman, gelir ve gider işlemleri",
         "cari",
@@ -157,6 +162,9 @@ def _hub_komutlar(app) -> dict[str, Callable]:
         "teklif": lambda: __import__("teklif_ui", fromlist=["teklifler_hub_goster"]).teklifler_hub_goster(app),
         "irsaliye_yeni": app.satis_irsaliyesi_yeni_ac,
         "irsaliye": app.satis_irsaliyeleri_goster,
+        "konsinye": lambda: __import__(
+            "konsinye_ui", fromlist=["konsinye_takibi_goster"]
+        ).konsinye_takibi_goster(app, yon="VERILEN"),
         "cari": lambda: cari_hesap_islemleri_goster(app),
         "rapor": lambda: satis_raporlar_hub_goster(app),
         "excel_aktarim": excel_aktarim,

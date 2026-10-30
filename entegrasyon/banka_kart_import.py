@@ -153,6 +153,9 @@ def aktar_satirlari(satirlar: list[dict[str, Any]], *, guncelle: bool = True) ->
                 )
                 continue
 
+            doviz = (m.get("doviz") or "TRY").strip().upper()
+            if doviz in {"TL", "YTL", ""}:
+                doviz = "TRY"
             veriler = {
                 "banka_adi": m["banka_adi"],
                 "sube": m.get("sube"),
@@ -160,6 +163,7 @@ def aktar_satirlari(satirlar: list[dict[str, Any]], *, guncelle: bool = True) ->
                 "iban": m.get("iban"),
                 "aciklama": m.get("aciklama"),
                 "pos_valor_gun": m.get("pos_valor_gun", 1),
+                "para_birimi": doviz,
                 "aktif": True,
             }
             if kart_id:

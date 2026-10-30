@@ -195,8 +195,38 @@ class PersonelBelgeService:
             return sonuc
 
     @staticmethod
+    def _kosul_uygulanir(personel: Personel, kosul: str | None, session) -> bool | None:
+        """Bilinen yapılandırılmış koşulları değerlendir.
+
+        True = koşul sağlandı (belge gerekli), False = uygulanmaz,
+        None = otomatik değerlendirilemedi (eksik alarmı üretme).
+        """
+        metin = (kosul or "").strip()
+        if not metin:
+            return None
+        m = metin.casefold()
+        # Personel ayrıldığında
+        if "ayrıldığında" in m or "ayrildiginda" in m or "ayrılış" in m or "ayrilis" in m:
+            from database.models.personel import DURUM_AYRILDI
+
+            return personel.calisma_durumu == DURUM_AYRILDI
+        # İstirahat alındığında — puantaj/izin kaydı yoksa otomatik zorunlu sayma
+        if "istirahat" in m:
+            return None
+        # Göreve ilişkin somut gereklilik — otomatik herkese zorunlu değil
+        if "somut gereklilik" in m or "hukuki dayanak tanımlandığında" in m:
+            return None
+        # İşyeri/görev sağlık gözetimi — politika bayrağı yoksa değerlendirme yok
+        if "sağlık gözetimi" in m or "saglik gozetimi" in m:
+            return None
+        # Kurum politikası veya görev gereği talep — otomatik zorunlu sayma
+        if "kurum politikası" in m or "görev gereği" in m or "gorev geregi" in m:
+            return None
+        return None
+
+    @staticmethod
     def eksik_listesi(personel_id: int) -> list[dict]:
-        """Yalnız uygulanabilir zorunlu/koşullu belgeler — koşul yoksa koşulluyu eksik sayma."""
+        """Yalnız uygulanabilir zorunlu/koşullu belgeler — belirsiz koşulda alarm yok."""
         yetki_zorunlu("personel_goruntuleme", "personel_duzenleme", "goruntuleme")
         schema_hazirla()
         with get_session() as session:
@@ -214,9 +244,13 @@ class PersonelBelgeService:
                 select(PersonelBelgeTuru).where(PersonelBelgeTuru.aktif.is_(True))
             ).all():
                 if tur.sinif == BELGE_SINIF_KOSULLU:
-                    # Koşul metni var ama otomatik değerlendirme yoksa eksik alarmı üretme
-                    continue
-                if tur.sinif != BELGE_SINIF_ZORUNLU:
+                    uyg = PersonelBelgeService._kosul_uygulanir(
+                        p, tur.uygulanma_kosulu, session
+                    )
+                    if uyg is not True:
+                        # False veya None: eksik alarmı üretme
+                        continue
+                elif tur.sinif != BELGE_SINIF_ZORUNLU:
                     continue
                 if tur.gizlilik in HASSAS and not hassas_gorur(tur.gizlilik):
                     continue

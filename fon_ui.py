@@ -94,10 +94,14 @@ def _oran_metni(oran) -> str:
     return metin.replace(".", ",")
 
 
-def _tablo(parent, kolonlar, yukseklik=14) -> ttk.Treeview:
+def _tablo(parent, kolonlar, yukseklik=14, *, filtre_parent=None) -> ttk.Treeview:
+    from liste_filtre_ui import treeview_filtre_bagla
+
     kap = ttk.Frame(parent)
     kap.pack(fill="both", expand=True)
-    tree = ttk.Treeview(kap, columns=[k[0] for k in kolonlar], show="headings", height=yukseklik)
+    kolon_idler = [k[0] for k in kolonlar]
+    baslik_map = {k[0]: k[1] for k in kolonlar}
+    tree = ttk.Treeview(kap, columns=kolon_idler, show="headings", height=yukseklik)
     for anahtar, baslik, en, hiza in kolonlar:
         tree.heading(anahtar, text=baslik)
         tree.column(anahtar, width=en, anchor=hiza, stretch=True)
@@ -111,16 +115,58 @@ def _tablo(parent, kolonlar, yukseklik=14) -> ttk.Treeview:
     kap.columnconfigure(0, weight=1)
     tree.tag_configure("iptal", foreground="#888888")
     tree.tag_configure("uyari", foreground="#B00020")
+    durum = {"filtre": {}, "ham": [], "kolonlar": kolonlar, "etiket": None, "bag": None}
+
+    def _yenile():
+        _doldur(tree, durum["kolonlar"], [h["kayit"] for h in durum["ham"]], durum.get("etiket"),
+                filtre_uygula=True)
+
+    if filtre_parent is not None:
+        durum["bag"] = treeview_filtre_bagla(
+            tree,
+            baslik_map,
+            get_filtre_dict=lambda: durum["filtre"],
+            set_filtre_dict=None,
+            yenile_cb=_yenile,
+            deger_listesi_cb=lambda: durum["ham"],
+            parent=filtre_parent,
+            kolonlar=kolon_idler,
+        )
+    tree._liste_filtre_durum = durum  # type: ignore[attr-defined]
     return tree
 
 
-def _doldur(tree: ttk.Treeview, kolonlar, satirlar: list[dict], etiket=None) -> None:
+def _doldur(tree: ttk.Treeview, kolonlar, satirlar: list[dict], etiket=None, *, filtre_uygula=False) -> None:
+    from liste_filtre_ui import satir_kolon_filtre_uygun
+
+    durum = getattr(tree, "_liste_filtre_durum", None)
+    kolon_idler = [k[0] for k in kolonlar]
+    if durum is not None and not filtre_uygula:
+        durum["kolonlar"] = kolonlar
+        durum["etiket"] = etiket
+        durum["ham"] = [
+            {"values": tuple(hucre_metni(s.get(k[0])) for k in kolonlar), "kayit": s}
+            for s in satirlar
+        ]
+        durum["filtre"].clear()
     tree.delete(*tree.get_children())
-    for i, s in enumerate(satirlar):
-        tree.insert("", "end", iid=str(i), values=[hucre_metni(s.get(k[0])) for k in kolonlar],
+    filtre = (durum or {}).get("filtre") or {}
+    gorunen = 0
+    kaynak = satirlar
+    if durum is not None and filtre_uygula:
+        kaynak = [h["kayit"] for h in durum["ham"]]
+    for i, s in enumerate(kaynak):
+        values = tuple(hucre_metni(s.get(k[0])) for k in kolonlar)
+        if filtre and not satir_kolon_filtre_uygun(values, kolon_idler, filtre):
+            continue
+        tree.insert("", "end", iid=str(i), values=values,
                     tags=(etiket(s),) if etiket and etiket(s) else ())
-    if not satirlar:
+        gorunen += 1
+    if not gorunen:
         tree.insert("", "end", iid="bos", values=["Kayıt yok"] + [""] * (len(kolonlar) - 1), tags=("iptal",))
+    bag = (durum or {}).get("bag")
+    if bag:
+        bag["guncelle_basliklar"]()
 
 
 def fon_yonetimi_goster(app) -> None:
@@ -208,7 +254,7 @@ class FonYonetimiSayfasi(ttk.Frame):
                           foreground="#555").pack(anchor="w")
             if anahtar == "transfer":
                 self._transfer_araclari(cerceve)
-            tree = _tablo(cerceve, kolonlar)
+            tree = _tablo(cerceve, kolonlar, filtre_parent=self)
             self.sekmeler[anahtar] = (tree, kolonlar, baslik)
         self.sekmeler["hareket"][0].bind("<Double-1>", self._kaynak_ac)
         self.sekmeler["transfer"][0].bind("<Double-1>", self._transfer_hareketleri)

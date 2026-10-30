@@ -411,9 +411,16 @@ def _rolleri_doldur(session: Session, izinler: dict[str, Permission]) -> dict[st
 
 def _ayar(session: Session, anahtar: str, deger: str | None = None) -> str | None:
     kayit = session.scalar(select(AppSetting).where(AppSetting.anahtar == anahtar))
+    if kayit is None:
+        for obj in session.new:
+            if isinstance(obj, AppSetting) and obj.anahtar == anahtar:
+                kayit = obj
+                break
     if kayit is None and deger is not None:
         session.add(AppSetting(anahtar=anahtar, deger=deger))
         return deger
+    if kayit is not None and deger is not None:
+        kayit.deger = deger
     return kayit.deger if kayit else None
 
 
@@ -551,6 +558,7 @@ def sistem_baslat(
             _ayar(session, "tek_firma_otomatik_giris", "1")
             _ayar(session, "kurulum_tamam", "1")
             _ayar(session, "maliyet_alti_satis_yasak", "0")
+            session.flush()
 
             # AŞAMA 6: yedek + sayısal snapshot (idempotent)
             from database.system.gecis import gecis_calistir
