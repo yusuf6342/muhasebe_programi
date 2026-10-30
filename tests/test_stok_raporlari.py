@@ -114,6 +114,94 @@ class DegerlemeTest(_Taban):
         u1 = next(x for x in hareketli["satirlar"] if x["urun_kodu"] == "U001")
         self.assertEqual(u1["toplam_maliyet"], D("750.00"))
 
+    def test_fifo_iki_katman_bes_cikis_2500(self):
+        """10×100 + 10×200 giriş, FIFO 5 çıkış → kalan 2.500 TL (5@100 + 10@200)."""
+        self.o.alis(10, 100, gun(10), lot="A")
+        self.o.alis(10, 200, gun(9), lot="B")
+        self.o.satis(5, 300, gun(8))
+        r = srv.degerleme(tarih=BUGUN)
+        u1 = next(x for x in r["satirlar"] if x["urun_kodu"] == "U001")
+        self.assertEqual((u1["miktar"], u1["toplam_maliyet"]), (D("15"), D("2500.00")))
+
+    def test_fifo_sifir_maliyetli_eksi_lot_cikis_sismez(self):
+        """Evo tarzı: çıkış -EKSI lota ve 0 maliyetle yazılsa bile açık katman doğru değerlenir."""
+        self.o.alis(10, 100, gun(10), lot="EVB-1")
+        self.o.alis(10, 200, gun(9), lot="EVB-2")
+        with get_session() as s:
+            ana = self.ana
+            u1 = self.u1
+            eksi = StokLotu(
+                stok_id=u1, depo_id=ana, lot_no="EVB-1-EKSI",
+                giris_tarihi=gun(8), kalan_miktar=D("0"), birim_maliyet=D("0"),
+            )
+            s.add(eksi)
+            s.flush()
+            # 5 adet çıkış yanlışlıkla EKSI lota, birim_maliyet=0
+            s.add(StokHareketi(
+                tarih=gun(8), hareket_turu="ÇIKIŞ", belge_no="SFT-X",
+                stok_id=u1, depo_id=ana, lot_id=eksi.id,
+                miktar=D("5"), birim_maliyet=D("0"),
+            ))
+            # Fiziksel kalan: EVB-1 üzerinde 5 (sistem lot.kalan senkronu test dışı)
+            for lot in s.scalars(select(StokLotu).where(StokLotu.stok_id == u1)).all():
+                if lot.lot_no == "EVB-1":
+                    lot.kalan_miktar = D("5")
+                elif lot.lot_no == "EVB-2":
+                    lot.kalan_miktar = D("10")
+        r = srv.degerleme(tarih=BUGUN)
+        u1 = next(x for x in r["satirlar"] if x["urun_kodu"] == "U001")
+        # FIFO: 5@100 tüketildi → kalan 5@100 + 10@200 = 2500 (hareket-sum olsa 3000 şişerdi)
+        self.assertEqual((u1["miktar"], u1["toplam_maliyet"]), (D("15"), D("2500.00")))
+
+    def test_fifo_ayni_gun_cikis_id_giristen_kucuk_olsa_da_katman_tuketilir(self):
+        """Aynı tarih + çıkış id < giriş id (Evo aktarım sırası) → önce giriş, sonra çıkış."""
+        with get_session() as s:
+            ana, u1 = self.ana, self.u1
+            lot = StokLotu(
+                stok_id=u1, depo_id=ana, lot_no="G1",
+                giris_tarihi=gun(5), kalan_miktar=D("5"), birim_maliyet=D("100"),
+            )
+            s.add(lot)
+            s.flush()
+            # Önce çıkış satırı (küçük id), sonra giriş — tarih aynı
+            s.add(StokHareketi(
+                tarih=gun(5), hareket_turu="ÇIKIŞ", belge_no="C1",
+                stok_id=u1, depo_id=ana, lot_id=lot.id,
+                miktar=D("5"), birim_maliyet=D("0"),
+            ))
+            s.flush()
+            s.add(StokHareketi(
+                tarih=gun(5), hareket_turu="GİRİŞ", belge_no="G1",
+                stok_id=u1, depo_id=ana, lot_id=lot.id,
+                miktar=D("10"), birim_maliyet=D("100"),
+            ))
+        r = srv.degerleme(tarih=BUGUN)
+        u1 = next(x for x in r["satirlar"] if x["urun_kodu"] == "U001")
+        self.assertEqual((u1["miktar"], u1["toplam_maliyet"]), (D("5"), D("500.00")))
+
+    def test_fifo_erken_asiri_satis_sonraki_giristen_acik_kapar(self):
+        """Stok yokken çıkış + sonra giriş: açık kapanır, yalnız net kalan değerlenir."""
+        with get_session() as s:
+            ana, u1 = self.ana, self.u1
+            s.add(StokHareketi(
+                tarih=gun(10), hareket_turu="ÇIKIŞ", belge_no="C-NEG",
+                stok_id=u1, depo_id=ana, miktar=D("3"), birim_maliyet=D("0"),
+            ))
+            s.add(StokLotu(
+                stok_id=u1, depo_id=ana, lot_no="SON",
+                giris_tarihi=gun(5), kalan_miktar=D("7"), birim_maliyet=D("100"),
+            ))
+            s.flush()
+            lot = s.scalar(select(StokLotu).where(StokLotu.stok_id == u1))
+            s.add(StokHareketi(
+                tarih=gun(5), hareket_turu="GİRİŞ", belge_no="G-SON",
+                stok_id=u1, depo_id=ana, lot_id=lot.id,
+                miktar=D("10"), birim_maliyet=D("100"),
+            ))
+        r = srv.degerleme(tarih=BUGUN)
+        u1 = next(x for x in r["satirlar"] if x["urun_kodu"] == "U001")
+        self.assertEqual((u1["miktar"], u1["toplam_maliyet"]), (D("7"), D("700.00")))
+
     def test_satis_fiyati_degeri_ayri_ve_toplama_girmez(self):
         from database.models.stok import StokFiyati
 

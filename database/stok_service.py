@@ -1,10 +1,11 @@
+from collections import deque
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 import random
 import shutil
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -3672,15 +3673,29 @@ class StokService:
     def fifo_envanter_degerleri(session, tarih: date | None = None) -> dict:
         """Stok×depo bazında tarihli FIFO miktar ve değer: {(stok_id, depo_id): {"miktar", "deger"}}.
 
-        Değer = tarih ≤ T hareketlerinin (giriş +, çıkış −) miktar × hareket birim maliyeti; yani
-        T anında açık kalan FIFO katmanlarının toplamı. T'den sonra onaylanan masraf dağıtımlarının
-        lot maliyetine eklediği pay, T'deki lot miktarı kadar geri düşülür (sonraki masraf geçmişi
-        değiştirmez). Tarih verilmezse bugün.
+        Miktar = tarih ≤ T giriş/çıkış hareketlerinin neti.
+        Değer = aynı hareketlerle FIFO kuyruğunda kalan giriş katmanlarının (miktar × giriş
+        birim maliyeti) toplamı. Çıkış hareketinin yazılmış birim maliyeti veya lot bağının
+        bozulmuş olması (ör. EvoBulut ``-EKSI`` lotlarına sıfır maliyetli çıkış) değeri
+        şişirmez; çıkış her zaman depodaki en eski açık katmandan düşülür. Stok yokken yapılan
+        çıkış açığı sonraki girişten önce kapatılır (o pay katmana yazılmaz). Aynı günde önce
+        girişler, sonra çıkışlar uygulanır.
+
+        T'den sonra onaylanan masraf dağıtımlarının lot maliyetine eklediği pay, T'deki lot
+        miktarı kadar geri düşülür (sonraki masraf geçmişi değiştirmez). Tarih verilmezse bugün.
         """
         as_of = tarih or date.today()
         sonuc: dict[tuple[int, int], dict] = {}
         lot_miktar: dict[int, Decimal] = {}
         lot_konum: dict[int, tuple[int, int]] = {}
+        # Her (stok, depo) için açık katman kuyruğu: [kalan_miktar, birim_maliyet, lot_id|None]
+        kuyruklar: dict[tuple[int, int], deque] = {}
+        # Kuyruk boşken yapılan çıkış (geçici negatif); sonraki giriş önce bu açığı kapar,
+        # ancak o pay katmana yazılmaz — aksi halde net miktar 409 iken katman 2904 gibi şişer.
+        acik_cikis: dict[tuple[int, int], Decimal] = {}
+        # Aynı günde Evo/aktarım bazen çıkış satırına girişten küçük id verir; FIFO için
+        # önce o günün girişleri, sonra çıkışları uygulanır (id yalnızca ikincil sıra).
+        giris_once = case((StokHareketi.hareket_turu.in_(GIRIS_HAREKETLERI), 0), else_=1)
         satirlar = session.execute(
             select(
                 StokHareketi.stok_id,
@@ -3689,7 +3704,9 @@ class StokService:
                 StokHareketi.miktar,
                 StokHareketi.birim_maliyet,
                 StokHareketi.lot_id,
-            ).where(StokHareketi.tarih <= as_of)
+            )
+            .where(StokHareketi.tarih <= as_of)
+            .order_by(StokHareketi.tarih, giris_once, StokHareketi.id)
         ).all()
         for stok_id, depo_id, tur, miktar, maliyet, lot_id in satirlar:
             if tur in GIRIS_HAREKETLERI:
@@ -3698,18 +3715,48 @@ class StokService:
                 isaret = Decimal("-1")
             else:
                 continue
-            m = Decimal(str(miktar or 0)) * isaret
+            m_abs = Decimal(str(miktar or 0))
+            if m_abs == 0:
+                continue
             key = (int(stok_id), int(depo_id))
             kayit = sonuc.setdefault(key, {"miktar": Decimal("0"), "deger": Decimal("0")})
-            kayit["miktar"] += m
-            kayit["deger"] += m * Decimal(str(maliyet or 0))
-            if lot_id:
-                lot_miktar[int(lot_id)] = lot_miktar.get(int(lot_id), Decimal("0")) + m
-                lot_konum[int(lot_id)] = key
+            lid = int(lot_id) if lot_id else None
+            if isaret > 0:
+                kayit["miktar"] += m_abs
+                maliyet_d = Decimal(str(maliyet or 0))
+                katmana = m_abs
+                acik = acik_cikis.get(key, Decimal("0"))
+                if acik > 0:
+                    kapa = acik if acik <= katmana else katmana
+                    acik_cikis[key] = acik - kapa
+                    katmana -= kapa
+                if katmana > 0:
+                    kuyruklar.setdefault(key, deque()).append([katmana, maliyet_d, lid])
+                    if lid is not None:
+                        lot_miktar[lid] = lot_miktar.get(lid, Decimal("0")) + katmana
+                        lot_konum[lid] = key
+            else:
+                kayit["miktar"] -= m_abs
+                kalan = m_abs
+                kuyruk = kuyruklar.setdefault(key, deque())
+                while kalan > 0 and kuyruk:
+                    katman = kuyruk[0]
+                    al = katman[0] if katman[0] <= kalan else kalan
+                    katman[0] -= al
+                    kalan -= al
+                    if katman[2] is not None:
+                        lot_miktar[katman[2]] = lot_miktar.get(katman[2], Decimal("0")) - al
+                    if katman[0] == 0:
+                        kuyruk.popleft()
+                if kalan > 0:
+                    acik_cikis[key] = acik_cikis.get(key, Decimal("0")) + kalan
+        for key, kuyruk in kuyruklar.items():
+            deger = sum((k[0] * k[1] for k in kuyruk if k[0] > 0), Decimal("0"))
+            sonuc.setdefault(key, {"miktar": Decimal("0"), "deger": Decimal("0")})["deger"] = deger
         if tarih is not None and as_of < date.today():
             StokService._sonraki_masraf_paylarini_dus(session, as_of, sonuc, lot_miktar, lot_konum)
         for kayit in sonuc.values():
-            kayit["deger"] = kayit["deger"].quantize(Decimal("0.01"))
+            kayit["deger"] = Decimal(str(kayit["deger"])).quantize(Decimal("0.01"))
         return sonuc
 
     @staticmethod
