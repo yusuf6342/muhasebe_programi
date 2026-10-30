@@ -174,6 +174,13 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
 
     gider_kart_schema_hazirla()
     try:
+        from database.database import alis_siparis_schemasini_guncelle
+
+        # Şirket DB'si (firma_db_ac sonrası aktif motor) — splash'taki muhasebe.db geçişi yetmez
+        alis_siparis_schemasini_guncelle()
+    except Exception as hata:  # noqa: BLE001
+        print("Alış siparişi şema uyarısı:", hata)
+    try:
         from database.fon_service import FonService
 
         FonService.schema_hazirla()

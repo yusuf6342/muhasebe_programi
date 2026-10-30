@@ -124,19 +124,30 @@ class _AkisCubugu(tk.Frame):
         return buton
 
     def _yerlestir(self, _e=None):
-        genislik = max(self.winfo_width(), 200)
+        try:
+            if not self.winfo_exists():
+                return
+            genislik = max(self.winfo_width(), 200)
+        except tk.TclError:
+            return
         if _e is not None and genislik == self._son_genislik:
             return
         self._son_genislik = genislik
         satir = sutun = kullanilan = 0
         for b in self._butonlar:
-            b.grid_forget()
+            try:
+                b.grid_forget()
+            except tk.TclError:
+                pass
         for b in self._butonlar:
-            w = b.winfo_reqwidth() + 6
-            if kullanilan and kullanilan + w > genislik:
-                satir += 1
-                sutun = kullanilan = 0
-            b.grid(row=satir, column=sutun, padx=3, pady=3, sticky="w")
+            try:
+                w = b.winfo_reqwidth() + 6
+                if kullanilan and kullanilan + w > genislik:
+                    satir += 1
+                    sutun = kullanilan = 0
+                b.grid(row=satir, column=sutun, padx=3, pady=3, sticky="w")
+            except tk.TclError:
+                continue
             sutun += 1
             kullanilan += w
 
@@ -351,14 +362,15 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         satir.columnconfigure(0, weight=48, uniform="irs_ust")
         satir.columnconfigure(1, weight=52, uniform="irs_ust")
         self._baslik_kaplari = []
-        sol = self._yan_panel(satir, "Belge ve Müşteri")
-        sol.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        sag = self._yan_panel(satir, "Sevkiyat ve Teslimat Bilgileri")
-        sag.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        # Dış çerçeve grid ile satıra oturur; alanlar pack'li iç çerçeveye yazılır (pack/grid çakışmasın).
+        sol_dis, sol = self._yan_panel(satir, "Belge ve Müşteri")
+        sol_dis.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        sag_dis, sag = self._yan_panel(satir, "Sevkiyat ve Teslimat Bilgileri")
+        sag_dis.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self._baslik_alanlari(sol)
         self._sevk_adres_alanlari(sag)
 
-    def _yan_panel(self, parent, baslik: str) -> tk.Frame:
+    def _yan_panel(self, parent, baslik: str) -> tuple[tk.Frame, tk.Frame]:
         dis = tk.Frame(parent, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
         ust = tk.Frame(dis, bg=BEYAZ)
         ust.pack(fill="x")
@@ -369,7 +381,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         ic = tk.Frame(dis, bg=BEYAZ)
         ic.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self._baslik_kaplari.append(ic)
-        return ic
+        return dis, ic
 
     def _baslik_alanlari(self, frame=None):
         frame = frame or self._panel("Belge ve Müşteri")

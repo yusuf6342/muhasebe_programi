@@ -769,6 +769,36 @@ def pos_sozlesme_schemasini_guncelle(hedef_engine=None) -> None:
             )
 
 
+def alis_siparis_schemasini_guncelle(hedef_engine=None) -> None:
+    """Alış siparişi kolonları — aktif firma (şirket) DB motorunda, tekrar güvenli.
+
+    Splash bootstrap çoğu zaman varsayılan muhasebe.db üzerinde koşar; firma seçiminden
+    sonra ``firma_db_ac`` ile şirket DB'sine geçilir. Bu yüzden ``valor_gun`` vb. kolonlar
+    şirket DB'sinde ayrıca uygulanmalıdır.
+    """
+    hedef = hedef_engine if hedef_engine is not None else engine
+    if inspect(hedef).has_table("alis_siparisleri"):
+        sutunlar = {sutun["name"] for sutun in inspect(hedef).get_columns("alis_siparisleri")}
+        if "teslim_depo" not in sutunlar:
+            with hedef.begin() as connection:
+                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "teslim_depo" VARCHAR(100)'))
+        if "valor_gun" not in sutunlar:
+            with hedef.begin() as connection:
+                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "valor_gun" INTEGER'))
+
+    if inspect(hedef).has_table("alis_siparisi_satirlari"):
+        as_sutunlar = {s["name"] for s in inspect(hedef).get_columns("alis_siparisi_satirlari")}
+        for alan in ("iskonto_orani_2", "iskonto_orani_3"):
+            if alan not in as_sutunlar:
+                with hedef.begin() as connection:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "alis_siparisi_satirlari" '
+                            f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
+                        )
+                    )
+
+
 def cari_kart_schemasini_guncelle() -> None:
     """Eksik cari alanlarını mevcut SQLite tablosuna veri kaybetmeden ekler."""
     from database.models.firma import Firma
@@ -1213,26 +1243,7 @@ def cari_kart_schemasini_guncelle() -> None:
             with engine.begin() as connection:
                 connection.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_{tablo}_{alan}" ON "{tablo}" ("{alan}")'))
 
-    if inspect(engine).has_table("alis_siparisleri"):
-        sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns("alis_siparisleri")}
-        if "teslim_depo" not in sutunlar:
-            with engine.begin() as connection:
-                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "teslim_depo" VARCHAR(100)'))
-        if "valor_gun" not in sutunlar:
-            with engine.begin() as connection:
-                connection.execute(text('ALTER TABLE "alis_siparisleri" ADD COLUMN "valor_gun" INTEGER'))
-
-    if inspect(engine).has_table("alis_siparisi_satirlari"):
-        as_sutunlar = {s["name"] for s in inspect(engine).get_columns("alis_siparisi_satirlari")}
-        for alan in ("iskonto_orani_2", "iskonto_orani_3"):
-            if alan not in as_sutunlar:
-                with engine.begin() as connection:
-                    connection.execute(
-                        text(
-                            f'ALTER TABLE "alis_siparisi_satirlari" '
-                            f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
-                        )
-                    )
+    alis_siparis_schemasini_guncelle(engine)
 
     # Alış irsaliyesi: giriş deposu, harici irsaliye ve teslim alma / sevkiyat alanları
     if inspect(engine).has_table("alis_irsaliyeleri"):

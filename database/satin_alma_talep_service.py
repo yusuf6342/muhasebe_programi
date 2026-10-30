@@ -204,8 +204,10 @@ class SatinAlmaTalepService:
     @staticmethod
     def _satir_miktarlari(session, satirlar: list[SatinAlmaTalepSatiri], onayli: bool) -> dict[int, dict]:
         """Satır id → talep / onaylı / sipariş / teslim / iptal / kalan."""
+        from database.database import alis_siparis_schemasini_guncelle
         from database.models.alis_siparisi import AlisSiparisi, AlisSiparisiSatiri
 
+        alis_siparis_schemasini_guncelle()
         idler = [int(s.id) for s in satirlar]
         baglar: list[tuple] = []
         if idler and SatinAlmaTalepService._tablo_var(session):

@@ -68,6 +68,9 @@ class AlisIrsaliyesiService:
 
     @staticmethod
     def acik_siparisler() -> list[AlisSiparisi]:
+        from database.database import alis_siparis_schemasini_guncelle
+
+        alis_siparis_schemasini_guncelle()
         with get_session() as session:
             return list(
                 session.scalars(
