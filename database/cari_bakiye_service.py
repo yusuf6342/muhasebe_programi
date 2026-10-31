@@ -113,9 +113,22 @@ def _kayitlari_topla(
             pb = (getattr(h, "para_birimi", None) or "TRY").upper()
             if pb != pb_filtre:
                 continue
-        kayitlar.append(
-            (h.satis_tarihi, bn, _d(h.satis_tutari), Decimal("0"))
-        )
+        # Çift kayıtsız SatisHareketi: yalnız tutarı borç yazmak, kapanan kısmı yok sayar
+        # ve bakiyeyi şişirir (risk kalan_acik ile doğru kalır). Kapanan = tutar − kalan → alacak.
+        tutar = _d(h.satis_tutari)
+        kalan = _d(getattr(h, "kalan_acik_tutar", None))
+        if tutar >= 0:
+            kapanan = max(Decimal("0"), tutar - max(kalan, Decimal("0")))
+            borc_ek = tutar
+            alacak_ek = kapanan
+            if kalan < 0:
+                # Avans / fazla tahsilat
+                alacak_ek += -kalan
+        else:
+            # Negatif satış tutarı (iade benzeri) — nadir; tutarı alacak say
+            borc_ek = Decimal("0")
+            alacak_ek = -tutar
+        kayitlar.append((h.satis_tarihi, bn, borc_ek, alacak_ek))
 
     for islem in islemler:
         bn = islem.belge_no or ""
@@ -248,16 +261,29 @@ def liste_bakiyeleri(
                     continue
                 borclar[int(cid)] += _d(borc)
                 alacaklar[int(cid)] += _d(alacak)
-            for cid, bn, tutar, pb in session.execute(
-                select(SatisHareketi.cari_id, SatisHareketi.belge_no, SatisHareketi.satis_tutari,
-                       SatisHareketi.para_birimi).where(SatisHareketi.cari_id.in_(parca))
+            for cid, bn, tutar, kalan, pb in session.execute(
+                select(
+                    SatisHareketi.cari_id,
+                    SatisHareketi.belge_no,
+                    SatisHareketi.satis_tutari,
+                    SatisHareketi.kalan_acik_tutar,
+                    SatisHareketi.para_birimi,
+                ).where(SatisHareketi.cari_id.in_(parca))
             ):
                 bn = bn or ""
                 if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
                     continue
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
-                borclar[int(cid)] += _d(tutar)
+                t = _d(tutar)
+                k = _d(kalan)
+                if t >= 0:
+                    borclar[int(cid)] += t
+                    alacaklar[int(cid)] += max(Decimal("0"), t - max(k, Decimal("0")))
+                    if k < 0:
+                        alacaklar[int(cid)] += -k
+                else:
+                    alacaklar[int(cid)] += -t
     return {cid: _kurus(_kurus(borclar[cid]) - _kurus(alacaklar[cid])) for cid in ids}
 
 
@@ -293,11 +319,12 @@ def liste_bakiyeleri_detay(
                     continue
                 borclar[int(cid)] += _d(borc)
                 alacaklar[int(cid)] += _d(alacak)
-            for cid, bn, tutar, pb in session.execute(
+            for cid, bn, tutar, kalan, pb in session.execute(
                 select(
                     SatisHareketi.cari_id,
                     SatisHareketi.belge_no,
                     SatisHareketi.satis_tutari,
+                    SatisHareketi.kalan_acik_tutar,
                     SatisHareketi.para_birimi,
                 ).where(SatisHareketi.cari_id.in_(parca))
             ):
@@ -306,7 +333,15 @@ def liste_bakiyeleri_detay(
                     continue
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
-                borclar[int(cid)] += _d(tutar)
+                t = _d(tutar)
+                k = _d(kalan)
+                if t >= 0:
+                    borclar[int(cid)] += t
+                    alacaklar[int(cid)] += max(Decimal("0"), t - max(k, Decimal("0")))
+                    if k < 0:
+                        alacaklar[int(cid)] += -k
+                else:
+                    alacaklar[int(cid)] += -t
     sonuc: dict[int, dict[str, Any]] = {}
     for cid in ids:
         tb = _kurus(borclar[cid])

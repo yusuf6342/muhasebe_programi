@@ -10,7 +10,7 @@ import tkinter as tk
 from decimal import Decimal
 from typing import Any
 
-from cari_kart_tema import BASARI, IKINCIL, LACIVERT, UYARI
+from cari_kart_tema import BASARI, BEYAZ, CIZGI, IKINCIL, LACIVERT, UYARI
 
 OZET_SATIRLARI = (
     "Toplam Borç",
@@ -137,17 +137,36 @@ def kisa_bakiye_valor_metni(metrik: dict[str, Any] | None) -> tuple[str, str, st
 class EvrakCariOzetPaneli:
     """Evrak üst panelindeki kompakt Borç / Alacak özeti (Cari Hesaplar ile aynı değerler)."""
 
-    def __init__(self, kap, *, bg: str, font_fn=None, tedarikci_modu: bool = False, pady: int = 0):
+    def __init__(
+        self,
+        kap,
+        *,
+        bg: str,
+        font_fn=None,
+        tedarikci_modu: bool = False,
+        pady: int = 0,
+        kompakt: bool = False,
+    ):
         self.kap = kap
         self.tedarikci_modu = tedarikci_modu
         self.degerler: dict[str, tk.Label] = {}
         self.basliklar: dict[str, tk.Label] = {}
         self.cari_id: int | None = None
         self._bekleyen = None
+        # Diğer panellerdeki Entry ile uyumlu çerçeve iç boşluğu
+        try:
+            import fatura_tema as ftema
+
+            _ip = max(1, ftema.form_ipady())
+            if pady <= 0:
+                pady = ftema.form_pady()
+        except Exception:  # noqa: BLE001
+            _ip = 2
         kap.columnconfigure(0, weight=0)
         kap.columnconfigure(1, weight=1)
         for satir, baslik in enumerate(OZET_SATIRLARI):
-            buyuk = baslik in BUYUK_SATIRLAR
+            # kompakt: vurgulu satırlar daha yüksek kutu oluşturmasın (fatura üst paneli)
+            buyuk = (baslik in BUYUK_SATIRLAR) and not kompakt
             yazi = ("Segoe UI", 11 if buyuk else 9, "bold")
             if font_fn is not None:
                 try:
@@ -156,8 +175,28 @@ class EvrakCariOzetPaneli:
                     pass
             lbl = tk.Label(kap, text=baslik, bg=bg, fg=LACIVERT, font=yazi, anchor="w", bd=0, padx=0, pady=0)
             lbl.grid(row=satir, column=0, sticky="w", padx=(0, 6), pady=pady)
-            deger = tk.Label(kap, text="—", bg=bg, fg=LACIVERT, font=yazi, anchor="e", bd=0, padx=0, pady=0)
-            deger.grid(row=satir, column=1, sticky="e", pady=pady)
+            # Değer: diğer tek satırlık alanlarla uyumlu çerçeve; salt okunur, sağa hizalı
+            cer = tk.Frame(
+                kap,
+                bg=BEYAZ,
+                highlightthickness=1,
+                highlightbackground=CIZGI,
+                highlightcolor=CIZGI,
+                bd=0,
+            )
+            cer.grid(row=satir, column=1, sticky="nsew", pady=pady)
+            if kompakt:
+                try:
+                    import fatura_tema as ftema
+
+                    cer.configure(height=ftema.form_satir_dis_yukseklik())
+                    cer.grid_propagate(False)
+                except Exception:  # noqa: BLE001
+                    pass
+            deger = tk.Label(
+                cer, text="—", bg=BEYAZ, fg=LACIVERT, font=yazi, anchor="e", bd=0, padx=4, pady=_ip,
+            )
+            deger.pack(fill="both", expand=True)
             self.basliklar[baslik] = lbl
             self.degerler[baslik] = deger
 

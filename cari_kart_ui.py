@@ -2188,6 +2188,19 @@ class CariDialog(tk.Toplevel):
             for w in (kart["frame"], kart["deger"]):
                 w.configure(cursor="hand2")
                 w.bind("<Button-1>", self.risk_panelini_ac, add="+")
+        self._risk_bakiye_fark_lbl = tk.Label(
+            parent,
+            text="",
+            bg=BEYAZ,
+            fg=DIKKAT,
+            font=font(8, root=self),
+            wraplength=200,
+            justify="left",
+            anchor="w",
+            cursor="hand2",
+        )
+        self._risk_bakiye_fark_lbl.pack(fill="x", pady=(2, 0))
+        self._risk_bakiye_fark_lbl.bind("<Button-1>", self.risk_panelini_ac)
 
     def _bakiye_ozet_paneli(self, parent):
         """Beş satırlı borç/alacak özeti: Borç, Alacak, Kalan (B/A), Kalan Gün, Kapatılan Gün."""
@@ -2205,7 +2218,9 @@ class CariDialog(tk.Toplevel):
             elif baslik == "Kalan Bakiye Gün":
                 ToolTip(
                     lbl,
-                    "Açık kalan tutarların ağırlıklı ortalama valör günü (bakiyeye göre borç/alacak).",
+                    "Açık kalan tutarların ağırlıklı ortalama valör günü (bakiyeye göre borç/alacak). "
+                    "Hareket tablosundaki «Gün» sütunu belgenin yaşını (bugün − belge tarihi) gösterir; "
+                    "bu özet satırıyla aynı hesap değildir.",
                 )
             elif baslik == "Kapatılan Bakiye Gün":
                 ToolTip(
@@ -2386,6 +2401,70 @@ class CariDialog(tk.Toplevel):
         except tk.TclError:
             pass
 
+    def _hareket_gorunen_kolonlar(self) -> tuple[str, ...]:
+        if getattr(self, "_hareket_urun_sutunlari_acik", False):
+            return tuple(self.hareket_tablosu["columns"]) if self.hareket_tablosu else ()
+        return getattr(self, "_hareket_temel_kolonlar", ())
+
+    def _hareket_urun_sutun_toggle(self):
+        """Ürün/barkod/fiyat sütunlarını aç-kapa; Kalan Bakiye/Gün temel görünümde kalır."""
+        self._hareket_urun_sutunlari_acik = not getattr(self, "_hareket_urun_sutunlari_acik", False)
+        self._hareket_gorunum_uygula()
+
+    def _hareket_gorunum_uygula(self):
+        tablo = getattr(self, "hareket_tablosu", None)
+        if tablo is None:
+            return
+        if getattr(self, "_hareket_urun_sutunlari_acik", False):
+            # Ürün sütunları açık: bakiye/gün sağda kalsın, ürünler ortada
+            goster = (
+                "tarih",
+                "tur",
+                "belge",
+                "aciklama",
+                *self._hareket_urun_kolonlar,
+                "borc",
+                "alacak",
+                "bakiye",
+                "gun",
+            )
+        else:
+            goster = self._hareket_temel_kolonlar
+        try:
+            tablo.configure(displaycolumns=goster)
+        except tk.TclError:
+            tablo["displaycolumns"] = goster
+        self._hareket_baslik_isaretlerini_guncelle()
+        self._hareket_sutunlari_sigdir()
+
+    def _hareket_sutunlari_sigdir(self, _event=None):
+        """Temel görünümde tutar + Kalan Bakiye + Gün'ü pencereye sığdır; yenilemede bozulmasın."""
+        tablo = getattr(self, "hareket_tablosu", None)
+        cerceve = getattr(self, "_hareket_tablo_cercevesi", None)
+        ayar = getattr(self, "_hareket_kolon_ayar", None)
+        if tablo is None or cerceve is None or not ayar:
+            return
+        if getattr(self, "_hareket_urun_sutunlari_acik", False):
+            return  # ürün sütunları açıkken yatay kaydırma beklenir
+        try:
+            genislik = int(cerceve.winfo_width())
+        except tk.TclError:
+            return
+        if genislik < 200:
+            return
+        # Sabit sütunlar + esnek açıklama
+        sabit = ("tarih", "tur", "belge", "borc", "alacak", "bakiye", "gun")
+        sabit_toplam = sum(ayar[k][1] for k in sabit) + 28  # #0
+        kalan = max(120, genislik - sabit_toplam - 24)
+        try:
+            for k in sabit:
+                _b, w, hiza, _s = ayar[k]
+                tablo.column(k, width=w, minwidth=max(48, w // 2), stretch=False, anchor=hiza)
+            tablo.column("aciklama", width=kalan, minwidth=100, stretch=True, anchor="w")
+            tablo.configure(displaycolumns=self._hareket_temel_kolonlar)
+        except tk.TclError:
+            pass
+
     def _hareket_tablosunu_olustur(self, parent):
         dis, hareket = beyaz_kart(parent, padx=8, pady=4)
         dis.pack(fill="both", expand=True)
@@ -2412,7 +2491,10 @@ class CariDialog(tk.Toplevel):
         baslik_satir.pack(fill="x", pady=(0, 4))
         tk.Label(
             baslik_satir,
-            text="Fatura satırlarında ▶ ile ürün detayını açın",
+            text=(
+                "▶ ürün detayı · Kalan Bakiye = yürüyen cari bakiye · "
+                "Gün = belge yaşı · sağ tık: ürün sütunları"
+            ),
             bg=BEYAZ,
             fg=IKINCIL,
             font=font(8, root=self),
@@ -2502,6 +2584,7 @@ class CariDialog(tk.Toplevel):
         self.hareket_tarih_bit.bind("<Return>", lambda _e: self._hareketleri_goster())
 
         # Stok Kodu (urun_kodu) görünmez; genişliği Ürün Adı'na eklendi (300+100=400)
+        # Tüm kolonlar tanımlı kalır; temel görünüm ürün sütunlarını gizler (Kalan Bakiye/Gün sığsın).
         kolonlar = (
             "tarih",
             "tur",
@@ -2521,6 +2604,28 @@ class CariDialog(tk.Toplevel):
             "bakiye",
             "gun",
         )
+        self._hareket_temel_kolonlar = (
+            "tarih",
+            "tur",
+            "belge",
+            "aciklama",
+            "borc",
+            "alacak",
+            "bakiye",
+            "gun",
+        )
+        self._hareket_urun_kolonlar = (
+            "barkod",
+            "urun_adi",
+            "miktar",
+            "birim",
+            "net_birim_fiyat",
+            "satir_tutari",
+            "pb",
+            "doviz",
+            "kur",
+        )
+        self._hareket_urun_sutunlari_acik = False
         tablo_cercevesi = tk.Frame(hareket, bg=BEYAZ)
         tablo_cercevesi.pack(fill="both", expand=True)
         self._hareket_tablo_cercevesi = tablo_cercevesi
@@ -2563,25 +2668,27 @@ class CariDialog(tk.Toplevel):
         )
         tablo.heading("#0", text="")
         tablo.column("#0", width=28, minwidth=28, stretch=False, anchor="center")
+        # Temel görünüm genişlikleri — Kalan Bakiye ve Gün yatay kaydırmasız sığacak şekilde
         kolon_ayar = {
-            "tarih": ("Tarih", 88, "center", False),
-            "tur": ("Belge Türü", 110, "w", False),
-            "belge": ("Belge No", 120, "w", False),
-            "aciklama": ("Açıklama", 180, "w", True),
-            "barkod": ("Barkod", 110, "w", False),
-            "urun_adi": ("Ürün Adı", 400, "w", True),  # +100 (eski Stok Kodu)
-            "miktar": ("Miktar", 78, "e", False),
-            "birim": ("Birim", 65, "center", False),
-            "net_birim_fiyat": ("Net Birim Fiyat", 120, "e", False),
-            "satir_tutari": ("Satır Tutarı", 115, "e", False),
-            "pb": ("PB", 42, "center", False),
-            "doviz": ("Döviz", 95, "e", False),
-            "kur": ("Kur", 78, "e", False),
-            "borc": ("Borç (TL)", 110, "e", False),
-            "alacak": ("Alacak (TL)", 110, "e", False),
-            "bakiye": ("Kalan Bakiye", 115, "e", False),
-            "gun": ("Gün", 55, "center", False),
+            "tarih": ("Tarih", 92, "center", False),
+            "tur": ("Belge Türü", 108, "w", False),
+            "belge": ("Belge No", 118, "w", False),
+            "aciklama": ("Açıklama", 220, "w", True),
+            "barkod": ("Barkod", 100, "w", False),
+            "urun_adi": ("Ürün Adı", 180, "w", True),
+            "miktar": ("Miktar", 72, "e", False),
+            "birim": ("Birim", 58, "center", False),
+            "net_birim_fiyat": ("Net Birim Fiyat", 110, "e", False),
+            "satir_tutari": ("Satır Tutarı", 100, "e", False),
+            "pb": ("PB", 40, "center", False),
+            "doviz": ("Döviz", 88, "e", False),
+            "kur": ("Kur", 70, "e", False),
+            "borc": ("Borç (TL)", 112, "e", False),
+            "alacak": ("Alacak (TL)", 112, "e", False),
+            "bakiye": ("Kalan Bakiye", 128, "e", False),
+            "gun": ("Gün", 58, "e", False),
         }
+        self._hareket_kolon_ayar = kolon_ayar
         self._hareket_kolon_basliklari = {k: v[0] for k, v in kolon_ayar.items()}
         self._hareket_kolon_hizalari = {k: v[2] for k, v in kolon_ayar.items()}
         for kolon in kolonlar:
@@ -2589,10 +2696,11 @@ class CariDialog(tk.Toplevel):
             tablo.column(
                 kolon,
                 width=genislik,
-                minwidth=max(40, genislik // 2),
+                minwidth=max(48, genislik // 2) if kolon in ("bakiye", "gun", "borc", "alacak") else max(36, genislik // 2),
                 anchor=hiza,
                 stretch=stretch,
             )
+        tablo["displaycolumns"] = self._hareket_temel_kolonlar
         treeview_basliklari_guncelle(
             tablo,
             kolonlar,
@@ -2647,12 +2755,17 @@ class CariDialog(tk.Toplevel):
         tablo.bind("<Left>", self._hareket_sol_ok)
         self.hareket_tablosu = tablo
         tablo_cercevesi.bind("<Configure>", self._hareket_yukseklik_ayarla, add="+")
+        tablo_cercevesi.bind("<Configure>", self._hareket_sutunlari_sigdir, add="+")
         self.after(120, self._hareket_yukseklik_ayarla)
+        self.after(140, self._hareket_sutunlari_sigdir)
         self._hareket_menu = tk.Menu(self, tearoff=0)
         self._hareket_menu.add_command(label="Belgeyi Aç", command=self._hareket_belge_ac)
         self._hareket_menu.add_command(label="Kapatma Detayı", command=self._hareket_kapatma_detayi)
         self._hareket_menu.add_command(
             label="Fatura ürünlerini göster/gizle", command=self._secili_fatura_detay_toggle
+        )
+        self._hareket_menu.add_command(
+            label="Ürün sütunlarını göster/gizle", command=self._hareket_urun_sutun_toggle
         )
         self._hareket_menu.add_command(label="Muhasebe Fişi", command=self._hareket_muhasebe_fisi)
         self._hareket_menu.add_command(
@@ -3455,6 +3568,30 @@ class CariDialog(tk.Toplevel):
                 renk = DURUM_RENK.get(hedef[0].get("durum"), LACIVERT)
             self.ozet_kartlari["risk_durumu"]["deger"].configure(text=metin, fg=renk)
 
+        # Risk − |bakiye| farkı: portföy/ciro çek-senet vb. (tıklanınca risk detayı)
+        fark_lbl = getattr(self, "_risk_bakiye_fark_lbl", None)
+        if fark_lbl is not None:
+            brut = Decimal(str((genel.get("brut") if genel else None) or 0))
+            net_b = abs(bakiye)
+            fark = (brut - net_b).quantize(Decimal("0.01"))
+            portfoy = Decimal(str(((risk.get("satirlar") or {}).get("PORTFOY") or {}).get("risk") or 0))
+            ciro = Decimal(str(((risk.get("satirlar") or {}).get("CIRO_CEK") or {}).get("risk") or 0)) + Decimal(
+                str(((risk.get("satirlar") or {}).get("CIRO_SENET") or {}).get("risk") or 0)
+            )
+            if abs(fark) >= Decimal("0.01"):
+                parcalar = []
+                if portfoy:
+                    parcalar.append(f"portföy {para_goster(portfoy)}")
+                if ciro:
+                    parcalar.append(f"ciro {para_goster(ciro)}")
+                neden = ", ".join(parcalar) if parcalar else "bileşen detayı"
+                fark_lbl.configure(
+                    text=f"Risk − bakiye: {para_goster(fark)} ({neden}). Tıkla → döküm.",
+                    fg=DIKKAT,
+                )
+            else:
+                fark_lbl.configure(text="", fg=IKINCIL)
+
         if "kullanilabilir_risk" in self.ozet_kartlari:
             kalan = metrik.get("kullanilabilir_risk")
             if kalan is None:
@@ -3846,6 +3983,8 @@ class CariDialog(tk.Toplevel):
                 f"Net: {para_goster(g_net)}  ({len(genel_set)} hareket)"
             )
         )
+        # Yenileme sonrası temel sütun düzeni bozulmasın
+        self._hareket_gorunum_uygula()
         tur = meta.get("tur") or "Tümü"
         if tur and tur != "Tümü":
             a_borc, a_alacak, a_net = self._hareket_tutar_toplamlari(gorunen)
@@ -4077,7 +4216,18 @@ class CariDialog(tk.Toplevel):
                 parcalar.append(s["stok_fark_uyari"])
             if s.get("aciklama"):
                 parcalar.append(str(s["aciklama"]))
-            acik = "  " + " · ".join(p for p in parcalar if p)  # noqa: F841 — satır özeti (görünür sütun yok)
+            urun_adi = (s.get("urun_adi") or "").strip()
+            ozet = " · ".join(p for p in parcalar if p)
+            # Temel görünümde ürün sütunları gizli → ad + özet Açıklama'da
+            if getattr(self, "_hareket_urun_sutunlari_acik", False):
+                aciklama_metin = ""
+            else:
+                miktar_birim = " ".join(
+                    x for x in (s.get("miktar_goster") or "", s.get("birim") or "") if x
+                ).strip()
+                net = s.get("net_goster") or ""
+                parca = [x for x in (urun_adi, miktar_birim, net, ozet) if x]
+                aciklama_metin = "  " + " · ".join(parca)
             self.hareket_tablosu.insert(
                 iid,
                 "end",
@@ -4086,9 +4236,9 @@ class CariDialog(tk.Toplevel):
                     "",
                     "Ürün",
                     "",
-                    "",
+                    aciklama_metin,
                     s.get("barkod") or "",
-                    s.get("urun_adi") or "",
+                    urun_adi,
                     s.get("miktar_goster") or "",
                     s.get("birim") or "",
                     s.get("net_birim_fiyat_goster")
