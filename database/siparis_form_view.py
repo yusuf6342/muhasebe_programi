@@ -68,6 +68,9 @@ class SiparisFormViewModel:
     genel_goster: str = ""
     toplam_miktar_goster: str = ""
     teslim_kosulu: str = ""
+    teslim_sekli: str = ""
+    teslim_saati: str = ""
+    siparis_saati: str = ""
     odeme_kosulu: str = ""
     aciklama: str = ""
     olusturma: str = ""
@@ -171,6 +174,9 @@ def build_siparis_form_from_record(siparis_id: int) -> SiparisFormViewModel:
             genel_goster=_para(t["genel_toplam"]),
             toplam_miktar_goster=toplam_miktar_metni(lines),
             teslim_kosulu=(getattr(sp, "teslim_kosulu", None) or "").strip(),
+            teslim_sekli=(getattr(sp, "teslim_sekli", None) or "").strip(),
+            teslim_saati=(getattr(sp, "teslim_saati", None) or "").strip(),
+            siparis_saati=(getattr(sp, "siparis_saati", None) or "").strip(),
             odeme_kosulu=(getattr(sp, "odeme_kosulu", None) or "").strip(),
             aciklama=(sp.aciklama or "").strip(),
             olusturma=datetime.now().strftime("%d.%m.%Y %H:%M"),
@@ -186,9 +192,12 @@ def assert_siparis_form_safe(vm: SiparisFormViewModel, metin: str = "") -> None:
 
 
 def belge_bilgi_satirlari(vm: SiparisFormViewModel) -> list[tuple[str, str]]:
+    siparis_tarih = vm.siparis_tarihi
+    if vm.siparis_saati:
+        siparis_tarih = f"{siparis_tarih} {vm.siparis_saati}".strip()
     satirlar = [
         ("Sipariş No", vm.siparis_no),
-        ("Sipariş Tarihi", vm.siparis_tarihi),
+        ("Sipariş Tarihi", siparis_tarih),
         ("Termin", vm.termin),
         ("Müşteri Ref.", vm.musteri_ref),
         ("Para Birimi", vm.para_etiketi if not vm.kur_goster else f"{vm.para_etiketi} ({vm.kur_goster})"),
@@ -197,9 +206,13 @@ def belge_bilgi_satirlari(vm: SiparisFormViewModel) -> list[tuple[str, str]]:
 
 
 def teslimat_satirlari(vm: SiparisFormViewModel) -> list[tuple[str, str]]:
+    termin = vm.termin
+    if vm.teslim_saati:
+        termin = f"{termin} {vm.teslim_saati}".strip()
     satirlar = [
         ("Teslimat Adresi", vm.teslimat_adresi or (vm.musteri or {}).get("adres") or ""),
-        ("Genel Termin", vm.termin),
+        ("Teslim Tarihi", termin),
+        ("Teslim Şekli", vm.teslim_sekli),
         ("Teslim Koşulu", vm.teslim_kosulu),
         ("Ödeme Koşulu", vm.odeme_kosulu),
     ]

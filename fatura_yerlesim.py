@@ -25,8 +25,8 @@ TOPLAM_HUCRELERI = (
     (3, 1, "masraf", "Masraf", True),
 )
 
-# Pencere iç yüksekliğine göre sekme gövdesi (px): not kutusu en az 4-5 satır gösterir
-DETAY_YUKSEKLIK = ((640, 78), (820, 96), (10_000, 120))
+# Pencere iç yüksekliğine göre sekme gövdesi (px): kısa pencerede ürün tablosuna öncelik
+DETAY_YUKSEKLIK = ((700, 44), (860, 68), (10_000, 96))
 
 
 def _font(w, boyut: int, kalinlik: str = "normal"):
@@ -104,7 +104,8 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
     """Dar pencerede isteğe bağlı üst çubuk öğelerini sırayla gizler.
 
     Kaydet, Onayla ve Yeni, Tahsilat Makbuzu, Yazdır / PDF, Diğer İşlemler ve Kapat her zaman
-    görünür; gizlenen Fatura Listesi «Diğer İşlemler» menüsünden açılır (Analiz oraya taşınmaz).
+    görünür. Gizlenen Fatura Listesi / Sevkiyat / Dosyadan Aktar «Diğer» menüsünden açılır.
+    Analiz gizlenebilir ama Diğer'e taşınmaz (Kâr Analizi Analiz menüsünde / sağ tıkta kalır).
     """
     refs = getattr(dialog, "_fatura_toolbar", None) or {}
     cubuk, sol, sag = refs.get("cubuk"), refs.get("sol"), refs.get("sag")
@@ -129,12 +130,16 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                 secenekli.append(("pencere", w))
         except tk.TclError:
             continue
-    analiz = getattr(dialog, "_analiz_mb", None)
-    if analiz is not None and analiz in sira:
-        secenekli.append(("analiz", analiz))
-    liste = getattr(dialog, "_fatura_liste_btn", None)
-    if liste is not None and liste in sira:
-        secenekli.append(("liste", liste))
+    # Uzun ikincil düğmeler önce gizlensin (Kapat her zaman kalsın)
+    for ad, attr in (
+        ("sevkiyat", "_sevkiyat_btn"),
+        ("dosya", "_dosyadan_aktar_btn"),
+        ("analiz", "_analiz_mb"),
+        ("liste", "_fatura_liste_btn"),
+    ):
+        w = getattr(dialog, attr, None)
+        if w is not None and w in sira:
+            secenekli.append((ad, w))
 
     genislik = {}
     for _ad, w in secenekli:
@@ -146,7 +151,12 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
 
     diger = getattr(dialog, "_diger_mb", None)
     diger_metin = str(diger.cget("text")) if diger is not None else ""
-    _diger_menusune_tasinanlari_ekle(dialog, liste_var=any(a == "liste" for a, _ in secenekli))
+    _diger_menusune_tasinanlari_ekle(
+        dialog,
+        liste_var=any(a == "liste" for a, _ in secenekli),
+        sevkiyat_var=any(a == "sevkiyat" for a, _ in secenekli),
+        dosya_var=any(a == "dosya" for a, _ in secenekli),
+    )
 
     durum = {"gizli": None}
     dialog._arac_sigdir = durum
@@ -218,7 +228,9 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
     _uygula_guvenli()
 
 
-def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool) -> None:
+def _diger_menusune_tasinanlari_ekle(
+    dialog, *, liste_var: bool, sevkiyat_var: bool = False, dosya_var: bool = False
+) -> None:
     mb = getattr(dialog, "_diger_mb", None)
     if mb is None:
         return
@@ -232,6 +244,14 @@ def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool) -> None:
         etiket = str(liste.cget("text")) if liste is not None else "Fatura Listesi (F3)"
         menu.insert_command(sira, label=etiket, command=dialog._fatura_listesini_ac)
         sira += 1
+    if sevkiyat_var and hasattr(dialog, "_sevkiyat_bilgileri_ac"):
+        sevk = getattr(dialog, "_sevkiyat_btn", None)
+        etiket = str(sevk.cget("text")) if sevk is not None else "Sevkiyat ve Teslimat Bilgileri"
+        menu.insert_command(sira, label=etiket, command=dialog._sevkiyat_bilgileri_ac)
+        sira += 1
+    if dosya_var and hasattr(dialog, "_fatura_dosyadan_aktar"):
+        menu.insert_command(sira, label="Dosyadan Aktar", command=dialog._fatura_dosyadan_aktar)
+        sira += 1
     if sira:
         menu.insert_separator(sira)
 
@@ -242,7 +262,7 @@ def _diger_menusune_tasinanlari_ekle(dialog, *, liste_var: bool) -> None:
 def satir_islemleri_dugmesi(dialog, parent) -> ttk.Menubutton:
     try:
         stil = ttk.Style(dialog)
-        stil.configure("FaturaGiris.TMenubutton", padding=(8, ftema.form_ipady() - 1))
+        stil.configure("FaturaGiris.TMenubutton", padding=(8, max(0, ftema.form_ipady())))
     except tk.TclError:
         pass
     mb = ttk.Menubutton(parent, text="Satır İşlemleri", style="FaturaGiris.TMenubutton")
@@ -272,33 +292,33 @@ def _toplamlar_kur(parent) -> tuple[tk.Frame, dict]:
         k = grup * 4
         tk.Label(
             sag, text=baslik, bg=ftema.BEYAZ, fg=ftema.IKINCIL, font=kucuk, anchor="e",
-        ).grid(row=satir, column=k, sticky="e", padx=(16 if grup else 0, 6))
+        ).grid(row=satir, column=k, sticky="e", padx=(16 if grup else 0, 6), pady=0)
         if yuzde:
             oran = tk.Label(
                 sag, text="%0,00", bg=ftema.BEYAZ, fg=ftema.METIN, font=kucuk,
                 anchor="e", width=7,
             )
-            oran.grid(row=satir, column=k + 1, sticky="e", padx=(0, 4))
+            oran.grid(row=satir, column=k + 1, sticky="e", padx=(0, 4), pady=0)
             degerler[f"{anahtar}_oran"] = oran
         # Sabit genişlik: tutar yazılırken (Uzlaşılan) metin uzunluğu değişse de yerleşim kaymaz
         deger = tk.Label(
             sag, text="—" if anahtar == "doviz" else "0,00 TL", bg=ftema.BEYAZ,
             fg=ftema.METIN, font=kalin, anchor="e", width=15,
         )
-        deger.grid(row=satir, column=k + 2, sticky="e")
+        deger.grid(row=satir, column=k + 2, sticky="e", pady=0)
         degerler[anahtar] = deger
     tk.Frame(sag, bg=ftema.CIZGI, height=1).grid(
-        row=4, column=0, columnspan=7, sticky="ew", pady=(3, 1)
+        row=4, column=0, columnspan=7, sticky="ew", pady=(2, 1)
     )
     tk.Label(
         sag, text="Net Toplam", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
-        font=_font(parent, 12, "bold"), anchor="e",
-    ).grid(row=5, column=0, columnspan=5, sticky="e", padx=(0, 10))
+        font=_font(parent, 11, "bold"), anchor="e",
+    ).grid(row=5, column=0, columnspan=5, sticky="e", padx=(0, 10), pady=0)
     net = tk.Label(
         sag, text="0,00 TL", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
-        font=_font(parent, 13, "bold"), anchor="e", width=16,
+        font=_font(parent, 12, "bold"), anchor="e", width=16,
     )
-    net.grid(row=5, column=5, columnspan=2, sticky="e")
+    net.grid(row=5, column=5, columnspan=2, sticky="e", pady=0)
     degerler["genel"] = net
     # Faturaya ek fon bedeli: yalnız bedel varsa görünür (dialog._toplamlari_guncelle açar)
     gizli = []
@@ -321,32 +341,7 @@ def _toplamlar_kur(parent) -> tuple[tk.Frame, dict]:
     for w in gizli:
         w.grid_remove()
     degerler["_fon_ek_widgetleri"] = gizli
-
-    # Kârlılık Özeti — Satış / Maliyet / Kâr / % (yetki kontrolü dialogda)
-    kar_fr = tk.Frame(sag, bg=ftema.BEYAZ)
-    kar_fr.grid(row=8, column=0, columnspan=7, sticky="ew", pady=(8, 0))
-    tk.Label(
-        kar_fr, text="Kârlılık Özeti", bg=ftema.BEYAZ, fg=ftema.LACIVERT,
-        font=_font(parent, 10, "bold"),
-    ).pack(anchor="w")
-    satir = tk.Frame(kar_fr, bg=ftema.BEYAZ)
-    satir.pack(fill="x", pady=(2, 0))
-    for anahtar, baslik in (
-        ("kar_satis", "Satış Toplamı"),
-        ("kar_maliyet", "Toplam Maliyet"),
-        ("kar_tutar", "Toplam Kâr"),
-        ("kar_yuzde", "Kâr Yüzdesi"),
-    ):
-        k = tk.Frame(satir, bg=ftema.BEYAZ)
-        k.pack(side="left", expand=True, fill="x", padx=(0, 8))
-        tk.Label(k, text=baslik, bg=ftema.BEYAZ, fg=ftema.IKINCIL, font=kucuk).pack(anchor="w")
-        lbl = tk.Label(
-            k, text="—", bg=ftema.BEYAZ, fg=ftema.METIN,
-            font=_font(parent, 14, "bold"), anchor="w",
-        )
-        lbl.pack(anchor="w")
-        degerler[anahtar] = lbl
-    degerler["_karlilik_cerceve"] = kar_fr
+    # Maliyet / kâr / marj normal fatura ekranında gösterilmez; KarlilikAnaliziDialog'da açılır.
     return sag, degerler
 
 
@@ -769,6 +764,30 @@ def sikilik_uygula(dialog, sik: bool) -> None:
             adres.configure(height=1 if sik else 2)
         except tk.TclError:
             pass
+    # Proje satırı sıkı modda gizlenir (ürün tablosuna yer); değer korunur
+    proje = getattr(dialog, "fatura_proje", None)
+    if proje is not None:
+        try:
+            if sik:
+                info = proje.grid_info()
+                if info:
+                    durum["proje_grid"] = dict(info)
+                    durum["proje_grid"].pop("in", None)
+                for w in (proje, getattr(dialog, "_fatura_proje_etiket", None)):
+                    if w is not None and w.winfo_manager() == "grid":
+                        w.grid_remove()
+            else:
+                kayit = durum.get("proje_grid")
+                if kayit:
+                    proje.grid(**kayit)
+                et = getattr(dialog, "_fatura_proje_etiket", None)
+                if et is not None and et.winfo_manager() != "grid":
+                    try:
+                        et.grid()
+                    except tk.TclError:
+                        pass
+        except tk.TclError:
+            pass
     refs = getattr(dialog, "_fatura_toolbar", None) or {}
     for anahtar in ("sol", "sag"):
         w = refs.get(anahtar)
@@ -785,15 +804,12 @@ def sikilik_uygula(dialog, sik: bool) -> None:
                     c.configure(pady=3 if sik else 5)
                 except tk.TclError:
                     pass
-    # Başlık ve fatura no / durum: sıkı modda tek satır
+    # Sıkı modda sol başlığı dikey tut (yatay tek satır Kaydet/Kapat'ı sıkıştırıyordu)
     sol = refs.get("sol")
     if sol is not None:
         for i, c in enumerate(sol.pack_slaves()):
             try:
-                if sik:
-                    c.pack_configure(side="left", anchor="center", padx=(0 if i == 0 else 12, 0), pady=0)
-                else:
-                    c.pack_configure(side="top", anchor="w", padx=0, pady=(4, 0) if i else 0)
+                c.pack_configure(side="top", anchor="w", padx=0, pady=(2 if sik else 4, 0) if i else 0)
             except tk.TclError:
                 pass
 
@@ -956,12 +972,14 @@ def ust_panel_genislik_kur(dialog) -> None:
                     p.grid_configure(padx=(0, 4 if dar else bosluk))
             except (tk.TclError, TypeError, ValueError):
                 pass
-        # Daralırken en çok boşluğu olan Fatura Bilgileri paneli küçülsün
-        agirlik = (40, 36, 16, 4) if dar else (24, 31, 27, 18)
-        en_az = (0, 0, 0, 175) if dar else (200, 240, 210, 140)
-        for s, a in enumerate(agirlik):
+        # İki satırlı dar mod (_fatura_ust_responsive) kendi ağırlıklarını yönetir; çakışma olmasın
+        if getattr(dialog, "_fatura_ust_dar", False):
+            return
+        # Müşteri(0) · Fatura(1) · Depo(2) · Cari(3) — dört eşit sütun (uniform)
+        en_az = 140 if dar else 160
+        for s in range(4):
             try:
-                ust.columnconfigure(s, weight=a, minsize=en_az[s])
+                ust.columnconfigure(s, weight=1, minsize=en_az, uniform="fatura_ust")
             except tk.TclError:
                 pass
 

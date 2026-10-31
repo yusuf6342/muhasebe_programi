@@ -164,12 +164,24 @@ class FaturaYerlesimTest(unittest.TestCase):
             self._icinde(n, "Not kutusu")
             self._icinde(n.not_buyut_btn, "Notu büyüt")
             satir_px = int(n.tk.call("font", "metrics", n.cget("font"), "-linespace"))
-            self.assertGreaterEqual(n.winfo_height(), 4 * satir_px, "not en az 4 satır göstermeli")
+            # Kısa pencerede not gövdesi küçülür; «Notu büyüt» ile tam metin açılır
+            min_satir = 2 if y < 640 else 4
+            self.assertGreaterEqual(
+                n.winfo_height(), min_satir * satir_px, "not kutusu okunabilir kalmalı"
+            )
         # Ürün tablosu: başlık + en az bir satır görünür; form kaydırması yok
         tablo = d.satir_tablosu
         self._icinde(tablo, "Ürün tablosu")
-        self.assertGreaterEqual(tablo.winfo_height(), 60, "ürün satırları görünür kalmalı")
+        # Kârlılık özeti yok; kısa pencerede de satır alanı kullanılabilir kalsın
+        # 1093×560 (%125 sim): üst cari özeti + sabit alt toplamlar sonrası ~56 px tablo
+        min_tablo = 50 if y < 640 else 80
+        self.assertGreaterEqual(tablo.winfo_height(), min_tablo, "ürün satırları görünür kalmalı")
         self.assertEqual(d.canvas.yview(), (0.0, 1.0), "ana form kaydırılmamalı")
+        # Normal işlem ekranında maliyet / kâr KPI şeridi yok
+        degerler = (d._fatura_alt_ozet or {}).get("degerler") or {}
+        self.assertIsNone(degerler.get("_karlilik_cerceve"))
+        for anahtar in ("kar_satis", "kar_maliyet", "kar_tutar", "kar_yuzde"):
+            self.assertIsNone(degerler.get(anahtar), f"{anahtar} normal ekranda olmamalı")
         # Üst bilgi panellerindeki düğmeler kırpılmadan görünür
         for panel in d._fatura_ust_panel.winfo_children():
             if not isinstance(panel, ttk.LabelFrame) or not panel.winfo_ismapped():

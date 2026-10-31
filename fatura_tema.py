@@ -47,28 +47,59 @@ DURUM_RENKLERI = {
 FONT_ADAYLARI = ("Segoe UI", "Aptos", "Calibri", "Arial")
 _font_aile: str | None = None
 
-# Satır yüksekliği — orijinal taban × 1.50 (font puntosu büyütülmez)
-SATIR_YUKSEKLIK_KATSAYI = 1.50
-FORM_SATIR_TABAN_PX = 22
-TABLO_SATIR_TABAN_PX = 28
-TABLO_BASLIK_PAD_TABAN = 4
-HUCRE_EDITOR_TABAN_PX = 24
+# Satır yüksekliği — sabit katsayı (açılışta tekrar büyümez); tek satır ≈ +%10
+SATIR_YUKSEKLIK_KATSAYI = 1.1
+FORM_SATIR_TABAN_PX = 18
+TABLO_SATIR_TABAN_PX = 26
+TABLO_BASLIK_PAD_TABAN = 3
+HUCRE_EDITOR_TABAN_PX = 20
+# Üst form satır arası hedef (mm) — DPI ile piksele çevrilir
+FORM_SATIR_ARALIK_MM = 1.5
 
 
 def scale_height(eski: float | int, katsayi: float = SATIR_YUKSEKLIK_KATSAYI) -> int:
-    """yeni = round(mevcut × 1.50) — çift padding ile aşırı büyütme yok."""
+    """yeni = round(mevcut × katsayı)."""
     return max(1, int(round(float(eski) * float(katsayi))))
 
 
 def form_ipady(taban: int = FORM_SATIR_TABAN_PX) -> int:
-    """Entry/düğme dikey iç boşluk; nihai yükseklik ≈ taban × 1.50."""
-    return max(0, (scale_height(taban) - int(taban)) // 2)
+    """Entry/düğme dikey iç boşluk — sabit hedef yükseklik (yeniden açılışta artmaz)."""
+    hedef = scale_height(taban)
+    # clam Entry içerik ~14 px; ipady ile dikey ortalama
+    return max(1, (hedef - 14) // 2)
 
 
-def form_pady(taban: int = 2) -> int:
-    """Grid satır arası — hafif ölçek (yalnız pady ile %125 şişirmemek için sınırlı)."""
-    return max(1, scale_height(taban) - int(taban) // 2)
+def form_satir_dis_yukseklik(taban: int = FORM_SATIR_TABAN_PX) -> int:
+    """Tek satırlık Entry/Combobox/düğme dış yüksekliği (içerik + ipady×2)."""
+    return scale_height(taban)
 
+
+def _ekran_dpi() -> float:
+    try:
+        root = tk._default_root  # type: ignore[attr-defined]
+        if root is not None:
+            return float(root.winfo_fpixels("1i"))
+    except Exception:
+        pass
+    return 96.0
+
+
+def form_pady(taban: int = 1) -> int:
+    """Grid pady (her kenar); bitişik satırlar arası toplam ≈ FORM_SATIR_ARALIK_MM.
+
+    Her kenara FORM_SATIR_ARALIK_MM koyulmaz — toplam boşluk bir kez bölünür
+    (üst+alt = ~1,5 mm; çift uygulamada ~3 mm olmaz).
+    """
+    import math
+
+    _ = taban  # API uyumu
+    toplam = max(2, int(round(FORM_SATIR_ARALIK_MM / 25.4 * _ekran_dpi())))
+    return max(1, int(math.ceil(toplam / 2.0)))
+
+
+def form_cok_satir_text_yukseklik(satir_sayisi: int) -> int:
+    """Çok satırlı Text için satır sayısı (Adres=2, Açıklama=3); panel büyütmez."""
+    return max(2, int(satir_sayisi))
 
 def resolve_ui_font(root: tk.Misc | None = None) -> str:
     global _font_aile
@@ -164,13 +195,21 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
     )
     stil.configure("Fatura.TEntry", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
     stil.configure("Fatura.TCombobox", fieldbackground=BEYAZ, foreground=METIN, font=f_ui)
-    # Üst form satırları — padding ile ~×1.50 satır yüksekliği
-    _ip = form_ipady(FORM_SATIR_TABAN_PX)
+    # Üst form: dikey padding stil içinde; grid/pack ipady EKLENMEZ (çift yükseklik olmasın).
+    # Hedef ≈ Borç/Alacak özet kutusunun gerçek dış yüksekliği (~23 px; cfg 20 + çerçeve).
+    _ip = max(0, form_ipady(FORM_SATIR_TABAN_PX) - 1)  # ~2 → Entry/Combobox ≈ özet kutusu
     stil.configure(
         "FaturaUst.TEntry",
         fieldbackground=BEYAZ,
         foreground=METIN,
         font=font(9, root=root),
+        padding=(4, _ip),
+    )
+    stil.configure(
+        "FaturaMusteriAd.TEntry",
+        fieldbackground=BEYAZ,
+        foreground=METIN,
+        font=font(10, "bold", root),
         padding=(4, _ip),
     )
     stil.configure(

@@ -7,6 +7,7 @@ from typing import Any
 
 import fatura_tema as ft
 
+
 ACIK_BG = ft.ACIK_BG
 BEYAZ = ft.BEYAZ
 LACIVERT = ft.LACIVERT
@@ -96,12 +97,10 @@ def stil_uygula(root=None):
         font=ft.font(9, "bold", root=root),
         padding=(6, 3),
     )
-    # Sipariş hareket satırları (ürün Treeview hücreleri): 12pt koyu/bold
+    # Ürün satır yüksekliği = Teklif Formu (TABLO_SATIR_TABAN × katsayı)
     f_satir = ft.font(12, "bold", root=root)
     f_baslik = ft.font(10, "bold", root=root)
-    # 12pt bold: satır yüksekliği fonta yakın — hücre metni dikeyde daha ortalı hisseder
-    # (Tk Treeview dikey anchor desteklemez; aşırı rowheight metni üste yapıştırır)
-    satir_rh = max(ft.scale_height(28), 36)
+    satir_rh = ft.scale_height(ft.TABLO_SATIR_TABAN_PX)
     stil.configure(
         "SiparisSatir.Treeview",
         font=f_satir,
@@ -155,70 +154,91 @@ def siparis_ust_toolbar(
 
 
 def siparis_alt_ozet(parent, *, pack: bool = False) -> dict[str, Any]:
-    """Alınan sipariş alt özeti — Fiyat Analiz paneli yok (Notlar + toplamlar).
+    """Alınan sipariş alt özeti — Satış Faturası ile aynı iki sütunlu toplamlar.
 
-    pack=False (varsayılan): çağıran sticky_footer_layout ile yerleştirir (fatura gibi).
+    Sol: Notlar + kalem/miktar özeti · Sağ: fatura_yerlesim._toplamlar_kur
+    pack=False (varsayılan): çağıran sticky_footer_layout / pack ile yerleştirir.
     """
-    refs = ft.alt_ozet_cubugu(parent, pack=pack)
-    analiz = refs.get("analiz")
-    if analiz is not None:
-        try:
-            analiz.destroy()
-        except tk.TclError:
-            pass
-        refs["analiz"] = None
-        refs["islem"] = None
+    from fatura_yerlesim import _toplamlar_kur
 
-    kart = refs.get("kart")
-    sol = refs.get("sol")
-    sag = refs.get("sag")
-    if kart is not None and sol is not None and sag is not None:
-        try:
-            # Notlar geniş (sipariş ayrıntıları) | Toplamlar sağda
-            kart.columnconfigure(0, weight=1, minsize=360)
-            kart.columnconfigure(1, weight=0)
-            kart.columnconfigure(2, weight=0)
-            kart.rowconfigure(0, weight=1)
-            sol.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-            sag.grid(row=0, column=1, sticky="ne")
-        except tk.TclError:
-            pass
-        not_w = refs.get("not_alani")
-        try:
-            for w in list(sol.winfo_children()):
-                if isinstance(w, tk.Text):
-                    w.pack_forget()
-            if not_w is not None:
-                not_w.configure(height=7, width=1, wrap="word")
-                not_w.pack(fill="both", expand=True, pady=(2, 0))
-        except tk.TclError:
-            pass
+    root = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else None
+    dis = tk.Frame(parent, bg=ACIK_BG, highlightthickness=0)
+    if pack:
+        dis.pack(side="bottom", fill="x")
 
-    # Görev çubuğu altında kalmasın: footer içeriğini bir satır yukarı çek
-    dis = refs.get("dis")
-    if dis is not None:
-        try:
-            for cocuk in dis.winfo_children():
-                if cocuk.winfo_manager() == "pack":
-                    cocuk.pack_configure(pady=(2, 28))
-                    break
-        except tk.TclError:
-            pass
+    kart_dis, kart = ft.beyaz_kart(dis, padx=8, pady=4)
+    kart_dis.pack(fill="x", padx=6, pady=(2, 4))
+    kart.columnconfigure(0, weight=1, minsize=280)
+    kart.columnconfigure(1, weight=0)
+    kart.rowconfigure(0, weight=1)
 
-    # Döviz satırı siparişte yok; İndirim/Masraf/Uzlaşılan ipucu fatura ile aynı kalsın
-    degerler = refs.get("degerler") or {}
-    w = degerler.get("doviz")
-    if w is not None and sag is not None:
-        try:
-            row = int(w.grid_info().get("row") or 0)
-            for cocuk in sag.grid_slaves(row=row):
-                try:
-                    cocuk.grid_remove()
-                except tk.TclError:
-                    pass
-        except (tk.TclError, ValueError, TypeError):
-            pass
-    return refs
+    sol = tk.Frame(kart, bg=BEYAZ)
+    sol.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+
+    tk.Label(
+        sol,
+        text="Notlar",
+        bg=BEYAZ,
+        fg=LACIVERT,
+        font=ft.font(8, "bold", root),
+        anchor="w",
+    ).pack(anchor="w", pady=(2, 0))
+    not_alani = tk.Text(
+        sol,
+        height=5,
+        width=1,
+        wrap="word",
+        font=ft.font(8, root=root),
+        relief="solid",
+        bd=1,
+    )
+    not_alani.pack(fill="both", expand=True, pady=(2, 4))
+
+    ozet_satir = tk.Frame(sol, bg=BEYAZ)
+    ozet_satir.pack(fill="x", pady=(0, 2))
+    kalem_lbl = tk.Label(
+        ozet_satir,
+        text="Kalem: 0",
+        bg=BEYAZ,
+        fg=ft.IKINCIL,
+        font=ft.font(9, "bold", root),
+        anchor="w",
+    )
+    kalem_lbl.pack(side="left", padx=(0, 16))
+    miktar_lbl = tk.Label(
+        ozet_satir,
+        text="Miktar: —",
+        bg=BEYAZ,
+        fg=ft.IKINCIL,
+        font=ft.font(9, "bold", root),
+        anchor="w",
+    )
+    miktar_lbl.pack(side="left")
+
+    sag, degerler = _toplamlar_kur(kart)
+    sag.grid(row=0, column=1, sticky="ne", padx=(0, 4), pady=(2, 2))
+
+    # Görev çubuğu altında kalmasın
+    try:
+        for cocuk in dis.winfo_children():
+            if cocuk.winfo_manager() == "pack":
+                cocuk.pack_configure(pady=(2, 18))
+                break
+    except tk.TclError:
+        pass
+
+    return {
+        "dis": dis,
+        "kart": kart,
+        "not_alani": not_alani,
+        "degerler": degerler,
+        "sag": sag,
+        "sol": sol,
+        "analiz": None,
+        "islem": None,
+        "kalem_lbl": kalem_lbl,
+        "miktar_lbl": miktar_lbl,
+    }
 
 
 def tk_buton(parent, metin, komut, *, rol="kaydet", state="normal", **kwargs):

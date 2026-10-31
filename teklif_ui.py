@@ -51,7 +51,7 @@ from database.teklif_service import (
     QuoteService,
 )
 from database.user_audit import display_user, format_dt
-from ui_takvim import takvim_butonu
+from ui_takvim import takvim_butonu, takvim_entry_bagla
 from satis_tema import (
     ACIK_BG,
     HubKart,
@@ -497,13 +497,418 @@ class TeklifDialog(tk.Toplevel):
     def _govde_kur(self):
         import fatura_tema as ftema
 
-        # Orta kaydırma alanı (sticky footer için)
+        # Orta alan: üst paneller sabit, ürünler kaydırılabilir (sticky footer için)
         kaydirma = tk.Frame(self, bg=ACIK_GRI, highlightthickness=0)
         kaydirma.pack(fill="both", expand=True)
         self._kaydirma_alani = kaydirma
 
-        self.canvas = tk.Canvas(kaydirma, bg=ACIK_GRI, highlightthickness=0)
-        scroll = ttk.Scrollbar(kaydirma, orient="vertical", command=self.canvas.yview)
+        try:
+            stil = ttk.Style(self)
+            ftema.stil_uygula(stil, root=self)
+            stil.configure(
+                "FaturaUst.TLabel",
+                font=ftema.font(9, root=self),
+                foreground=ftema.IKINCIL,
+            )
+            stil.configure(
+                "FaturaUst.TLabelframe.Label",
+                font=ftema.font(9, "bold", self),
+                foreground=ftema.LACIVERT,
+            )
+            stil.configure("FaturaUst.TLabelframe", padding=(6, 2))
+        except tk.TclError:
+            pass
+
+        # ipady=0 — fatura üstü / özet kutusu yüksekliği (çift şişme yok)
+        _ipady = 0
+        _py = ftema.form_pady()
+        gap = 8
+        self._teklif_form_ipady = _ipady
+        self._teklif_form_pady = _py
+        self._teklif_ozet_kutu_h = ftema.form_satir_dis_yukseklik()
+        self._teklif_satir_yuvasi = self._teklif_ozet_kutu_h + 2 * _py
+        self.girdiler: dict[str, Any] = {}
+
+        # ——— Üst: Müşteri | Teklif Bilgileri | Ticari Şartlar | Fiyat Analizi (fatura ölçüleri) ———
+        ust = ttk.Frame(kaydirma)
+        ust.pack(fill="x", padx=8, pady=(0, 0))
+        self._teklif_ust_panel = ust
+        self._baslik_kaplari = [ust]
+        for _c in range(4):
+            ust.columnconfigure(_c, weight=1, minsize=160, uniform="teklif_ust")
+        ust.rowconfigure(0, weight=0)
+
+        def _bes_satir_yuva(panel, satir_sayisi=5):
+            for _r in range(satir_sayisi):
+                panel.rowconfigure(_r, weight=0, minsize=self._teklif_satir_yuvasi)
+
+        # ——— 1 Müşteri ———
+        mus = ttk.LabelFrame(ust, text="Müşteri", padding=(6, 2), style="FaturaUst.TLabelframe")
+        mus.grid(row=0, column=0, sticky="new", padx=(0, gap), pady=0)
+        mus.columnconfigure(0, minsize=72, weight=0)
+        mus.columnconfigure(1, weight=1)
+        mus.columnconfigure(2, minsize=48, weight=0)
+        mus.columnconfigure(3, weight=1)
+        _bes_satir_yuva(mus)
+        self._selected_customer_id = None
+        self._musteri_kod_map = {
+            (m.cari_kodu or "").strip(): m
+            for m in self.musteriler
+            if (m.cari_kodu or "").strip()
+        }
+
+        ttk.Label(mus, text="Müşteri Adı", style="FaturaUst.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        ad_satir = ttk.Frame(mus)
+        ad_satir.grid(row=0, column=1, columnspan=3, sticky="ew", pady=_py)
+        ad_satir.columnconfigure(0, weight=1)
+        self.musteri_adi = ttk.Entry(ad_satir, width=28, style="FaturaMusteriAd.TEntry")
+        self.musteri_adi.pack(side="left", fill="x", expand=True, ipady=_ipady)
+
+        ttk.Label(mus, text="Müşteri Kodu", style="FaturaUst.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        kod_satir = ttk.Frame(mus)
+        kod_satir.grid(row=1, column=1, columnspan=3, sticky="ew", pady=_py)
+        self.musteri_kodu = ttk.Entry(kod_satir, width=12, style="FaturaUst.TEntry")
+        self.musteri_kodu.pack(side="left", ipady=_ipady)
+        ttk.Button(
+            kod_satir, text="Yeni", width=5, style="FaturaUst.TButton", command=self._yeni_musteri_ekle
+        ).pack(side="left", padx=(4, 0), ipady=_ipady)
+        self._musteri_arama_after = None
+        self._musteri_ara_sonuclar: list[str] = []
+        self.musteri_kodu.bind("<KeyRelease>", self._musteri_kod_degisti)
+        self.musteri_kodu.bind("<Return>", self._musteri_kod_enter)
+        self.musteri_kodu.bind("<KP_Enter>", self._musteri_kod_enter)
+        self.musteri_kodu.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
+        self.musteri_adi.bind("<KeyRelease>", self._musteri_ara_filtrele)
+        self.musteri_adi.bind("<Return>", self._musteri_ara_enter)
+        self.musteri_adi.bind("<KP_Enter>", self._musteri_ara_enter)
+        self.musteri_adi.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
+        self.musteri = self.musteri_kodu
+
+        ttk.Label(mus, text="Aday Müşteri", style="FaturaUst.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        aday_satir = ttk.Frame(mus)
+        aday_satir.grid(row=2, column=1, columnspan=3, sticky="ew", pady=_py)
+        aday_satir.columnconfigure(0, weight=1)
+        self.aday_musteri_map: dict[str, Any] = {}
+        self.girdiler["aday_musteri_adi"] = ttk.Combobox(
+            aday_satir, values=self._aday_musteri_secenekleri(), width=18, style="FaturaUst.TCombobox"
+        )
+        self.girdiler["aday_musteri_adi"].pack(side="left", fill="x", expand=True, ipady=_ipady)
+        ttk.Button(
+            aday_satir, text="Yeni", width=5, style="FaturaUst.TButton", command=self._yeni_aday_musteri_ekle
+        ).pack(side="left", padx=(4, 0), ipady=_ipady)
+
+        self._alan(mus, 3, 0, "Yetkili", "musteri_yetkilisi", width=12)
+        self._alan(mus, 3, 2, "Telefon", "musteri_telefon", width=10)
+        self._alan(mus, 4, 0, "E-posta", "musteri_email", width=12)
+        ttk.Label(mus, text="Satış Temsilcisi", style="FaturaUst.TLabel").grid(
+            row=4, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.girdiler["satis_temsilcisi"] = ttk.Combobox(
+            mus, values=self._satis_temsilcisi_secenekleri(), width=10, state="readonly",
+            style="FaturaUst.TCombobox",
+        )
+        self.girdiler["satis_temsilcisi"].grid(
+            row=4, column=3, sticky="ew", pady=_py, ipady=_ipady
+        )
+
+        # ——— 2 Teklif Bilgileri ———
+        genel = ttk.LabelFrame(ust, text="Teklif Bilgileri", padding=(6, 2), style="FaturaUst.TLabelframe")
+        genel.grid(row=0, column=1, sticky="new", padx=(0, gap), pady=0)
+        genel.columnconfigure(0, minsize=72, weight=0)
+        genel.columnconfigure(1, weight=1)
+        genel.columnconfigure(2, minsize=48, weight=0)
+        genel.columnconfigure(3, weight=1)
+        _bes_satir_yuva(genel)
+        self._alan(genel, 0, 0, "Teklif No", "teklif_no", width=12)
+        self._tarih_alan(
+            genel, 0, 2, "Teklif Tarihi", "teklif_tarihi",
+            on_select=self._teklif_tarih_veya_kur_degisti, width=10,
+        )
+        self._tarih_alan(
+            genel, 1, 0, "Geçerlilik", "gecerlilik_tarihi",
+            on_select=self._gecerlilik_tarih_degisti, width=10,
+        )
+        self._alan(genel, 1, 2, "Geç. Günü", "gecerlilik_gunu", width=6)
+        self._alan(genel, 2, 0, "Konu", "konu", width=14)
+        self._alan(genel, 2, 2, "Referans No", "referans_no", width=10)
+        self._gecerlilik_senkron_kilit = False
+        self.girdiler["gecerlilik_gunu"].bind("<KeyRelease>", self._gecerlilik_gun_degisti)
+        self.girdiler["gecerlilik_gunu"].bind("<FocusOut>", self._gecerlilik_gun_degisti)
+        self.girdiler["gecerlilik_tarihi"].bind("<FocusOut>", self._gecerlilik_tarih_degisti)
+        self.girdiler["teklif_tarihi"].bind("<FocusOut>", self._teklif_tarih_veya_kur_degisti)
+
+        # Ödeme — kompakt 2 satır (iç içe LabelFrame yok; boş satır üretmez)
+        self._odeme_secim: dict[str, tk.BooleanVar] = {}
+        self._odeme_vade_manuel = False
+        self._odeme_secim_kilit = False
+        odeme1 = ttk.Frame(genel)
+        odeme1.grid(row=3, column=0, columnspan=4, sticky="ew", pady=_py)
+        odeme2 = ttk.Frame(genel)
+        odeme2.grid(row=4, column=0, columnspan=4, sticky="ew", pady=_py)
+
+        def _odeme_cb(parent, sekil: str):
+            var = tk.BooleanVar(value=(sekil == NAKIT))
+            self._odeme_secim[sekil] = var
+            ttk.Checkbutton(
+                parent, text=sekil, variable=var,
+                command=lambda s=sekil: self._odeme_tek_sec(s),
+            ).pack(side="left", padx=(0, 4))
+
+        _odeme_cb(odeme1, NAKIT)
+        self.odeme_nakit_turu = ttk.Combobox(
+            odeme1, values=list(NAKIT_ALT), width=7, state="readonly", style="FaturaUst.TCombobox"
+        )
+        self.odeme_nakit_turu.set("Havale")
+        self.odeme_nakit_turu.pack(side="left", padx=(0, 6), ipady=_ipady)
+        self.girdiler["odeme_nakit_turu"] = self.odeme_nakit_turu
+        self.odeme_nakit_turu.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
+        _odeme_cb(odeme1, KREDI_KARTI)
+        self.odeme_taksit = ttk.Combobox(
+            odeme1, values=kk_taksit_secenekleri(), width=9, state="readonly", style="FaturaUst.TCombobox"
+        )
+        self.odeme_taksit.set("Tek Çekim")
+        self.odeme_taksit.pack(side="left", padx=(0, 2), ipady=_ipady)
+        self.girdiler["odeme_taksit"] = self.odeme_taksit
+        self.odeme_taksit.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
+
+        _odeme_cb(odeme2, "Çek")
+        _odeme_cb(odeme2, "Senet")
+        _odeme_cb(odeme2, "Açık Hesap")
+        ttk.Label(odeme2, text="Gün", style="FaturaUst.TLabel").pack(side="left", padx=(6, 2))
+        self.odeme_vade_gun = ttk.Entry(odeme2, width=4, style="FaturaUst.TEntry")
+        self.odeme_vade_gun.pack(side="left", padx=(0, 4), ipady=_ipady)
+        self.girdiler["odeme_vade_gun"] = self.odeme_vade_gun
+        ttk.Label(odeme2, text="Vade", style="FaturaUst.TLabel").pack(side="left", padx=(0, 2))
+        self.odeme_vade_tarihi = ttk.Entry(odeme2, width=9, style="FaturaUst.TEntry")
+        self.odeme_vade_tarihi.pack(side="left", ipady=_ipady)
+        takvim_entry_bagla(self.odeme_vade_tarihi, on_select=self._odeme_vade_tarih_yazildi)
+        self.girdiler["odeme_vade_tarihi"] = self.odeme_vade_tarihi
+        self.odeme_vade_gun.bind("<KeyRelease>", self._odeme_vade_gun_degisti)
+        self.odeme_vade_gun.bind("<FocusOut>", self._odeme_vade_gun_degisti)
+        self.odeme_vade_tarihi.bind("<KeyRelease>", self._odeme_vade_tarih_yazildi)
+        self.odeme_vade_tarihi.bind("<FocusOut>", self._odeme_vade_tarih_yazildi)
+        self.girdiler["odeme_sekli"] = self.odeme_nakit_turu
+
+        # ——— 3 Ticari Şartlar ———
+        ticari = ttk.LabelFrame(ust, text="Ticari Şartlar", padding=(6, 2), style="FaturaUst.TLabelframe")
+        ticari.grid(row=0, column=2, sticky="new", padx=(0, gap), pady=0)
+        ticari.columnconfigure(0, minsize=64, weight=0)
+        ticari.columnconfigure(1, weight=1)
+        ticari.columnconfigure(2, minsize=48, weight=0)
+        ticari.columnconfigure(3, weight=1)
+        _bes_satir_yuva(ticari)
+        from database.models.doviz import PARA_BIRIMLERI
+
+        ttk.Label(ticari, text="Para Birimi", style="FaturaUst.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.para_birimi = ttk.Combobox(
+            ticari, values=list(PARA_BIRIMLERI), width=7, state="readonly", style="FaturaUst.TCombobox"
+        )
+        self.para_birimi.set("TRY")
+        self.para_birimi.grid(row=0, column=1, sticky="w", pady=_py, ipady=_ipady)
+        self.girdiler["para_birimi"] = self.para_birimi
+        self.para_birimi.bind("<<ComboboxSelected>>", self._teklif_para_birimi_degisti)
+
+        ttk.Label(ticari, text="Belge Kuru", style="FaturaUst.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        kur_satir = ttk.Frame(ticari)
+        kur_satir.grid(row=0, column=3, sticky="ew", pady=_py)
+        self.kur_giris = ttk.Entry(kur_satir, width=8, justify="right", style="FaturaUst.TEntry")
+        self.kur_giris.insert(0, "1")
+        self.kur_giris.pack(side="left", ipady=_ipady)
+        self.girdiler["kur"] = self.kur_giris
+        self.kur_giris.bind("<FocusOut>", self._teklif_kur_manuel)
+        ttk.Button(
+            kur_satir, text="TCMB", width=5, style="FaturaUst.TButton", command=self._teklif_tcmb_kur_yenile
+        ).pack(side="left", padx=(4, 0), ipady=_ipady)
+        self._teklif_kur_turu = "effective_buying"
+        self._teklif_kur_kaynagi = "MANUEL"
+        self._teklif_kur_tarihi = date.today()
+        # Kaynak metni ayrı satır değil — kur satırının ipucu olarak tutulur
+        self.lbl_kur_kaynak = ttk.Label(kur_satir, text="Ef.Alış", style="FaturaUst.TLabel")
+        self.lbl_kur_kaynak.pack(side="left", padx=(4, 0))
+
+        ttk.Label(ticari, text="Kur Seçimi", style="FaturaUst.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.doviz_karsilik_pb = ttk.Combobox(
+            ticari, values=("—", "USD", "EUR"), width=7, state="readonly", style="FaturaUst.TCombobox"
+        )
+        self.doviz_karsilik_pb.set("—")
+        self.doviz_karsilik_pb.grid(row=1, column=1, sticky="w", pady=_py, ipady=_ipady)
+        self.girdiler["doviz_karsilik_pb"] = self.doviz_karsilik_pb
+        self.doviz_karsilik_pb.bind("<<ComboboxSelected>>", self._teklif_doviz_karsilik_degisti)
+
+        ttk.Label(ticari, text="Kur Bilgisi", style="FaturaUst.TLabel").grid(
+            row=1, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        karsilik_kur_satir = ttk.Frame(ticari)
+        karsilik_kur_satir.grid(row=1, column=3, sticky="ew", pady=_py)
+        self.doviz_karsilik_kur = ttk.Entry(
+            karsilik_kur_satir, width=8, justify="right", style="FaturaUst.TEntry"
+        )
+        self.doviz_karsilik_kur.insert(0, "")
+        self.doviz_karsilik_kur.pack(side="left", fill="x", expand=True, ipady=_ipady)
+        self.doviz_karsilik_kur.configure(state="readonly")
+        self.girdiler["doviz_karsilik_kur"] = self.doviz_karsilik_kur
+        self.doviz_karsilik_kur.bind("<FocusOut>", self._teklif_doviz_karsilik_kur_manuel)
+        self.doviz_karsilik_kur.bind("<Return>", self._teklif_doviz_karsilik_kur_manuel)
+        self.btn_doviz_karsilik_tcmb = ttk.Button(
+            karsilik_kur_satir, text="TCMB", width=5, style="FaturaUst.TButton",
+            command=self._teklif_doviz_karsilik_tcmb, state="disabled",
+        )
+        self.btn_doviz_karsilik_tcmb.pack(side="left", padx=(4, 0), ipady=_ipady)
+        self.lbl_doviz_karsilik_kaynak = ttk.Label(
+            karsilik_kur_satir, text="", style="FaturaUst.TLabel"
+        )
+        self.lbl_doviz_karsilik_kaynak.pack(side="left", padx=(2, 0))
+
+        self._alan(ticari, 2, 0, "Teslim Süresi", "teslim_suresi", width=8)
+        self._alan(ticari, 2, 2, "Depo", "depo", width=8)
+        self._alan(ticari, 3, 0, "Proje", "proje", width=8)
+        ttk.Label(ticari, text="Termin Türü", style="FaturaUst.TLabel").grid(
+            row=3, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.termin_turu = ttk.Combobox(
+            ticari, values=list(TERMIN_TURLERI), width=10, state="readonly", style="FaturaUst.TCombobox"
+        )
+        self.termin_turu.set(TERMIN_TURLERI[0])
+        self.termin_turu.grid(row=3, column=3, sticky="ew", pady=_py, ipady=_ipady)
+
+        # Satır 4: Termin gün + açıklama | Tahmini teslim
+        ttk.Label(ticari, text="Termin", style="FaturaUst.TLabel").grid(
+            row=4, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        term_fr = ttk.Frame(ticari)
+        term_fr.grid(row=4, column=1, sticky="ew", pady=_py)
+        e_gun = ttk.Entry(term_fr, width=4, style="FaturaUst.TEntry")
+        e_gun.pack(side="left", ipady=_ipady)
+        self.girdiler["delivery_term_days"] = e_gun
+        e_note = ttk.Entry(term_fr, width=10, style="FaturaUst.TEntry")
+        e_note.pack(side="left", fill="x", expand=True, padx=(4, 0), ipady=_ipady)
+        self.girdiler["delivery_term_note"] = e_note
+        self._tarih_alan(
+            ticari, 4, 2, "Tahmini Teslim", "estimated_delivery_date",
+            on_select=self._termin_manuel_isaretle, width=9,
+        )
+        self.girdiler["delivery_term_days"].bind("<KeyRelease>", self._termin_gun_degisti)
+        self.girdiler["delivery_term_days"].bind("<FocusOut>", self._termin_gun_degisti)
+        self.girdiler["estimated_delivery_date"].bind("<KeyRelease>", self._termin_manuel_isaretle)
+
+        # ——— 4 Fiyat Analizi / Çalışma ———
+        fiyat = ttk.LabelFrame(
+            ust, text="Fiyat Analizi / Çalışma", padding=(6, 2), style="FaturaUst.TLabelframe"
+        )
+        fiyat.grid(row=0, column=3, sticky="new", padx=0, pady=0)
+        fiyat.columnconfigure(0, minsize=64, weight=0)
+        fiyat.columnconfigure(1, weight=1)
+        fiyat.columnconfigure(2, minsize=48, weight=0)
+        fiyat.columnconfigure(3, weight=1)
+        _bes_satir_yuva(fiyat)
+        self.fiyat_panel = fiyat
+        self.fiyat_girdiler: dict[str, Any] = {}
+
+        ttk.Label(fiyat, text="Kâr Marjı %", style="FaturaUst.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.fiyat_girdiler["profit_rate"] = ttk.Entry(fiyat, width=8, style="FaturaUst.TEntry")
+        self.fiyat_girdiler["profit_rate"].insert(0, "0")
+        self.fiyat_girdiler["profit_rate"].grid(row=0, column=1, sticky="ew", pady=_py, ipady=_ipady)
+        ttk.Label(fiyat, text="Maktu Kâr", style="FaturaUst.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.fiyat_girdiler["fixed_profit_amount"] = ttk.Entry(fiyat, width=8, style="FaturaUst.TEntry")
+        self.fiyat_girdiler["fixed_profit_amount"].insert(0, "0")
+        self.fiyat_girdiler["fixed_profit_amount"].grid(
+            row=0, column=3, sticky="ew", pady=_py, ipady=_ipady
+        )
+
+        ttk.Label(fiyat, text="Teklif Masrafı", style="FaturaUst.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.fiyat_girdiler["customer_expense_amount"] = ttk.Entry(
+            fiyat, width=8, style="FaturaUst.TEntry"
+        )
+        self.fiyat_girdiler["customer_expense_amount"].insert(0, "0")
+        self.fiyat_girdiler["customer_expense_amount"].grid(
+            row=1, column=1, sticky="ew", pady=_py, ipady=_ipady
+        )
+        ttk.Label(fiyat, text="İç Masraf", style="FaturaUst.TLabel").grid(
+            row=1, column=2, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.fiyat_girdiler["internal_expense_amount"] = ttk.Entry(
+            fiyat, width=8, style="FaturaUst.TEntry"
+        )
+        self.fiyat_girdiler["internal_expense_amount"].insert(0, "0")
+        self.fiyat_girdiler["internal_expense_amount"].grid(
+            row=1, column=3, sticky="ew", pady=_py, ipady=_ipady
+        )
+
+        ttk.Label(fiyat, text="Yuvarlama", style="FaturaUst.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, 4), pady=_py
+        )
+        self.fiyat_girdiler["yuvarlama"] = ttk.Combobox(
+            fiyat, values=["kurus", "1", "5", "10", "psikolojik", "yok"],
+            width=10, state="readonly", style="FaturaUst.TCombobox",
+        )
+        self.fiyat_girdiler["yuvarlama"].set("kurus")
+        self.fiyat_girdiler["yuvarlama"].grid(
+            row=2, column=1, columnspan=3, sticky="ew", pady=_py, ipady=_ipady
+        )
+
+        btn_f = ttk.Frame(fiyat)
+        btn_f.grid(row=3, column=0, columnspan=4, sticky="ew", pady=_py)
+        for c in range(4):
+            btn_f.columnconfigure(c, weight=1)
+        ttk.Button(
+            btn_f, text="Fiyatları Hesapla", style="FaturaUst.TButton", command=self._fiyatlari_hesapla
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 2), ipady=_ipady)
+        ttk.Button(
+            btn_f, text="Hesaplamayı Geri Al", style="FaturaUst.TButton", command=self._fiyat_geri_al_uygula
+        ).grid(row=0, column=1, sticky="ew", padx=1, ipady=_ipady)
+        ttk.Button(
+            btn_f, text="Masraf Detayı", style="FaturaUst.TButton", command=self._masraf_detay
+        ).grid(row=0, column=2, sticky="ew", padx=1, ipady=_ipady)
+        if maliyet_izinli():
+            ttk.Button(
+                btn_f, text="Karlılık Analizi", style="FaturaUst.TButton", command=self._ic_maliyet_analizi
+            ).grid(row=0, column=3, sticky="ew", padx=(2, 0), ipady=_ipady)
+
+        # Geri uyumluluk etiketleri (görünmez yer kaplamaz)
+        self.lbl_fiyat_ozet = ttk.Label(fiyat, text="", style="FaturaUst.TLabel")
+        self.lbl_toplam = self.lbl_fiyat_ozet
+        if not maliyet_izinli():
+            for w in (
+                self.fiyat_girdiler["profit_rate"],
+                self.fiyat_girdiler["fixed_profit_amount"],
+                self.fiyat_girdiler["internal_expense_amount"],
+            ):
+                w.grid_remove()
+
+        self._teklif_ust_paneller = (mus, genel, ticari, fiyat)
+        self._teklif_cok_satir_hizalandi = False
+        # Hedef yükseklik = fatura üst bandı (5 satır yuva + LabelFrame çerçeve)
+        self._teklif_ust_hedef_h = 5 * self._teklif_satir_yuvasi + 42
+        sari = tk.Frame(kaydirma, bg=ftema.SARI, height=2)
+        sari.pack(fill="x", padx=8, pady=(0, 0))
+        self._teklif_ust_sari = sari
+        self.after(80, self._teklif_ust_alt_sinir_hizala)
+
+        self._odeme_secim_degisti()
+
+        # Kaydırılabilir ürün / not alanı
+        orta = tk.Frame(kaydirma, bg=ACIK_GRI, highlightthickness=0)
+        orta.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(orta, bg=ACIK_GRI, highlightthickness=0)
+        scroll = ttk.Scrollbar(orta, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -521,357 +926,9 @@ class TeklifDialog(tk.Toplevel):
 
         self.canvas.bind("<Configure>", _canvas_genislik)
 
-        _ipady = ftema.form_ipady()
-        _py = ftema.form_pady(2)
-        gap = 10
-        self.girdiler: dict[str, Any] = {}
-
-        # ——— Üst: Genel | Müşteri | Ticari | Fiyat Analiz (dört eşit kolon) ———
-        ust = ttk.Frame(self.icerik)
-        ust.pack(fill="x", padx=10, pady=(6, 4))
-        self._baslik_kaplari = [ust]
-        for _c in range(4):
-            ust.columnconfigure(_c, weight=1, uniform="teklif_ust")
-        ust.rowconfigure(0, weight=1)
-
-        genel = ttk.LabelFrame(ust, text="Genel Bilgiler", padding=8)
-        genel.grid(row=0, column=0, sticky="nsew", padx=(0, gap))
-        genel.columnconfigure(1, weight=1)
-        genel.columnconfigure(3, weight=1)
-        self._alan(genel, 0, 0, "Teklif No", "teklif_no", width=14)
-        self._tarih_alan(
-            genel, 0, 2, "Teklif Tarihi", "teklif_tarihi",
-            on_select=self._teklif_tarih_veya_kur_degisti, width=10,
-        )
-        self._tarih_alan(
-            genel, 1, 0, "Geçerlilik Tarihi", "gecerlilik_tarihi",
-            on_select=self._gecerlilik_tarih_degisti, width=10,
-        )
-        self._alan(genel, 1, 2, "Geçerlilik Günü", "gecerlilik_gunu", width=6)
-        self._alan(genel, 2, 0, "Konu", "konu", width=16)
-        self._alan(genel, 2, 2, "Referans No", "referans_no", width=10)
-        self._gecerlilik_senkron_kilit = False
-        self.girdiler["gecerlilik_gunu"].bind("<KeyRelease>", self._gecerlilik_gun_degisti)
-        self.girdiler["gecerlilik_gunu"].bind("<FocusOut>", self._gecerlilik_gun_degisti)
-        self.girdiler["gecerlilik_tarihi"].bind("<FocusOut>", self._gecerlilik_tarih_degisti)
-        self.girdiler["teklif_tarihi"].bind("<FocusOut>", self._teklif_tarih_veya_kur_degisti)
-
-        # Ödeme şekli — Genel Bilgiler altındaki boşluğa (dar, 2 satır)
-        odeme_panel = ttk.LabelFrame(genel, text="Ödeme Şekli", padding=4)
-        odeme_panel.grid(row=3, column=0, columnspan=4, sticky="nsew", padx=2, pady=(8, 2))
-        self._odeme_secim: dict[str, tk.BooleanVar] = {}
-        self._odeme_vade_manuel = False
-        self._odeme_secim_kilit = False
-        satir1 = ttk.Frame(odeme_panel)
-        satir1.pack(anchor="w", pady=(0, 2))
-        satir2 = ttk.Frame(odeme_panel)
-        satir2.pack(anchor="w")
-
-        def _odeme_cb(parent, sekil: str):
-            var = tk.BooleanVar(value=(sekil == NAKIT))
-            self._odeme_secim[sekil] = var
-            ttk.Checkbutton(
-                parent,
-                text=sekil,
-                variable=var,
-                command=lambda s=sekil: self._odeme_tek_sec(s),
-            ).pack(side="left", padx=(0, 4))
-
-        _odeme_cb(satir1, NAKIT)
-        self.odeme_nakit_turu = ttk.Combobox(
-            satir1, values=list(NAKIT_ALT), width=7, state="readonly"
-        )
-        self.odeme_nakit_turu.set("Havale")
-        self.odeme_nakit_turu.pack(side="left", padx=(0, 8))
-        self.girdiler["odeme_nakit_turu"] = self.odeme_nakit_turu
-        self.odeme_nakit_turu.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
-
-        _odeme_cb(satir1, KREDI_KARTI)
-        self.odeme_taksit = ttk.Combobox(
-            satir1, values=kk_taksit_secenekleri(), width=10, state="readonly"
-        )
-        self.odeme_taksit.set("Tek Çekim")
-        self.odeme_taksit.pack(side="left", padx=(0, 4))
-        self.girdiler["odeme_taksit"] = self.odeme_taksit
-        self.odeme_taksit.bind("<<ComboboxSelected>>", self._odeme_hesap_guncelle)
-
-        _odeme_cb(satir2, "Çek")
-        _odeme_cb(satir2, "Senet")
-        _odeme_cb(satir2, "Açık Hesap")
-        ttk.Label(satir2, text="Gün").pack(side="left", padx=(8, 2))
-        self.odeme_vade_gun = ttk.Entry(satir2, width=5)
-        self.odeme_vade_gun.pack(side="left", padx=(0, 6))
-        self.girdiler["odeme_vade_gun"] = self.odeme_vade_gun
-        ttk.Label(satir2, text="Vade").pack(side="left", padx=(0, 2))
-        vade_fr = ttk.Frame(satir2)
-        vade_fr.pack(side="left")
-        self.odeme_vade_tarihi = ttk.Entry(vade_fr, width=10)
-        self.odeme_vade_tarihi.pack(side="left")
-        takvim_butonu(
-            vade_fr,
-            self.odeme_vade_tarihi,
-            on_select=self._odeme_vade_tarih_yazildi,
-            text="📅",
-            width=3,
-        )
-        self.girdiler["odeme_vade_tarihi"] = self.odeme_vade_tarihi
-        self.odeme_vade_gun.bind("<KeyRelease>", self._odeme_vade_gun_degisti)
-        self.odeme_vade_gun.bind("<FocusOut>", self._odeme_vade_gun_degisti)
-        self.odeme_vade_tarihi.bind("<KeyRelease>", self._odeme_vade_tarih_yazildi)
-        self.odeme_vade_tarihi.bind("<FocusOut>", self._odeme_vade_tarih_yazildi)
-        self.girdiler["odeme_sekli"] = self.odeme_nakit_turu
-
-        mus = ttk.LabelFrame(ust, text="Müşteri", padding=8)
-        mus.grid(row=0, column=1, sticky="nsew", padx=(0, gap))
-        mus.columnconfigure(1, weight=1)
-        mus.columnconfigure(3, weight=1)
-        # Müşteri kodu + adı dikey; arama adı kutusunda (Ara butonu yok)
-        self._selected_customer_id = None
-        self._musteri_kod_map = {
-            (m.cari_kodu or "").strip(): m
-            for m in self.musteriler
-            if (m.cari_kodu or "").strip()
-        }
-        ttk.Label(mus, text="Müşteri Kodu").grid(row=0, column=0, sticky="w", padx=4, pady=_py)
-        kod_satir = ttk.Frame(mus)
-        kod_satir.grid(row=0, column=1, columnspan=3, sticky="ew", padx=4, pady=_py)
-        kod_satir.columnconfigure(0, weight=1)
-        self.musteri_kodu = ttk.Entry(kod_satir, width=14)
-        self.musteri_kodu.grid(row=0, column=0, sticky="ew", ipady=_ipady)
-        ttk.Button(kod_satir, text="Yeni", width=6, command=self._yeni_musteri_ekle).grid(
-            row=0, column=1, sticky="e", padx=(6, 0)
-        )
-        ttk.Label(mus, text="Müşteri Adı").grid(row=1, column=0, sticky="w", padx=4, pady=_py)
-        self.musteri_adi = ttk.Entry(mus, width=28)
-        self.musteri_adi.grid(
-            row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=_py, ipady=_ipady
-        )
-        self._musteri_arama_after = None
-        self._musteri_ara_sonuclar: list[str] = []
-        self.musteri_kodu.bind("<KeyRelease>", self._musteri_kod_degisti)
-        self.musteri_kodu.bind("<Return>", self._musteri_kod_enter)
-        self.musteri_kodu.bind("<KP_Enter>", self._musteri_kod_enter)
-        self.musteri_kodu.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
-        self.musteri_adi.bind("<KeyRelease>", self._musteri_ara_filtrele)
-        self.musteri_adi.bind("<Return>", self._musteri_ara_enter)
-        self.musteri_adi.bind("<KP_Enter>", self._musteri_ara_enter)
-        self.musteri_adi.bind("<F2>", lambda _e: self._musteri_ara_secim_ac(zorla=True))
-        # Geri uyumluluk: eski self.musteri.get() çağrıları kod alanına yönlensin
-        self.musteri = self.musteri_kodu
-        # Aday müşteri — seçenekli + Yeni
-        ttk.Label(mus, text="Aday Müşteri").grid(row=2, column=0, sticky="w", padx=4, pady=_py)
-        aday_satir = ttk.Frame(mus)
-        aday_satir.grid(row=2, column=1, columnspan=3, sticky="ew", padx=4, pady=_py)
-        aday_satir.columnconfigure(0, weight=1)
-        self.aday_musteri_map: dict[str, Any] = {}
-        self.girdiler["aday_musteri_adi"] = ttk.Combobox(
-            aday_satir, values=self._aday_musteri_secenekleri(), width=18
-        )
-        self.girdiler["aday_musteri_adi"].grid(row=0, column=0, sticky="ew", ipady=_ipady)
-        ttk.Button(
-            aday_satir, text="Yeni", width=6, command=self._yeni_aday_musteri_ekle
-        ).grid(row=0, column=1, sticky="e", padx=(6, 0))
-        self._alan(mus, 3, 0, "Yetkili", "musteri_yetkilisi", width=14)
-        self._alan(mus, 3, 2, "Telefon", "musteri_telefon", width=12)
-        self._alan(mus, 4, 0, "E-posta", "musteri_email", width=14)
-        ttk.Label(mus, text="Satış Temsilcisi").grid(
-            row=4, column=2, sticky="w", padx=4, pady=_py
-        )
-        self.girdiler["satis_temsilcisi"] = ttk.Combobox(
-            mus,
-            values=self._satis_temsilcisi_secenekleri(),
-            width=12,
-            state="readonly",
-        )
-        self.girdiler["satis_temsilcisi"].grid(
-            row=4, column=3, sticky="ew", padx=4, pady=_py, ipady=_ipady
-        )
-
-        ticari = ttk.LabelFrame(ust, text="Ticari Şartlar", padding=8)
-        ticari.grid(row=0, column=2, sticky="nsew", padx=(0, gap))
-        ticari.columnconfigure(1, weight=1)
-        ticari.columnconfigure(3, weight=1)
-        # Para birimi + döviz karşılığı (TCMB efektif alış)
-        from database.models.doviz import PARA_BIRIMLERI
-
-        ttk.Label(ticari, text="Para Birimi").grid(row=0, column=0, sticky="w", padx=4, pady=_py)
-        self.para_birimi = ttk.Combobox(
-            ticari, values=list(PARA_BIRIMLERI), width=8, state="readonly"
-        )
-        self.para_birimi.set("TRY")
-        self.para_birimi.grid(row=0, column=1, sticky="w", padx=4, pady=_py)
-        self.girdiler["para_birimi"] = self.para_birimi
-        self.para_birimi.bind("<<ComboboxSelected>>", self._teklif_para_birimi_degisti)
-
-        ttk.Label(ticari, text="Belge Kuru").grid(row=0, column=2, sticky="w", padx=4, pady=_py)
-        kur_satir = ttk.Frame(ticari)
-        kur_satir.grid(row=0, column=3, sticky="ew", padx=4, pady=_py)
-        self.kur_giris = ttk.Entry(kur_satir, width=12, justify="right")
-        self.kur_giris.insert(0, "1")
-        self.kur_giris.pack(side="left")
-        self.girdiler["kur"] = self.kur_giris
-        self.kur_giris.bind("<FocusOut>", self._teklif_kur_manuel)
-        ttk.Button(kur_satir, text="TCMB", width=5, command=self._teklif_tcmb_kur_yenile).pack(
-            side="left", padx=(4, 0)
-        )
-        self._teklif_kur_turu = "effective_buying"
-        self._teklif_kur_kaynagi = "MANUEL"
-        self._teklif_kur_tarihi = date.today()
-        self.lbl_kur_kaynak = ttk.Label(ticari, text="Efektif Alış", foreground="#64748B")
-        self.lbl_kur_kaynak.grid(row=1, column=2, columnspan=2, sticky="w", padx=4, pady=(0, 2))
-
-        # Döviz karşılığı: kur seçimi + kur bilgisi (her zaman görünür alan)
-        ttk.Label(ticari, text="Kur Seçimi").grid(row=2, column=0, sticky="w", padx=4, pady=_py)
-        self.doviz_karsilik_pb = ttk.Combobox(
-            ticari, values=("—", "USD", "EUR"), width=8, state="readonly"
-        )
-        self.doviz_karsilik_pb.set("—")
-        self.doviz_karsilik_pb.grid(row=2, column=1, sticky="w", padx=4, pady=_py)
-        self.girdiler["doviz_karsilik_pb"] = self.doviz_karsilik_pb
-        self.doviz_karsilik_pb.bind("<<ComboboxSelected>>", self._teklif_doviz_karsilik_degisti)
-
-        ttk.Label(ticari, text="Kur Bilgisi").grid(row=2, column=2, sticky="w", padx=4, pady=_py)
-        karsilik_kur_satir = ttk.Frame(ticari)
-        karsilik_kur_satir.grid(row=2, column=3, sticky="ew", padx=4, pady=_py)
-        # disabled yerine normal/readonly — Windows'ta disabled Entry görünmez kalabiliyor
-        self.doviz_karsilik_kur = ttk.Entry(karsilik_kur_satir, width=12, justify="right")
-        self.doviz_karsilik_kur.insert(0, "")
-        self.doviz_karsilik_kur.pack(side="left", fill="x", expand=True)
-        self.doviz_karsilik_kur.configure(state="readonly")
-        self.girdiler["doviz_karsilik_kur"] = self.doviz_karsilik_kur
-        self.doviz_karsilik_kur.bind("<FocusOut>", self._teklif_doviz_karsilik_kur_manuel)
-        self.doviz_karsilik_kur.bind("<Return>", self._teklif_doviz_karsilik_kur_manuel)
-        self.btn_doviz_karsilik_tcmb = ttk.Button(
-            karsilik_kur_satir,
-            text="TCMB",
-            width=5,
-            command=self._teklif_doviz_karsilik_tcmb,
-            state="disabled",
-        )
-        self.btn_doviz_karsilik_tcmb.pack(side="left", padx=(4, 0))
-        self.lbl_doviz_karsilik_kaynak = ttk.Label(
-            ticari, text="TCMB Efektif Alış (USD/EUR seçin)", foreground="#64748B"
-        )
-        self.lbl_doviz_karsilik_kaynak.grid(
-            row=3, column=2, columnspan=2, sticky="w", padx=4, pady=(0, 4)
-        )
-
-        self._alan(ticari, 4, 0, "Teslim Süresi", "teslim_suresi", width=10)
-        self._alan(ticari, 4, 2, "Depo", "depo", width=10)
-        self._alan(ticari, 5, 0, "Proje", "proje", width=10)
-        ttk.Label(ticari, text="Termin Türü").grid(row=5, column=2, sticky="w", padx=4, pady=_py)
-        self.termin_turu = ttk.Combobox(
-            ticari, values=list(TERMIN_TURLERI), width=14, state="readonly"
-        )
-        self.termin_turu.set(TERMIN_TURLERI[0])
-        self.termin_turu.grid(row=5, column=3, sticky="ew", padx=4, pady=_py)
-        self._alan(ticari, 6, 0, "Termin Süresi (Gün)", "delivery_term_days", width=6)
-        self._tarih_alan(
-            ticari, 6, 2, "Tahmini Teslim Tarihi", "estimated_delivery_date",
-            on_select=self._termin_manuel_isaretle, width=10,
-        )
-        self._alan(ticari, 7, 0, "Termin Açıklaması", "delivery_term_note", width=20)
-        self.girdiler["delivery_term_days"].bind("<KeyRelease>", self._termin_gun_degisti)
-        self.girdiler["delivery_term_days"].bind("<FocusOut>", self._termin_gun_degisti)
-        self.girdiler["estimated_delivery_date"].bind("<KeyRelease>", self._termin_manuel_isaretle)
-
-        # Sağ üst: Fiyat Analiz / Çalışma — açık sarı zemin
-        ACIK_SARI = "#FEF9C3"
-        self.fiyat_panel = tk.LabelFrame(
-            ust,
-            text="Fiyat Analiz / Çalışma",
-            bg=ACIK_SARI,
-            fg=LACIVERT,
-            font=("Segoe UI", 9, "bold"),
-            padx=8,
-            pady=8,
-            labelanchor="nw",
-        )
-        self.fiyat_panel.grid(row=0, column=3, sticky="nsew")
-        self.fiyat_panel.columnconfigure(1, weight=1)
-        self.fiyat_girdiler: dict[str, Any] = {}
-
-        def _fa_lbl(text, row):
-            tk.Label(
-                self.fiyat_panel,
-                text=text,
-                bg=ACIK_SARI,
-                fg="#0F172A",
-                font=("Segoe UI", 9),
-                anchor="w",
-            ).grid(row=row, column=0, sticky="w", pady=1)
-
-        _fa_lbl("Kâr Marjı (%)", 0)
-        self.fiyat_girdiler["profit_rate"] = ttk.Entry(self.fiyat_panel, width=10)
-        self.fiyat_girdiler["profit_rate"].insert(0, "0")
-        self.fiyat_girdiler["profit_rate"].grid(row=0, column=1, sticky="ew", pady=1)
-        _fa_lbl("Maktu Kâr", 1)
-        self.fiyat_girdiler["fixed_profit_amount"] = ttk.Entry(self.fiyat_panel, width=10)
-        self.fiyat_girdiler["fixed_profit_amount"].insert(0, "0")
-        self.fiyat_girdiler["fixed_profit_amount"].grid(row=1, column=1, sticky="ew", pady=1)
-        _fa_lbl("Teklif Masrafı", 2)
-        self.fiyat_girdiler["customer_expense_amount"] = ttk.Entry(self.fiyat_panel, width=10)
-        self.fiyat_girdiler["customer_expense_amount"].insert(0, "0")
-        self.fiyat_girdiler["customer_expense_amount"].grid(row=2, column=1, sticky="ew", pady=1)
-        _fa_lbl("İç Masraf", 3)
-        self.fiyat_girdiler["internal_expense_amount"] = ttk.Entry(self.fiyat_panel, width=10)
-        self.fiyat_girdiler["internal_expense_amount"].insert(0, "0")
-        self.fiyat_girdiler["internal_expense_amount"].grid(row=3, column=1, sticky="ew", pady=1)
-        _fa_lbl("Yuvarlama", 4)
-        self.fiyat_girdiler["yuvarlama"] = ttk.Combobox(
-            self.fiyat_panel,
-            values=["kurus", "1", "5", "10", "psikolojik", "yok"],
-            width=10,
-            state="readonly",
-        )
-        self.fiyat_girdiler["yuvarlama"].set("kurus")
-        self.fiyat_girdiler["yuvarlama"].grid(row=4, column=1, sticky="ew", pady=1)
-        btn_f = tk.Frame(self.fiyat_panel, bg=ACIK_SARI)
-        btn_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        tk.Button(
-            btn_f,
-            text="Fiyatları Hesapla",
-            command=self._fiyatlari_hesapla,
-            bg=YESIL,
-            fg=BEYAZ,
-            relief="raised",
-            bd=2,
-            font=("Segoe UI", 9, "bold"),
-            cursor="hand2",
-        ).pack(fill="x", pady=1)
-        ttk.Button(btn_f, text="Hesaplamayı Geri Al", command=self._fiyat_geri_al_uygula).pack(
-            fill="x", pady=1
-        )
-        ttk.Button(btn_f, text="Masraf Detayı", command=self._masraf_detay).pack(fill="x", pady=1)
-        if maliyet_izinli():
-            tk.Button(
-                btn_f,
-                text="Karlılık Analizi",
-                command=self._ic_maliyet_analizi,
-                bg=LACIVERT,
-                fg=BEYAZ,
-                relief="raised",
-                bd=2,
-                font=("Segoe UI", 9, "bold"),
-                cursor="hand2",
-            ).pack(fill="x", pady=(4, 1))
-        # Özet etiketi (gizli metin yok; geri uyumluluk için boş tut)
-        self.lbl_fiyat_ozet = tk.Label(self.fiyat_panel, text="", bg=ACIK_SARI)
-        self.lbl_fiyat_ozet.grid(row=6, column=0, columnspan=2, sticky="ew")
-        self.lbl_toplam = self.lbl_fiyat_ozet
-        if not maliyet_izinli():
-            for w in (
-                self.fiyat_girdiler["profit_rate"],
-                self.fiyat_girdiler["fixed_profit_amount"],
-                self.fiyat_girdiler["internal_expense_amount"],
-            ):
-                w.grid_remove()
-
-        self._odeme_secim_degisti()
-
         # ——— Ürünler tablonun sonundaki boş giriş satırından eklenir ———
         aksiyon = ttk.Frame(self.icerik)
-        aksiyon.pack(fill="x", padx=10, pady=(2, 2))
+        aksiyon.pack(fill="x", padx=8, pady=(2, 2))
 
         def _btn3d(parent, text, cmd, bg, fg=BEYAZ):
             return tk.Button(
@@ -1067,7 +1124,7 @@ class TeklifDialog(tk.Toplevel):
         self.satir_tablo.tag_configure("manuel_satir", foreground="#6D28D9")
         self._secili_urun: dict[str, Any] | None = None
         self._teklif_satir_girisi_kur()
-        self.after_idle(self._teklif_excel_cizgileri_kur)
+        self.after_idle(self._teklif_excel_cizgileri_bagla)
 
         notlar = ttk.LabelFrame(self.icerik, text="Notlar", padding=8)
         notlar.pack(fill="x", padx=10, pady=6)
@@ -1095,30 +1152,55 @@ class TeklifDialog(tk.Toplevel):
         self.lbl_gecmis.pack(anchor="w")
 
     def _alan(self, parent, row, col, baslik, anahtar, width=20):
-        import fatura_tema as ftema
-
-        _py = ftema.form_pady(2)
-        _ipady = ftema.form_ipady()
-        ttk.Label(parent, text=baslik).grid(row=row, column=col, sticky="w", padx=4, pady=_py)
-        e = ttk.Entry(parent, width=width)
-        e.grid(row=row, column=col + 1, sticky="ew", padx=4, pady=_py, ipady=_ipady)
+        _py = getattr(self, "_teklif_form_pady", 2)
+        _ipady = getattr(self, "_teklif_form_ipady", 0)
+        ttk.Label(parent, text=baslik, style="FaturaUst.TLabel").grid(
+            row=row, column=col, sticky="w", padx=(0, 4), pady=_py
+        )
+        e = ttk.Entry(parent, width=width, style="FaturaUst.TEntry")
+        e.grid(row=row, column=col + 1, sticky="ew", pady=_py, ipady=_ipady)
         self.girdiler[anahtar] = e
         return e
 
     def _tarih_alan(self, parent, row, col, baslik, anahtar, *, on_select=None, width=10):
-        """Tarih entry + takvim butonu (gg.aa.yyyy)."""
-        import fatura_tema as ftema
-
-        _py = ftema.form_pady(2)
-        _ipady = ftema.form_ipady()
-        ttk.Label(parent, text=baslik).grid(row=row, column=col, sticky="w", padx=4, pady=_py)
-        fr = ttk.Frame(parent)
-        fr.grid(row=row, column=col + 1, sticky="ew", padx=4, pady=_py)
-        e = ttk.Entry(fr, width=width)
-        e.pack(side="left", ipady=_ipady)
-        takvim_butonu(fr, e, on_select=on_select, text="📅", width=3)
+        """Tarih entry — fatura gibi alana tıkla (takvim); kutu yüksekliği Entry ile aynı."""
+        _py = getattr(self, "_teklif_form_pady", 2)
+        _ipady = getattr(self, "_teklif_form_ipady", 0)
+        ttk.Label(parent, text=baslik, style="FaturaUst.TLabel").grid(
+            row=row, column=col, sticky="w", padx=(0, 4), pady=_py
+        )
+        e = ttk.Entry(parent, width=width, style="FaturaUst.TEntry")
+        e.grid(row=row, column=col + 1, sticky="ew", pady=_py, ipady=_ipady)
+        takvim_entry_bagla(e, on_select=on_select)
         self.girdiler[anahtar] = e
         return e
+
+    def _teklif_ust_alt_sinir_hizala(self, _event=None):
+        """Dört üst paneli fatura üst bandı yüksekliğine hizala."""
+        if getattr(self, "_teklif_cok_satir_hizalandi", False):
+            return
+        paneller = getattr(self, "_teklif_ust_paneller", None)
+        if not paneller:
+            return
+        try:
+            self.update_idletasks()
+            hedef = int(getattr(self, "_teklif_ust_hedef_h", 0) or 0)
+            if hedef < 80:
+                yukseklikler = [int(p.winfo_reqheight()) for p in paneller]
+                hedef = max(yukseklikler) if yukseklikler else 0
+            if hedef < 80:
+                return
+            for panel in paneller:
+                panel.configure(height=hedef)
+                try:
+                    panel.grid_propagate(False)
+                except tk.TclError:
+                    pass
+                panel.grid_configure(sticky="new")
+            self._teklif_cok_satir_hizalandi = True
+            self.update_idletasks()
+        except tk.TclError:
+            pass
 
     def _gecerlilik_gun_degisti(self, _event=None):
         """Geçerlilik günü → geçerlilik tarihi = teklif tarihi + gün."""
@@ -3871,203 +3953,36 @@ class TeklifDialog(tk.Toplevel):
         self._satir_tablo_yenile()
         self._toplam_guncelle()
 
-    def _teklif_excel_cizgileri_temizle(self) -> None:
-        for w in getattr(self, "_teklif_excel_cizgiler", []) or []:
-            try:
-                w.destroy()
-            except tk.TclError:
-                pass
-        self._teklif_excel_cizgiler = []
-        aid = getattr(self, "_teklif_excel_after", None)
-        if aid is not None:
-            try:
-                self.after_cancel(aid)
-            except tk.TclError:
-                pass
-            self._teklif_excel_after = None
-
-    def _teklif_excel_cizgileri_kur(self) -> None:
-        """Ürün satır tablosuna fatura benzeri Excel ızgarası bağlar."""
-        if getattr(self, "_teklif_excel_kurulu", False):
-            self._teklif_excel_cizgileri_yenile()
-            return
+    def _teklif_excel_cizgileri_bagla(self) -> None:
+        """Ürün satır tablosuna ortak Excel ızgarası."""
         if not hasattr(self, "satir_tablo"):
             return
-        tree = self.satir_tablo
-        parent = tree.master
-        self._teklif_excel_cizgiler = []
-        self._teklif_excel_after = None
+        from treeview_excel_cizgi import excel_cizgi_bagla
 
-        dikey = None
-        for w in parent.winfo_children():
-            if not isinstance(w, ttk.Scrollbar):
-                continue
+        def _sonrasi():
             try:
-                if str(w.cget("orient")) == "vertical":
-                    dikey = w
-                    break
-            except tk.TclError:
-                continue
+                self._giris_temiz_koruma = False
+                sec = self.satir_tablo.selection()
+                if sec:
+                    self._satir_girise_yukle(self.satir_tablo.index(sec[0]))
+            except (tk.TclError, Exception):
+                pass
 
-        def planla(_event=None):
-            aid = getattr(self, "_teklif_excel_after", None)
-            if aid is not None:
-                try:
-                    self.after_cancel(aid)
-                except tk.TclError:
-                    pass
-            self._teklif_excel_after = self.after(15, self._teklif_excel_cizgileri_yenile)
-
-        def yset(*args):
-            if dikey is not None:
-                try:
-                    dikey.set(*args)
-                except tk.TclError:
-                    pass
-            planla()
-
-        tree.configure(yscrollcommand=yset)
-        tree.bind("<Configure>", planla, add="+")
-        tree.bind("<MouseWheel>", planla, add="+")
-        tree.bind("<ButtonRelease-1>", planla, add="+")
-        parent.bind("<Configure>", planla, add="+")
-        self._teklif_excel_kurulu = True
-        planla()
+        excel_cizgi_bagla(
+            self,
+            self.satir_tablo,
+            style_name="TeklifSatir.Treeview",
+            bag_adi="teklif",
+            tiklama_sonrasi=_sonrasi,
+        )
 
     def _teklif_excel_cizgileri_yenile(self) -> None:
-        """Görünür hücre kenarlarına ince yatay/dikey çizgiler (fatura gibi)."""
-        self._teklif_excel_after = None
-        if not hasattr(self, "satir_tablo"):
-            return
-        tree = self.satir_tablo
-        parent = tree.master
-        self._teklif_excel_cizgileri_temizle()
-        try:
-            if not tree.winfo_ismapped():
-                return
-        except tk.TclError:
-            return
+        ov = getattr(self, "_teklif_excel_overlay", None)
+        if ov is not None:
+            ov.yenile()
 
-        renk = "#BDBDBD"
-        dcols = tree["displaycolumns"]
-        if not dcols or dcols in ("#all", ("#all",)):
-            dcols = tree["columns"]
-        dcols = list(dcols or ())
-        if not dcols:
-            return
-        try:
-            tx, ty = tree.winfo_x(), tree.winfo_y()
-        except tk.TclError:
-            return
-
-        cizgiler = []
-        self._teklif_excel_cizgiler = cizgiler
-
-        def _tiklama_aktar(event, cift=False):
-            try:
-                x = event.x_root - tree.winfo_rootx()
-                y = event.y_root - tree.winfo_rooty()
-            except tk.TclError:
-                return "break"
-            row = tree.identify_row(y)
-            if row:
-                try:
-                    tree.selection_set(row)
-                    tree.focus(row)
-                    self._giris_temiz_koruma = False
-                    idx = tree.index(row)
-                    if not cift:
-                        self._satir_girise_yukle(idx)
-                except tk.TclError:
-                    pass
-            try:
-                tree.event_generate("<Double-1>" if cift else "<Button-1>", x=x, y=y)
-            except tk.TclError:
-                pass
-            return "break"
-
-        def cizgi(**kwargs):
-            fr = tk.Frame(parent, bg=renk, highlightthickness=0, bd=0, **kwargs)
-            fr.bind("<Button-1>", _tiklama_aktar)
-            fr.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
-            cizgiler.append(fr)
-            return fr
-
-        def hucre(x, y, w, h, sol=False, ust=False):
-            if w <= 1 or h <= 1:
-                return
-            if ust:
-                cizgi(height=1, width=w).place(x=tx + x, y=ty + y)
-            cizgi(height=1, width=w).place(x=tx + x, y=ty + y + h - 1)
-            if sol:
-                cizgi(width=1, height=h).place(x=tx + x, y=ty + y)
-            cizgi(width=1, height=h).place(x=tx + x + w - 1, y=ty + y)
-
-        stil = ttk.Style(self)
-        try:
-            rh = int(float(stil.lookup("TeklifSatir.Treeview", "rowheight") or 42))
-        except (TypeError, ValueError):
-            rh = 42
-
-        children = list(tree.get_children())
-        kolon_xw = None
-        baslik_h = None
-        son_alt = None
-        ilk_veri_y = None
-
-        for item in children:
-            for sira, col in enumerate(dcols):
-                box = tree.bbox(item, col)
-                if not box:
-                    continue
-                x, y, w, h = box
-                if ilk_veri_y is None:
-                    ilk_veri_y = y
-                hucre(x, y, w, h, sol=(sira == 0), ust=(y == ilk_veri_y))
-                if kolon_xw is None:
-                    kolon_xw = []
-                    for c2 in dcols:
-                        b2 = tree.bbox(item, c2)
-                        if b2:
-                            kolon_xw.append((b2[0], b2[2]))
-                    baslik_h = y
-                    rh = h
-                son_alt = y + h
-
-        if kolon_xw is None:
-            toplam_w = sum(max(20, int(tree.column(c, "width") or 20)) for c in dcols) or 1
-            try:
-                sol = float(tree.xview()[0]) * toplam_w
-            except (tk.TclError, ValueError, IndexError):
-                sol = 0.0
-            kolon_xw = []
-            cum = 0
-            for col in dcols:
-                w = max(20, int(tree.column(col, "width") or 20))
-                kolon_xw.append((int(cum - sol), w))
-                cum += w
-            baslik_h = 26
-            son_alt = baslik_h
-
-        if baslik_h and baslik_h > 2 and kolon_xw:
-            for sira, (x, w) in enumerate(kolon_xw):
-                if x + w < 0:
-                    continue
-                hucre(x, 0, w, baslik_h, sol=(sira == 0), ust=True)
-
-        try:
-            tablo_h = tree.winfo_height()
-        except tk.TclError:
-            return
-        y = son_alt if son_alt is not None else (baslik_h or 26)
-        guvenlik = 0
-        while y + rh <= tablo_h and guvenlik < 40 and kolon_xw:
-            for sira, (x, w) in enumerate(kolon_xw):
-                if x + w < 0:
-                    continue
-                hucre(x, y, w, rh, sol=(sira == 0), ust=False)
-            y += rh
-            guvenlik += 1
+    def _teklif_excel_cizgileri_kur(self) -> None:
+        self._teklif_excel_cizgileri_bagla()
 
     def _satir_tablo_yenile(self):
         for i in self.satir_tablo.get_children():

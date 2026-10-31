@@ -462,6 +462,8 @@ class SatisSiparisiService:
             ust_mevcut = {c["name"] for c in insp.get_columns("satis_siparisleri")}
             ust_eklenecekler = {
                 "siparis_saati": "VARCHAR(8)",
+                "teslim_saati": "VARCHAR(8)",
+                "teslim_sekli": "VARCHAR(80)",
                 "depo": "VARCHAR(100)",
                 "teslimat_adresi": "TEXT",
                 "teslimat_il": "VARCHAR(80)",
@@ -469,6 +471,10 @@ class SatisSiparisiService:
                 "musteri_siparis_no": "VARCHAR(80)",
                 "para_birimi": "VARCHAR(3) DEFAULT 'TRY' NOT NULL",
                 "kur": "NUMERIC(18, 6) DEFAULT 1 NOT NULL",
+                "genel_toplam": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
+                "genel_islem_turu": "VARCHAR(20)",
+                "genel_islem_orani": "NUMERIC(12, 6) DEFAULT 0 NOT NULL",
+                "genel_islem_tutari": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
                 "teslim_kosulu": "VARCHAR(300)",
                 "odeme_kosulu": "VARCHAR(300)",
             }
@@ -617,6 +623,12 @@ class SatisSiparisiService:
             if "siparis_saati" in veriler:
                 saat = bos_metin(veriler.get("siparis_saati")) or None
                 siparis.siparis_saati = saat
+            if "teslim_saati" in veriler or yeni:
+                # Boş ile gerçek 00:00 karışmasın: boş → None, "00:00" korunur
+                ts = bos_metin(veriler.get("teslim_saati"))
+                siparis.teslim_saati = ts or None
+            if "teslim_sekli" in veriler or yeni:
+                siparis.teslim_sekli = bos_metin(veriler.get("teslim_sekli")) or None
             siparis.cari_id = int(veriler["cari_id"])
             siparis.maliyet_yontemi = maliyet_yontemi
             siparis.hedef_kar_marji = hedef
@@ -626,6 +638,15 @@ class SatisSiparisiService:
             siparis.aciklama = bos_metin(veriler.get("aciklama")) or None
             siparis.para_birimi = para_birimi
             siparis.kur = kur
+            if "genel_islem_turu" in veriler or yeni:
+                tur = bos_metin(veriler.get("genel_islem_turu")) or None
+                siparis.genel_islem_turu = tur
+                siparis.genel_islem_orani = decimal(
+                    veriler.get("genel_islem_orani", 0) or 0, "İşlem oranı", Decimal("0")
+                )
+                siparis.genel_islem_tutari = decimal(
+                    veriler.get("genel_islem_tutari", 0) or 0, "İşlem tutarı", Decimal("0")
+                )
             for alan in (
                 "depo", "teslimat_adresi", "teslimat_il", "teslimat_ilce", "musteri_siparis_no",
                 "teslim_kosulu", "odeme_kosulu",
@@ -638,6 +659,12 @@ class SatisSiparisiService:
                 siparis.durum = "AÇIK"
             SatisSiparisiService._satirlari_uygula(siparis, satir_verileri, yeni=yeni)
             toplam = SatisSiparisiService.siparis_toplami(siparis.satirlar)
+            if "genel_toplam" in veriler:
+                siparis.genel_toplam = decimal(
+                    veriler.get("genel_toplam", 0) or 0, "Genel toplam", Decimal("0")
+                )
+            else:
+                siparis.genel_toplam = toplam["genel_toplam"]
             tahsilat_toplam = Decimal("0")
             if tahsilat_verileri is None:
                 tahsilat_toplam = sum(
@@ -647,7 +674,10 @@ class SatisSiparisiService:
                 tutar = decimal(veri["tutar"], "Tahsilat tutarı", Decimal("0"))
                 tahsilat_toplam += tutar
                 siparis.tahsilatlar.append(SatisSiparisiTahsilati(tahsilat_tarihi=veri["tahsilat_tarihi"], tutar=tutar, odeme_sekli=veri["odeme_sekli"], hesap=veri.get("hesap"), aciklama=veri.get("aciklama")))
-            if tahsilat_toplam > toplam["genel_toplam"]:
+            net_kontrol = decimal(getattr(siparis, "genel_toplam", 0) or 0, "Genel", Decimal("0"))
+            if net_kontrol <= 0:
+                net_kontrol = toplam["genel_toplam"]
+            if tahsilat_toplam > net_kontrol:
                 raise ValueError("Toplam tahsilat sipariş toplamından büyük olamaz.")
             if yeni:
                 stamp_create(siparis)

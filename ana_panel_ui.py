@@ -76,8 +76,9 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
     # Satışlar: anahtar, uygulamadaki mevcut ekranın metot adıdır. Listeler Satışlar ekranında açılır;
     # SATIS_PENCERELERI ayrı pencere (Toplevel) açar, ekran değiştirmez.
     "satislar": (
-        ("Satış Faturaları", "satis_faturalari_goster", ("satis_goruntuleme", "goruntuleme")),
-        ("Alınan Siparişler", "satis_siparisleri_goster", ("satis_goruntuleme", "goruntuleme")),
+        ("Satış Faturaları", "hizli_fatura_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
+        ("Alınan Siparişler", "satis_siparisi_yeni_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
+        ("Teklifler", "teklifler_hub_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
         ("Sorulan Ürünler", "sorulan_urunler", ("satis_goruntuleme", "goruntuleme")),
         ("Müşteri Kartları", "musteri_karti_ac", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
                                                   "goruntuleme")),
@@ -963,6 +964,15 @@ class AnaPanelKabuk:
                 sorulan_urunler_goster(self.app)
             except Exception as hata:  # noqa: BLE001
                 messagebox.showerror("Sorulan Ürünler", str(hata), parent=self.app)
+            return
+        if alt_anahtar == "teklifler_hub_ac":
+            from teklif_ui import teklifler_hub_goster
+
+            self._alt_oge_isaretle(alt_anahtar)
+            try:
+                teklifler_hub_goster(self.app)
+            except Exception as hata:  # noqa: BLE001
+                messagebox.showerror("Teklifler", str(hata), parent=self.app)
             return
         if any(k == alt_anahtar for _e, k, _y in MENU_ALT_OGELERI["satislar"]):
             self._satis_listesi_ac(alt_anahtar)
