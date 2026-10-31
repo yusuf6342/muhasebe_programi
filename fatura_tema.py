@@ -62,6 +62,39 @@ def scale_height(eski: float | int, katsayi: float = SATIR_YUKSEKLIK_KATSAYI) ->
     return max(1, int(round(float(eski) * float(katsayi))))
 
 
+def tablo_satir_rowheight(
+    root: tk.Misc | None = None,
+    *,
+    font_spec=None,
+    vurgulu_font_spec=None,
+    dikey_pay: int = 12,
+) -> int:
+    """Treeview ürün satırı yüksekliği — yazı linespace + pay (ızgara metni kesmez).
+
+    Windows ölçeğinde punto büyür; sabit px yetmez. Font metrics ile hesaplanır.
+    Fatura vurgulu ürün adı (12 bold) overlay'i de aynı satıra sığmalıdır.
+    """
+    from tkinter import font as tkfont
+
+    def _linespace(spec) -> int:
+        try:
+            if root is not None:
+                fnt = tkfont.Font(root=root, font=spec)
+            else:
+                fnt = tkfont.Font(font=spec)
+            return max(1, int(fnt.metrics("linespace") or 0))
+        except Exception:
+            return 0
+
+    if font_spec is None:
+        font_spec = font(10, root=root)
+    if vurgulu_font_spec is None:
+        vurgulu_font_spec = font(12, "bold", root=root)
+    ls = max(_linespace(font_spec), _linespace(vurgulu_font_spec), 16)
+    taban = scale_height(TABLO_SATIR_TABAN_PX)
+    return max(taban, ls + max(6, int(dikey_pay)))
+
+
 def form_ipady(taban: int = FORM_SATIR_TABAN_PX) -> int:
     """Entry/düğme dikey iç boşluk — sabit hedef yükseklik (yeniden açılışta artmaz)."""
     hedef = scale_height(taban)
@@ -225,15 +258,17 @@ def stil_uygula(stil: ttk.Style | None = None, root: tk.Misc | None = None) -> t
         padding=(8, _ip),
     )
 
+    _satir_font = font(10, root=root)
     stil.configure(
         "FaturaSatir.Treeview",
-        font=f_alt,
-        rowheight=scale_height(TABLO_SATIR_TABAN_PX),
+        font=_satir_font,
+        rowheight=tablo_satir_rowheight(root, font_spec=_satir_font),
         fieldbackground=BEYAZ,
         background=BEYAZ,
         foreground=METIN,
-        borderwidth=1,
-        relief="solid",
+        # solid relief Windows'ta satır ortasından yatay çizgi çizebiliyor; ızgara overlay'de
+        borderwidth=0,
+        relief="flat",
     )
     # Açık zemin + lacivert yazı: Windows/clam'da lacivert+beyaz bazen görünmez kalır
     stil.configure(

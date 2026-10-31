@@ -12,6 +12,17 @@ from database.models.stok import KDV_ORANLARI
 from database.stok_service import BirimDonusumHatasi
 from fatura_tema import HUCRE_EDITOR_TABAN_PX, scale_height
 from satir_klavye import odak_tabloda_mi, satir_stok_karti_ac, urun_kolonlari
+
+
+def _hucre_editor_yerlestir(editor, bx, by, bw, bh, *, min_w: int = 50) -> None:
+    """Editörü hücre bbox içine 1 px pay ile yerleştir (ızgara metni kesmesin)."""
+    ic = 1
+    editor.place(
+        x=bx + ic,
+        y=by + ic,
+        width=max(bw - 2 * ic, min_w),
+        height=max(bh - 2 * ic, 18),
+    )
 from fatura_satir_birim_service import (
     birim_degistir,
     birim_satis_fiyati,
@@ -601,7 +612,7 @@ def _overlay_entry(dialog, tablo, iid, kolon, metin, *, justify="right"):
     bx, by, bw, bh = box
     var = tk.StringVar(value=metin)
     editor = ttk.Entry(tablo, textvariable=var, justify=justify, font=("Segoe UI", 10))
-    editor.place(x=bx, y=by, width=max(bw, 50), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
+    _hucre_editor_yerlestir(editor, bx, by, bw, bh, min_w=50)
     editor.lift()
     editor.focus_set()
     editor.selection_range(0, "end")
@@ -716,7 +727,7 @@ def birim_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         font=("Segoe UI", 10),
         justify="center",
     )
-    editor.place(x=bx, y=by, width=max(bw, 70), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
+    _hucre_editor_yerlestir(editor, bx, by, bw, bh, min_w=70)
     editor.focus_set()
     dialog._satir_hucre_editor = editor
     _odak_cikinca_uygula(dialog, editor)
@@ -941,7 +952,7 @@ def pb_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         justify="center",
         font=("Segoe UI", 10),
     )
-    editor.place(x=bx, y=by, width=max(bw, 60), height=max(bh, scale_height(HUCRE_EDITOR_TABAN_PX)))
+    _hucre_editor_yerlestir(editor, bx, by, bw, bh, min_w=60)
     editor.focus_set()
     dialog._satir_hucre_editor = editor
     _odak_cikinca_uygula(dialog, editor)
@@ -1302,7 +1313,7 @@ def kdv_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
         justify="center",
         font=("Segoe UI", 10),
     )
-    editor.place(x=bx, y=by, width=max(bw, 72), height=max(bh, scale_height(26)))
+    _hucre_editor_yerlestir(editor, bx, by, bw, bh, min_w=72)
     editor.focus_set()
     dialog._satir_hucre_editor = editor
     _odak_cikinca_uygula(dialog, editor)

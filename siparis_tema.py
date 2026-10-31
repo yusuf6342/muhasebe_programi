@@ -97,10 +97,10 @@ def stil_uygula(root=None):
         font=ft.font(9, "bold", root=root),
         padding=(6, 3),
     )
-    # Ürün satır yüksekliği = Teklif Formu (TABLO_SATIR_TABAN × katsayı)
+    # Ürün satır yüksekliği = yazı metrics + pay (ızgara metni kesmez; Teklif ile aynı formül)
     f_satir = ft.font(12, "bold", root=root)
     f_baslik = ft.font(10, "bold", root=root)
-    satir_rh = ft.scale_height(ft.TABLO_SATIR_TABAN_PX)
+    satir_rh = ft.tablo_satir_rowheight(root, font_spec=f_satir, vurgulu_font_spec=f_satir)
     stil.configure(
         "SiparisSatir.Treeview",
         font=f_satir,
@@ -108,8 +108,8 @@ def stil_uygula(root=None):
         fieldbackground=BEYAZ,
         background=BEYAZ,
         foreground=ft.METIN,
-        borderwidth=1,
-        relief="solid",
+        borderwidth=0,
+        relief="flat",
     )
     stil.configure(
         "SiparisSatir.Treeview.Heading",

@@ -6843,7 +6843,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             style.configure("FaturaUst.TLabelframe", padding=(6, 2))
             style.configure(
                 "FaturaSatir.Treeview",
-                rowheight=ftema.scale_height(ftema.TABLO_SATIR_TABAN_PX),
+                rowheight=ftema.tablo_satir_rowheight(self),
             )
             style.configure(
                 "FaturaSatir.Treeview.Heading",
@@ -8903,13 +8903,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         except Exception:
             pass
         stil = ttk.Style(self)
-        # Tablo veri satırı: taban 28 × 1.50 = 42 (tema ile senkron)
+        # Satır yüksekliği: font metrics + pay (Excel ızgara metnin içinden geçmez)
+        _f_satir = ftema.font(10, root=self)
         stil.configure(
             "FaturaSatir.Treeview",
-            rowheight=ftema.scale_height(ftema.TABLO_SATIR_TABAN_PX),
-            font=ftema.font(10, root=self),
-            borderwidth=1,
-            relief="solid",
+            rowheight=ftema.tablo_satir_rowheight(self, font_spec=_f_satir),
+            font=_f_satir,
+            borderwidth=0,
+            relief="flat",
             fieldbackground=ftema.BEYAZ,
             background=ftema.BEYAZ,
             foreground=ftema.METIN,
@@ -9794,6 +9795,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     metin = degerler[k_idx] if k_idx < len(degerler) else ""
                 except (ValueError, IndexError, TypeError):
                     metin = ""
+                # 1 px iç boşluk: Excel satır/sütun çizgisi harflerin üstüne binmesin
+                ic = 1
                 lbl = tk.Label(
                     tablo,
                     text=str(metin),
@@ -9804,7 +9807,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     padx=4,
                     pady=0,
                 )
-                lbl.place(x=x, y=y, width=w, height=h)
+                lbl.place(
+                    x=x + ic,
+                    y=y + ic,
+                    width=max(2, w - 2 * ic),
+                    height=max(2, h - 2 * ic),
+                )
 
                 def _duzenle(_iid, _kolon, _e=None):
                     if getattr(self, "_fatura_kilitli", False):

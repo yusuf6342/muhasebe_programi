@@ -1,7 +1,8 @@
-"""Treeview Excel ızgarası — teklif ürün tablosuyla aynı yatay/dikey hücre çizgileri.
+"""Treeview Excel ızgarası — yatay/dikey çizgiler yalnızca satır/sütun sınırlarında.
 
-Boş görünür alana da çizgi çizer; gerçek belge satırı eklemez.
-Frame overlay tıklamaları Treeview'a iletir (hücre düzenleme / sağ tık bozulmaz).
+Çizgiler hücre içeriğinin (metin) üzerine binmez: yatay çizgi satırın
+alt sınırına (bbox y+h) konur; dikey çizgi sütun kenarına. Overlay
+Frame tıklamaları Treeview'a iletir.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ class TreeviewExcelCizgi:
         self._cizgiler: list[tk.Frame] = []
         self._after: Any = None
         self._kurulu = False
+        self._onceki_yscroll = None
 
     def temizle(self) -> None:
         for w in self._cizgiler:
@@ -73,15 +75,6 @@ class TreeviewExcelCizgi:
                     pass
             self._after = self.host.after(15, self.yenile)
 
-        def yset(*args):
-            if dikey is not None:
-                try:
-                    dikey.set(*args)
-                except tk.TclError:
-                    pass
-            planla()
-
-        # Mevcut yscrollcommand'ı koru (yatay + dikey birlikte olabilir)
         onceki = tree.cget("yscrollcommand")
         self._onceki_yscroll = onceki
 
@@ -130,7 +123,11 @@ class TreeviewExcelCizgi:
             return
         try:
             tx, ty = tree.winfo_x(), tree.winfo_y()
+            tablo_h = int(tree.winfo_height())
+            tablo_w = int(tree.winfo_width())
         except tk.TclError:
+            return
+        if tablo_h < 8 or tablo_w < 8:
             return
 
         cizgiler = self._cizgiler
@@ -150,7 +147,6 @@ class TreeviewExcelCizgi:
                 except tk.TclError:
                     pass
             try:
-                # rootx/rooty şart — bind_class sağ tık / hücre identify bunları kullanır
                 tree.event_generate(
                     "<Double-1>" if cift else "<Button-1>",
                     x=x,
@@ -192,49 +188,88 @@ class TreeviewExcelCizgi:
             fr.bind("<Button-1>", _tiklama_aktar)
             fr.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
             fr.bind("<Button-3>", _sag_tik)
+            try:
+                fr.lift(tree)
+            except tk.TclError:
+                pass
             cizgiler.append(fr)
             return fr
 
-        def hucre(x, y, w, h, sol=False, ust=False):
-            if w <= 1 or h <= 1:
+        def yatay_sinir(x: int, y_abs: int, w: int) -> None:
+            """Yatay çizgi — satırın alt kenar pikseli (metin payı rowheight ile sağlanır)."""
+            if w <= 1:
                 return
-            if ust:
-                cizgi(height=1, width=w).place(x=tx + x, y=ty + y)
-            cizgi(height=1, width=w).place(x=tx + x, y=ty + y + h - 1)
-            if sol:
-                cizgi(width=1, height=h).place(x=tx + x, y=ty + y)
-            cizgi(width=1, height=h).place(x=tx + x + w - 1, y=ty + y)
+            # Treeview alanının dışına taşmasın
+            if y_abs < ty or y_abs >= ty + tablo_h:
+                return
+            cizgi(height=1, width=w).place(x=tx + x, y=y_abs)
+
+        def dikey_sinir(x_abs: int, y: int, h: int) -> None:
+            if h <= 1:
+                return
+            cizgi(width=1, height=h).place(x=x_abs, y=ty + y)
 
         stil = ttk.Style(self.host)
         try:
-            rh = int(float(stil.lookup(self.style_name, "rowheight") or 28))
+            rh_stil = int(float(stil.lookup(self.style_name, "rowheight") or 28))
         except (TypeError, ValueError):
-            rh = 28
+            rh_stil = 28
 
         children = list(tree.get_children())
-        kolon_xw = None
-        baslik_h = None
-        son_alt = None
-        ilk_veri_y = None
+        kolon_xw: list[tuple[int, int]] | None = None
+        baslik_h: int | None = None
+        satir_adim: int | None = None
+        son_alt: int | None = None
+        ilk_veri_y: int | None = None
+        onceki_y: int | None = None
 
         for item in children:
+            satir_y = None
+            satir_h = None
             for sira, col in enumerate(dcols):
                 box = tree.bbox(item, col)
                 if not box:
                     continue
-                x, y, w, h = box
+                x, y, w, h = (int(v) for v in box)
+                if w <= 1 or h <= 1:
+                    continue
                 if ilk_veri_y is None:
                     ilk_veri_y = y
-                hucre(x, y, w, h, sol=(sira == 0), ust=(y == ilk_veri_y))
+                    baslik_h = y
+                if satir_y is None:
+                    satir_y = y
+                    # ttk bazen bbox yüksekliğini stil rowheight'ten kısa verir;
+                    # kısa h ile çizilen yatay çizgi metnin ORTASINDAN geçer.
+                    satir_h = max(h, rh_stil)
                 if kolon_xw is None:
                     kolon_xw = []
                     for c2 in dcols:
                         b2 = tree.bbox(item, c2)
                         if b2:
-                            kolon_xw.append((b2[0], b2[2]))
-                    baslik_h = y
-                    rh = h
-                son_alt = y + h
+                            kolon_xw.append((int(b2[0]), int(b2[2])))
+                        else:
+                            kolon_xw.append((0, max(20, int(tree.column(c2, "width") or 20))))
+                # Dikey çizgi: stil satır yüksekliği (bbox h kısa olsa bile)
+                rh_ciz = max(h, rh_stil)
+                dikey_sinir(tx + x + w - 1, y, rh_ciz)
+                if sira == 0:
+                    dikey_sinir(tx + x, y, rh_ciz)
+            if satir_y is not None and satir_h is not None:
+                if onceki_y is not None:
+                    adim = satir_y - onceki_y
+                    if adim > 0:
+                        satir_adim = adim
+                onceki_y = satir_y
+                # Yatay çizgi: stil/adım ile satır ALT sınırı (asla bbox-orta değil)
+                if kolon_xw:
+                    for x, w in kolon_xw:
+                        if x + w < 0:
+                            continue
+                        # Hücre altına (y+h): son içerik pikseline binmez
+                        yatay_sinir(x, ty + satir_y + satir_h, w)
+                son_alt = satir_y + satir_h
+                if satir_adim is None:
+                    satir_adim = satir_h
 
         if kolon_xw is None:
             toplam_w = sum(max(20, int(tree.column(c, "width") or 20)) for c in dcols) or 1
@@ -250,24 +285,30 @@ class TreeviewExcelCizgi:
                 cum += w
             baslik_h = 26
             son_alt = baslik_h
+            satir_adim = rh_stil
 
+        # Başlık: üst + alt kenar, dikeyler (veri satırı x ile aynı kolon_xw)
         if baslik_h and baslik_h > 2 and kolon_xw:
             for sira, (x, w) in enumerate(kolon_xw):
                 if x + w < 0:
                     continue
-                hucre(x, 0, w, baslik_h, sol=(sira == 0), ust=True)
+                yatay_sinir(x, ty, w)
+                yatay_sinir(x, ty + baslik_h, w)
+                dikey_sinir(tx + x + w - 1, 0, baslik_h)
+                if sira == 0:
+                    dikey_sinir(tx + x, 0, baslik_h)
 
-        try:
-            tablo_h = tree.winfo_height()
-        except tk.TclError:
-            return
+        rh = max(satir_adim or rh_stil, 8)
         y = son_alt if son_alt is not None else (baslik_h or 26)
         guvenlik = 0
-        while y + rh <= tablo_h and guvenlik < 60 and kolon_xw:
+        while y + rh <= tablo_h and guvenlik < 80 and kolon_xw:
             for sira, (x, w) in enumerate(kolon_xw):
                 if x + w < 0:
                     continue
-                hucre(x, y, w, rh, sol=(sira == 0), ust=False)
+                dikey_sinir(tx + x + w - 1, y, rh)
+                if sira == 0:
+                    dikey_sinir(tx + x, y, rh)
+                yatay_sinir(x, ty + y + rh, w)
             y += rh
             guvenlik += 1
 
@@ -284,6 +325,8 @@ def excel_cizgi_bagla(
     attr = f"_{bag_adi}_excel_overlay"
     mevcut = getattr(host, attr, None)
     if isinstance(mevcut, TreeviewExcelCizgi) and mevcut.tree is tree:
+        mevcut.style_name = style_name
+        mevcut.tiklama_sonrasi = tiklama_sonrasi
         mevcut.kur()
         return mevcut
     overlay = TreeviewExcelCizgi(

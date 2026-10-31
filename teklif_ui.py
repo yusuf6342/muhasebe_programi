@@ -1059,14 +1059,15 @@ class TeklifDialog(tk.Toplevel):
                 "toplam": 110,
             }
         self._satir_kolonlar = kolonlar
-        satir_h = ftema.scale_height(ftema.TABLO_SATIR_TABAN_PX)  # 28 × 1.50
+        f_satir = ("Segoe UI", 12, "bold")
+        satir_h = ftema.tablo_satir_rowheight(self, font_spec=f_satir, vurgulu_font_spec=f_satir)
         stil = ttk.Style(self)
         stil.configure(
             "TeklifSatir.Treeview",
-            font=("Segoe UI", 12, "bold"),
+            font=f_satir,
             rowheight=satir_h,
-            borderwidth=1,
-            relief="solid",
+            borderwidth=0,
+            relief="flat",
             fieldbackground=BEYAZ,
             background=BEYAZ,
             foreground="#0B1220",

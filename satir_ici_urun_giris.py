@@ -678,7 +678,14 @@ class SatirHucreDuzenleyici:
                 self.tablo, textvariable=self._var, font=("Segoe UI", 10),
                 justify="right" if alan.tur == "sayi" else "left",
             )
-        ed.place(x=x, y=y, width=max(w, 70), height=max(h, 24))
+        # Hücre yüksekliğini aşma — çizgi/metin çakışmasın; 1 px iç pay
+        ic = 1
+        ed.place(
+            x=x + ic,
+            y=y + ic,
+            width=max(w - 2 * ic, 70),
+            height=max(h - 2 * ic, 18),
+        )
         ed.focus_set()
         if str(ed.cget("state")) != "readonly":
             ed.selection_range(0, "end")
@@ -1025,7 +1032,13 @@ class SatirIciUrunGirisi:
             return
         x, y, w, h = box
         try:
-            self.entry.place(x=x, y=y, width=max(w, _EDITOR_MIN_GENISLIK), height=max(h, 24))
+            ic = 1
+            self.entry.place(
+                x=x + ic,
+                y=y + ic,
+                width=max(w - 2 * ic, _EDITOR_MIN_GENISLIK),
+                height=max(h - 2 * ic, 18),
+            )
             self.entry.lift()
             if odakla:
                 self.entry.focus_set()

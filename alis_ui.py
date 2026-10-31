@@ -609,9 +609,20 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
         self._sekmeler.pack(fill="both", expand=True, padx=10, pady=4)
         orta = ttk.Frame(self._sekmeler, padding=8)
         self._sekmeler.add(orta, text="Ürün Satırları")
+        try:
+            import siparis_tema as stema
+
+            stema.stil_uygula(root=self)
+            stil_adi = "SiparisSatir.Treeview"
+        except Exception:
+            stil_adi = "Treeview"
+            ttk.Style(self).configure(
+                "Treeview",
+                rowheight=ftema.tablo_satir_rowheight(self),
+            )
         self.satir_tablosu = ttk.Treeview(
             orta, columns=("kod", "ad", "miktar", "birim", "fiyat", "isk", "kdv", "tutar"),
-            show="headings", height=10,
+            show="headings", height=10, style=stil_adi,
         )
         for kolon, baslik_metni, w in (
             ("kod", "Kod", 100), ("ad", "Ad", 220), ("miktar", "Miktar", 80),
@@ -621,6 +632,16 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
             self.satir_tablosu.heading(kolon, text=baslik_metni)
             self.satir_tablosu.column(kolon, width=w)
         self.satir_tablosu.pack(fill="both", expand=True)
+        try:
+            from treeview_excel_cizgi import excel_cizgi_bagla
+
+            self.after_idle(
+                lambda: excel_cizgi_bagla(
+                    self, self.satir_tablosu, style_name=stil_adi, bag_adi="alis_siparis"
+                )
+            )
+        except Exception:
+            pass
         self._alis_girisi_kur()
         satir_btn = ttk.Frame(orta)
         satir_btn.pack(fill="x", pady=4)
@@ -2116,6 +2137,10 @@ class AlisFaturasiDialog(tk.Toplevel):
             deger = stil.lookup(kaynak, secenek)
             if deger not in ("", None):
                 ayar[secenek] = deger
+        # Metrik satır yüksekliği — FaturaSatir ile aynı (ızgara/yazı çakışmasın)
+        ayar["rowheight"] = ftema.tablo_satir_rowheight(self)
+        ayar["borderwidth"] = 0
+        ayar["relief"] = "flat"
         stil.configure(ALIS_TABLO_STILI, **ayar)
         stil.configure(
             f"{ALIS_TABLO_STILI}.Heading",
@@ -2948,6 +2973,19 @@ class AlisFaturasiDialog(tk.Toplevel):
         yatay.grid(row=2, column=0, sticky="ew")
         parent.rowconfigure(1, weight=1)
         parent.columnconfigure(0, weight=1)
+        try:
+            from treeview_excel_cizgi import excel_cizgi_bagla
+
+            self.after_idle(
+                lambda: excel_cizgi_bagla(
+                    self,
+                    self.satir_tablosu,
+                    style_name=ALIS_TABLO_STILI,
+                    bag_adi="alis_fatura",
+                )
+            )
+        except Exception:
+            pass
         self._alis_fatura_girisi_kur()
 
         # Sabit alt banda pack(in_=...) edilebilmesi için Toplevel'in çocuğu olmalı;
