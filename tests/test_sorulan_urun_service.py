@@ -31,9 +31,6 @@ class SorulanUrunServiceTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
         )
         event.listen(eng, "connect", _pragma)
-        # Yalnızca sorulan tabloları — tüm metadata bağımlılıkları tetiklenmesin
-        SorulanUrunAday.__table__.create(bind=eng, checkfirst=True)
-        SorulanUrunTalep.__table__.create(bind=eng, checkfirst=True)
         Session = sessionmaker(
             bind=eng, autoflush=False, autocommit=False, expire_on_commit=False
         )
@@ -64,7 +61,7 @@ class SorulanUrunServiceTest(unittest.TestCase):
         cls._donem_patch.start()
         from database.sorulan_urun_service import SorulanUrunService
 
-        SorulanUrunService._schema_hazir = True
+        SorulanUrunService.ensure_schema(eng)
         cls.svc = SorulanUrunService
         cls._engine = eng
 
@@ -100,9 +97,54 @@ class SorulanUrunServiceTest(unittest.TestCase):
         talepler = self.svc.talepler(r1["aday_id"])
         self.assertGreaterEqual(len(talepler), 2)
 
-    def test_urun_adi_zorunlu(self):
+    def test_urun_adi_veya_tarif_zorunlu(self):
         with self.assertRaises(ValueError):
             self.svc.hizli_kaydet({"urun_adi": "  ", "talep_nedeni": "CESITTE_YOK"})
+        r = self.svc.hizli_kaydet(
+            {
+                "urun_adi": "",
+                "musteri_tarifi": "Gri plastik kapak, vida delikli",
+                "talep_nedeni": "CESITTE_YOK",
+                "musteri_adi": "Ayşe",
+            }
+        )
+        self.assertTrue(r["aday_id"])
+
+    def test_tekrar_sorulma_bagimsiz_artmaz(self):
+        r = self.svc.hizli_kaydet(
+            {"urun_adi": "Ray kapak X", "talep_nedeni": "CESITTE_YOK", "musteri_adi": "Can"}
+        )
+        o1 = next(o for o in self.svc.urun_ozet_listesi() if o["id"] == r["aday_id"])
+        self.svc.tekrar_soruldu(r["talep_id"], notlar="Tekrar sordu")
+        o2 = next(o for o in self.svc.urun_ozet_listesi() if o["id"] == r["aday_id"])
+        self.assertEqual(o2["bagimsiz_talep"], o1["bagimsiz_talep"])
+        self.assertEqual(o2["toplam_sorulma"], o1["toplam_sorulma"] + 1)
+        talepler = self.svc.talepler(r["aday_id"])
+        self.assertEqual(len(talepler), 1)
+        self.assertEqual(talepler[0]["tekrar_sayisi"], 1)
+
+    def test_gecmis_sorulma_tarihi(self):
+        from datetime import date, timedelta
+
+        eski = date.today() - timedelta(days=10)
+        r = self.svc.hizli_kaydet(
+            {
+                "urun_adi": "Eski talep ürün",
+                "talep_nedeni": "CESITTE_YOK",
+                "talep_tarihi": eski,
+                "musteri_adi": "Deniz",
+            }
+        )
+        t = self.svc.talepler(r["aday_id"])[0]
+        self.assertEqual(t["tarih_iso"], eski.isoformat())
+        with self.assertRaises(ValueError):
+            self.svc.hizli_kaydet(
+                {
+                    "urun_adi": "Gelecek yasak",
+                    "talep_nedeni": "CESITTE_YOK",
+                    "talep_tarihi": date.today() + timedelta(days=1),
+                }
+            )
 
 
 if __name__ == "__main__":

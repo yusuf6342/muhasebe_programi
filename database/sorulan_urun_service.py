@@ -3,21 +3,34 @@
 from __future__ import annotations
 
 import re
+import shutil
 import unicodedata
-from datetime import date, datetime
+import uuid
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from database.access import yazma_zorunlu
-from database.database import Base, engine, get_session
+from database.database import Base, DB_DIR, engine, get_session
 from database.models.sorulan_urun import (
     ARAMA_SONUCLARI,
+    MUADIL_SECENEKLERI,
     NIYETLER,
+    NIYET_ETIKET,
+    TALEP_DURUM_ETIKET,
     TALEP_NEDENLERI,
+    TALEP_NEDENI_ETIKET,
+    TANIM_DURUM_ETIKET,
     SorulanUrunAday,
+    SorulanUrunEk,
+    SorulanUrunGorusme,
+    SorulanUrunOlcu,
     SorulanUrunTalep,
+    SorulanUrunTarihLog,
+    SorulanUrunTekrar,
 )
 from database.session_manager import oturum
 
@@ -25,7 +38,79 @@ from database.session_manager import oturum
 def _normalize_ad(ad: str) -> str:
     s = unicodedata.normalize("NFKC", (ad or "").strip())
     s = re.sub(r"\s+", " ", s)
-    return s.casefold()
+    return s.casefold() or "__bos__"
+
+
+def bugun_tr() -> date:
+    """Türkiye günü (Europe/Istanbul)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    except Exception:
+        return date.today()
+
+
+def tarih_goster(d: date | None) -> str:
+    if d is None:
+        return ""
+    return d.strftime("%d.%m.%Y")
+
+
+def tarih_coz(metin: str | None) -> date | None:
+    m = (metin or "").strip()
+    if not m:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(m, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Geçersiz tarih: {metin}")
+
+
+def etiket_neden(kod: str) -> str:
+    return TALEP_NEDENI_ETIKET.get((kod or "").upper(), kod or "")
+
+
+def etiket_niyet(kod: str) -> str:
+    return NIYET_ETIKET.get((kod or "").upper(), kod or "")
+
+
+def etiket_durum(kod: str) -> str:
+    return TALEP_DURUM_ETIKET.get((kod or "").upper(), kod or "")
+
+
+def etiket_tanim(kod: str) -> str:
+    return TANIM_DURUM_ETIKET.get((kod or "").upper(), kod or "")
+
+
+_ACIK_DURUMLAR = frozenset(
+    {
+        "ACIK",
+        "BILGI_BEKLENIYOR",
+        "ARASTIRILIYOR",
+        "TEDARIKCI_BEKLENIYOR",
+        "FIYAT_BEKLENIYOR",
+        "MUSTERIYE_BILDIRILDI",
+        "TAKIPTE",
+        "SATINALMA_ARA",
+        "SIPARIS_VERILDI",
+        "URUN_GELDI",
+        "ARAMA_BEKLIYOR",
+    }
+)
+
+
+def _bekleme_gunu(talep: SorulanUrunTalep, *, bugun: date | None = None) -> int | None:
+    """İlk sorulmadan bugüne (veya sonuç tarihine); bilinmeyen tarihte None."""
+    if getattr(talep, "sorulma_tarihi_bilinmiyor", False):
+        return None
+    ilk = talep.talep_tarihi
+    if ilk is None:
+        return None
+    bitis = talep.sonuc_tarihi if (talep.durum not in _ACIK_DURUMLAR and talep.sonuc_tarihi) else (bugun or bugun_tr())
+    return max(0, (bitis - ilk).days)
 
 
 class SorulanUrunService:
@@ -38,11 +123,72 @@ class SorulanUrunService:
             return
         import database.models.sorulan_urun  # noqa: F401
 
-        Base.metadata.create_all(
-            bind=bag,
-            tables=[SorulanUrunAday.__table__, SorulanUrunTalep.__table__],
-        )
+        tablolar = [
+            SorulanUrunAday.__table__,
+            SorulanUrunTalep.__table__,
+            SorulanUrunOlcu.__table__,
+            SorulanUrunEk.__table__,
+            SorulanUrunTekrar.__table__,
+            SorulanUrunGorusme.__table__,
+            SorulanUrunTarihLog.__table__,
+        ]
+        Base.metadata.create_all(bind=bag, tables=tablolar)
+        cls._kolonlari_guncelle(bag)
         cls._schema_hazir = True
+
+    @classmethod
+    def _kolonlari_guncelle(cls, bag) -> None:
+        """Mevcut tablolara eksik kolonları ekler (eski veriyi korur)."""
+        insp = inspect(bag)
+        aday_ek = {
+            "ilk_tarif": "TEXT",
+            "musteri_tarifi": "TEXT",
+            "diger_adlar": "VARCHAR(400)",
+            "urun_grubu": "VARCHAR(80)",
+            "urun_grubu_aciklama": "VARCHAR(200)",
+            "marka": "VARCHAR(100)",
+            "model": "VARCHAR(100)",
+            "uretici_kodu": "VARCHAR(100)",
+            "barkod": "VARCHAR(80)",
+            "urun_yazilari": "TEXT",
+            "kullanim_amaci": "TEXT",
+            "uyum_bilgisi": "TEXT",
+            "malzeme": "VARCHAR(120)",
+            "renk": "VARCHAR(80)",
+            "kaplama": "VARCHAR(80)",
+            "sekil": "VARCHAR(80)",
+            "calisma_bicimi": "VARCHAR(120)",
+            "numune_var": "BOOLEAN DEFAULT 0 NOT NULL",
+            "numune_yer": "VARCHAR(200)",
+            "internet_link": "VARCHAR(500)",
+            "katalog_sayfa": "VARCHAR(200)",
+            "tanim_durumu": "VARCHAR(30) DEFAULT 'TANIMLANAMADI' NOT NULL",
+        }
+        talep_ek = {
+            "sorulma_saati": "VARCHAR(8)",
+            "sorulma_tarihi_bilinmiyor": "BOOLEAN DEFAULT 0 NOT NULL",
+            "talep_aciklama": "TEXT",
+            "ihtiyac_tarihi": "DATE",
+            "aciliyet": "VARCHAR(40)",
+            "muadil": "VARCHAR(30) DEFAULT 'SORULMADI' NOT NULL",
+            "hedef_fiyat": "NUMERIC(18, 4)",
+            "sorumlu_personel": "VARCHAR(80)",
+            "sonraki_takip": "DATE",
+            "sonuc_tarihi": "DATE",
+        }
+        for tablo, ekler in (
+            ("sorulan_urun_adaylari", aday_ek),
+            ("sorulan_urun_talepleri", talep_ek),
+        ):
+            if not insp.has_table(tablo):
+                continue
+            mevcut = {c["name"] for c in insp.get_columns(tablo)}
+            eksik = {a: t for a, t in ekler.items() if a not in mevcut}
+            if not eksik:
+                continue
+            with bag.begin() as conn:
+                for alan, tip in eksik.items():
+                    conn.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}'))
 
     @staticmethod
     def _firma_id() -> int:
@@ -53,16 +199,31 @@ class SorulanUrunService:
 
     @staticmethod
     def hizli_kaydet(veriler: dict[str, Any]) -> dict[str, Any]:
-        """Ürün adı + talep nedeni ile kayıt; stok/cari zorunlu değil."""
+        """Hızlı kayıt: tarif/görsel yeterli; stok/cari zorunlu değil; hareket yok."""
         yazma_zorunlu()
         SorulanUrunService.ensure_schema()
         ad = " ".join(str(veriler.get("urun_adi") or "").split())
+        tarif = (veriler.get("musteri_tarifi") or veriler.get("ilk_tarif") or "").strip()
+        if not ad and not tarif and not veriler.get("fotograf_yollari"):
+            raise ValueError(
+                "Ürün adı/tarifi veya en az bir fotoğraf gerekli "
+                "(adı bilinmeyen ürün tarif veya görselle kaydedilebilir)."
+            )
         if not ad:
-            raise ValueError("Ürün adı zorunlu.")
+            ad = (tarif[:80] + "…") if len(tarif) > 80 else (tarif or "Adsız / tarifli ürün")
         neden = (veriler.get("talep_nedeni") or "CESITTE_YOK").strip().upper()
+        # Türkçe etiket gelirse koda çevir
+        for kod, et in TALEP_NEDENI_ETIKET.items():
+            if neden == et.upper() or neden == et:
+                neden = kod
+                break
         if neden not in TALEP_NEDENLERI:
             neden = "CESITTE_YOK"
         niyet = (veriler.get("niyet") or "SADECE_SORDU").strip().upper()
+        for kod, et in NIYET_ETIKET.items():
+            if niyet == et.upper() or niyet == et:
+                niyet = kod
+                break
         if niyet not in NIYETLER:
             niyet = "SADECE_SORDU"
         norm = _normalize_ad(ad)
@@ -73,6 +234,29 @@ class SorulanUrunService:
             miktar_d = Decimal(str(miktar))
             if miktar_d <= 0:
                 raise ValueError("Miktar pozitif olmalı veya boş bırakılmalı.")
+
+        # Sorulduğu tarih — gelecek yasak; bilinmiyor bayrağı
+        bilinmiyor = bool(veriler.get("sorulma_tarihi_bilinmiyor"))
+        if bilinmiyor:
+            sorulma = veriler.get("talep_tarihi")  # None kalabilir
+            if sorulma is None:
+                sorulma = bugun_tr()  # DB NOT NULL — bayrakla raporlarda ayrılır
+        else:
+            raw = veriler.get("talep_tarihi") or veriler.get("sorulma_tarihi")
+            if isinstance(raw, date):
+                sorulma = raw
+            elif raw:
+                sorulma = tarih_coz(str(raw))
+            else:
+                sorulma = bugun_tr()
+            if sorulma > bugun_tr():
+                raise ValueError("Sorulduğu tarih gelecek olamaz.")
+        saat = (veriler.get("sorulma_saati") or "").strip() or None
+        if saat:
+            try:
+                datetime.strptime(saat, "%H:%M")
+            except ValueError as exc:
+                raise ValueError("Saat SS:DD formatında olmalı.") from exc
 
         with get_session() as session:
             aday = session.scalar(
@@ -87,10 +271,17 @@ class SorulanUrunService:
                     firma_id=firma,
                     urun_adi=ad,
                     normalize_ad=norm,
+                    ilk_tarif=tarif or ad,
+                    musteri_tarifi=tarif or None,
                     ozellik=(veriler.get("ozellik") or None),
                     birim=(veriler.get("birim") or None),
+                    marka=(veriler.get("marka") or None),
+                    model=(veriler.get("model") or None),
+                    urun_grubu=(veriler.get("urun_grubu") or None),
+                    kullanim_amaci=(veriler.get("kullanim_amaci") or None),
                     stok_id=int(veriler["stok_id"]) if veriler.get("stok_id") else None,
                     talep_nedeni_ozet=neden,
+                    tanim_durumu=(veriler.get("tanim_durumu") or "TANIMLANAMADI"),
                     olusturan=getattr(oturum, "kullanici_adi", None),
                 )
                 session.add(aday)
@@ -99,15 +290,33 @@ class SorulanUrunService:
                 aday.guncelleme_tarihi = datetime.utcnow()
                 if veriler.get("stok_id") and not aday.stok_id:
                     aday.stok_id = int(veriler["stok_id"])
+                if tarif and not aday.ilk_tarif:
+                    aday.ilk_tarif = tarif
+                if tarif:
+                    aday.musteri_tarifi = tarif
 
             cari_id = veriler.get("cari_id")
             musteri = (veriler.get("musteri_adi") or "").strip() or None
             telefon = (veriler.get("telefon") or "").strip() or None
             anonim = not cari_id and not musteri and not telefon
+            muadil = (veriler.get("muadil") or "SORULMADI").strip().upper()
+            if muadil not in MUADIL_SECENEKLERI:
+                muadil = "SORULMADI"
+            ihtiyac = veriler.get("ihtiyac_tarihi")
+            if isinstance(ihtiyac, str):
+                ihtiyac = tarih_coz(ihtiyac) if ihtiyac.strip() else None
+            takip = veriler.get("sonraki_takip") or veriler.get("sonraki_arama")
+            if isinstance(takip, str):
+                takip = tarih_coz(takip) if takip.strip() else None
+            hedef = veriler.get("hedef_fiyat")
+            hedef_d = Decimal(str(hedef)) if hedef not in (None, "") else None
+
             talep = SorulanUrunTalep(
                 firma_id=firma,
                 aday_id=int(aday.id),
-                talep_tarihi=veriler.get("talep_tarihi") or date.today(),
+                talep_tarihi=sorulma,
+                sorulma_saati=saat,
+                sorulma_tarihi_bilinmiyor=bilinmiyor,
                 cari_id=int(cari_id) if cari_id else None,
                 musteri_adi=musteri,
                 telefon=telefon,
@@ -116,22 +325,45 @@ class SorulanUrunService:
                 birim=(veriler.get("birim") or aday.birim),
                 niyet=niyet,
                 talep_nedeni=neden,
+                talep_aciklama=(veriler.get("talep_aciklama") or None),
+                ihtiyac_tarihi=ihtiyac,
+                aciliyet=(veriler.get("aciliyet") or None),
+                muadil=muadil,
+                hedef_fiyat=hedef_d,
+                sorumlu_personel=(veriler.get("sorumlu_personel") or None),
+                sonraki_takip=takip,
+                sonraki_arama=takip,
                 kaynak=(veriler.get("kaynak") or "HIZLI"),
                 notlar=(veriler.get("notlar") or None),
                 olusturan=getattr(oturum, "kullanici_adi", None),
             )
             session.add(talep)
             session.flush()
-            return {
-                "aday_id": int(aday.id),
-                "talep_id": int(talep.id),
-                "urun_adi": aday.urun_adi,
-            }
+            aday_id = int(aday.id)
+            talep_id = int(talep.id)
+            urun_adi = aday.urun_adi
+
+        # Fotoğraflar (oturum dışında dosya kopyala)
+        for yol in veriler.get("fotograf_yollari") or []:
+            try:
+                SorulanUrunService.ek_ekle(aday_id, yol, etiket="Diğer")
+            except Exception:
+                pass
+        return {"aday_id": aday_id, "talep_id": talep_id, "urun_adi": urun_adi}
 
     @staticmethod
-    def urun_ozet_listesi(*, arama: str | None = None, arsiv: bool = False) -> list[dict[str, Any]]:
+    def urun_ozet_listesi(
+        *,
+        arama: str | None = None,
+        arsiv: bool = False,
+        tarih_bas: date | None = None,
+        tarih_bit: date | None = None,
+        bilinmeyen_ayri: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Üst liste. tarih_* sorulma tarihine uygulanır; bilinmeyenler ayrı işaretlenir."""
         SorulanUrunService.ensure_schema()
         firma = SorulanUrunService._firma_id()
+        bugun = bugun_tr()
         with get_session() as session:
             q = select(SorulanUrunAday).where(
                 SorulanUrunAday.firma_id == firma,
@@ -139,38 +371,108 @@ class SorulanUrunService:
             )
             if arama and arama.strip():
                 like = f"%{arama.strip()}%"
-                q = q.where(SorulanUrunAday.urun_adi.ilike(like))
-            adaylar = session.scalars(
-                q.order_by(SorulanUrunAday.id.desc())
-            ).all()
+                q = q.where(
+                    SorulanUrunAday.urun_adi.ilike(like)
+                    | SorulanUrunAday.musteri_tarifi.ilike(like)
+                    | SorulanUrunAday.marka.ilike(like)
+                    | SorulanUrunAday.model.ilike(like)
+                    | SorulanUrunAday.diger_adlar.ilike(like)
+                )
+            adaylar = session.scalars(q.order_by(SorulanUrunAday.id.desc())).all()
             sonuc = []
             for a in adaylar:
-                talepler = session.scalars(
-                    select(SorulanUrunTalep).where(
-                        SorulanUrunTalep.aday_id == a.id,
-                        SorulanUrunTalep.gecersiz.is_(False),
+                talepler = list(
+                    session.scalars(
+                        select(SorulanUrunTalep).where(
+                            SorulanUrunTalep.aday_id == a.id,
+                            SorulanUrunTalep.gecersiz.is_(False),
+                        )
                     )
-                ).all()
+                )
+                tekrarlar = {}
+                for t in talepler:
+                    tekrarlar[t.id] = list(
+                        session.scalars(
+                            select(SorulanUrunTekrar).where(SorulanUrunTekrar.talep_id == t.id)
+                        )
+                    )
+                # Dönem filtresi — bilinmeyenler dönem toplamına dahil edilmez
+                tarihli = [
+                    t
+                    for t in talepler
+                    if not getattr(t, "sorulma_tarihi_bilinmiyor", False)
+                ]
+                bilinmeyen = [
+                    t for t in talepler if getattr(t, "sorulma_tarihi_bilinmiyor", False)
+                ]
+                if tarih_bas or tarih_bit:
+                    def _aralikta(t):
+                        d = t.talep_tarihi
+                        if tarih_bas and d < tarih_bas:
+                            return False
+                        if tarih_bit and d > tarih_bit:
+                            return False
+                        return True
+
+                    donem_talepler = [t for t in tarihli if _aralikta(t)]
+                    # Tekrar sorulmalar da dönem ölçütü olabilir
+                    donem_tekrar = 0
+                    for t in tarihli:
+                        for tr in tekrarlar.get(t.id, []):
+                            if tarih_bas and tr.tekrar_tarihi < tarih_bas:
+                                continue
+                            if tarih_bit and tr.tekrar_tarihi > tarih_bit:
+                                continue
+                            donem_tekrar += 1
+                else:
+                    donem_talepler = tarihli
+                    donem_tekrar = sum(len(v) for v in tekrarlar.values())
+
                 musteriler = {
                     (t.cari_id or t.musteri_adi or t.telefon)
                     for t in talepler
                     if not t.anonim and (t.cari_id or t.musteri_adi or t.telefon)
                 }
                 anonim_n = sum(1 for t in talepler if t.anonim)
-                son = max((t.talep_tarihi for t in talepler), default=None)
+                ilk_tarihler = [t.talep_tarihi for t in tarihli]
+                son_tarihler = list(ilk_tarihler)
+                for trs in tekrarlar.values():
+                    son_tarihler.extend(tr.tekrar_tarihi for tr in trs)
+                ilk = min(ilk_tarihler) if ilk_tarihler else None
+                son = max(son_tarihler) if son_tarihler else None
+                bagimsiz = len(talepler)  # her talep kaydı bağımsız
+                toplam_sorulma = bagimsiz + sum(len(v) for v in tekrarlar.values())
+                acik = [t for t in talepler if t.durum in _ACIK_DURUMLAR]
+                beklemeler = [_bekleme_gunu(t, bugun=bugun) for t in acik]
+                beklemeler = [b for b in beklemeler if b is not None]
                 sonuc.append(
                     {
                         "id": int(a.id),
                         "urun_adi": a.urun_adi,
+                        "tarif": (a.musteri_tarifi or a.ilk_tarif or "")[:80],
                         "ozellik": a.ozellik or "",
-                        "talep_nedeni": a.talep_nedeni_ozet or "",
-                        "son_sorulma": son.isoformat() if son else "",
-                        "sorulma_sayisi": len(talepler),
+                        "talep_nedeni": etiket_neden(a.talep_nedeni_ozet or ""),
+                        "talep_nedeni_kod": a.talep_nedeni_ozet or "",
+                        "ilk_sorulma": tarih_goster(ilk),
+                        "ilk_sorulma_iso": ilk.isoformat() if ilk else "",
+                        "son_sorulma": tarih_goster(son),
+                        "son_sorulma_iso": son.isoformat() if son else "",
+                        "bagimsiz_talep": bagimsiz,
+                        "toplam_sorulma": toplam_sorulma,
+                        "sorulma_sayisi": toplam_sorulma,  # geriye uyum
                         "farkli_musteri": len(musteriler),
                         "anonim": anonim_n,
+                        "acik_talep": len(acik),
+                        "max_bekleme": max(beklemeler) if beklemeler else None,
+                        "bilinmeyen_tarih": len(bilinmeyen),
+                        "donem_talep": len(donem_talepler),
+                        "donem_tekrar": donem_tekrar if (tarih_bas or tarih_bit) else None,
+                        "tanim_durumu": etiket_tanim(getattr(a, "tanim_durumu", None) or "TANIMLANAMADI"),
                         "tedarik_durumu": a.tedarik_durumu,
                         "stok_id": a.stok_id,
                         "sorumlu": a.sorumlu_personel or "",
+                        "marka": a.marka or "",
+                        "model": a.model or "",
                     }
                 )
             return sonuc
@@ -179,6 +481,7 @@ class SorulanUrunService:
     def talepler(aday_id: int) -> list[dict[str, Any]]:
         SorulanUrunService.ensure_schema()
         firma = SorulanUrunService._firma_id()
+        bugun = bugun_tr()
         with get_session() as session:
             rows = session.scalars(
                 select(SorulanUrunTalep)
@@ -199,20 +502,50 @@ class SorulanUrunService:
                         - Decimal(str(t.karsilanan_miktar or 0))
                         - Decimal(str(t.iptal_miktar or 0)),
                     )
+                tekrarlar = list(
+                    session.scalars(
+                        select(SorulanUrunTekrar)
+                        .where(SorulanUrunTekrar.talep_id == t.id)
+                        .order_by(SorulanUrunTekrar.tekrar_tarihi.desc())
+                    )
+                )
+                son_tekrar = tekrarlar[0].tekrar_tarihi if tekrarlar else None
+                bilinmiyor = bool(getattr(t, "sorulma_tarihi_bilinmiyor", False))
                 out.append(
                     {
                         "id": int(t.id),
-                        "tarih": t.talep_tarihi.isoformat(),
+                        "tarih": (
+                            "Bilinmiyor"
+                            if bilinmiyor
+                            else tarih_goster(t.talep_tarihi)
+                        ),
+                        "tarih_iso": "" if bilinmiyor else t.talep_tarihi.isoformat(),
+                        "sorulma_saati": getattr(t, "sorulma_saati", None) or "",
+                        "bilinmiyor": bilinmiyor,
                         "musteri": t.musteri_adi or ("Anonim" if t.anonim else ""),
                         "telefon": t.telefon or "",
                         "miktar": str(t.miktar) if t.miktar is not None else "",
                         "kalan": str(kalan) if kalan is not None else "",
                         "niyet": t.niyet,
+                        "niyet_etiket": etiket_niyet(t.niyet),
                         "durum": t.durum,
+                        "durum_etiket": etiket_durum(t.durum),
                         "neden": t.talep_nedeni,
+                        "neden_etiket": etiket_neden(t.talep_nedeni),
+                        "ihtiyac_tarihi": tarih_goster(getattr(t, "ihtiyac_tarihi", None)),
+                        "son_tekrar": tarih_goster(son_tekrar),
+                        "tekrar_sayisi": len(tekrarlar),
+                        "bekleme_gun": _bekleme_gunu(t, bugun=bugun),
+                        "sorumlu": getattr(t, "sorumlu_personel", None) or "",
                         "gecersiz": bool(t.gecersiz),
+                        "anonim": bool(t.anonim),
                     }
                 )
+            # Gerçek tarih sırası (metin değil)
+            out.sort(
+                key=lambda r: (r["bilinmiyor"], r["tarih_iso"] or "", r["id"]),
+                reverse=True,
+            )
             return out
 
     @staticmethod
@@ -728,3 +1061,430 @@ class SorulanUrunService:
             "stok_id": hedef_stok,
             "detay": detay,
         }
+
+    # ── Ekler / fotoğraf ──────────────────────────────────────────────
+    @staticmethod
+    def _ek_kok(firma_id: int, aday_id: int) -> Path:
+        p = Path(DB_DIR) / "sorulan_urun_ekler" / str(firma_id) / str(aday_id)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @staticmethod
+    def ek_ekle(
+        aday_id: int,
+        kaynak_yol: str | Path,
+        *,
+        etiket: str | None = None,
+        aciklama: str | None = None,
+        ana: bool = False,
+    ) -> dict[str, Any]:
+        """Dosyayı firma klasörüne kopyalar; geçici klasör silinse de kalır."""
+        yazma_zorunlu()
+        SorulanUrunService.ensure_schema()
+        kaynak = Path(kaynak_yol)
+        if not kaynak.is_file():
+            raise ValueError(f"Dosya bulunamadı: {kaynak}")
+        firma = SorulanUrunService._firma_id()
+        with get_session() as session:
+            a = session.get(SorulanUrunAday, int(aday_id))
+            if a is None or int(a.firma_id) != firma:
+                raise ValueError("Ürün bulunamadı.")
+        hedef_dir = SorulanUrunService._ek_kok(firma, int(aday_id))
+        uzanti = kaynak.suffix.lower() or ".bin"
+        ad = f"{uuid.uuid4().hex}{uzanti}"
+        hedef = hedef_dir / ad
+        shutil.copy2(kaynak, hedef)
+        mime = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".pdf": "application/pdf",
+            ".mp4": "video/mp4",
+        }.get(uzanti, "application/octet-stream")
+        onizleme = None
+        if mime.startswith("image/"):
+            try:
+                from PIL import Image
+
+                thumb = hedef_dir / f"thumb_{ad}.jpg"
+                with Image.open(hedef) as im:
+                    im.thumbnail((160, 160))
+                    im.convert("RGB").save(thumb, "JPEG", quality=75)
+                onizleme = str(thumb)
+            except Exception:
+                onizleme = None
+        with get_session() as session:
+            if ana:
+                for e in session.scalars(
+                    select(SorulanUrunEk).where(SorulanUrunEk.aday_id == int(aday_id))
+                ):
+                    e.ana_fotograf = False
+            ek = SorulanUrunEk(
+                aday_id=int(aday_id),
+                dosya_yolu=str(hedef),
+                orijinal_ad=kaynak.name,
+                mime=mime,
+                etiket=etiket or "Diğer",
+                aciklama=aciklama,
+                ana_fotograf=bool(ana),
+                onizleme_yolu=onizleme,
+            )
+            session.add(ek)
+            session.flush()
+            return {"id": int(ek.id), "yol": str(hedef), "onizleme": onizleme}
+
+    @staticmethod
+    def ekler(aday_id: int) -> list[dict[str, Any]]:
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        with get_session() as session:
+            a = session.get(SorulanUrunAday, int(aday_id))
+            if a is None or int(a.firma_id) != firma:
+                return []
+            rows = session.scalars(
+                select(SorulanUrunEk)
+                .where(SorulanUrunEk.aday_id == int(aday_id))
+                .order_by(SorulanUrunEk.ana_fotograf.desc(), SorulanUrunEk.id)
+            ).all()
+            return [
+                {
+                    "id": int(e.id),
+                    "yol": e.dosya_yolu,
+                    "onizleme": e.onizleme_yolu or e.dosya_yolu,
+                    "etiket": e.etiket or "",
+                    "aciklama": e.aciklama or "",
+                    "ana": bool(e.ana_fotograf),
+                    "orijinal": e.orijinal_ad or "",
+                    "mime": e.mime or "",
+                }
+                for e in rows
+            ]
+
+    @staticmethod
+    def tekrar_soruldu(
+        talep_id: int,
+        *,
+        tarih: date | None = None,
+        saat: str | None = None,
+        notlar: str | None = None,
+    ) -> dict[str, Any]:
+        """Aynı talebe tarihli tekrar; miktar/bağımsız talep artmaz."""
+        yazma_zorunlu()
+        SorulanUrunService.ensure_schema()
+        t_gun = tarih or bugun_tr()
+        if t_gun > bugun_tr():
+            raise ValueError("Tekrar sorulma tarihi gelecek olamaz.")
+        firma = SorulanUrunService._firma_id()
+        with get_session() as session:
+            t = session.get(SorulanUrunTalep, int(talep_id))
+            if t is None or int(t.firma_id) != firma or t.gecersiz:
+                raise ValueError("Talep bulunamadı.")
+            tr = SorulanUrunTekrar(
+                talep_id=int(t.id),
+                tekrar_tarihi=t_gun,
+                tekrar_saati=(saat or None),
+                notlar=notlar,
+                olusturan=getattr(oturum, "kullanici_adi", None),
+            )
+            session.add(tr)
+            t.guncelleme_tarihi = datetime.utcnow()
+            session.flush()
+            return {"id": int(tr.id), "talep_id": int(t.id), "tarih": tarih_goster(t_gun)}
+
+    @staticmethod
+    def sorulma_tarihi_duzelt(
+        talep_id: int,
+        yeni_tarih: date | str | None,
+        *,
+        bilinmiyor: bool = False,
+        saat: str | None = None,
+        notlar: str | None = None,
+    ) -> dict[str, Any]:
+        """Sorulma tarihini düzeltir; eski/yeni loglanır. Raporlar yeni tarihe göre."""
+        yazma_zorunlu()
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        if isinstance(yeni_tarih, str):
+            yeni_tarih = tarih_coz(yeni_tarih) if yeni_tarih.strip() else None
+        if not bilinmiyor:
+            if yeni_tarih is None:
+                raise ValueError("Yeni sorulma tarihi gerekli.")
+            if yeni_tarih > bugun_tr():
+                raise ValueError("Sorulduğu tarih gelecek olamaz.")
+        with get_session() as session:
+            t = session.get(SorulanUrunTalep, int(talep_id))
+            if t is None or int(t.firma_id) != firma:
+                raise ValueError("Talep bulunamadı.")
+            eski = (
+                "BILINMIYOR"
+                if getattr(t, "sorulma_tarihi_bilinmiyor", False)
+                else t.talep_tarihi.isoformat()
+            )
+            if bilinmiyor:
+                t.sorulma_tarihi_bilinmiyor = True
+                # NOT NULL kolon — değer korunur ama bayrakla ayrılır
+            else:
+                t.sorulma_tarihi_bilinmiyor = False
+                t.talep_tarihi = yeni_tarih  # type: ignore[assignment]
+            if saat is not None:
+                t.sorulma_saati = saat or None
+            t.guncelleme_tarihi = datetime.utcnow()
+            log = SorulanUrunTarihLog(
+                talep_id=int(t.id),
+                eski_tarih=eski,
+                yeni_tarih="BILINMIYOR" if bilinmiyor else yeni_tarih.isoformat(),  # type: ignore[union-attr]
+                kullanici=getattr(oturum, "kullanici_adi", None),
+                notlar=notlar,
+            )
+            session.add(log)
+            session.flush()
+            return {"talep_id": int(t.id), "eski": eski, "yeni": log.yeni_tarih}
+
+    @staticmethod
+    def olcu_kaydet(aday_id: int, satirlar: list[dict[str, Any]]) -> int:
+        """Ölçü tablosunu değiştirir (aday bazında). Boş değer = bilinmiyor (sıfır yazılmaz)."""
+        yazma_zorunlu()
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        with get_session() as session:
+            a = session.get(SorulanUrunAday, int(aday_id))
+            if a is None or int(a.firma_id) != firma:
+                raise ValueError("Ürün bulunamadı.")
+            for eski in session.scalars(
+                select(SorulanUrunOlcu).where(SorulanUrunOlcu.aday_id == int(aday_id))
+            ):
+                session.delete(eski)
+            n = 0
+            for i, s in enumerate(satirlar or []):
+                ad = (s.get("olcu_adi") or "").strip()
+                if not ad:
+                    continue
+                deger = s.get("deger")
+                if deger is not None and str(deger).strip() == "":
+                    deger = None
+                session.add(
+                    SorulanUrunOlcu(
+                        aday_id=int(aday_id),
+                        olcu_adi=ad,
+                        deger=None if deger is None else str(deger).strip(),
+                        birim=(s.get("birim") or None),
+                        aciklama=(s.get("aciklama") or None),
+                        kaynak=(s.get("kaynak") or "TAHMINI"),
+                        sira=i,
+                    )
+                )
+                n += 1
+            session.flush()
+            return n
+
+    @staticmethod
+    def olculer(aday_id: int) -> list[dict[str, Any]]:
+        SorulanUrunService.ensure_schema()
+        with get_session() as session:
+            rows = session.scalars(
+                select(SorulanUrunOlcu)
+                .where(SorulanUrunOlcu.aday_id == int(aday_id))
+                .order_by(SorulanUrunOlcu.sira, SorulanUrunOlcu.id)
+            ).all()
+            return [
+                {
+                    "id": int(o.id),
+                    "olcu_adi": o.olcu_adi,
+                    "deger": o.deger,
+                    "birim": o.birim or "",
+                    "aciklama": o.aciklama or "",
+                    "kaynak": o.kaynak,
+                }
+                for o in rows
+            ]
+
+    @staticmethod
+    def gorusme_ekle(aday_id: int, veriler: dict[str, Any]) -> dict[str, Any]:
+        yazma_zorunlu()
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        gt = veriler.get("gorusme_tarihi") or bugun_tr()
+        if isinstance(gt, str):
+            gt = tarih_coz(gt)
+        with get_session() as session:
+            a = session.get(SorulanUrunAday, int(aday_id))
+            if a is None or int(a.firma_id) != firma:
+                raise ValueError("Ürün bulunamadı.")
+            g = SorulanUrunGorusme(
+                aday_id=int(aday_id),
+                talep_id=int(veriler["talep_id"]) if veriler.get("talep_id") else None,
+                gorusme_tarihi=gt,
+                tedarikci=(veriler.get("tedarikci") or None),
+                cevap=(veriler.get("cevap") or None),
+                bulunan_kod=(veriler.get("bulunan_kod") or None),
+                fiyat=Decimal(str(veriler["fiyat"])) if veriler.get("fiyat") not in (None, "") else None,
+                teslim_suresi=(veriler.get("teslim_suresi") or None),
+                notlar=(veriler.get("notlar") or None),
+                olusturan=getattr(oturum, "kullanici_adi", None),
+            )
+            session.add(g)
+            session.flush()
+            return {"id": int(g.id)}
+
+    @staticmethod
+    def olay_gecmisi(talep_id: int) -> list[dict[str, Any]]:
+        """İlk sorulma, tekrarlar, görüşmeler, sonuç — kronolojik."""
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        olaylar: list[dict[str, Any]] = []
+        with get_session() as session:
+            t = session.get(SorulanUrunTalep, int(talep_id))
+            if t is None or int(t.firma_id) != firma:
+                return []
+            bilinmiyor = bool(getattr(t, "sorulma_tarihi_bilinmiyor", False))
+            olaylar.append(
+                {
+                    "tur": "ilk_sorulma",
+                    "tarih": "Bilinmiyor" if bilinmiyor else tarih_goster(t.talep_tarihi),
+                    "tarih_iso": "" if bilinmiyor else t.talep_tarihi.isoformat(),
+                    "aciklama": "İlk sorulma",
+                }
+            )
+            for tr in session.scalars(
+                select(SorulanUrunTekrar)
+                .where(SorulanUrunTekrar.talep_id == t.id)
+                .order_by(SorulanUrunTekrar.tekrar_tarihi)
+            ):
+                olaylar.append(
+                    {
+                        "tur": "tekrar",
+                        "tarih": tarih_goster(tr.tekrar_tarihi),
+                        "tarih_iso": tr.tekrar_tarihi.isoformat(),
+                        "aciklama": tr.notlar or "Tekrar soruldu",
+                    }
+                )
+            for g in session.scalars(
+                select(SorulanUrunGorusme)
+                .where(
+                    (SorulanUrunGorusme.talep_id == t.id)
+                    | (SorulanUrunGorusme.aday_id == t.aday_id)
+                )
+                .order_by(SorulanUrunGorusme.gorusme_tarihi)
+            ):
+                olaylar.append(
+                    {
+                        "tur": "gorusme",
+                        "tarih": tarih_goster(g.gorusme_tarihi),
+                        "tarih_iso": g.gorusme_tarihi.isoformat(),
+                        "aciklama": f"{g.tedarikci or ''}: {g.cevap or g.notlar or ''}".strip(": "),
+                    }
+                )
+            if t.sonuc_tarihi:
+                olaylar.append(
+                    {
+                        "tur": "sonuc",
+                        "tarih": tarih_goster(t.sonuc_tarihi),
+                        "tarih_iso": t.sonuc_tarihi.isoformat(),
+                        "aciklama": f"Sonuç: {etiket_durum(t.durum)}",
+                    }
+                )
+        olaylar.sort(key=lambda o: (o["tarih_iso"] == "", o["tarih_iso"]))
+        return olaylar
+
+    @staticmethod
+    def donem_filtre_coz(anahtar: str, bas: str | None = None, bit: str | None = None) -> tuple[date | None, date | None]:
+        """Bugün / 7 / 30 / 90 / bu_ay / ozel → (bas, bit) dahil."""
+        bugun = bugun_tr()
+        k = (anahtar or "").strip().upper()
+        if k in ("TUM", "HEPSI", ""):
+            return None, None
+        if k == "BUGUN":
+            return bugun, bugun
+        if k in ("7", "SON_7"):
+            return bugun - timedelta(days=6), bugun
+        if k in ("30", "SON_30"):
+            return bugun - timedelta(days=29), bugun
+        if k in ("90", "SON_90"):
+            return bugun - timedelta(days=89), bugun
+        if k in ("BU_AY", "AY"):
+            return bugun.replace(day=1), bugun
+        if k == "OZEL":
+            return (
+                tarih_coz(bas) if bas else None,
+                tarih_coz(bit) if bit else None,
+            )
+        try:
+            gun = int(k)
+            return bugun - timedelta(days=max(0, gun - 1)), bugun
+        except ValueError:
+            return None, None
+
+    @staticmethod
+    def acik_geciken(*, min_bekleme: int = 0) -> list[dict[str, Any]]:
+        SorulanUrunService.ensure_schema()
+        firma = SorulanUrunService._firma_id()
+        bugun = bugun_tr()
+        with get_session() as session:
+            rows = session.scalars(
+                select(SorulanUrunTalep).where(
+                    SorulanUrunTalep.firma_id == firma,
+                    SorulanUrunTalep.gecersiz.is_(False),
+                    SorulanUrunTalep.durum.in_(list(_ACIK_DURUMLAR)),
+                )
+            ).all()
+            out = []
+            for t in rows:
+                bg = _bekleme_gunu(t, bugun=bugun)
+                if bg is None:
+                    continue
+                if bg < int(min_bekleme):
+                    continue
+                a = session.get(SorulanUrunAday, t.aday_id)
+                out.append(
+                    {
+                        "talep_id": int(t.id),
+                        "urun": a.urun_adi if a else "",
+                        "musteri": t.musteri_adi or ("Anonim" if t.anonim else ""),
+                        "sorulma": tarih_goster(t.talep_tarihi),
+                        "bekleme_gun": bg,
+                        "ihtiyac": tarih_goster(getattr(t, "ihtiyac_tarihi", None)),
+                        "sorumlu": getattr(t, "sorumlu_personel", None) or "",
+                        "durum": etiket_durum(t.durum),
+                    }
+                )
+            out.sort(key=lambda r: -int(r["bekleme_gun"]))
+            return out
+
+    @staticmethod
+    def benzer_adaylar(metin: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Ad/tarif/marka/model/parça kodu ile öneri; otomatik birleştirmez."""
+        SorulanUrunService.ensure_schema()
+        q = (metin or "").strip()
+        if len(q) < 2:
+            return []
+        firma = SorulanUrunService._firma_id()
+        like = f"%{q}%"
+        with get_session() as session:
+            rows = session.scalars(
+                select(SorulanUrunAday)
+                .where(
+                    SorulanUrunAday.firma_id == firma,
+                    SorulanUrunAday.arsiv.is_(False),
+                    (
+                        SorulanUrunAday.urun_adi.ilike(like)
+                        | SorulanUrunAday.musteri_tarifi.ilike(like)
+                        | SorulanUrunAday.diger_adlar.ilike(like)
+                        | SorulanUrunAday.marka.ilike(like)
+                        | SorulanUrunAday.model.ilike(like)
+                        | SorulanUrunAday.uretici_kodu.ilike(like)
+                    ),
+                )
+                .limit(int(limit))
+            ).all()
+            return [
+                {
+                    "id": int(a.id),
+                    "urun_adi": a.urun_adi,
+                    "marka": a.marka or "",
+                    "model": a.model or "",
+                    "tarif": (a.musteri_tarifi or "")[:60],
+                }
+                for a in rows
+            ]
