@@ -130,8 +130,38 @@ class TakvimPopup(tk.Toplevel):
         self.destroy()
 
 
+_acik_takvim: TakvimPopup | None = None
+
+
 def takvim_ac(parent, entry, on_select=None):
-    TakvimPopup(parent, entry, on_select=on_select)
+    """Tek takvim; zaten açıksa yenisini açmaz."""
+    global _acik_takvim
+    if _acik_takvim is not None:
+        try:
+            if _acik_takvim.winfo_exists():
+                _acik_takvim.lift()
+                _acik_takvim.focus_force()
+                return _acik_takvim
+        except tk.TclError:
+            _acik_takvim = None
+    popup = TakvimPopup(parent, entry, on_select=on_select)
+    _acik_takvim = popup
+
+    def _temizle(_e=None, p=popup):
+        global _acik_takvim
+        if _acik_takvim is p:
+            _acik_takvim = None
+
+    popup.bind("<Destroy>", _temizle, add="+")
+    # Entry yakınına konumlandır
+    try:
+        popup.update_idletasks()
+        x = entry.winfo_rootx()
+        y = entry.winfo_rooty() + entry.winfo_height() + 2
+        popup.geometry(f"+{x}+{y}")
+    except tk.TclError:
+        pass
+    return popup
 
 
 def takvim_butonu(parent, entry, on_select=None, *, text="Takvim", width=8):
@@ -144,6 +174,21 @@ def takvim_butonu(parent, entry, on_select=None, *, text="Takvim", width=8):
     )
     btn.pack(side="left", padx=(4, 0))
     return btn
+
+
+def takvim_entry_bagla(entry, on_select=None):
+    """Tarih alanına tek tık → yakında takvim; Esc iptal; klavye yazımı korunur."""
+
+    def _tikla(_event=None):
+        try:
+            top = entry.winfo_toplevel()
+        except tk.TclError:
+            return
+        # break yok: imleç alana gelsin, Esc sonrası yazılabilir kalsın
+        top.after_idle(lambda: takvim_ac(top, entry, on_select=on_select))
+
+    entry.bind("<Button-1>", _tikla, add="+")
+    return entry
 
 
 def tarih_alani(parent, satir, baslik, alan, deger, girdiler, on_select=None, sutun=0, genislik=28):

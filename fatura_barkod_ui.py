@@ -238,7 +238,9 @@ def fatura_barkod_paneli_kur(dialog) -> None:
         except tk.TclError:
             pass
     else:
-        dialog.after(350, dialog._barkod_odak)
+        # Açılış odağı Müşteri Adı; barkod F8 ile alınır (otomatik odak ezmesin)
+        if hasattr(dialog, "_fatura_ilk_musteri_odak"):
+            dialog.after(100, dialog._fatura_ilk_musteri_odak)
 
 
 def _musteri_fiyat(dialog, stok_kodu: str, barkod_fiyat: Decimal) -> Decimal:

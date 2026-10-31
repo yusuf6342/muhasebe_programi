@@ -27,6 +27,14 @@ def _yetki_var(*kodlar: str) -> bool:
 # acici: app -> None  (lazy; string tip: "sayfa:xxx" | "alt:metot" | "fn:modul.fonksiyon")
 EK_MENU_KAYITLARI: tuple[tuple[str, str, str, tuple[str, ...], str, tuple[str, ...]], ...] = (
     (
+        "satis.teklifler",
+        "Teklifler",
+        "Satışlar › Teklifler",
+        ("teklif", "teklif formu", "fiyat teklifi", "müşteri teklifi", "quote"),
+        "fn:teklif_ui.teklifler_hub_goster",
+        ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit"),
+    ),
+    (
         "ozet.bilanco",
         "Dönen Sermaye Bilançosu",
         "Özet Tablolar › Dönen Sermaye Bilançosu",
