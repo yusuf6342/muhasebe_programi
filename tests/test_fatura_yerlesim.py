@@ -140,7 +140,8 @@ class FaturaYerlesimTest(unittest.TestCase):
         d = self.dlg
         return {
             "Kaydet": d.kaydet_btn,
-            "Onayla ve Yeni": d.kaydet_onay_btn,
+            "Onayla": d.kaydet_onay_btn,
+            "Yeni": d.yeni_btn,
             "Tahsilat Makbuzu": d._tahsilat_makbuzu_btn,
             "Yazdır / PDF": d._yazdir_mb,
             "Diğer İşlemler": d._diger_mb,
@@ -295,7 +296,10 @@ class FaturaYerlesimTest(unittest.TestCase):
     def test_diger_menusunde_analiz_ve_pencere_dugmeleri_yok(self):
         self._ac(satir_sayisi=2)
         d = self.dlg
-        menuler = [d.nametowidget(d._diger_mb.cget("menu"))]
+        diger_menu = getattr(d, "_diger_menu", None) or d._diger_mb.cget("menu")
+        if isinstance(diger_menu, str):
+            diger_menu = d.nametowidget(diger_menu)
+        menuler = [diger_menu]
         etiketler = []
         while menuler:
             m = menuler.pop()

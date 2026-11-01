@@ -4462,10 +4462,10 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
 
     @staticmethod
     def _fatura_cari_hareketi(session, fatura):
-        """Onaylı faturanın açık borç satırı (onaysız / iptal faturada yoktur)."""
+        """Faturanın açık borç satırı (Talimat V2: kaydet sonrası da vardır; iptalde yok)."""
         from database.models.cari import SatisHareketi
 
-        if not fatura.onaylandi or (fatura.durum or "") == "İPTAL":
+        if (fatura.durum or "") == "İPTAL":
             return None
         return session.scalar(
             select(SatisHareketi).where(

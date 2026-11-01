@@ -329,12 +329,14 @@ class FaturaStokEntegrasyonTest(unittest.TestCase):
         import database.models.stok  # noqa: F401
         import database.models.firma  # noqa: F401
         import database.models.donem  # noqa: F401
+        import database.models.kart_turu  # noqa: F401 — cari/stok alt_tur FK
         import database.models.alis_faturasi  # noqa: F401
         import database.models.alis_iade_faturasi  # noqa: F401
         import database.models.alis_irsaliyesi  # noqa: F401
         import database.models.alis_siparisi  # noqa: F401
         import database.models.alis_masraf  # noqa: F401
         import database.models.finans  # noqa: F401
+        import database.models.genel_muhasebe  # noqa: F401 — kur farkı / fiş
         import database.models.satis_faturasi  # noqa: F401
         import database.models.satis_iade_faturasi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401

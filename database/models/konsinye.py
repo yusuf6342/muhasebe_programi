@@ -62,12 +62,16 @@ class KonsinyeTeslimSatiri(Base):
     miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)  # işlem biriminde
     temel_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)  # temel birim
     birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # Anlaşılan satış/alış fiyatı (stok maliyetinden ayrı)
+    fifo_birim_maliyet: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     lot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lot_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # İzleme (temel birim)
     kalan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     bildirilen_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     faturalanan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # Taslak faturaya ayrılan (henüz onaylanmamış) miktar
+    taslak_ayrilan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     iade_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
 
     teslim: Mapped["KonsinyeTeslim"] = relationship("KonsinyeTeslim", back_populates="satirlar")
@@ -83,12 +87,17 @@ class KonsinyeHareket(Base):
         ForeignKey("konsinye_teslim_satirlari.id"), nullable=False, index=True
     )
     hareket_turu: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
-    # SATIS_BILDIRIM | IADE | FATURA_TASLAK | FATURA_ONAY
+    # SATIS_BILDIRIM | IADE | KESIN_AL | FATURA_TASLAK | FATURA_ONAY
     miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)  # temel birim
     gercek_tarih: Mapped[date | None] = mapped_column(Date, nullable=True)
     kayit_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     belge_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
     belge_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # SATIS | ALIS — gerçek fatura türü; boşsa bağlanmamış sayılır
+    fatura_turu: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    fatura_satir_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     aciklama: Mapped[str | None] = mapped_column(String(300), nullable=True)
     iptal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     olusturan: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Mükerrer bağlama engeli (iptal edilmemiş kayıtlar)
+    islem_anahtari: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)

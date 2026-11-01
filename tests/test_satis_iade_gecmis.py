@@ -73,19 +73,26 @@ class DurumAkisiTest(IadeTemel):
         return stok, cari
 
     def test_kayit_acik_onaysiz_hareket_yalniz_onayda(self):
+        # V2: cari kaydet'te; stok yalnız onayla'da; onay_kaldir stoğu geri alır, cari kalır
         f = self._fatura(date(2026, 3, 1), [_satir("5")], onayla=False)
         self.assertEqual((f.durum, f.onaylandi), ("AÇIK", False))
-        self.assertEqual(self._hareket_sayilari(f.fatura_no), (0, 0))
+        stok, cari = self._hareket_sayilari(f.fatura_no)
+        self.assertEqual(stok, 0)
+        self.assertGreater(cari, 0)
         SatisFaturasiService.onayla(f.id)
         f = SatisFaturasiService.getir(f.id)
         self.assertEqual((f.durum, f.onaylandi), ("AÇIK", True))
         stok, cari = self._hareket_sayilari(f.fatura_no)
         self.assertGreater(stok, 0)
         self.assertGreater(cari, 0)
+        cari_onayda = cari
         SatisFaturasiService.onay_kaldir(f.id)
         f = SatisFaturasiService.getir(f.id)
         self.assertEqual((f.durum, f.onaylandi), ("AÇIK", False))
-        self.assertEqual(self._hareket_sayilari(f.fatura_no), (0, 0))
+        stok, cari = self._hareket_sayilari(f.fatura_no)
+        self.assertEqual(stok, 0)
+        self.assertEqual(cari, cari_onayda)
+        self.assertGreater(cari, 0)
 
     def test_fatura_no_otomatik_veya_manuel_cakisma_reddedilir(self):
         temel = {"fatura_tarihi": date(2026, 3, 1), "vade_tarihi": date(2026, 3, 1), "cari_id": self.cari_id,
@@ -122,7 +129,9 @@ class DurumAkisiTest(IadeTemel):
             SatisFaturasiService.onayla(f.id)
         g = SatisFaturasiService.getir(f.id)
         self.assertEqual((g.durum, g.onaylandi), ("AÇIK", False))
-        self.assertEqual(self._hareket_sayilari(g.fatura_no), (0, 0))
+        stok, cari = self._hareket_sayilari(g.fatura_no)
+        self.assertEqual(stok, 0)
+        self.assertGreater(cari, 0)
 
     def test_evrak_ve_odeme_durumu_yardimcilari(self):
         self.assertEqual(evrak_durumu("KAPALI"), "AÇIK")

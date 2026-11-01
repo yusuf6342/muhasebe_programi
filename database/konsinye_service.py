@@ -30,10 +30,27 @@ DURUM_IPTAL = "IPTAL"
 
 H_SATIS = "SATIS_BILDIRIM"
 H_IADE = "IADE"
+H_KESIN_AL = "KESIN_AL"
 H_FATURA_TASLAK = "FATURA_TASLAK"
 H_FATURA_ONAY = "FATURA_ONAY"
 
 KONSINYE_DEPO_ONEK = "KONSİNYE:"
+SAHIP_BIZE = "BIZE"
+SAHIP_TEDARIKCI = "TEDARIKCI"
+
+
+def miktar_goster(v) -> str:
+    """Tam sayının sondaki sıfırlarını silme; yalnız kesir sıfırlarını temizle."""
+    try:
+        d = Decimal(str(v if v is not None else 0))
+    except Exception:
+        return "0"
+    if d == d.to_integral_value():
+        return format(d.to_integral_value(), "f")
+    t = format(d, "f")
+    if "." in t:
+        t = t.rstrip("0").rstrip(".")
+    return t or "0"
 
 
 def _kullanici() -> str | None:
@@ -55,6 +72,7 @@ class KonsinyeService:
         if engine is None:
             return
         import database.models.konsinye  # noqa: F401
+        from sqlalchemy import inspect, text
 
         Base.metadata.create_all(
             bind=engine,
@@ -64,6 +82,38 @@ class KonsinyeService:
                 KonsinyeHareket.__table__,
             ],
         )
+        # Sürümlü / tekrarlanabilir kolon göçü
+        insp = inspect(engine)
+        ekler = {
+            "konsinye_teslim_satirlari": {
+                "fifo_birim_maliyet": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
+                "taslak_ayrilan_miktar": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
+            },
+            "konsinye_hareketler": {
+                "fatura_turu": "VARCHAR(20)",
+                "fatura_satir_id": "INTEGER",
+                "islem_anahtari": "VARCHAR(120)",
+            },
+            "stok_lotlari": {
+                "sahip_turu": "VARCHAR(20) DEFAULT 'BIZE' NOT NULL",
+                "sahip_cari_id": "INTEGER",
+                "kaynak_konsinye_satir_id": "INTEGER",
+            },
+            "satis_faturasi_satirlari": {
+                "konsinye_teslim_satiri_id": "INTEGER",
+            },
+            "alis_faturasi_satirlari": {
+                "konsinye_teslim_satiri_id": "INTEGER",
+            },
+        }
+        with engine.begin() as conn:
+            for tablo, kolonlar in ekler.items():
+                if not insp.has_table(tablo):
+                    continue
+                mevcut = {c["name"] for c in insp.get_columns(tablo)}
+                for ad, tip in kolonlar.items():
+                    if ad not in mevcut:
+                        conn.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{ad}" {tip}'))
         KonsinyeService._schema_hazir = True
 
     @staticmethod
@@ -75,25 +125,39 @@ class KonsinyeService:
         return f"{onek}{int(son) + 1:06d}"
 
     @staticmethod
-    def konsinye_depo_adi(cari_unvan: str, yon: str) -> str:
-        kisalt = (cari_unvan or "CARİ").strip()[:40]
-        yon_etiket = "MÜŞTERİ" if yon == YON_VERILEN else "TEDARİKÇİ"
-        return f"{KONSINYE_DEPO_ONEK}{yon_etiket}:{kisalt}"
+    def konsinye_depo_adi(cari_id: int, yon: str, cari_unvan: str = "") -> str:
+        """Kalıcı cari kimliğiyle sanal depo — unvan değişince bağlantı bozulmaz."""
+        yon_etiket = "MUSTERI" if yon == YON_VERILEN else "TEDARIKCI"
+        # Kısa unvan yalnızca okunabilirlik; benzersizlik cari_id ile
+        kisalt = (cari_unvan or "").strip()[:24]
+        ek = f":{kisalt}" if kisalt else ""
+        return f"{KONSINYE_DEPO_ONEK}{yon_etiket}:C{int(cari_id)}{ek}"
 
     @staticmethod
     def sanal_depo_mu(depo_ad: str | None) -> bool:
         return (depo_ad or "").strip().upper().startswith(KONSINYE_DEPO_ONEK)
 
     @staticmethod
+    def lot_firma_mulkiyeti_mi(lot) -> bool:
+        tur = (getattr(lot, "sahip_turu", None) or SAHIP_BIZE).strip().upper()
+        return tur == SAHIP_BIZE
+
+    @staticmethod
     def _konsinye_depo_al_veya_olustur(session, cari, yon: str) -> Depo:
-        ad = KonsinyeService.konsinye_depo_adi(getattr(cari, "unvan", "") or "", yon)
+        ad = KonsinyeService.konsinye_depo_adi(
+            int(cari.id), yon, getattr(cari, "unvan", "") or ""
+        )
         depo = session.scalar(select(Depo).where(Depo.ad == ad))
+        if depo is None:
+            # Eski unvan-ön ekli depoyu yeniden kullan (göç)
+            eski_ad = f"{KONSINYE_DEPO_ONEK}{'MÜŞTERİ' if yon == YON_VERILEN else 'TEDARİKÇİ'}:{(getattr(cari, 'unvan', '') or '').strip()[:40]}"
+            depo = session.scalar(select(Depo).where(Depo.ad == eski_ad))
         if depo is None:
             depo = Depo(
                 ad=ad,
                 aktif=True,
                 varsayilan=False,
-                aciklama="KONSINYE_SANAL — satılabilir stok sayılmaz",
+                aciklama=f"KONSINYE_SANAL cari_id={int(cari.id)} — satılabilir stok sayılmaz",
             )
             session.add(depo)
             session.flush()
@@ -199,14 +263,46 @@ class KonsinyeService:
         for satir in teslim.satirlar:
             miktar = Decimal(str(satir.temel_miktar))
             if teslim.yon == YON_VERILEN:
-                # Kendi stokumuz → müşteri konsinye konumu (cari borç yok)
-                KonsinyeService._kaynaktan_cikis(
-                    session, teslim, satir, kaynak, miktar
+                # Kendi stokumuz → müşteri konsinye konumu; FIFO maliyet korunur (cari borç yok)
+                katmanlar = KonsinyeService._kaynaktan_cikis(
+                    session,
+                    teslim,
+                    satir,
+                    kaynak,
+                    miktar,
+                    sadece_firma=True,
                 )
-                KonsinyeService._hedefe_giris(session, teslim, satir, hedef, miktar)
+                toplam_maliyet = sum(
+                    (k["miktar"] * k["birim_maliyet"] for k in katmanlar), Decimal("0")
+                )
+                # Hedefe katman katman gir (maliyet bozulmasın)
+                for k in katmanlar:
+                    KonsinyeService._hedefe_giris(
+                        session,
+                        teslim,
+                        satir,
+                        hedef,
+                        k["miktar"],
+                        birim_maliyet=k["birim_maliyet"],
+                        sahip_turu=SAHIP_BIZE,
+                        sahip_cari_id=None,
+                        lot_no_ek=f"-L{k['lot_id']}" if len(katmanlar) > 1 else "",
+                    )
+                if miktar > 0:
+                    satir.fifo_birim_maliyet = (toplam_maliyet / miktar).quantize(Decimal("0.0001"))
             else:
-                # Tedarikçi malı mağazamıza (konsinye alınan) — tedarikçiye borç yok
-                KonsinyeService._hedefe_giris(session, teslim, satir, kaynak, miktar)
+                # Tedarikçi malı fiziksel mağazaya — firma mülkiyeti/borcu yok
+                KonsinyeService._hedefe_giris(
+                    session,
+                    teslim,
+                    satir,
+                    kaynak,
+                    miktar,
+                    birim_maliyet=Decimal(str(satir.birim_fiyat or 0)),
+                    sahip_turu=SAHIP_TEDARIKCI,
+                    sahip_cari_id=int(teslim.cari_id),
+                )
+                satir.fifo_birim_maliyet = Decimal(str(satir.birim_fiyat or 0))
 
         teslim.durum = DURUM_ONAYLI
         teslim.onay_tarihi = datetime.now()
@@ -214,7 +310,19 @@ class KonsinyeService:
         session.flush()
 
     @staticmethod
-    def _kaynaktan_cikis(session, teslim, satir, kaynak_depo: Depo, miktar: Decimal) -> None:
+    def _kaynaktan_cikis(
+        session,
+        teslim,
+        satir,
+        kaynak_depo: Depo,
+        miktar: Decimal,
+        *,
+        sadece_firma: bool = True,
+        sahip_turu: str | None = None,
+        belge_no: str | None = None,
+        tarih: date | None = None,
+    ) -> list[dict[str, Any]]:
+        """FIFO çıkış; katman listesi döner. ``sadece_firma`` tedarikçi lotlarını atlar."""
         stok = session.get(StokKarti, satir.stok_id)
         if stok is None:
             raise ValueError("Stok bulunamadı.")
@@ -223,41 +331,78 @@ class KonsinyeService:
             StokLotu.depo_id == kaynak_depo.id,
             StokLotu.kalan_miktar > 0,
         )
-        if satir.lot_no:
+        if getattr(satir, "lot_no", None):
             q = q.where(StokLotu.lot_no == satir.lot_no)
+        if sahip_turu:
+            q = q.where(StokLotu.sahip_turu == sahip_turu)
         lotlar = list(session.scalars(q.order_by(StokLotu.giris_tarihi, StokLotu.id)).all())
+        if sadece_firma and sahip_turu is None:
+            lotlar = [l for l in lotlar if KonsinyeService.lot_firma_mulkiyeti_mi(l)]
         mevcut = sum((Decimal(str(l.kalan_miktar or 0)) for l in lotlar), Decimal("0"))
         if mevcut < miktar:
             raise ValueError(
-                f"{satir.stok_adi}: {kaynak_depo.ad} stok yetersiz "
+                f"{getattr(satir, 'stok_adi', stok.stok_adi)}: {kaynak_depo.ad} stok yetersiz "
                 f"(mevcut {mevcut}, istenen {miktar})."
             )
         kalan = miktar
+        katmanlar: list[dict[str, Any]] = []
+        bno = belge_no or teslim.belge_no
+        htarih = tarih or teslim.belge_tarihi
         for lot in lotlar:
             if kalan <= 0:
                 break
             cikan = min(kalan, Decimal(str(lot.kalan_miktar or 0)))
+            maliyet = Decimal(str(lot.birim_maliyet or 0))
             lot.kalan_miktar = Decimal(str(lot.kalan_miktar)) - cikan
             kalan -= cikan
             session.add(
                 StokHareketi(
-                    tarih=teslim.belge_tarihi,
+                    tarih=htarih,
                     hareket_turu="TRANSFER ÇIKIŞ",
-                    belge_no=teslim.belge_no,
+                    belge_no=bno,
                     stok_id=stok.id,
                     depo_id=kaynak_depo.id,
                     lot_id=lot.id,
                     miktar=cikan,
-                    birim_maliyet=lot.birim_maliyet,
+                    birim_maliyet=maliyet,
                 )
             )
+            katmanlar.append(
+                {"lot_id": int(lot.id), "miktar": cikan, "birim_maliyet": maliyet}
+            )
+        return katmanlar
 
     @staticmethod
-    def _hedefe_giris(session, teslim, satir, hedef_depo: Depo, miktar: Decimal) -> None:
+    def _hedefe_giris(
+        session,
+        teslim,
+        satir,
+        hedef_depo: Depo,
+        miktar: Decimal,
+        *,
+        birim_maliyet: Decimal | None = None,
+        sahip_turu: str = SAHIP_BIZE,
+        sahip_cari_id: int | None = None,
+        lot_no_ek: str = "",
+        belge_no: str | None = None,
+        tarih: date | None = None,
+    ) -> StokLotu:
         stok = session.get(StokKarti, satir.stok_id)
         if stok is None:
             raise ValueError("Stok bulunamadı.")
-        lot_no = (satir.lot_no or "").strip() or f"{teslim.belge_no}-{satir.id}"
+        maliyet = Decimal(
+            str(
+                birim_maliyet
+                if birim_maliyet is not None
+                else getattr(satir, "fifo_birim_maliyet", None)
+                or 0
+            )
+        )
+        # Satış fiyatını maliyet yapma — verilen konsinyede fifo ile gelmeli
+        if maliyet < 0:
+            maliyet = Decimal("0")
+        taban = (getattr(satir, "lot_no", None) or "").strip() or f"{teslim.belge_no}-{getattr(satir, 'id', 0)}"
+        lot_no = f"{taban}{lot_no_ek}"
         lot = session.scalar(
             select(StokLotu).where(
                 StokLotu.stok_id == stok.id,
@@ -273,25 +418,43 @@ class KonsinyeService:
                 tedarikci=f"KONSİNYE {teslim.belge_no}",
                 giris_tarihi=teslim.belge_tarihi,
                 kalan_miktar=Decimal("0"),
-                birim_maliyet=Decimal(str(satir.birim_fiyat or 0)),
+                birim_maliyet=maliyet,
+                sahip_turu=sahip_turu,
+                sahip_cari_id=sahip_cari_id,
+                kaynak_konsinye_satir_id=getattr(satir, "id", None),
             )
             session.add(lot)
             session.flush()
+        else:
+            # Mevcut lot sahipliği korunur; maliyet ağırlıklı ortalama
+            eski_q = Decimal(str(lot.kalan_miktar or 0))
+            if eski_q > 0 and miktar > 0:
+                lot.birim_maliyet = (
+                    (eski_q * Decimal(str(lot.birim_maliyet or 0)) + miktar * maliyet)
+                    / (eski_q + miktar)
+                ).quantize(Decimal("0.0001"))
+            elif miktar > 0:
+                lot.birim_maliyet = maliyet
+            lot.sahip_turu = sahip_turu
+            if sahip_cari_id is not None:
+                lot.sahip_cari_id = sahip_cari_id
         lot.kalan_miktar = Decimal(str(lot.kalan_miktar or 0)) + miktar
         session.add(
             StokHareketi(
-                tarih=teslim.belge_tarihi,
+                tarih=tarih or teslim.belge_tarihi,
                 hareket_turu="TRANSFER GİRİŞ",
-                belge_no=teslim.belge_no,
+                belge_no=belge_no or teslim.belge_no,
                 stok_id=stok.id,
                 depo_id=hedef_depo.id,
                 lot_id=lot.id,
                 miktar=miktar,
-                birim_maliyet=lot.birim_maliyet,
+                birim_maliyet=maliyet,
             )
         )
-        satir.lot_id = lot.id
-        satir.lot_no = lot.lot_no
+        if hasattr(satir, "lot_id"):
+            satir.lot_id = lot.id
+            satir.lot_no = lot.lot_no
+        return lot
 
     @staticmethod
     def teslim_onayla(teslim_id: int) -> dict[str, Any]:
@@ -412,25 +575,51 @@ class KonsinyeService:
                                 birim_maliyet=lot.birim_maliyet,
                             )
                         )
-                # Ana depoya giriş — satır lot bağlantısını bozmamak için proxy
+                # Ana depoya giriş — FIFO maliyet (satış fiyatı değil)
+                iade_maliyet = Decimal(str(satir.fifo_birim_maliyet or 0))
+                if satir.lot_id:
+                    kaynak_lot = session.get(StokLotu, satir.lot_id)
+                    if kaynak_lot is not None:
+                        iade_maliyet = Decimal(str(kaynak_lot.birim_maliyet or iade_maliyet))
                 proxy = type(
                     "S",
                     (),
                     {
                         "stok_id": satir.stok_id,
-                        "birim_fiyat": satir.birim_fiyat,
+                        "birim_fiyat": iade_maliyet,
+                        "fifo_birim_maliyet": iade_maliyet,
                         "lot_no": (satir.lot_no or "") + "-IADE",
                         "id": satir.id,
                         "lot_id": None,
                     },
                 )()
-                KonsinyeService._hedefe_giris(session, teslim, proxy, hedef, miktar_d)
+                KonsinyeService._hedefe_giris(
+                    session,
+                    teslim,
+                    proxy,
+                    hedef,
+                    miktar_d,
+                    birim_maliyet=iade_maliyet,
+                    sahip_turu=SAHIP_BIZE,
+                    belge_no=f"{teslim.belge_no}-IADE",
+                    tarih=date.today(),
+                )
             else:
-                # ALINAN: fiziksel depodaki tedarikçi lotundan düş
+                # ALINAN: yalnız tedarikçiye ait lotlardan iade
                 kaynak = session.get(Depo, teslim.depo_id)
                 if kaynak is None:
                     raise ValueError("Kaynak depo yok.")
-                KonsinyeService._kaynaktan_cikis(session, teslim, satir, kaynak, miktar_d)
+                KonsinyeService._kaynaktan_cikis(
+                    session,
+                    teslim,
+                    satir,
+                    kaynak,
+                    miktar_d,
+                    sadece_firma=False,
+                    sahip_turu=SAHIP_TEDARIKCI,
+                    belge_no=f"{teslim.belge_no}-IADE",
+                    tarih=date.today(),
+                )
 
             session.add(
                 KonsinyeHareket(
@@ -454,7 +643,7 @@ class KonsinyeService:
         birim_maliyet: Decimal | str | float | None = None,
         aciklama: str | None = None,
     ) -> dict[str, Any]:
-        """ALINAN konsinyede tedarikçi malını kendi stoğumuza geçir (cari borç yazılmaz; fatura sonra)."""
+        """ALINAN: sahiplik değişir; fiziksel toplam aynı kalır (ÇIKIŞ+GİRİŞ çift). Cari borç yok."""
         KonsinyeService.ensure_schema()
         miktar_d = decimal(miktar, "Kesin alım miktarı", Decimal("0.0001"))
         with get_session() as session:
@@ -470,43 +659,103 @@ class KonsinyeService:
             if miktar_d > kalan:
                 raise ValueError(f"Kesin alım kalanı aşıyor (kalan: {kalan}).")
             maliyet = decimal(
-                birim_maliyet if birim_maliyet is not None else satir.birim_fiyat,
+                birim_maliyet
+                if birim_maliyet is not None
+                else (satir.fifo_birim_maliyet or satir.birim_fiyat),
                 "Birim maliyet",
                 Decimal("0.0001"),
             )
-            satir.kalan_miktar = kalan - miktar_d
-            satir.bildirilen_miktar = Decimal(str(satir.bildirilen_miktar or 0)) + miktar_d
-            # Fiziksel lokasyon aynı; maliyet/lot sahipliği güncellenir
-            if satir.lot_id:
-                lot = session.get(StokLotu, satir.lot_id)
-                if lot is not None and Decimal(str(lot.kalan_miktar or 0)) >= miktar_d:
-                    lot.kalan_miktar = Decimal(str(lot.kalan_miktar)) - miktar_d
+            hedef = session.get(Depo, teslim.depo_id)
+            if hedef is None:
+                raise ValueError("Depo bulunamadı.")
+            # Tedarikçi lotundan çıkış (hareket kaydı zorunlu — rapor 130 olmasın)
+            proxy_cikis = type(
+                "S",
+                (),
+                {
+                    "stok_id": satir.stok_id,
+                    "stok_adi": satir.stok_adi,
+                    "lot_no": satir.lot_no,
+                    "id": satir.id,
+                },
+            )()
+            KonsinyeService._kaynaktan_cikis(
+                session,
+                teslim,
+                proxy_cikis,
+                hedef,
+                miktar_d,
+                sadece_firma=False,
+                sahip_turu=SAHIP_TEDARIKCI,
+                belge_no=f"{teslim.belge_no}-KA",
+                tarih=date.today(),
+            )
+            # Aynı depoda firma mülkiyetli lot
             proxy = type(
                 "S",
                 (),
                 {
                     "stok_id": satir.stok_id,
                     "birim_fiyat": maliyet,
+                    "fifo_birim_maliyet": maliyet,
                     "lot_no": f"KA-{teslim.belge_no}-{satir.id}",
                     "id": satir.id,
                     "lot_id": None,
                 },
             )()
-            hedef = session.get(Depo, teslim.depo_id)
-            KonsinyeService._hedefe_giris(session, teslim, proxy, hedef, miktar_d)
+            KonsinyeService._hedefe_giris(
+                session,
+                teslim,
+                proxy,
+                hedef,
+                miktar_d,
+                birim_maliyet=maliyet,
+                sahip_turu=SAHIP_BIZE,
+                sahip_cari_id=None,
+                belge_no=f"{teslim.belge_no}-KA",
+                tarih=date.today(),
+            )
+            satir.kalan_miktar = kalan - miktar_d
+            satir.bildirilen_miktar = Decimal(str(satir.bildirilen_miktar or 0)) + miktar_d
             session.add(
                 KonsinyeHareket(
                     teslim_satiri_id=satir.id,
-                    hareket_turu=H_FATURA_TASLAK,
+                    hareket_turu=H_KESIN_AL,
                     miktar=miktar_d,
                     gercek_tarih=date.today(),
                     aciklama=(aciklama or "Kesin alım").strip(),
                     olusturan=_kullanici(),
+                    islem_anahtari=f"KA:{satir.id}:{miktar_d}:{date.today().isoformat()}",
                 )
             )
             session.flush()
             KonsinyeService._teslim_durum_guncelle(session, teslim)
             return KonsinyeService._satir_ozet(satir)
+
+    @staticmethod
+    def _gercek_fatura_dogrula(
+        session, *, yon: str, belge_id: int, belge_no: str | None, miktar: Decimal
+    ) -> tuple[Any, str]:
+        """Gerçek satış/alış faturasını doğrula; iptal/hayali kabul etme."""
+        if yon == YON_VERILEN:
+            from database.models.satis_faturasi import SatisFaturasi
+
+            fatura = session.get(SatisFaturasi, int(belge_id))
+            tur = "SATIS"
+        else:
+            from database.models.alis_faturasi import AlisFaturasi
+
+            fatura = session.get(AlisFaturasi, int(belge_id))
+            tur = "ALIS"
+        if fatura is None:
+            raise ValueError("Bağlanacak fatura bulunamadı.")
+        durum = (getattr(fatura, "durum", None) or "").strip().upper()
+        if durum in ("İPTAL", "IPTAL"):
+            raise ValueError("İptal fatura bağlanamaz.")
+        no = (getattr(fatura, "fatura_no", None) or "").strip()
+        if belge_no and no and belge_no.strip() != no:
+            raise ValueError(f"Fatura numarası uyuşmuyor (beklenen {no}).")
+        return fatura, tur
 
     @staticmethod
     def fatura_bagla(
@@ -515,11 +764,20 @@ class KonsinyeService:
         miktar: Decimal | str | float,
         belge_no: str | None = None,
         belge_id: int | None = None,
+        fatura_satir_id: int | None = None,
         onayli: bool = True,
     ) -> dict[str, Any]:
-        """Bildirilen/kesin alınan miktarı faturalanan olarak işaretle (fiziksel stok tekrar düşmez)."""
+        """Bildirilen/kesin alınan miktarı gerçek faturaya bağla (stok tekrar düşmez).
+
+        ``belge_id`` zorunlu — yalnız numara ile hayali bağlama kabul edilmez.
+        """
         KonsinyeService.ensure_schema()
         miktar_d = decimal(miktar, "Fatura miktarı", Decimal("0.0001"))
+        if not belge_id:
+            raise ValueError(
+                "Gerçek fatura kimliği (belge_id) zorunlu. "
+                "Önce Satış/Alış Faturası Oluştur veya mevcut faturayla eşleştirin."
+            )
         with get_session() as session:
             satir = session.get(KonsinyeTeslimSatiri, int(teslim_satiri_id))
             if satir is None:
@@ -527,22 +785,55 @@ class KonsinyeService:
             teslim = session.get(KonsinyeTeslim, satir.teslim_id)
             if teslim is None or teslim.durum not in (DURUM_ONAYLI, DURUM_KAPALI):
                 raise ValueError("Geçersiz teslim durumu.")
+            fatura, fatura_turu = KonsinyeService._gercek_fatura_dogrula(
+                session,
+                yon=teslim.yon,
+                belge_id=int(belge_id),
+                belge_no=belge_no,
+                miktar=miktar_d,
+            )
+            # Cari uyumu
+            fatura_cari = getattr(fatura, "musteri_id", None) or getattr(fatura, "tedarikci_id", None)
+            if fatura_cari and int(fatura_cari) != int(teslim.cari_id):
+                raise ValueError("Fatura carisi konsinye carisiyle uyuşmuyor.")
+            anahtar = f"FB:{satir.id}:{fatura_turu}:{int(belge_id)}:{fatura_satir_id or 0}:{miktar_d}"
+            mevcut = session.scalar(
+                select(KonsinyeHareket).where(
+                    KonsinyeHareket.islem_anahtari == anahtar,
+                    KonsinyeHareket.iptal.is_(False),
+                )
+            )
+            if mevcut is not None:
+                raise ValueError("Bu fatura bağlantısı zaten kayıtlı (mükerrer engellendi).")
             bekleyen = Decimal(str(satir.bildirilen_miktar or 0)) - Decimal(
                 str(satir.faturalanan_miktar or 0)
-            )
+            ) - Decimal(str(getattr(satir, "taslak_ayrilan_miktar", 0) or 0))
+            if onayli:
+                # Onaylı bağlama: taslak ayrılanı serbest bırakıp faturalanana ekle
+                bekleyen = Decimal(str(satir.bildirilen_miktar or 0)) - Decimal(
+                    str(satir.faturalanan_miktar or 0)
+                )
             if miktar_d > bekleyen:
                 raise ValueError(f"Fatura bekleyen miktarı aşıyor (bekleyen: {bekleyen}).")
+            no = (getattr(fatura, "fatura_no", None) or belge_no or "").strip() or None
             if onayli:
                 satir.faturalanan_miktar = Decimal(str(satir.faturalanan_miktar or 0)) + miktar_d
+            else:
+                satir.taslak_ayrilan_miktar = Decimal(
+                    str(getattr(satir, "taslak_ayrilan_miktar", 0) or 0)
+                ) + miktar_d
             session.add(
                 KonsinyeHareket(
                     teslim_satiri_id=satir.id,
                     hareket_turu=H_FATURA_ONAY if onayli else H_FATURA_TASLAK,
                     miktar=miktar_d,
                     gercek_tarih=date.today(),
-                    belge_no=(belge_no or "").strip() or None,
-                    belge_id=belge_id,
+                    belge_no=no,
+                    belge_id=int(belge_id),
+                    fatura_turu=fatura_turu,
+                    fatura_satir_id=int(fatura_satir_id) if fatura_satir_id else None,
                     olusturan=_kullanici(),
+                    islem_anahtari=anahtar,
                 )
             )
             session.flush()
@@ -567,11 +858,13 @@ class KonsinyeService:
         yon: str | None = None,
         durum: str | None = None,
         cari_id: int | None = None,
-        limit: int = 200,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """limit=None → tüm kayıtlar (rapor/toplam); UI sayfalama için limit verilebilir."""
         KonsinyeService.ensure_schema()
         with get_session() as session:
-            q = select(KonsinyeTeslim).order_by(KonsinyeTeslim.id.desc()).limit(limit)
+            q = select(KonsinyeTeslim).order_by(KonsinyeTeslim.id.desc())
             if yon:
                 q = q.where(KonsinyeTeslim.yon == yon)
             if durum:
@@ -580,6 +873,10 @@ class KonsinyeService:
                 q = q.where(KonsinyeTeslim.durum != DURUM_IPTAL)
             if cari_id:
                 q = q.where(KonsinyeTeslim.cari_id == int(cari_id))
+            if offset:
+                q = q.offset(int(offset))
+            if limit is not None:
+                q = q.limit(int(limit))
             return [KonsinyeService._teslim_ozet(session, t) for t in session.scalars(q).all()]
 
     @staticmethod
@@ -596,10 +893,11 @@ class KonsinyeService:
         kalan = Decimal(str(s.kalan_miktar or 0))
         bildirilen = Decimal(str(s.bildirilen_miktar or 0))
         faturalanan = Decimal(str(s.faturalanan_miktar or 0))
-        fatura_bekleyen = max(Decimal("0"), bildirilen - faturalanan)
+        taslak = Decimal(str(getattr(s, "taslak_ayrilan_miktar", 0) or 0))
+        fatura_bekleyen = max(Decimal("0"), bildirilen - faturalanan - taslak)
         if kalan > 0:
             adim = "Müşteride Mal Var" if yon != YON_ALINAN else "Tedarikçiye Ait Kalan"
-        elif fatura_bekleyen > 0:
+        elif fatura_bekleyen > 0 or taslak > 0:
             adim = "Fatura Bekliyor"
         else:
             adim = "Tamamlandı"
@@ -612,10 +910,13 @@ class KonsinyeService:
             "miktar": Decimal(str(s.miktar)),
             "temel_miktar": Decimal(str(s.temel_miktar)),
             "birim_fiyat": Decimal(str(s.birim_fiyat or 0)),
+            "fifo_birim_maliyet": Decimal(str(getattr(s, "fifo_birim_maliyet", 0) or 0)),
+            "lot_id": s.lot_id,
             "lot_no": s.lot_no,
             "kalan_miktar": kalan,
             "bildirilen_miktar": bildirilen,
             "faturalanan_miktar": faturalanan,
+            "taslak_ayrilan_miktar": taslak,
             "fatura_bekleyen": fatura_bekleyen,
             "iade_miktar": Decimal(str(s.iade_miktar or 0)),
             "adim": adim,
@@ -648,8 +949,8 @@ class KonsinyeService:
 
     @staticmethod
     def ozet_kutulari(yon: str) -> dict[str, Any]:
-        """Ana ekran özet kutuları — belge/satır sayısı; farklı birimleri birleştirmez."""
-        liste = KonsinyeService.listele(yon=yon, limit=500)
+        """Ana ekran özet kutuları — tüm belgeler; farklı birimleri birleştirmez."""
+        liste = KonsinyeService.listele(yon=yon, limit=None)
         acik = [t for t in liste if t["durum"] in (DURUM_ONAYLI, DURUM_TASLAK)]
         fatura_bek = sum(1 for t in liste if t["fatura_bekleyen_toplam"] > 0)
         kalan_satir = sum(
@@ -661,3 +962,147 @@ class KonsinyeService:
             "kalan_satir": kalan_satir,
             "toplam_belge": len(liste),
         }
+
+    @staticmethod
+    def stok_sahiplik_ozeti(stok_id: int) -> dict[str, Any]:
+        """Fiziksel / bize ait / tedarikçiye ait ayrımı (temel birim + maliyet değeri)."""
+        KonsinyeService.ensure_schema()
+        with get_session() as session:
+            lotlar = list(
+                session.scalars(select(StokLotu).where(StokLotu.stok_id == int(stok_id))).all()
+            )
+            fiziksel = Decimal("0")
+            bize = Decimal("0")
+            tedarikci = Decimal("0")
+            bize_deger = Decimal("0")
+            for lot in lotlar:
+                q = Decimal(str(lot.kalan_miktar or 0))
+                if q <= 0:
+                    continue
+                fiziksel += q
+                if KonsinyeService.lot_firma_mulkiyeti_mi(lot):
+                    bize += q
+                    bize_deger += q * Decimal(str(lot.birim_maliyet or 0))
+                else:
+                    tedarikci += q
+            return {
+                "fiziksel": fiziksel,
+                "bize_ait": bize,
+                "tedarikciye_ait": tedarikci,
+                "bize_ait_deger": bize_deger,
+            }
+
+    @staticmethod
+    def hareket_net_miktar(stok_id: int) -> Decimal:
+        """Hareket esaslı net (giriş − çıkış); kesin alım çifti neti bozmamalı."""
+        from database.stok_service import CIKIS_HAREKETLERI, GIRIS_HAREKETLERI
+
+        with get_session() as session:
+            hareketler = list(
+                session.scalars(
+                    select(StokHareketi).where(StokHareketi.stok_id == int(stok_id))
+                ).all()
+            )
+            giris = sum(
+                (Decimal(str(h.miktar)) for h in hareketler if h.hareket_turu in GIRIS_HAREKETLERI),
+                Decimal("0"),
+            )
+            cikis = sum(
+                (Decimal(str(h.miktar)) for h in hareketler if h.hareket_turu in CIKIS_HAREKETLERI),
+                Decimal("0"),
+            )
+            return giris - cikis
+
+    @staticmethod
+    def faturalanabilir_satirlar(*, yon: str, cari_id: int | None = None) -> list[dict[str, Any]]:
+        """Fatura bekleyen satırlar (tüm kayıtlar)."""
+        sonuc = []
+        for t in KonsinyeService.listele(yon=yon, cari_id=cari_id, limit=None):
+            for s in t["satirlar"]:
+                if s["fatura_bekleyen"] > 0:
+                    sonuc.append({**s, "teslim_id": t["id"], "belge_no": t["belge_no"],
+                                  "cari_id": t["cari_id"], "cari_unvan": t["cari_unvan"],
+                                  "yon": t["yon"], "belge_tarihi": t["belge_tarihi"]})
+        return sonuc
+
+    @staticmethod
+    def satis_faturasi_satirlari_hazirla(satir_idler_miktar: list[tuple[int, Decimal]]) -> dict[str, Any]:
+        """Verilen konsinye → satış faturası için cari + satır verisi (UI/servis ortak)."""
+        if not satir_idler_miktar:
+            raise ValueError("Faturalanacak satır seçin.")
+        with get_session() as session:
+            satirlar_out = []
+            cari_id = None
+            for sid, miktar in satir_idler_miktar:
+                miktar_d = decimal(miktar, "Miktar", Decimal("0.0001"))
+                satir = session.get(KonsinyeTeslimSatiri, int(sid))
+                if satir is None:
+                    raise ValueError(f"Konsinye satırı yok: {sid}")
+                teslim = session.get(KonsinyeTeslim, satir.teslim_id)
+                if teslim is None or teslim.yon != YON_VERILEN:
+                    raise ValueError("Yalnız verilen konsinye satışı faturalanır.")
+                if cari_id is None:
+                    cari_id = int(teslim.cari_id)
+                elif int(teslim.cari_id) != cari_id:
+                    raise ValueError("Farklı cariler tek faturada birleştirilemez.")
+                ozet = KonsinyeService._satir_ozet(satir, yon=teslim.yon)
+                if miktar_d > ozet["fatura_bekleyen"]:
+                    raise ValueError(
+                        f"{satir.stok_kodu}: bekleyen {ozet['fatura_bekleyen']}, istenen {miktar_d}"
+                    )
+                satirlar_out.append(
+                    {
+                        "stok_id": satir.stok_id,
+                        "urun_kodu": satir.stok_kodu,
+                        "urun_adi": satir.stok_adi,
+                        "birim": satir.birim,
+                        "miktar": miktar_d,
+                        "birim_fiyat": Decimal(str(satir.birim_fiyat or 0)),
+                        "kdv_orani": Decimal("20"),
+                        "konsinye_teslim_satiri_id": int(satir.id),
+                        "konsinye_stok_cikisi_yapildi": True,
+                    }
+                )
+            return {"cari_id": cari_id, "satirlar": satirlar_out, "yon": YON_VERILEN}
+
+    @staticmethod
+    def alis_faturasi_satirlari_hazirla(satir_idler_miktar: list[tuple[int, Decimal]]) -> dict[str, Any]:
+        """Alınan konsinye kesin alım → alış faturası satırları."""
+        if not satir_idler_miktar:
+            raise ValueError("Faturalanacak satır seçin.")
+        with get_session() as session:
+            satirlar_out = []
+            cari_id = None
+            for sid, miktar in satir_idler_miktar:
+                miktar_d = decimal(miktar, "Miktar", Decimal("0.0001"))
+                satir = session.get(KonsinyeTeslimSatiri, int(sid))
+                if satir is None:
+                    raise ValueError(f"Konsinye satırı yok: {sid}")
+                teslim = session.get(KonsinyeTeslim, satir.teslim_id)
+                if teslim is None or teslim.yon != YON_ALINAN:
+                    raise ValueError("Yalnız alınan konsinye alış faturalanır.")
+                if cari_id is None:
+                    cari_id = int(teslim.cari_id)
+                elif int(teslim.cari_id) != cari_id:
+                    raise ValueError("Farklı cariler tek faturada birleştirilemez.")
+                ozet = KonsinyeService._satir_ozet(satir, yon=teslim.yon)
+                if miktar_d > ozet["fatura_bekleyen"]:
+                    raise ValueError(
+                        f"{satir.stok_kodu}: bekleyen {ozet['fatura_bekleyen']}, istenen {miktar_d}"
+                    )
+                satirlar_out.append(
+                    {
+                        "stok_id": satir.stok_id,
+                        "urun_kodu": satir.stok_kodu,
+                        "urun_adi": satir.stok_adi,
+                        "birim": satir.birim,
+                        "miktar": miktar_d,
+                        "birim_fiyat": Decimal(
+                            str(satir.fifo_birim_maliyet or satir.birim_fiyat or 0)
+                        ),
+                        "kdv_orani": Decimal("20"),
+                        "konsinye_teslim_satiri_id": int(satir.id),
+                        "konsinye_stok_girisi_yapildi": True,
+                    }
+                )
+            return {"cari_id": cari_id, "satirlar": satirlar_out, "yon": YON_ALINAN}

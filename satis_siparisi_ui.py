@@ -38,7 +38,13 @@ from satis_tema import (
     tk_buton,
     treeview_stil,
 )
-from ui_takvim import saat_dogrula, saat_varsayilan, takvim_entry_bagla
+from ui_takvim import (
+    saat_alani_bagla,
+    saat_dogrula,
+    saat_kisa_giris_coz,
+    saat_varsayilan,
+    takvim_entry_bagla,
+)
 YESIL = "#1F9D74"
 TURUNCU = "#E07B00"
 KIRMIZI = "#D64545"
@@ -78,15 +84,8 @@ TESLIM_SEKLI_SECENEKLERI = ("İşyerinden", "Kargo", "Ambar", "Bizim araçla tes
 
 
 def _saat_opsiyonel(metin: str) -> str | None:
-    """Boş → None; '00:00' geçerli saat olarak kalır (varsayılan saatle karıştırılmaz)."""
-    m = (metin or "").strip()
-    if not m:
-        return None
-    try:
-        datetime.strptime(m, "%H:%M")
-    except ValueError as hata:
-        raise ValueError("Teslim saati SS:DD formatında olmalıdır (ör. 14:35).") from hata
-    return m
+    """Boş → None; kısa giriş (16 / 1643) HH:mm'ye çevrilir; '00:00' geçerli kalır."""
+    return saat_kisa_giris_coz(metin, bos_izinli=True, alan_adi="Teslim saati")
 
 
 def _satir_iskonto_metni(s: dict[str, Any]) -> str:
@@ -452,6 +451,10 @@ class SatisSiparisiKarti(tk.Toplevel):
         e_ts = ttk.Entry(p2, width=7, style="FaturaUst.TEntry")
         e_ts.grid(row=1, column=3, padx=0, pady=py, sticky="ew", ipady=_ipady)
         self.girdiler["teslim_saati"] = e_ts
+        # Yazarken dönüştürme; FocusOut / Enter / kaydet öncesi HH:mm
+        self._teslim_saati_bicimlendir = saat_alani_bagla(
+            e_ts, bos_izinli=True, alan_adi="Teslim saati", parent=self
+        )
 
         ttk.Label(p2, text="Teslim Şekli", style="FaturaUst.TLabel").grid(
             row=2, column=0, padx=(0, 6), pady=py, sticky="w"
@@ -2125,7 +2128,23 @@ class SatisSiparisiKarti(tk.Toplevel):
             siparis_saati = saat_dogrula(g("siparis_saati"))
         except ValueError as hata:
             raise ValueError(str(hata).replace("İşlem saati", "Sipariş saati")) from hata
-        teslim_saati = _saat_opsiyonel(g("teslim_saati"))
+        # Kaydetmeden önce Teslim Saati'ni HH:mm'ye çevir (alanı da güncelle)
+        ts_w = self.girdiler.get("teslim_saati")
+        if ts_w is not None:
+            try:
+                teslim_saati = saat_kisa_giris_coz(
+                    ts_w.get(), bos_izinli=True, alan_adi="Teslim saati"
+                )
+            except ValueError as hata:
+                raise ValueError(str(hata)) from hata
+            try:
+                ts_w.delete(0, "end")
+                if teslim_saati:
+                    ts_w.insert(0, teslim_saati)
+            except tk.TclError:
+                pass
+        else:
+            teslim_saati = _saat_opsiyonel(g("teslim_saati"))
         if not self._hucre.bekleyeni_uygula():
             raise ValueError("Düzenlenen hücredeki değer geçersiz; düzeltin veya Esc ile vazgeçin.")
         self._satir_ici_giris.bekleyeni_uygula()
@@ -2299,7 +2318,14 @@ class SatisSiparisiKarti(tk.Toplevel):
             ts_w.delete(0, "end")
             kayitli_ts = getattr(sp, "teslim_saati", None)
             if kayitli_ts is not None and str(kayitli_ts).strip() != "":
-                ts_w.insert(0, str(kayitli_ts).strip())
+                try:
+                    bicimli = saat_kisa_giris_coz(
+                        str(kayitli_ts), bos_izinli=True, alan_adi="Teslim saati"
+                    )
+                except ValueError:
+                    bicimli = str(kayitli_ts).strip()
+                if bicimli:
+                    ts_w.insert(0, bicimli)
         sekil = (getattr(sp, "teslim_sekli", None) or "").strip()
         if sekil in TESLIM_SEKLI_SECENEKLERI:
             self.teslim_sekli.set(sekil)

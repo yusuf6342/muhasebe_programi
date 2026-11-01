@@ -1,9 +1,11 @@
 """Evrak satır tabloları — ortak klavye yardımcıları.
 
-- Ürün adı / kodu / barkod hücresine çift tık veya F2: satırın bağlı stok kartı açılır.
+- Ürün adı / kodu / barkod hücresine çift tık: satırın bağlı stok kartı açılır.
+  Tabloda F2 hücre düzenlemeyi açar (stok kartı değil); stok listesi F10 / menü ile kalır.
 - Üçlü iskonto hücresi: iskonto 1 → 2 → 3 ardışık küçük kutular (Enter / Tab / → ile sıradaki).
 - Hücre editörlerinde ↑ / ↓ değeri yazar ve aynı kolonda önceki / sonraki satıra geçer.
   Açılır listelerde (birim, KDV …) ↑ / ↓ da satır değiştirir; liste Alt+↓ veya fareyle açılır.
+- Editörde ←/→: imleç; tam seçimde ilk ok seçimi bırakır (hücreden çıkmaz); uçta çıkış.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def satir_stok_karti_ac(dialog, idx: int) -> bool:
 
 
 def odak_tabloda_mi(dialog, tablo) -> bool:
-    """F2 yalnız satır tablosu (veya üstündeki hücre editörü) odaktayken stok kartı açar."""
+    """Kısayol yalnız satır tablosu (veya üstündeki hücre editörü) odaktayken geçerli."""
     try:
         odak = dialog.focus_get()
     except (tk.TclError, KeyError):
@@ -70,13 +72,18 @@ def combobox_listesini_ac(editor) -> None:
 
 
 def ok_ile_gec(editor, yon: int) -> bool:
-    """Sağ/sol ok hücreden çıkar mı: seçim listesi her zaman; metinde tümü seçiliyken veya imleç uçtayken."""
+    """Sağ/sol ok hücreden çıkar mı.
+
+    Readonly combobox: her zaman. Metinde seçim varken ilk ok seçimi daraltır
+    (çıkmaz); seçim yokken yalnız imleç uçtaysa çıkar.
+    """
     try:
         if isinstance(editor, ttk.Combobox) and str(editor.cget("state")) == "readonly":
             return True
         metin = editor.get()
         if editor.selection_present():
-            return editor.index("sel.first") == 0 and editor.index("sel.last") >= len(metin)
+            # Tam (veya kısmi) seçim: Tk varsayılanı seçimi bırakır / imleci kaydırır
+            return False
         konum = editor.index("insert")
     except tk.TclError:
         return True

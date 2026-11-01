@@ -17,8 +17,8 @@ def test_kayit_sonrasi_yazdir_sor_destroy_yok():
     assert "askyesno" not in kaynak2
     kaynak3 = inspect.getsource(app_mod.SatisFaturasiDialog.kaydet)
     assert "self.destroy()" not in kaynak3
-    assert "Onayla ve Yeni" in inspect.getsource(app_mod.SatisFaturasiDialog)
-    assert "onayla_ve_yeni" in inspect.getsource(app_mod.SatisFaturasiDialog)
+    assert "Onayla (F4)" in inspect.getsource(app_mod.SatisFaturasiDialog)
+    assert "_fatura_yeni_ac" in inspect.getsource(app_mod.SatisFaturasiDialog)
 
 
 def test_override_ui_kaldirildi():
@@ -37,5 +37,7 @@ def test_override_ui_kaldirildi():
     assert "_uzlasilan_fiyatlara_dagit" in src
     assert "Fiyatları Düzenle" in src
     assert "Fiyatları Net'e Uydur" not in src
-    assert "Onayla ve Yeni (F4)" in src
+    assert "Onayla (F4)" in src
+    assert "Onayla ve Yeni (F4)" not in src
     assert "Kaydet ve Onayla (F4)" not in src
+    assert "_fatura_yeni_ac" in src

@@ -168,6 +168,65 @@ def ilk_duzenlenebilir_kolon(dialog, idx: int) -> str | None:
     return None
 
 
+def aktif_hucre_al(dialog) -> tuple[int, str] | None:
+    """Düzenleme dışı aktif hücre (satır, kolon); geçersizse None."""
+    h = getattr(dialog, "_aktif_hucre", None)
+    if not h or not isinstance(h, (tuple, list)) or len(h) != 2:
+        return None
+    try:
+        r = int(h[0])
+    except (TypeError, ValueError):
+        return None
+    c = h[1]
+    if not isinstance(c, str) or not kolon_duzenlenebilir_mi(dialog, r, c):
+        return None
+    return r, c
+
+
+def aktif_hucre_ayarla(
+    dialog, row_id: int, column_id: str, *, tablo_odak: bool = True
+) -> None:
+    """Aktif hücreyi kaydet; satırı seç/görünür yap (editör açmaz)."""
+    dialog._aktif_hucre = (int(row_id), column_id)
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if tablo is None:
+        return
+    iid = str(row_id)
+    try:
+        tablo.selection_set(iid)
+        tablo.focus(iid)
+        tablo.see(iid)
+        _kolonu_gorunur_kaydir(tablo, column_id)
+        if tablo_odak:
+            tablo.focus_set()
+    except tk.TclError:
+        pass
+
+
+def _aktif_hucre_veya_secim(dialog) -> tuple[int, str] | None:
+    """Aktif hücre; yoksa seçili satırın ilk düzenlenebilir kolonu."""
+    mevcut = aktif_hucre_al(dialog)
+    if mevcut is not None:
+        return mevcut
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if tablo is None:
+        return None
+    try:
+        secim = [i for i in tablo.selection() if i != "__yeni__"]
+    except tk.TclError:
+        return None
+    if not secim:
+        return None
+    try:
+        idx = int(secim[0])
+    except (TypeError, ValueError):
+        return None
+    kolon = ilk_duzenlenebilir_kolon(dialog, idx)
+    if not kolon:
+        return None
+    return idx, kolon
+
+
 def _urun_arama_odakla(dialog) -> None:
     """Satırın son alanı sonrası: tablo sonundaki boş ürün giriş satırı."""
     from satir_ici_urun_giris import giris_bileseni
@@ -203,17 +262,11 @@ def focus_editable_cell(dialog, row_id: int, column_id: str, *, deneme: int = 0)
         if hedef:
             focus_editable_cell(dialog, hedef[0], hedef[1], deneme=0)
         return
+    aktif_hucre_ayarla(dialog, row_id, column_id, tablo_odak=True)
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
     iid = str(row_id)
-    try:
-        tablo.selection_set(iid)
-        tablo.focus(iid)
-        tablo.see(iid)
-        tablo.focus_set()
-    except tk.TclError:
-        return
     box = _hucre_bbox(tablo, iid, column_id)
     if not box:
         _kolonu_gorunur_kaydir(tablo, column_id)
@@ -481,6 +534,7 @@ def hucre_duzenle(
     """Kolona göre uygun editörü aç."""
     if kolon in getattr(dialog, "DUZENLENEMEZ_KOLONLAR", ()):
         return
+    dialog._aktif_hucre = (int(idx), kolon)
     if kolon == "miktar":
         miktar_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
     elif kolon == "birim":
@@ -521,15 +575,17 @@ def _satira_gec(dialog, idx: int, kolon: str, satir_yon: int) -> None:
     if hedef != idx and kolon_duzenlenebilir_mi(dialog, hedef, kolon):
         focus_editable_cell(dialog, hedef, kolon)
         return
+    if hedef != idx:
+        yedek = ilk_duzenlenebilir_kolon(dialog, hedef)
+        if yedek:
+            focus_editable_cell(dialog, hedef, yedek)
+            return
     if tablo is None or n <= 0:
         return
-    try:
-        tablo.selection_set(str(hedef))
-        tablo.focus(str(hedef))
-        tablo.see(str(hedef))
-        tablo.focus_set()
-    except tk.TclError:
-        pass
+    hedef_kolon = kolon
+    if not kolon_duzenlenebilir_mi(dialog, hedef, hedef_kolon):
+        hedef_kolon = ilk_duzenlenebilir_kolon(dialog, hedef) or kolon
+    aktif_hucre_ayarla(dialog, hedef, hedef_kolon)
 
 
 def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False, satir_yon: int = 0):
@@ -1404,8 +1460,64 @@ def aciklama_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> Non
     _ok_gezinme_bagla(editor, _kaydet)
 
 
+def aktif_hucre_yatay_tasi(dialog, geri: bool = False) -> str | None:
+    """Tabloda ←/→: aktif hücreyi aynı satırda taşır (editör açmaz). Tk bind için «break» veya None."""
+    if getattr(dialog, "_fatura_kilitli", False):
+        return None
+    if not editoru_birak(dialog):
+        return "break"
+    mevcut = _aktif_hucre_veya_secim(dialog)
+    if not mevcut:
+        return "break"
+    idx, kolon = mevcut
+    sira = [k for k in EDITABLE_COLUMN_ORDER if kolon_duzenlenebilir_mi(dialog, idx, k)]
+    if not sira:
+        return "break"
+    try:
+        i = sira.index(kolon)
+    except ValueError:
+        i = len(sira) - 1 if geri else 0
+    j = i - 1 if geri else i + 1
+    if 0 <= j < len(sira):
+        aktif_hucre_ayarla(dialog, idx, sira[j])
+    else:
+        aktif_hucre_ayarla(dialog, idx, sira[0] if geri else sira[-1])
+    return "break"
+
+
+def aktif_hucre_dikey_tasi(dialog, asagi: bool = True) -> str | None:
+    """Tabloda ↑/↓: aktif hücreyi aynı kolonda satırlar arasında taşır (editör açmaz)."""
+    if getattr(dialog, "_fatura_kilitli", False):
+        return None
+    if not editoru_birak(dialog):
+        return "break"
+    mevcut = _aktif_hucre_veya_secim(dialog)
+    if not mevcut:
+        return "break"
+    idx, kolon = mevcut
+    n = len(getattr(dialog, "satirlar", []) or [])
+    if n <= 0:
+        return "break"
+    hedef = idx + (1 if asagi else -1)
+    if hedef >= n:
+        if _satir_ici_var(dialog):
+            _urun_arama_odakla(dialog)
+            return "break"
+        hedef = n - 1
+    hedef = max(0, hedef)
+    if hedef == idx:
+        return "break"
+    if kolon_duzenlenebilir_mi(dialog, hedef, kolon):
+        aktif_hucre_ayarla(dialog, hedef, kolon)
+    else:
+        yedek = ilk_duzenlenebilir_kolon(dialog, hedef)
+        if yedek:
+            aktif_hucre_ayarla(dialog, hedef, yedek)
+    return "break"
+
+
 def fatura_satir_hucre_etkilesim(dialog) -> None:
-    """Tek tık hücre düzenleme; ürün adı/kodu/barkod çift tık veya F2 stok kartı; bind çoğalmasını engeller."""
+    """Tek tık hücre düzenleme; ürün kolonuna çift tık stok kartı; F2/Enter aktif hücreyi düzenler."""
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
@@ -1484,14 +1596,22 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
         row = tablo.identify_row(event.y)
         if not editoru_birak(dialog):
             return "break"
-        if not row or row == "__yeni__" or kolon not in DUZENLENEBILIR_KOLONLAR:
+        if not row or row == "__yeni__":
             return None
         try:
             idx = int(row)
         except (TypeError, ValueError):
             return None
         tablo.selection_set(row)
-        if kolon == "kur" and not _kur_duzenlenebilir(dialog, row):
+        if kolon in DUZENLENEBILIR_KOLONLAR and not (
+            kolon == "kur" and not _kur_duzenlenebilir(dialog, row)
+        ):
+            aktif_hucre_ayarla(dialog, idx, kolon, tablo_odak=False)
+        else:
+            # Ürün vb. kolonda tık: satırın aktif hücresini ilk düzenlenebilire taşı
+            ilk = ilk_duzenlenebilir_kolon(dialog, idx)
+            if ilk:
+                aktif_hucre_ayarla(dialog, idx, ilk, tablo_odak=False)
             return None
         # Kısa gecikme: seçim + odak otursun, çift tık ile çakışmasın
         def _ac(_i=idx, _k=kolon):
@@ -1528,28 +1648,10 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
             return "break"
         return None
 
-    def _f2(_event=None):
-        """F2: seçili satırın bağlı stok kartı (kilitli/onaylı faturada da açılır)."""
-        if not odak_tabloda_mi(dialog, tablo):
-            return None
-        ed = getattr(dialog, "_satir_hucre_editor", None)
-        secim = [i for i in tablo.selection() if i != "__yeni__"]
-        if not secim:
-            return "break"
-        try:
-            idx = int(secim[0])
-        except (TypeError, ValueError):
-            return "break"
-        if ed is not None and not acik_editoru_uygula(dialog):
-            return "break"
-        satir_stok_karti_ac(dialog, idx)
-        return "break"
-
-    def _enter_tablo(event=None):
-        """Seçili satırda editör yoksa ilk alana gir; çift işleme yok."""
+    def _aktif_hucreyi_duzenle(_event=None):
+        """Enter/F2: aktif düzenlenebilir hücrede editör aç (stok kartı açmaz)."""
         if getattr(dialog, "_fatura_kilitli", False):
             return None
-        secim = _secili_satirlar()
         if not editoru_birak(dialog):
             return "break"
         # İskonto modalı açıksa sızma
@@ -1561,43 +1663,23 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
                         return "break"
         except tk.TclError:
             pass
-        if not secim:
-            return None
-        try:
-            idx = int(secim[0])
-        except (TypeError, ValueError):
-            return None
-        kolon = ilk_duzenlenebilir_kolon(dialog, idx)
-        if not kolon:
+        hedef = _aktif_hucre_veya_secim(dialog)
+        if not hedef:
             return "break"
-        focus_editable_cell(dialog, idx, kolon)
+        focus_editable_cell(dialog, hedef[0], hedef[1])
         return "break"
 
-    def _secili_satirlar() -> list[str]:
-        # Açık editör yazılınca tablo kendi satırını yeniden seçer; kullanıcının seçimi önce alınır
-        try:
-            return [i for i in tablo.selection() if i != "__yeni__"]
-        except tk.TclError:
-            return []
-
-    def _ok_tablo(geri: bool):
-        """Seçili satırda sağ ok ilk, sol ok son düzenlenebilir hücreyi açar (açık editör önce yazılır)."""
-        if getattr(dialog, "_fatura_kilitli", False):
+    def _f2(_event=None):
+        """F2: tabloda aktif hücreyi düzenle (stok kartı değil)."""
+        if not odak_tabloda_mi(dialog, tablo):
             return None
-        secim = _secili_satirlar()
-        if not editoru_birak(dialog):
+        if acik_editor(dialog) is not None:
             return "break"
-        if not secim:
-            return None
-        try:
-            idx = int(secim[0])
-        except (TypeError, ValueError):
-            return None
-        sira = reversed(EDITABLE_COLUMN_ORDER) if geri else EDITABLE_COLUMN_ORDER
-        kolon = next((k for k in sira if kolon_duzenlenebilir_mi(dialog, idx, k)), None)
-        if kolon:
-            focus_editable_cell(dialog, idx, kolon)
-        return "break"
+        return _aktif_hucreyi_duzenle(_event)
+
+    def _enter_tablo(event=None):
+        """Seçili/aktif hücrede editör yoksa düzenlemeyi aç."""
+        return _aktif_hucreyi_duzenle(event)
 
     def _kapanista_temizle(_e=None):
         # Toplevel <Destroy> bağı her alt widget yok edildiğinde de tetiklenir
@@ -1612,8 +1694,10 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
     tablo.bind("<F2>", _f2)
     tablo.bind("<Return>", _enter_tablo)
     tablo.bind("<KP_Enter>", _enter_tablo)
-    tablo.bind("<Right>", lambda e: _ok_tablo(False))
-    tablo.bind("<Left>", lambda e: _ok_tablo(True))
+    tablo.bind("<Right>", lambda e: aktif_hucre_yatay_tasi(dialog, False))
+    tablo.bind("<Left>", lambda e: aktif_hucre_yatay_tasi(dialog, True))
+    tablo.bind("<Down>", lambda e: aktif_hucre_dikey_tasi(dialog, True))
+    tablo.bind("<Up>", lambda e: aktif_hucre_dikey_tasi(dialog, False))
     tablo.bind("<Motion>", _motion)
     tablo.bind("<Leave>", _tooltip_gizle)
     dialog.bind("<F2>", _f2)

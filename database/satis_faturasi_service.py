@@ -25,7 +25,9 @@ from database.finans_service import FinansService
 # Sipariş → fatura: kalan = sipariş miktarı − faturalanan_miktar (sevk zorunlu değil).
 # İrsaliye → fatura: kalan = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
 # satırının faturalanan_miktar'ı da artar. Kaynak: FATURA_KAYNAK_KURALI.
-# Evrak durumu: TASLAK (kaydedilmemiş) → (kaydet) AÇIK → İPTAL. Hareketler yalnız onaylandi=True iken.
+# Evrak durumu: TASLAK (kaydedilmemiş) → (kaydet) AÇIK → İPTAL.
+# kaydet: cari borç + FATURA TAHSİLATI finans + muhasebe fişi (stok yok, onaylandi=False).
+# onayla: yalnız stok çıkışı + onaylandi=True (+ fon); onay_kaldir: yalnız stok geri.
 # Ödenme ayrı alanda (odeme_durumu).
 # "KAPALI" yalnız eski kayıtlarda okunur; ekranda AÇIK gösterilir.
 FATURA_DURUMLARI = ("TASLAK", "AÇIK", "İPTAL")
@@ -453,11 +455,116 @@ class SatisFaturasiService:
             ]
 
     @staticmethod
-    def kaydet(veriler, satir_verileri, fatura_id=None, tahsilat_verileri=None):
-        """Faturayı taslak kaydeder: stok / cari / finans hareketi oluşturmaz.
+    def _cari_borc_ve_finans_senkron(session, fatura) -> None:
+        """SatisHareketi borcunu upsert eder; FATURA TAHSİLATI finansını geri alıp yeniden yazar.
 
-        Hareketler yalnızca onayla() ile üretilir. Onaylı fatura düzenlenemez;
-        önce onay_kaldir() çağrılmalıdır.
+        Stok / onaylandi dokunulmaz. Kur farkı kayıtları senkron öncesi iptal edilir,
+        ardından güncel tahsilat satırlarından (pozitif tutar) yeniden üretilir.
+        """
+        from database.acik_kalem_service import AcikKalemService
+        from database.kur_farki_service import KurFarkiService
+
+        tarih = fatura.fatura_tarihi
+        toplam = SatisFaturasiService.net_toplam(fatura)
+        tahsilat_toplam = Decimal(str(fatura.tahsilat_tutari or 0))
+        if tahsilat_toplam > toplam:
+            raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
+
+        FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
+        # Kur farkı yalnız döviz-sabit faturalarda üretilir; TRY'de sorguya gerek yok
+        _pb = (getattr(fatura, "para_birimi", "TRY") or "TRY").upper()
+        _borc = getattr(fatura, "borc_esasi", "TL_SABIT") or "TL_SABIT"
+        if getattr(fatura, "id", None) and _pb != "TRY" and _borc == "DOVIZ_SABIT":
+            KurFarkiService.kaynak_iptal(
+                session,
+                "satis_faturasi",
+                int(fatura.id),
+                f"Fatura tahsilat senkron {fatura.fatura_no}",
+            )
+            DovizService.kur_farki_fislerini_sil(session, fatura.fatura_no)
+
+        hareket = session.scalar(
+            select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+        )
+        if not hareket:
+            hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
+            session.add(hareket)
+        hareket.cari_id = fatura.cari_id
+        hareket.satis_tarihi = tarih
+        hareket.satis_tutari = toplam
+        hareket.kalan_acik_tutar = toplam - tahsilat_toplam
+        hareket.para_birimi = getattr(fatura, "para_birimi", "TRY") or "TRY"
+        hareket.kur = Decimal(str(getattr(fatura, "kur", 1) or 1))
+        hareket.borc_esasi = getattr(fatura, "borc_esasi", "TL_SABIT") or "TL_SABIT"
+        if hareket.borc_esasi == "DOVIZ_SABIT" and hareket.para_birimi != "TRY":
+            hareket.doviz_tutari = Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0))
+            ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(fatura)
+            if ek + ek_kdv > 0:
+                from database.fon_service import FonService
+
+                FonService._kur_dogrula(fatura)
+                hareket.doviz_tutari += ((ek + ek_kdv) / hareket.kur).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+        else:
+            hareket.doviz_tutari = Decimal("0")
+
+        for th in fatura.tahsilatlar:
+            if Decimal(str(th.tutar or 0)) <= 0:
+                continue
+            if (
+                getattr(fatura, "borc_esasi", "TL_SABIT") == "DOVIZ_SABIT"
+                and getattr(fatura, "para_birimi", "TRY") != "TRY"
+            ):
+                from database.kur_farki_service import KurFarkiService as _Kf
+
+                try:
+                    odeme_kuru = DovizService.kur_degeri(
+                        th.tahsilat_tarihi,
+                        fatura.para_birimi,
+                        getattr(fatura, "kur_turu", "forex_selling"),
+                    )
+                except ValueError:
+                    odeme_kuru = None
+                session.flush()
+                kf = _Kf.satis_fatura_tahsilati(session, fatura, th, odeme_kuru)
+                if odeme_kuru is not None and kf is not None and kf.durum == "HESAPLANDI":
+                    th.odeme_kuru = odeme_kuru
+                    th.kur_farki = Decimal(str(kf.kur_farki))
+                    DovizService.kur_farki_fisi_olustur(
+                        session,
+                        cari_id=fatura.cari_id,
+                        fatura_no=fatura.fatura_no,
+                        tarih=th.tahsilat_tarihi,
+                        kur_farki=th.kur_farki,
+                        para_birimi=fatura.para_birimi,
+                        fatura_kuru=Decimal(str(getattr(fatura, "kur", 1) or 1)),
+                        odeme_kuru=odeme_kuru,
+                        sira=int(getattr(th, "id", 0) or 0)
+                        or (list(fatura.tahsilatlar).index(th) + 1),
+                        finans_hesap_adi=th.hesap,
+                    )
+                else:
+                    th.odeme_kuru = Decimal(str(odeme_kuru or 0))
+                    th.kur_farki = Decimal("0")
+            FinansService.fatura_tahsilati(
+                session,
+                fatura.fatura_no,
+                th.tahsilat_tarihi,
+                th.tutar,
+                th.odeme_sekli,
+                th.hesap,
+            )
+
+        AcikKalemService.avanslari_uygula(session, fatura.cari_id)
+
+    @staticmethod
+    def kaydet(veriler, satir_verileri, fatura_id=None, tahsilat_verileri=None):
+        """Faturayı kaydeder: satırlar + tahsilat + cari borç + finans (aynı transaction).
+
+        Stok çıkışı / FIFO yapmaz; durum AÇIK, onaylandi=False. Onaylı fatura
+        düzenlenemez; önce onay_kaldir() çağrılmalıdır. Muhasebe fişi kaydet sonrası
+        cari ile eşleşir; stok onayı onayla() ile gelir.
         """
         yazma_zorunlu("satis_duzenleme", "yeni_kayit")
         from database.user_audit import (
@@ -506,6 +613,7 @@ class SatisFaturasiService:
                 if cakisan:
                     raise ValueError(f"{istenen_no} numaralı bir satış faturası zaten var.")
             yeni = False
+            eski_fatura_no = None
             if fatura_id:
                 fatura = session.get(SatisFaturasi, fatura_id)
                 if not fatura:
@@ -523,6 +631,7 @@ class SatisFaturasiService:
                 onceki_irsaliye_satirlari = [
                     int(s.irsaliye_satiri_id) for s in fatura.satirlar if s.irsaliye_satiri_id
                 ]
+                eski_fatura_no = fatura.fatura_no
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
                 fatura.satirlar.clear()
                 fatura.tahsilatlar.clear()
@@ -593,16 +702,20 @@ class SatisFaturasiService:
                         raise ValueError("Fatura miktarı siparişin kalan miktarından büyük olamaz.")
                     kaynak.faturalanan_miktar += miktar
                     kaynak.fatura_belge_baglantisi = fatura.fatura_no
+                konsinye_sid = veri.get("konsinye_teslim_satiri_id")
                 fatura.satirlar.append(
                     SatisFaturasiSatiri(
                         siparis_satiri_id=sip_id,
                         irsaliye_satiri_id=irs_id,
+                        konsinye_teslim_satiri_id=int(konsinye_sid) if konsinye_sid else None,
                         urun_kodu=veri["urun_kodu"].strip(),
                         urun_adi=veri["urun_adi"].strip(),
                         barkod=veri.get("barkod") or None,
                         aciklama=veri.get("aciklama") or None,
                         lot_no=veri.get("lot_no") or None,
-                        lot_cikisi=veri.get("lot_cikisi") or None,
+                        lot_cikisi=veri.get("lot_cikisi") or (
+                            "Konsinye stokundan" if konsinye_sid else None
+                        ),
                         miktar=miktar,
                         birim=veri.get("birim") or "Adet",
                         birim_fiyat=decimal(veri["birim_fiyat"], "Birim fiyat", Decimal("0")),
@@ -715,7 +828,7 @@ class SatisFaturasiService:
             ilk = fatura.tahsilatlar[0] if fatura.tahsilatlar else None
             fatura.tahsilat_sekli = ilk.odeme_sekli if ilk else None
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
-            # Kayıtlı fatura AÇIK; stok/cari/finans hareketleri yalnız onayla() ile oluşur
+            # Kayıtlı fatura AÇIK + cari/finans; stok yalnız onayla() ile
             fatura.onaylandi = False
             fatura.durum = "AÇIK"
             fatura.sales_person_id = sp_id
@@ -725,6 +838,28 @@ class SatisFaturasiService:
             else:
                 stamp_update(fatura)
             session.flush()
+            if (
+                eski_fatura_no
+                and eski_fatura_no != fatura.fatura_no
+            ):
+                from database.acik_kalem_service import AcikKalemService
+                from database.kur_farki_service import KurFarkiService
+
+                FinansService.fatura_tahsilatini_geri_al(session, eski_fatura_no)
+                KurFarkiService.kaynak_iptal(
+                    session,
+                    "satis_faturasi",
+                    int(fatura.id),
+                    f"Fatura no değişti {eski_fatura_no}→{fatura.fatura_no}",
+                )
+                DovizService.kur_farki_fislerini_sil(session, eski_fatura_no)
+                AcikKalemService.belge_kalemlerini_sil(
+                    session,
+                    eski_fatura_no,
+                    fatura.cari_id,
+                    neden=f"Fatura no değişti {eski_fatura_no}",
+                )
+            SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
             SatisFaturasiService._durumlari_guncelle(
                 session, fatura, onceki_irsaliye_satirlari=onceki_irsaliye_satirlari
             )
@@ -737,6 +872,9 @@ class SatisFaturasiService:
             fid = int(fatura.id)
             fno = fatura.fatura_no
             eylem = "FATURA_OLUSTUR" if yeni else "FATURA_DUZENLE"
+            from database.muhasebe_entegrasyon import muhasebe_hook
+
+            muhasebe_hook("satis_faturasi_fisi", fid, yeniden=not yeni, session=session)
         audit_document(
             eylem,
             modul="satis_faturasi",
@@ -805,7 +943,12 @@ class SatisFaturasiService:
 
     @staticmethod
     def onayla(fatura_id):
-        """Taslak faturayı onaylar: stok çıkışı, cari borç ve finans tahsilatı oluşturur."""
+        """Kayıtlı faturayı onaylar: yalnız stok çıkışı + onaylandi=True + fon.
+
+        Cari borç / finans tahsilatı kaydet() aşamasındadır. Eski (pre-V2) taslaklarda
+        SatisHareketi yoksa bir kez _cari_borc_ve_finans_senkron çağrılır; hareket
+        zaten varsa cari/finans yeniden yazılmaz.
+        """
         yazma_zorunlu("satis_duzenleme")
         from database.user_audit import (
             OturumGerekli,
@@ -840,12 +983,30 @@ class SatisFaturasiService:
             if tarih > date.today():
                 raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
 
+            # Legacy taslak: cari/finans kaydet'te yazılmamışsa bir kez senkron
+            hareket = session.scalar(
+                select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
+            )
+            if hareket is None:
+                SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
+
             # Tüm satırlar için stok yeterlilik (ürün bazında toplu) — çıkıştan önce
             SatisFaturasiService._onay_oncesi_stok_yeterlilik(session, fatura)
 
             for satir in fatura.satirlar:
                 # İrsaliyeden stok çıkışı yapılmışsa fatura satırında tekrar çıkış yapma
                 skip_stok = False
+                if getattr(satir, "konsinye_teslim_satiri_id", None):
+                    # Satış bildiriminde stok zaten çıktı; tekrar düşürme
+                    skip_stok = True
+                    satir.lot_cikisi = satir.lot_cikisi or "Konsinye stokundan"
+                    from database.models.konsinye import KonsinyeTeslimSatiri as _KSat
+
+                    ks = session.get(_KSat, int(satir.konsinye_teslim_satiri_id))
+                    if ks is not None:
+                        satir.fifo_birim_maliyeti = Decimal(
+                            str(getattr(ks, "fifo_birim_maliyet", 0) or 0)
+                        )
                 if getattr(satir, "irsaliye_satiri_id", None):
                     from database.satis_irsaliyesi_service import stok_cikis_gerekli
 
@@ -881,92 +1042,11 @@ class SatisFaturasiService:
                 satir.lot_cikisi = stok_cikisi["lot_cikisi"]
                 satir.fifo_birim_maliyeti = stok_cikisi["fifo_birim_maliyeti"]
 
-            toplam = SatisFaturasiService.net_toplam(fatura)
-            tahsilat_toplam = Decimal(str(fatura.tahsilat_tutari or 0))
-            if tahsilat_toplam > toplam:
-                raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
-
-            hareket = session.scalar(
-                select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
-            )
-            if not hareket:
-                hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
-                session.add(hareket)
-            hareket.cari_id = fatura.cari_id
-            hareket.satis_tarihi = tarih
-            hareket.satis_tutari = toplam
-            hareket.kalan_acik_tutar = toplam - tahsilat_toplam
-            hareket.para_birimi = getattr(fatura, "para_birimi", "TRY") or "TRY"
-            hareket.kur = Decimal(str(getattr(fatura, "kur", 1) or 1))
-            hareket.borc_esasi = getattr(fatura, "borc_esasi", "TL_SABIT") or "TL_SABIT"
-            if hareket.borc_esasi == "DOVIZ_SABIT" and hareket.para_birimi != "TRY":
-                hareket.doviz_tutari = Decimal(str(getattr(fatura, "doviz_ara_toplam", 0) or 0))
-                ek, ek_kdv = SatisFaturasiService.ek_fon_bedeli(fatura)
-                if ek + ek_kdv > 0:
-                    from database.fon_service import FonService
-
-                    FonService._kur_dogrula(fatura)
-                    # Ek bedel TL hesaplanır; döviz borca faturanın kayıtlı kuruyla bir kez çevrilir
-                    hareket.doviz_tutari += ((ek + ek_kdv) / hareket.kur).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-            else:
-                hareket.doviz_tutari = Decimal("0")
-
-            for th in fatura.tahsilatlar:
-                if Decimal(str(th.tutar or 0)) <= 0:
-                    continue
-                if (
-                    getattr(fatura, "borc_esasi", "TL_SABIT") == "DOVIZ_SABIT"
-                    and getattr(fatura, "para_birimi", "TRY") != "TRY"
-                ):
-                    from database.kur_farki_service import KurFarkiService
-
-                    try:
-                        odeme_kuru = DovizService.kur_degeri(
-                            th.tahsilat_tarihi,
-                            fatura.para_birimi,
-                            getattr(fatura, "kur_turu", "forex_selling"),
-                        )
-                    except ValueError:
-                        odeme_kuru = None
-                    session.flush()
-                    kf = KurFarkiService.satis_fatura_tahsilati(session, fatura, th, odeme_kuru)
-                    if odeme_kuru is not None and kf is not None and kf.durum == "HESAPLANDI":
-                        th.odeme_kuru = odeme_kuru
-                        th.kur_farki = Decimal(str(kf.kur_farki))
-                        DovizService.kur_farki_fisi_olustur(
-                            session,
-                            cari_id=fatura.cari_id,
-                            fatura_no=fatura.fatura_no,
-                            tarih=th.tahsilat_tarihi,
-                            kur_farki=th.kur_farki,
-                            para_birimi=fatura.para_birimi,
-                            fatura_kuru=Decimal(str(getattr(fatura, "kur", 1) or 1)),
-                            odeme_kuru=odeme_kuru,
-                            sira=int(getattr(th, "id", 0) or 0) or (list(fatura.tahsilatlar).index(th) + 1),
-                            finans_hesap_adi=th.hesap,
-                        )
-                    else:
-                        th.odeme_kuru = Decimal(str(odeme_kuru or 0))
-                        th.kur_farki = Decimal("0")
-                FinansService.fatura_tahsilati(
-                    session,
-                    fatura.fatura_no,
-                    th.tahsilat_tarihi,
-                    th.tutar,
-                    th.odeme_sekli,
-                    th.hesap,
-                )
-
             # Evrak durumu onayla AÇIK olur; ödenme ayrı izlenir (tahsilat_tutari / açık kalem).
             fatura.durum = "AÇIK"
             fatura.onaylandi = True
             stamp_approve(fatura)
             SatisFaturasiService._durumlari_guncelle(session, fatura)
-            from database.acik_kalem_service import AcikKalemService
-
-            AcikKalemService.avanslari_uygula(session, fatura.cari_id)
             try:
                 session.flush()
                 from database.fon_service import FonService
@@ -979,7 +1059,8 @@ class SatisFaturasiService:
             fno = fatura.fatura_no
             from database.muhasebe_entegrasyon import muhasebe_hook
 
-            muhasebe_hook("satis_faturasi_fisi", fid, session=session)
+            # FIFO maliyet satırları onayda yazıldığı için fişi yenile
+            muhasebe_hook("satis_faturasi_fisi", fid, yeniden=True, session=session)
         audit_document(
             "FATURA_ONAY",
             modul="satis_faturasi",
@@ -990,7 +1071,7 @@ class SatisFaturasiService:
 
     @staticmethod
     def onay_kaldir(fatura_id):
-        """Onayı kaldırır: stok/finans/cari hareketlerini geri alır; satırları silmez."""
+        """Onayı kaldırır: yalnız stok çıkışını geri alır; cari/finans/muhasebe bozulmaz."""
         yazma_zorunlu("satis_duzenleme", "iptal")
         with get_session() as session:
             fatura = session.scalar(
@@ -1009,21 +1090,7 @@ class SatisFaturasiService:
                 raise ValueError("Bu fatura zaten onaysız (taslak).")
 
             StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
-            FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
-            from database.kur_farki_service import KurFarkiService
-
-            KurFarkiService.kaynak_iptal(session, "satis_faturasi", int(fatura.id),
-                                         f"Fatura onayı kaldırıldı {fatura.fatura_no}")
-            from database.doviz_service import DovizService
-
-            DovizService.kur_farki_fislerini_sil(session, fatura.fatura_no)
-            from database.acik_kalem_service import AcikKalemService
-
             neden = f"Fatura onayı kaldırıldı {fatura.fatura_no}"
-            FinansService.bagli_makbuz_paylarini_faturada_tut(session, fatura, neden=neden)
-            AcikKalemService.belge_kalemlerini_sil(
-                session, fatura.fatura_no, fatura.cari_id, neden=neden
-            )
             fatura.onaylandi = False
             fatura.durum = "AÇIK"
             SatisFaturasiService._durumlari_guncelle(session, fatura)
@@ -1035,9 +1102,137 @@ class SatisFaturasiService:
             except IntegrityError as hata:
                 raise ValueError("Onay kaldırılamadı.") from hata
             fid = int(fatura.id)
+        return SatisFaturasiService.getir(fid)
+
+    @staticmethod
+    def tahsilatlari_guncelle(fatura_id, tahsilat_verileri):
+        """Kayıtlı (İPTAL değil) faturada tahsilat satırlarını günceller; stok/onay dokunulmaz.
+
+        Veride ``id`` varsa mevcut satır güncellenir; aksi halde tahsilatlar temizlenip
+        yeniden yazılır. Header tahsilat alanları ve cari/finans senkronlanır.
+        """
+        yazma_zorunlu("satis_duzenleme")
+        from database.user_audit import (
+            OturumGerekli,
+            audit_document,
+            require_user_session,
+            stamp_update,
+        )
+
+        try:
+            require_user_session()
+        except OturumGerekli as exc:
+            raise ValueError(str(exc)) from exc
+        tahsilat_verileri = list(tahsilat_verileri or [])
+        with get_session() as session:
+            fatura = session.scalar(
+                select(SatisFaturasi)
+                .where(SatisFaturasi.id == int(fatura_id))
+                .options(
+                    selectinload(SatisFaturasi.satirlar),
+                    selectinload(SatisFaturasi.tahsilatlar),
+                )
+            )
+            if not fatura:
+                raise ValueError("Fatura bulunamadı.")
+            if fatura.durum == "İPTAL":
+                raise ValueError("İptal edilmiş faturada tahsilat güncellenemez.")
+
+            mevcut_by_id = {int(t.id): t for t in list(fatura.tahsilatlar) if t.id}
+            id_ile = any(veri.get("id") not in (None, "") for veri in tahsilat_verileri)
+
+            tahsilat_toplam = Decimal("0")
+            if id_ile:
+                kullanilan: set[int] = set()
+                for veri in tahsilat_verileri:
+                    tutar = decimal(veri["tutar"], "Tahsilat tutarı", Decimal("0.01"))
+                    odeme_sekli = (veri.get("odeme_sekli") or "").strip()
+                    hesap = (veri.get("hesap") or "").strip()
+                    if not odeme_sekli:
+                        raise ValueError("Tahsilat ödeme şekli zorunludur.")
+                    if not hesap:
+                        raise ValueError("Tahsilat hesabı zorunludur.")
+                    tahsilat_tarihi = veri.get("tahsilat_tarihi") or fatura.fatura_tarihi
+                    if not hasattr(tahsilat_tarihi, "strftime"):
+                        tahsilat_tarihi = fatura.fatura_tarihi
+                    raw_id = veri.get("id")
+                    th = None
+                    if raw_id not in (None, ""):
+                        try:
+                            th = mevcut_by_id.get(int(raw_id))
+                        except (TypeError, ValueError):
+                            th = None
+                    if th is None:
+                        th = SatisFaturasiTahsilati(fatura_id=fatura.id)
+                        fatura.tahsilatlar.append(th)
+                    else:
+                        kullanilan.add(int(th.id))
+                    th.tahsilat_tarihi = tahsilat_tarihi
+                    th.tutar = tutar
+                    th.odeme_sekli = odeme_sekli
+                    th.hesap = hesap
+                    th.aciklama = (veri.get("aciklama") or None)
+                    tahsilat_toplam += tutar
+                for tid, th in list(mevcut_by_id.items()):
+                    if tid not in kullanilan:
+                        fatura.tahsilatlar.remove(th)
+                        session.delete(th)
+            else:
+                fatura.tahsilatlar.clear()
+                session.flush()
+                for veri in tahsilat_verileri:
+                    tutar = decimal(veri["tutar"], "Tahsilat tutarı", Decimal("0.01"))
+                    odeme_sekli = (veri.get("odeme_sekli") or "").strip()
+                    hesap = (veri.get("hesap") or "").strip()
+                    if not odeme_sekli:
+                        raise ValueError("Tahsilat ödeme şekli zorunludur.")
+                    if not hesap:
+                        raise ValueError("Tahsilat hesabı zorunludur.")
+                    tahsilat_tarihi = veri.get("tahsilat_tarihi") or fatura.fatura_tarihi
+                    if not hasattr(tahsilat_tarihi, "strftime"):
+                        tahsilat_tarihi = fatura.fatura_tarihi
+                    tahsilat_toplam += tutar
+                    fatura.tahsilatlar.append(
+                        SatisFaturasiTahsilati(
+                            tahsilat_tarihi=tahsilat_tarihi,
+                            tutar=tutar,
+                            odeme_sekli=odeme_sekli,
+                            hesap=hesap,
+                            aciklama=(veri.get("aciklama") or None),
+                        )
+                    )
+
+            toplam = SatisFaturasiService.net_toplam(fatura)
+            makbuz_tahsilati = FinansService.fatura_bagli_makbuz_toplami(session, fatura.id)
+            if tahsilat_toplam + makbuz_tahsilati > toplam:
+                if makbuz_tahsilati > 0:
+                    raise ValueError(
+                        "Toplam tahsilat fatura tutarını aşamaz: faturaya bağlı tahsilat makbuzlarıyla "
+                        f"{makbuz_tahsilati:.2f} TL tahsil edilmiş."
+                    )
+                raise ValueError("Toplam tahsilat fatura tutarını aşamaz.")
+            fatura.tahsilat_tutari = tahsilat_toplam + makbuz_tahsilati
+            ilk = fatura.tahsilatlar[0] if fatura.tahsilatlar else None
+            fatura.tahsilat_sekli = ilk.odeme_sekli if ilk else None
+            fatura.tahsilat_hesabi = ilk.hesap if ilk else None
+            stamp_update(fatura)
+            session.flush()
+            SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
+            try:
+                session.flush()
+            except IntegrityError as hata:
+                raise ValueError("Tahsilatlar güncellenemedi.") from hata
+            fid = int(fatura.id)
+            fno = fatura.fatura_no
             from database.muhasebe_entegrasyon import muhasebe_hook
 
-            muhasebe_hook("satis_faturasi_iptal", fid, neden, session=session)
+            muhasebe_hook("satis_faturasi_fisi", fid, yeniden=True, session=session)
+        audit_document(
+            "FATURA_TAHSILAT_GUNCELLE",
+            modul="satis_faturasi",
+            kayit_id=str(fid),
+            belge_no=fno,
+        )
         return SatisFaturasiService.getir(fid)
 
     @staticmethod
@@ -1071,17 +1266,33 @@ class SatisFaturasiService:
             if fatura.durum != "İPTAL":
                 onayliydi = bool(getattr(fatura, "onaylandi", False))
                 SatisFaturasiService._baglantilari_geri_al(session, fatura.satirlar)
+                cari_var = session.scalar(
+                    select(SatisHareketi.id).where(SatisHareketi.belge_no == fatura.fatura_no)
+                ) is not None
                 if onayliydi:
                     StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
+                # V2: kaydet cari/finans yazdığı için onaysız kayıtta da mali geri al
+                if onayliydi or cari_var:
                     FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
                     from database.kur_farki_service import KurFarkiService
 
-                    KurFarkiService.kaynak_iptal(session, "satis_faturasi", int(fatura.id),
-                                                 f"Fatura iptal {fatura.fatura_no}")
+                    _pb = (getattr(fatura, "para_birimi", "TRY") or "TRY").upper()
+                    _borc = getattr(fatura, "borc_esasi", "TL_SABIT") or "TL_SABIT"
+                    if _pb != "TRY" and _borc == "DOVIZ_SABIT":
+                        KurFarkiService.kaynak_iptal(
+                            session,
+                            "satis_faturasi",
+                            int(fatura.id),
+                            f"Fatura iptal {fatura.fatura_no}",
+                        )
+                        DovizService.kur_farki_fislerini_sil(session, fatura.fatura_no)
                     from database.acik_kalem_service import AcikKalemService
 
                     AcikKalemService.belge_kalemlerini_sil(
-                        session, fatura.fatura_no, fatura.cari_id, neden=f"Fatura iptal {fatura.fatura_no}"
+                        session,
+                        fatura.fatura_no,
+                        fatura.cari_id,
+                        neden=f"Fatura iptal {fatura.fatura_no}",
                     )
                 if onayliydi:
                     from database.fon_service import FonService
@@ -1093,10 +1304,15 @@ class SatisFaturasiService:
                 SatisFaturasiService._durumlari_guncelle(session, fatura)
                 fid = int(fatura.id)
                 fno = fatura.fatura_no
-                if onayliydi:
+                if onayliydi or cari_var:
                     from database.muhasebe_entegrasyon import muhasebe_hook
 
-                    muhasebe_hook("satis_faturasi_iptal", fid, f"Fatura iptal: {neden}", session=session)
+                    muhasebe_hook(
+                        "satis_faturasi_iptal",
+                        fid,
+                        f"Fatura iptal: {neden}",
+                        session=session,
+                    )
             else:
                 return
 

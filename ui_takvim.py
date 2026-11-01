@@ -4,7 +4,7 @@ from __future__ import annotations
 import calendar
 import tkinter as tk
 from datetime import date, datetime
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 
 def saat_varsayilan(mevcut: str | None = None) -> str:
@@ -23,6 +23,115 @@ def saat_dogrula(metin: str) -> str:
     except ValueError as hata:
         raise ValueError("İşlem saati SS:DD formatında olmalıdır (ör. 14:35).") from hata
     return metin
+
+
+def saat_kisa_giris_coz(
+    metin: str,
+    *,
+    bos_izinli: bool = True,
+    alan_adi: str = "Saat",
+) -> str | None:
+    """Kısa saat girişini HH:mm'ye çevirir.
+
+    Kabul: ``16``→16:00, ``1643``→16:43, ``9``→09:00, ``930``→09:30,
+    ``0905``→09:05, ``16:43``→16:43.
+
+    Boş metin ``bos_izinli`` ise ``None`` (00:00 yapılmaz). Geçersiz değerde
+    ValueError; saat başka bir değere “düzeltilmez”.
+    """
+    ham = (metin or "").strip()
+    if not ham:
+        if bos_izinli:
+            return None
+        raise ValueError(f"{alan_adi} boş olamaz.")
+
+    if ":" in ham:
+        parcalar = ham.split(":")
+        if len(parcalar) != 2 or any(p.strip() == "" for p in parcalar):
+            raise ValueError(
+                f"{alan_adi} geçersiz. Örnek: 16, 1643, 09:05 veya 16:43."
+            )
+        try:
+            saat = int(parcalar[0].strip())
+            dakika = int(parcalar[1].strip())
+        except ValueError as hata:
+            raise ValueError(
+                f"{alan_adi} geçersiz. Örnek: 16, 1643, 09:05 veya 16:43."
+            ) from hata
+    else:
+        rakam = ham.replace(" ", "")
+        if not rakam.isdigit():
+            raise ValueError(
+                f"{alan_adi} geçersiz. Örnek: 16, 1643, 09:05 veya 16:43."
+            )
+        n = len(rakam)
+        if n in (1, 2):
+            saat = int(rakam)
+            dakika = 0
+        elif n == 3:
+            saat = int(rakam[0])
+            dakika = int(rakam[1:])
+        elif n == 4:
+            saat = int(rakam[:2])
+            dakika = int(rakam[2:])
+        else:
+            raise ValueError(
+                f"{alan_adi} geçersiz. En fazla 4 rakam veya SS:DD girin."
+            )
+
+    if not (0 <= saat <= 23 and 0 <= dakika <= 59):
+        raise ValueError(
+            f"{alan_adi} geçersiz: saat 00–23, dakika 00–59 olmalı "
+            f"(girilen: {saat:02d}:{dakika:02d})."
+        )
+    return f"{saat:02d}:{dakika:02d}"
+
+
+def saat_alani_bagla(
+    entry: ttk.Entry | tk.Entry,
+    *,
+    bos_izinli: bool = True,
+    alan_adi: str = "Teslim saati",
+    parent: tk.Misc | None = None,
+):
+    """FocusOut / Enter / KP_Enter'da biçimlendir; yazarken dokunmaz."""
+
+    def _bicimlendir(event=None):
+        try:
+            sonuc = saat_kisa_giris_coz(
+                entry.get(), bos_izinli=bos_izinli, alan_adi=alan_adi
+            )
+        except ValueError as hata:
+            try:
+                ust = parent or entry.winfo_toplevel()
+            except tk.TclError:
+                ust = None
+            messagebox.showwarning(alan_adi, str(hata), parent=ust)
+            if event is not None and getattr(event, "keysym", "") in (
+                "Return",
+                "KP_Enter",
+            ):
+                return "break"
+            return None
+        hedef = "" if sonuc is None else sonuc
+        try:
+            guncel = entry.get()
+        except tk.TclError:
+            return None
+        if guncel.strip() == hedef:
+            return None
+        try:
+            entry.delete(0, "end")
+            if hedef:
+                entry.insert(0, hedef)
+        except tk.TclError:
+            pass
+        return None
+
+    entry.bind("<FocusOut>", _bicimlendir, add="+")
+    entry.bind("<Return>", _bicimlendir, add="+")
+    entry.bind("<KP_Enter>", _bicimlendir, add="+")
+    return _bicimlendir
 
 
 def _tarih_oku(metin: str) -> date:

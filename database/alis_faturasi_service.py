@@ -581,7 +581,9 @@ class AlisFaturasiService:
 
                 # Stok ve FIFO lotu temel birimde: 2 Koli (×12) → 24 Adet, maliyet koli fiyatı / 12
                 temel_maliyet = (stok_maliyeti / carpan).quantize(Decimal("0.0001"))
-                if hareket_yaz:
+                konsinye_sid = veri.get("konsinye_teslim_satiri_id")
+                # Konsinye kesin alımda stok/sahiplik zaten oluştu — tekrar giriş yok
+                if hareket_yaz and not konsinye_sid:
                     stok_girisi = StokService.fatura_girisi(
                         session,
                         fatura.fatura_no,
@@ -600,6 +602,9 @@ class AlisFaturasiService:
                     )
                     lot_girisi = stok_girisi["lot_girisi"]
                     fifo_maliyet = stok_girisi["birim_maliyet"]
+                elif konsinye_sid:
+                    lot_girisi = "Konsinye kesin alım"
+                    fifo_maliyet = temel_maliyet
                 else:
                     lot_girisi = (veri.get("lot_no") or "").strip() or None
                     fifo_maliyet = temel_maliyet
@@ -607,6 +612,7 @@ class AlisFaturasiService:
                     AlisFaturasiSatiri(
                         siparis_satiri_id=sip_id,
                         irsaliye_satiri_id=irs_id,
+                        konsinye_teslim_satiri_id=int(konsinye_sid) if konsinye_sid else None,
                         urun_kodu=veri["urun_kodu"].strip(),
                         urun_adi=veri["urun_adi"].strip(),
                         barkod=veri.get("barkod") or None,

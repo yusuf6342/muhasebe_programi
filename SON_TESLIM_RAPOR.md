@@ -1,45 +1,39 @@
-# Son Teslim Raporu — 31.10.2026
+# Son teslim raporu — 1 Kasım 2026 (ev)
 
-## Push edilen commit’ler (`main` → `origin/main`)
+## Bugünkü işler
 
-| Kısa | Konu |
-|---|---|
-| `2346d85` | Alınan Sipariş: fatura alt toplamları, uzlaşılan fiyat, Teklif satır yüksekliği, excel çizgi |
-| `a54bcbc` | Cari kart hareket sütun görünümü + bakiye/risk özet hizası |
-| `1620131` | Sorulan ürün: ölçüm/tekrar/görüşme/tarih log + UI/test |
-| `1b5af5b` | Satış faturası: açılış odağı, irsaliyeden seçim, takvim bağlama, Teklifler menü araması |
-| *(bu dosya güncellemesi)* | Kapanış raporu |
+| Alan | Durum |
+|------|--------|
+| Fatura Kaydet/Onayla/Yeni ayrımı, tahsilat, cari/finans bir kez | Kod + testler |
+| Hücre klavye / F2 / sağ tık / F10 | Kod + testler |
+| Tablo çizgi hizası, müşteri vadesi, teslim saati | Korundu |
+| Oval 3D → **kompakt iki ölçü grubu** (panel 74×24, dışı 128×30) | Uygulandı |
+| Panel «Yeni» kısaltması; veri alanları genişletildi | Uygulandı |
+| Konsinye sahiplik / FIFO / kesin alım net=100 / gerçek fatura bağ | Test OK |
+| Konsinye raporları (A–I çekirdek) | Servis + UI menü |
+| Mutabakat Excel/PDF tam otomasyon | Kısmi (ekran çıktısı var) |
+| Giriş sonrası her düğme canlı turu | Giriş engeli — kullanıcıda |
 
-## Alınan Sipariş — tamamlanan kontroller
-- Footer iki kolon (fatura ile aynı yerleşim); Net = Uzlaşılan
-- Uzlaşılan Tutar / Fiyatları Düzenle / Dağıtımı Geri Al
-- Satır yüksekliği Teklif = Sipariş (**29 / 29** bbox)
-- F10 bind, sağ tık/çift tık altyapısı, Tab/Enter, MouseWheel
-- Kaydet → yeniden aç; tam/kısmi aktarım (canlı DB **kopyası**)
+## Son EXE
 
-## Paketlenmiş EXE’de yapılamayan / başarı sayılmayan canlı kontroller
-- Girişli dondurulmuş EXE oturumunda menüden uçtan uca fare tıklaması (oturum kapalı / giriş şifresi yok; Computer Use odak çakışması)
-- Doğrulama: commit edilen kaynak + canlı DB kopyası + Tk Alınan Sipariş kartı üzerinden yapıldı — **EXE UI oturumu başarı sayılmadı**
+- Klasör: `C:\Users\Pc\Documents\CinMuhasebe_EV_TEST_GUNCEL_2026-11-01_1914\`
+- EXE: `...\CinMuhasebe.exe`
+- SHA-256: `E627747193DDBF360AA0229DC81D599896141422835CA12B7A0F91F9A979E072`
+- Kısayol: `Cin Muhasebe GUNCEL EV TEST 2026-11-01.lnk` → bu paket + TEST veri
+- Veri: `%LOCALAPPDATA%\CinMuhasebeTest\data` (**TEST**)
 
-## Cari / Sorulan ürün / Fatura (bu kapanışta gönderilen)
-- Cari: ürün sütun aç-kapa, sütun sığdırma; borç/alacak özet kutusu fatura üst alan yüksekliğine uyum; çift kayıtsız satışta kapanan tutarın bakiyeye yansıması
-- Sorulan ürün: ek tablolar (ölçü/ek/tekrar/görüşme/tarih log), etiketler, UI yenileme/tekrar, testler
-- Fatura: Müşteri Adı ilk odak, barkod F8; `fatura_irsaliye_secim_ui`; `takvim_entry_bagla`; menü aramasında Teklifler
+## Veri yedeği (Git dışı)
 
-## EXE
-- Yol: `dist\CinMuhasebe\CinMuhasebe.exe`
-- Derleme: kapanış rebuild (kaynak = push edilen son commit’ler)
-- Masaüstü: `Cin Muhasebe.lnk` → aynı EXE
+- `C:\Users\Pc\Documents\CinMuhasebe_Teslim_Yedek_20261101_191524\TEST_data\`
+- `muhasebe.db` / `system.db` integrity_check=ok, FK=0
+- Manifest: aynı klasörde `MANIFEST.json`
+- Taşıma: USB veya kullanıcının özel aktarım yöntemi — **işyerine henüz ulaşmadı (yerel hazır)**
 
-## Commit dışı bırakılanlar (silinmedi)
-| Ne | Neden |
-|---|---|
-| `Banka_Guncelleme_Yedek/` | Yedek klasörü |
-| `tmp_screens/`, `_fiyat_tab_*.png`, `_talimat_extract/` | Geçici ekran/talimat çıktıları |
-| `tools/_shots_*`, `tools/_tmp_*`, ölçüm/png/txt çıktıları | Geçici doğrulama artefaktları |
-| `tools/_siparis_*`, `_fatura_*`, `_teklif_*`, `_stok_kart_*`, `_tani_*`, `_verify_*`, müşteri tarama scriptleri | Yerel yardımcı / tanı; ürün kaynak değil; bazıları müşteri verisine değebilir |
-| Canlı `muhasebe.db` / system.db / şirket DB | Veritabanı |
-| Şifre / lisans dosyaları | Güvenlik |
+## Buton ölçüleri (son)
 
-## Dal
-`main` — force push yok.
+- Panel içi: **74×24** (Yeni / Ara / Cari Kart)
+- Panel dışı: **128×30** (üst şerit + satır araçları)
+
+## Not
+
+Commit SHA ve uzak doğrulama bu dosyada kapanış commit’inden sonra güncellenir / raporda verilir.

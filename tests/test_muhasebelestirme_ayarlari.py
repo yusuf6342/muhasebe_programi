@@ -388,8 +388,10 @@ class MuhasebelestirmeAyarlariTest(unittest.TestCase):
 
         self._alis("U001", "100", "100", "LOT-A")
         sid = self._sat("10")
+        # V2: onay_kaldir yalnız stok; muhasebe/cari kaydet aşamasında kalır
+        self.assertEqual(self._durum("satis_faturasi", sid)["durum"], "Muhasebeleştirildi")
         SatisFaturasiService.onay_kaldir(sid)
-        self.assertEqual(self._durum("satis_faturasi", sid)["durum"], "İptal edildi")
+        self.assertEqual(self._durum("satis_faturasi", sid)["durum"], "Muhasebeleştirildi")
         SatisFaturasiService.onayla(sid)
         self.assertEqual(self._fis_sayisi("satis_faturasi", "Kesinleşmiş"), 1)
         self.assertEqual(self._durum("satis_faturasi", sid)["durum"], "Muhasebeleştirildi")

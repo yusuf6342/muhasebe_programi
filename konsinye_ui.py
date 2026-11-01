@@ -22,11 +22,10 @@ from urun_sec_ui import UrunSecDialog
 
 
 def _miktar(v) -> str:
-    try:
-        d = Decimal(str(v or 0))
-    except Exception:
-        return "0"
-    return f"{d:f}".rstrip("0").rstrip(".") or "0"
+    """Gösterim: yalnız ondalık kesrin gereksiz sıfırlarını sil; 100→100 (tam sayının sıfırları silinmez)."""
+    from database.konsinye_service import miktar_goster
+
+    return miktar_goster(v)
 
 
 def _tarih(d) -> str:
@@ -85,8 +84,9 @@ def konsinye_takibi_goster(app, *, yon: str | None = None) -> None:
             "1) Yeni Teslim / Giriş ile malı konumlandırın (cari borç yazılmaz).\n"
             "2) Satış Bildir: müşteri satılan miktarı bildirir → fatura bekleyen artar.\n"
             "3) İade Al: satılmamış mal geri döner.\n"
-            "4) Fatura Bağla: yalnız bildirilen/kesin alınan miktarı işaretler; stok tekrar düşmez.\n"
-            "Aldığımız yönde Kesin Al ile tedarikçi malı kendi stoğumuza geçer.",
+            "4) Gerçek Satış/Alış Faturası oluşturun veya faturayla eşleştirin; "
+            "hayali numara kabul edilmez. Stok tekrar hareket etmez.\n"
+            "Kesin Al: fiziksel aynı kalır, sahiplik firmaya geçer. Raporlar menüsünü kullanın.",
             parent=app,
         )
 
@@ -151,8 +151,17 @@ class _KonsinyeSekme:
         else:
             tk_buton(arac, "Kesin Al", self._kesin_al, rol="ikincil").pack(side="left", padx=2)
         tk_buton(arac, "İade Al", self._iade, rol="ikincil").pack(side="left", padx=2)
-        tk_buton(arac, "Fatura Bağla", self._fatura_bagla, rol="ikincil").pack(side="left", padx=2)
+        if self.yon == YON_VERILEN:
+            tk_buton(arac, "Satış Faturası Oluştur", self._satis_fatura_olustur, rol="ana").pack(
+                side="left", padx=2
+            )
+        else:
+            tk_buton(arac, "Alış Faturası Oluştur", self._alis_fatura_olustur, rol="ana").pack(
+                side="left", padx=2
+            )
+        tk_buton(arac, "Faturayla Eşleştir", self._fatura_bagla, rol="ikincil").pack(side="left", padx=2)
         tk_buton(arac, "Onayla", self._onayla, rol="ikincil").pack(side="left", padx=2)
+        tk_buton(arac, "Raporlar", self._raporlar, rol="ikincil").pack(side="left", padx=2)
 
         filtre = tk.Frame(self.cerceve, bg=ACIK_BG)
         filtre.pack(fill="x", padx=8, pady=(0, 4))
@@ -209,7 +218,8 @@ class _KonsinyeSekme:
         durum = self.durum.get()
         durum_f = None if durum == "Tümü" else durum
         try:
-            liste = KonsinyeService.listele(yon=self.yon, durum=durum_f)
+            # Ekranda sayfalama yok; tüm kayıtlar (filtre + arama)
+            liste = KonsinyeService.listele(yon=self.yon, durum=durum_f, limit=None)
             ozet = KonsinyeService.ozet_kutulari(self.yon)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Konsinye", str(exc), parent=self.app)
@@ -431,6 +441,7 @@ class _KonsinyeSekme:
             messagebox.showerror("Konsinye", str(exc), parent=self.app)
 
     def _fatura_bagla(self):
+        """Mevcut gerçek fatura kimliğiyle eşleştir (hayali numara kabul edilmez)."""
         t = self._secili_teslim()
         if not t:
             return
@@ -442,15 +453,31 @@ class _KonsinyeSekme:
         if bek <= 0:
             messagebox.showinfo("Konsinye", "Fatura bekleyen miktar yok.", parent=self.app)
             return
-        m = self._miktar_iste("Fatura Bağla", bek)
+        m = self._miktar_iste("Faturayla Eşleştir", bek)
         if m is None:
             return
-        belge = simpledialog.askstring("Fatura no", "İsteğe bağlı belge no:", parent=self.app)
+        belge_id_s = simpledialog.askstring(
+            "Fatura kimliği",
+            "Gerçek fatura ID (zorunlu). Yalnız numara yeterli değildir:",
+            parent=self.app,
+        )
+        if not belge_id_s or not str(belge_id_s).strip().isdigit():
+            messagebox.showerror("Konsinye", "Geçerli fatura ID girin.", parent=self.app)
+            return
+        belge_no = simpledialog.askstring(
+            "Fatura no", "Kontrol için fatura no (isteğe bağlı):", parent=self.app
+        )
         try:
-            KonsinyeService.fatura_bagla(teslim_satiri_id=sid, miktar=m, belge_no=belge, onayli=True)
+            KonsinyeService.fatura_bagla(
+                teslim_satiri_id=sid,
+                miktar=m,
+                belge_id=int(belge_id_s),
+                belge_no=belge_no,
+                onayli=True,
+            )
             messagebox.showinfo(
                 "Konsinye",
-                "Faturalanan işaretlendi (stok tekrar düşmez).",
+                "Gerçek faturaya bağlandı (stok tekrar hareket etmez).",
                 parent=self.app,
             )
             self.yenile()
@@ -459,6 +486,130 @@ class _KonsinyeSekme:
             self._ayrinti()
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Konsinye", str(exc), parent=self.app)
+
+    def _satis_fatura_olustur(self):
+        t = self._secili_teslim()
+        if not t or t["durum"] != DURUM_ONAYLI:
+            messagebox.showinfo("Konsinye", "Onaylı verilen teslim ve satır seçin.", parent=self.app)
+            return
+        sid = self._secili_satir_id()
+        if not sid:
+            return
+        satir = next((s for s in t["satirlar"] if s["id"] == sid), None)
+        bek = Decimal(str((satir or {}).get("fatura_bekleyen") or 0))
+        if bek <= 0:
+            messagebox.showinfo("Konsinye", "Fatura bekleyen miktar yok.", parent=self.app)
+            return
+        m = self._miktar_iste("Satış faturası miktarı", bek)
+        if m is None:
+            return
+        try:
+            hazir = KonsinyeService.satis_faturasi_satirlari_hazirla([(sid, m)])
+            messagebox.showinfo(
+                "Konsinye",
+                f"Satış faturası için {len(hazir['satirlar'])} satır hazır "
+                f"(cari_id={hazir['cari_id']}).\n"
+                "Satış Faturası ekranından kaydedip onaylayın; ardından "
+                "«Faturayla Eşleştir» ile belge ID bağlayın.\n"
+                "(Stok bildiriminde zaten çıktı — fatura onayı tekrar düşürmez.)",
+                parent=self.app,
+            )
+            # Hazır satırları pano/öznitelik — ana fatura UI açılırsa kullanılsın
+            self.app._konsinye_fatura_hazir = hazir
+            if hasattr(self.app, "yeni_satis_faturasi"):
+                self.app.yeni_satis_faturasi()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Konsinye", str(exc), parent=self.app)
+
+    def _alis_fatura_olustur(self):
+        t = self._secili_teslim()
+        if not t or t["durum"] != DURUM_ONAYLI:
+            messagebox.showinfo("Konsinye", "Onaylı alınan teslim ve satır seçin.", parent=self.app)
+            return
+        sid = self._secili_satir_id()
+        if not sid:
+            return
+        satir = next((s for s in t["satirlar"] if s["id"] == sid), None)
+        bek = Decimal(str((satir or {}).get("fatura_bekleyen") or 0))
+        if bek <= 0:
+            messagebox.showinfo("Konsinye", "Fatura bekleyen (kesin alınan) yok.", parent=self.app)
+            return
+        m = self._miktar_iste("Alış faturası miktarı", bek)
+        if m is None:
+            return
+        try:
+            hazir = KonsinyeService.alis_faturasi_satirlari_hazirla([(sid, m)])
+            self.app._konsinye_fatura_hazir = hazir
+            messagebox.showinfo(
+                "Konsinye",
+                f"Alış faturası için {len(hazir['satirlar'])} satır hazır "
+                f"(cari_id={hazir['cari_id']}).\n"
+                "Alış Faturası ekranından kaydedin; stok kesin alımda oluştuğu için "
+                "tekrar giriş yazılmaz. Sonra «Faturayla Eşleştir».",
+                parent=self.app,
+            )
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Konsinye", str(exc), parent=self.app)
+
+    def _raporlar(self):
+        from database.konsinye_rapor_service import KonsinyeRaporService
+
+        menu = tk.Menu(self.app, tearoff=0)
+
+        def _goster(baslik, veri):
+            win = tk.Toplevel(self.app)
+            win.title(baslik)
+            win.geometry("960x480")
+            txt = tk.Text(win, wrap="none", font=("Consolas", 9))
+            txt.pack(fill="both", expand=True)
+            satirlar = veri.get("satirlar") or veri.get("hatalar") or []
+            txt.insert("end", f"{baslik} — {veri.get('adet', len(satirlar))} kayıt\n\n")
+            for s in satirlar[:2000]:
+                txt.insert("end", f"{s}\n")
+            if veri.get("dilimler"):
+                for k, v in veri["dilimler"].items():
+                    txt.insert("end", f"\n[{k}] {len(v)} satır\n")
+                    for s in v[:200]:
+                        txt.insert("end", f"  {s}\n")
+
+        menu.add_command(
+            label="Müşterideki Konsinye Mallar",
+            command=lambda: _goster(
+                "Müşterideki", KonsinyeRaporService.musterideki_mallar()
+            ),
+        )
+        menu.add_command(
+            label="Tedarikçiye Ait Envanter",
+            command=lambda: _goster(
+                "Tedarikçi Envanter", KonsinyeRaporService.tedarikci_envanteri()
+            ),
+        )
+        menu.add_command(
+            label="Faturalanmayı Bekleyen",
+            command=lambda: _goster(
+                "Fatura Bekleyen", KonsinyeRaporService.fatura_bekleyen(yon=self.yon)
+            ),
+        )
+        menu.add_command(
+            label="Yaşlandırma",
+            command=lambda: _goster("Yaşlandırma", KonsinyeRaporService.yaslandirma()),
+        )
+        menu.add_command(
+            label="Hareket Geçmişi",
+            command=lambda: _goster(
+                "Hareket", KonsinyeRaporService.hareket_gecmisi()
+            ),
+        )
+        menu.add_command(
+            label="Tutarlılık / Hata",
+            command=lambda: _goster(
+                "Tutarlılık", KonsinyeRaporService.tutarlilik()
+            ),
+        )
+        try:
+            menu.tk_popup(self.app.winfo_pointerx(), self.app.winfo_pointery())
+        finally:
+            menu.grab_release()
 
 
 class _TeslimDialog(tk.Toplevel):

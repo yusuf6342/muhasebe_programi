@@ -690,7 +690,8 @@ class MuhasebeEntegrasyonService:
         H = MuhasebeEntegrasyonService
         with oturum_kullan(session) as s:
             f = s.get(SatisFaturasi, int(fatura_id))
-            if f is None or f.durum == "İPTAL" or not getattr(f, "onaylandi", False):
+            # Talimat V2: cari/finans kaydet'te yazılır; fiş de kaydet'te (onay stok içindir).
+            if f is None or f.durum == "İPTAL":
                 return None
             # Doğrulanmış tutar (KDV raporuyla aynı kaynak). Uzlaşma / genel indirim-masraf farkı
             # satış hesabında netleşir (matrah = genel − KDV), fiş dengeli kalır.

@@ -2147,8 +2147,8 @@ class AlisFaturasiDialog(tk.Toplevel):
             font=ftema.font(10, "bold", self),
             background=ftema.SARI,
             foreground=ftema.LACIVERT,
-            relief="solid",
-            borderwidth=1,
+            relief="flat",
+            borderwidth=0,
         )
         stil.map(
             f"{ALIS_TABLO_STILI}.Heading",

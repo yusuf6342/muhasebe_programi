@@ -116,10 +116,30 @@ def stil_uygula(root=None):
         font=f_baslik,
         background="#E8EEF5",
         foreground=LACIVERT,
-        relief="solid",
-        borderwidth=1,
+        # solid relief / Treeheading.border başlık metnini ortalar; ızgara overlay'de
+        relief="flat",
+        borderwidth=0,
         padding=(6, ft.scale_height(ft.TABLO_BASLIK_PAD_TABAN)),
     )
+    try:
+        stil.layout(
+            "SiparisSatir.Treeview.Heading",
+            [
+                ("Treeheading.cell", {"sticky": "nswe"}),
+                (
+                    "Treeheading.padding",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            ("Treeheading.image", {"side": "right", "sticky": ""}),
+                            ("Treeheading.text", {"sticky": "we"}),
+                        ],
+                    },
+                ),
+            ],
+        )
+    except Exception:
+        pass
     stil.map(
         "SiparisSatir.Treeview",
         background=[("selected", ft.SECIM)],

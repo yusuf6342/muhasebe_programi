@@ -262,6 +262,10 @@ class StokLotu(Base):
     giris_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
     kalan_miktar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     birim_maliyet: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # BIZE = firma mülkiyeti; TEDARIKCI = alınan konsinye (fiziksel bizde, değer/borç yok)
+    sahip_turu: Mapped[str] = mapped_column(String(20), nullable=False, default="BIZE", index=True)
+    sahip_cari_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kaynak_konsinye_satir_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     stok: Mapped["StokKarti"] = relationship("StokKarti", back_populates="lotlar")
     depo: Mapped["Depo"] = relationship("Depo")
 

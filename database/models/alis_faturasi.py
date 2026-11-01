@@ -68,6 +68,7 @@ class AlisFaturasiSatiri(Base):
     fatura_id: Mapped[int] = mapped_column(ForeignKey("alis_faturalari.id"), nullable=False, index=True)
     siparis_satiri_id: Mapped[int | None] = mapped_column(ForeignKey("alis_siparisi_satirlari.id"), nullable=True, index=True)
     irsaliye_satiri_id: Mapped[int | None] = mapped_column(ForeignKey("alis_irsaliyesi_satirlari.id"), nullable=True, index=True)
+    konsinye_teslim_satiri_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     urun_kodu: Mapped[str] = mapped_column(String(50), nullable=False)
     urun_adi: Mapped[str] = mapped_column(String(200), nullable=False)
     barkod: Mapped[str | None] = mapped_column(String(100), nullable=True)

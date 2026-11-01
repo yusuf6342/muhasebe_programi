@@ -534,7 +534,7 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
         kw = pencere.call_args.kwargs
         self.assertEqual(kw["bilgi"], "Fatura kaydedildi.")
         self.assertEqual(kw["fatura_ozet"]["kalan"], Decimal("120.00"))
-        # Kayıt muhasebe anlamını değiştirmez: AÇIK ama onaysız (hareket yalnız onayda)
+        # Kayıt AÇIK / onaysız; cari-finans kaydet'te, stok onayda
         self.assertEqual((dlg.fatura.durum, bool(dlg.fatura.onaylandi)), ("AÇIK", False))
         dlg.destroy()
 

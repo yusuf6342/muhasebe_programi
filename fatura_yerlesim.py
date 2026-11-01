@@ -33,43 +33,24 @@ def _font(w, boyut: int, kalinlik: str = "normal"):
     return ftema.font(boyut, kalinlik, w.winfo_toplevel())
 
 
-def _menubutton(parent, metin: str, *, rol: str = "ikincil") -> tuple[tk.Menubutton, tk.Menu]:
-    renkler = {
-        "ikincil": (ftema.BEYAZ, ftema.LACIVERT, ftema.ACIK_BG),
-        "yazdir": (ftema.LACIVERT_ORTA, ftema.BEYAZ, ftema.LACIVERT),
-    }
-    bg, fg, aktif = renkler.get(rol, renkler["ikincil"])
-    mb = tk.Menubutton(
-        parent, text=metin, bg=bg, fg=fg, activebackground=aktif, activeforeground=fg,
-        relief="flat", font=_font(parent, 10, "bold"), cursor="hand2", padx=10, pady=5,
-        highlightthickness=1 if rol == "ikincil" else 0, highlightbackground=ftema.CIZGI,
-    )
-    menu = tk.Menu(mb, tearoff=0)
-    mb.configure(menu=menu)
+def _menubutton(parent, metin: str, *, rol: str = "yardimci", grup: str = "dis"):
+    """Kompakt oval menü düğmesi + Menu."""
+    menu = tk.Menu(parent, tearoff=0)
+    mb = ftema.oval_buton(parent, metin, rol=rol, menu=menu, grup=grup)
     return mb, menu
 
 
-def _kucuk_buton(parent, metin: str, komut, *, rol: str = "ikincil") -> tk.Button:
-    renkler = {
-        "ikincil": (ftema.BEYAZ, ftema.LACIVERT, ftema.ACIK_BG),
-        "onay": (ftema.BASARI, ftema.BEYAZ, ftema.BASARI_HOVER),
-        "vurgu": (ftema.SARI, ftema.LACIVERT, ftema.SARI_HOVER),
-    }
-    bg, fg, aktif = renkler.get(rol, renkler["ikincil"])
-    return tk.Button(
-        parent, text=metin, command=komut, bg=bg, fg=fg, activebackground=aktif,
-        activeforeground=fg, relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
-        font=_font(parent, 9, "bold"), highlightthickness=1,
-        highlightbackground=ftema.CIZGI if rol == "ikincil" else bg,
-    )
+def _kucuk_buton(parent, metin: str, komut, *, rol: str = "yardimci", grup: str = "panel"):
+    """Panel içi kompakt oval düğme."""
+    return ftema.oval_buton(parent, metin, komut, rol=rol, grup=grup)
 
 
 # ─── Üst işlem çubuğu ──────────────────────────────────────────────
 
 
-def yazdir_menusu_kur(dialog, parent) -> tk.Menubutton:
+def yazdir_menusu_kur(dialog, parent):
     """Önizleme, Yazdır ve PDF tek «Yazdır / PDF» menüsünde; kısayollar aynı kalır."""
-    mb, menu = _menubutton(parent, "Yazdır / PDF ▾", rol="yazdir")
+    mb, menu = _menubutton(parent, "Yazdır / PDF ▾", rol="yardimci")
     menu.add_command(label="Önizleme", accelerator="Ctrl+P", command=dialog._fatura_onizleme_ac)
     menu.add_command(label="Yazdır…", command=dialog._fatura_yazdir)
     menu.add_command(label="PDF Kaydet…", accelerator="Ctrl+E", command=dialog._fatura_pdf_kaydet)
@@ -101,69 +82,58 @@ def _yatay_pay(info: dict) -> int:
 
 
 def arac_cubugu_sigdir_kur(dialog) -> None:
-    """Dar pencerede isteğe bağlı üst çubuk öğelerini sırayla gizler.
+    """Dar pencerede işlem butonlarını ikinci satıra sarar; gizlemez.
 
-    Kaydet, Onayla ve Yeni, Tahsilat Makbuzu, Yazdır / PDF, Diğer İşlemler ve Kapat her zaman
-    görünür. Gizlenen Fatura Listesi / Sevkiyat / Dosyadan Aktar «Diğer» menüsünden açılır.
-    Analiz gizlenebilir ama Diğer'e taşınmaz (Kâr Analizi Analiz menüsünde / sağ tıkta kalır).
+    Kaydet / Onayla / Yeni / Yazdır / Tahsilat / Diğer / Kapat öncelikli 1. satırda kalır;
+    sığmayanlar düzenli 2. satıra iner. Müşteri kısa adı gerekirse gizlenebilir.
     """
     refs = getattr(dialog, "_fatura_toolbar", None) or {}
     cubuk, sol, sag = refs.get("cubuk"), refs.get("sol"), refs.get("sag")
+    sag2 = refs.get("sag2")
     if cubuk is None or sag is None or getattr(dialog, "_arac_sigdir", None):
         return
     try:
         cubuk.update_idletasks()
     except tk.TclError:
         return
+    # İlk kurulumda tüm butonlar sag (satır 1) içinde
     sira = [w for w in sag.pack_slaves()]
+    if sag2 is not None:
+        sira.extend(w for w in sag2.pack_slaves())
     bilgiler = {str(w): _pack_bilgisi(w) for w in sira}
     kullanici = (getattr(dialog, "_aktif_kullanici_cubugu", None) or {}).get("cerceve")
-    secenekli = []
     musteri = refs.get("musteri")
-    if musteri is not None and musteri.winfo_manager() == "pack":
-        secenekli.append(("musteri", musteri))
-    if kullanici is not None and kullanici in sira:
-        secenekli.append(("kullanici", kullanici))
-    for w in sira:
-        try:
-            if str(w.cget("text")) in ("─", "□", "❐"):
-                secenekli.append(("pencere", w))
-        except tk.TclError:
-            continue
-    # Uzun ikincil düğmeler önce gizlensin (Kapat her zaman kalsın)
-    for ad, attr in (
-        ("sevkiyat", "_sevkiyat_btn"),
-        ("dosya", "_dosyadan_aktar_btn"),
-        ("analiz", "_analiz_mb"),
-        ("liste", "_fatura_liste_btn"),
-    ):
-        w = getattr(dialog, attr, None)
-        if w is not None and w in sira:
-            secenekli.append((ad, w))
+    musteri_pay = 230
 
-    genislik = {}
-    for _ad, w in secenekli:
-        try:
-            info = _pack_bilgisi(w)
-            genislik[str(w)] = w.winfo_reqwidth() + _yatay_pay(info)
-        except tk.TclError:
-            genislik[str(w)] = 0
-
-    diger = getattr(dialog, "_diger_mb", None)
-    diger_metin = str(diger.cget("text")) if diger is not None else ""
-    _diger_menusune_tasinanlari_ekle(
-        dialog,
-        liste_var=any(a == "liste" for a, _ in secenekli),
-        sevkiyat_var=any(a == "sevkiyat" for a, _ in secenekli),
-        dosya_var=any(a == "dosya" for a, _ in secenekli),
+    # 1. satırda tutmaya öncelik verilen düğmeler (soldan)
+    oncelik_attr = (
+        "_fatura_liste_btn",
+        "_btn_kaydet",
+        "kaydet_btn",
+        "kaydet_onay_btn",
+        "yeni_btn",
+        "_yazdir_mb",
+        "_tahsilat_makbuzu_btn",
+        "_analiz_mb",
+        "_diger_mb",
+        "_sevkiyat_btn",
+        "_dosyadan_aktar_btn",
     )
+    oncelik_set = set()
+    for attr in oncelik_attr:
+        w = getattr(dialog, attr, None)
+        if w is not None:
+            oncelik_set.add(str(w))
 
-    durum = {"gizli": None}
+    durum = {"anahtar": None}
     dialog._arac_sigdir = durum
-    musteri_pay = 230  # müşteri adı sonradan değişebilir; ad için sabit pay ayrılır
-    if musteri is not None and str(musteri) in genislik:
-        genislik[str(musteri)] = musteri_pay
-    tam_sag = sum(w.winfo_reqwidth() + _yatay_pay(bilgiler[str(w)]) for w in sira)
+
+    def _widget_genislik(w) -> int:
+        try:
+            info = bilgiler.get(str(w)) or _pack_bilgisi(w)
+            return int(w.winfo_reqwidth()) + _yatay_pay(info)
+        except tk.TclError:
+            return 0
 
     def _tam_sol() -> int:
         w = sol.winfo_reqwidth() if sol is not None else 0
@@ -179,22 +149,32 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
             W = cubuk.winfo_width()
         except tk.TclError:
             return
-        if W < 100:
+        if W < 100 or not sira:
             return
-        ihtiyac = _tam_sol() + 22 + tam_sag + 24
-        gizli: set[str] = set()
-        for ad, w in secenekli:
-            if ihtiyac <= W:
-                break
-            gizli.add(str(w))
-            ihtiyac -= genislik.get(str(w), 0)
-        kisa = ihtiyac > W
-        if durum["gizli"] == (gizli, kisa):
+        uygun = max(120, W - _tam_sol() - 36)
+        satir1: list = []
+        satir2: list = []
+        kalan = uygun
+        # Orijinal sırayı koru; taşanı 2. satıra al
+        for w in sira:
+            gw = _widget_genislik(w)
+            if not satir1 or kalan >= gw:
+                satir1.append(w)
+                kalan -= gw
+            else:
+                satir2.append(w)
+        musteri_gizle = bool(musteri is not None and (_tam_sol() + 40 > W))
+        anahtar = (
+            tuple(str(w) for w in satir1),
+            tuple(str(w) for w in satir2),
+            musteri_gizle,
+        )
+        if durum["anahtar"] == anahtar:
             return
-        durum["gizli"] = (gizli, kisa)
+        durum["anahtar"] = anahtar
         if musteri is not None:
             try:
-                if str(musteri) in gizli:
+                if musteri_gizle:
                     musteri.pack_forget()
                 elif musteri.winfo_manager() != "pack":
                     musteri.pack(side="left")
@@ -205,18 +185,32 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                 w.pack_forget()
             except tk.TclError:
                 pass
-        for w in sira:
-            if str(w) in gizli:
-                continue
+        for w in satir1:
             try:
-                w.pack(**bilgiler[str(w)])
+                w.pack(in_=sag, **bilgiler[str(w)])
+            except tk.TclError:
+                try:
+                    w.pack(side="left", padx=3, in_=sag)
+                except tk.TclError:
+                    pass
+        if sag2 is not None:
+            try:
+                if satir2:
+                    if sag2.winfo_manager() != "pack":
+                        sag2.pack(side="top", anchor="e", pady=(4, 0))
+                else:
+                    sag2.pack_forget()
             except tk.TclError:
                 pass
-        if diger is not None:
-            try:
-                diger.configure(text="Diğer ▾" if kisa else diger_metin)
-            except tk.TclError:
-                pass
+            for w in satir2:
+                try:
+                    w.pack(in_=sag2, **bilgiler[str(w)])
+                except tk.TclError:
+                    try:
+                        w.pack(side="left", padx=3, in_=sag2)
+                    except tk.TclError:
+                        pass
+        _ = (kullanici, oncelik_set)
 
     def _uygula_guvenli(e=None):
         try:
@@ -231,42 +225,17 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
 def _diger_menusune_tasinanlari_ekle(
     dialog, *, liste_var: bool, sevkiyat_var: bool = False, dosya_var: bool = False
 ) -> None:
-    mb = getattr(dialog, "_diger_mb", None)
-    if mb is None:
-        return
-    try:
-        menu = mb.nametowidget(mb.cget("menu"))
-    except (tk.TclError, KeyError):
-        return
-    sira = 0
-    if liste_var:
-        liste = getattr(dialog, "_fatura_liste_btn", None)
-        etiket = str(liste.cget("text")) if liste is not None else "Fatura Listesi (F3)"
-        menu.insert_command(sira, label=etiket, command=dialog._fatura_listesini_ac)
-        sira += 1
-    if sevkiyat_var and hasattr(dialog, "_sevkiyat_bilgileri_ac"):
-        sevk = getattr(dialog, "_sevkiyat_btn", None)
-        etiket = str(sevk.cget("text")) if sevk is not None else "Sevkiyat ve Teslimat Bilgileri"
-        menu.insert_command(sira, label=etiket, command=dialog._sevkiyat_bilgileri_ac)
-        sira += 1
-    if dosya_var and hasattr(dialog, "_fatura_dosyadan_aktar"):
-        menu.insert_command(sira, label="Dosyadan Aktar", command=dialog._fatura_dosyadan_aktar)
-        sira += 1
-    if sira:
-        menu.insert_separator(sira)
+    """Geriye uyumluluk: butonlar artık gizlenmediği için menüye ekleme yapılmaz."""
+    _ = (dialog, liste_var, sevkiyat_var, dosya_var)
+    return
 
 
 # ─── Ürün şeridi: Satır İşlemleri ─────────────────────────────────
 
 
-def satir_islemleri_dugmesi(dialog, parent) -> ttk.Menubutton:
-    try:
-        stil = ttk.Style(dialog)
-        stil.configure("FaturaGiris.TMenubutton", padding=(8, max(0, ftema.form_ipady())))
-    except tk.TclError:
-        pass
-    mb = ttk.Menubutton(parent, text="Satır İşlemleri", style="FaturaGiris.TMenubutton")
-    menu = tk.Menu(mb, tearoff=0)
+def satir_islemleri_dugmesi(dialog, parent):
+    """Ürün şeridi — eşit oval «Satır İşlemleri ▾» menü düğmesi."""
+    menu = tk.Menu(parent, tearoff=0)
 
     def _doldur():
         from fatura_satir_araclar import satir_islemleri_doldur
@@ -275,7 +244,7 @@ def satir_islemleri_dugmesi(dialog, parent) -> ttk.Menubutton:
         satir_islemleri_doldur(dialog, menu)
 
     menu.configure(postcommand=_doldur)
-    mb.configure(menu=menu)
+    mb = ftema.oval_buton(parent, "Satır İşlemleri ▾", rol="yardimci", menu=menu, grup="dis")
     dialog._satir_islemleri_menu = menu
     return mb
 
@@ -799,6 +768,8 @@ def sikilik_uygula(dialog, sik: bool) -> None:
     sag = refs.get("sag")
     if sag is not None:
         for c in sag.winfo_children():
+            if isinstance(c, ftema.FaturaOvalButon):
+                continue  # oval ölçüler sabit
             if isinstance(c, (tk.Button, tk.Menubutton)):
                 try:
                     c.configure(pady=3 if sik else 5)
@@ -836,7 +807,9 @@ def _kardes_dugme(alan, metin: str):
         return None
     for c in alan.master.winfo_children():
         try:
-            if isinstance(c, ttk.Button) and str(c.cget("text")) == metin:
+            if str(c.cget("text")) == metin and isinstance(
+                c, (ttk.Button, tk.Button, ftema.FaturaOvalButon)
+            ):
                 return c
         except tk.TclError:
             continue
@@ -858,11 +831,9 @@ def ust_panel_genislik_kur(dialog) -> None:
             except tk.TclError:
                 pass
     ara = _kardes_dugme(getattr(dialog, "musteri_kodu", None), "Ara")
-    if ara is not None:
-        ara.configure(width=0)
-    yeni_musteri = _kardes_dugme(getattr(dialog, "musteri_adi", None), "Yeni Müşteri")
-    if yeni_musteri is not None:
-        yeni_musteri.configure(width=0)
+    yeni_musteri = _kardes_dugme(getattr(dialog, "musteri_adi", None), "Yeni")
+    if yeni_musteri is None:
+        yeni_musteri = _kardes_dugme(getattr(dialog, "musteri_adi", None), "Yeni Müşteri")
     genislikler = [
         (getattr(dialog, ad, None), uzun, kisa)
         for ad, uzun, kisa in (
@@ -896,11 +867,12 @@ def ust_panel_genislik_kur(dialog) -> None:
 
     if getattr(dialog, "_fatura_ust_sol", None) is not None:
         _takvim_bul(dialog._fatura_ust_sol)
+    # Panel oval düğmeler zaten kompakt «Yeni» / «Cari Kart»; kısaltma uygulanmaz
     kisalar = [
-        (getattr(dialog, "_btn_cari_hesap_karti", None), "Cari Hesap Kartı", "Cari Kart"),
-        (yeni_musteri, "Yeni Müşteri", "Yeni"),
-        (getattr(dialog, "_btn_yeni_adres", None), "Yeni Adres Ekle", "Yeni Adres"),
-        (_kardes_dugme(getattr(dialog, "depo", None), "Yeni Depo"), "Yeni Depo", "Yeni"),
+        (getattr(dialog, "_btn_cari_hesap_karti", None), "Cari Kart", "Cari Kart"),
+        (yeni_musteri, "Yeni", "Yeni"),
+        (getattr(dialog, "_btn_yeni_adres", None), "Yeni", "Yeni"),
+        (_kardes_dugme(getattr(dialog, "depo", None), "Yeni"), "Yeni", "Yeni"),
     ] + [(t, "Takvim", "▼") for t in takvimler]
     for panel_ad, metinler in (
         ("_fatura_ust_cari", {
@@ -952,6 +924,9 @@ def ust_panel_genislik_kur(dialog) -> None:
             return
         durum["dar"] = dar
         for w, uzun, kisa in kisalar:
+            # Oval eşit-boyut butonlarda yazı kısaltılmaz (talimat)
+            if isinstance(w, ftema.FaturaOvalButon):
+                continue
             try:
                 w.configure(text=kisa if dar else uzun)
             except tk.TclError:

@@ -2804,6 +2804,9 @@ class StokService:
                 for lot in s.lotlar or []:
                     if KonsinyeService.sanal_depo_mu(depo_adlari.get(lot.depo_id)):
                         continue
+                    # Tedarikçiye ait konsinye lotu satılabilir/firma stokuna girmez
+                    if not KonsinyeService.lot_firma_mulkiyeti_mi(lot):
+                        continue
                     kalan = Decimal(str(lot.kalan_miktar or 0))
                     kullanilabilir += kalan
                     if depo_id is None or lot.depo_id == depo_id:

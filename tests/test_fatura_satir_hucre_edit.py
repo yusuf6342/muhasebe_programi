@@ -57,6 +57,7 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         event.listen(eng, "connect", _pragma)
         import database.models.cari  # noqa: F401
         import database.models.stok  # noqa: F401
+        import database.models.kart_turu  # noqa: F401 — cari/stok alt_tur FK
         import database.models.satis_siparisi  # noqa: F401
         import database.models.satis_irsaliyesi  # noqa: F401
         import database.models.satis_faturasi  # noqa: F401
@@ -209,7 +210,7 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
             (
                 w
                 for w in self.dlg._vurgulu_overlayler
-                if int(w.place_info().get("x", -1)) == bb[0]
+                if abs(int(w.place_info().get("x", -1)) - bb[0]) <= 2
             ),
             None,
         )
@@ -298,9 +299,10 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         editor = self._editor()
         x = int(editor.place_info()["x"])
         tablo = self.dlg.satir_tablosu
+        # Yerleşim 1 px içe alır; yatay kaydırma sonrası bbox ±2 sapabilir
         for kolon in tablo["displaycolumns"]:
             bb = tablo.bbox("0", kolon)
-            if bb and bb[0] == x:
+            if bb and abs(bb[0] - x) <= 2:
                 return kolon
         self.fail(f"Editör konumu (x={x}) hiçbir kolonla eşleşmedi")
 
@@ -351,7 +353,11 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         bb = self.dlg.satir_tablosu.bbox("0", "birim")
         self.assertTrue(bb)
         etiket = next(
-            (w for w in self.dlg._vurgulu_overlayler if int(w.place_info().get("x", -1)) == bb[0]),
+            (
+                w
+                for w in self.dlg._vurgulu_overlayler
+                if abs(int(w.place_info().get("x", -1)) - bb[0]) <= 2
+            ),
             None,
         )
         self.assertIsNotNone(etiket, "Birim hücresinin üstünde etiket yok")
@@ -359,6 +365,22 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         self._bekle(0.5)
         self.assertIsInstance(self._editor(), ttk.Combobox)
         self.assertEqual(tuple(self._editor().cget("values")), ("Adet",))
+
+    def _imlec_kenara(self, sag: bool = True) -> None:
+        """Tam seçimi kaldırıp imleci kenara al — tek ←/→ ile hücreden çıkılsın."""
+        import tkinter as tk
+
+        editor = self._editor()
+        if hasattr(editor, "kutular"):
+            kutu = editor.kutular[self._iskonto_kutusu()]
+            kutu.selection_clear()
+            kutu.icursor("end" if sag else 0)
+            return
+        try:
+            editor.selection_clear()
+            editor.icursor("end" if sag else 0)
+        except tk.TclError:
+            pass
 
     def test_sag_sol_ok_ve_enter_ile_satirda_gezinilir(self):
         from fatura_satir_hucre_edit import focus_editable_cell
@@ -369,23 +391,32 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         focus_editable_cell(self.dlg, 0, "miktar")
         self._bekle()
         self.assertEqual(self._editor_kolonu(), "miktar")
+        # Tam seçimde ilk ok seçimi bırakır, hücreden çıkmaz
+        editor = self._editor()
+        editor.selection_range(0, "end")
+        self._tus("<Right>")
+        self.assertEqual(self._editor_kolonu(), "miktar")
         for kolon in sira[1:]:
+            self._imlec_kenara(True)
             self._tus("<Right>")
             self.assertEqual(self._editor_kolonu(), kolon)
             if kolon == "iskonto":
-                # üç ardışık iskonto kutusu: → ile 1 → 2 → 3, sonra sonraki kolon
+                # üç ardışık iskonto kutusu: uçta → ile 1 → 2 → 3, sonra sonraki kolon
                 self.assertEqual(self._iskonto_kutusu(), 0)
                 for kutu in (1, 2):
+                    self._imlec_kenara(True)
                     self._tus("<Right>")
                     self.assertEqual(self._editor_kolonu(), "iskonto")
                     self.assertEqual(self._iskonto_kutusu(), kutu)
         for kolon in reversed(sira[:-1]):
+            self._imlec_kenara(False)
             self._tus("<Left>")
             self.assertEqual(self._editor_kolonu(), kolon)
             if kolon == "iskonto":
                 # geri gelişte son kutudan başlar
                 self.assertEqual(self._iskonto_kutusu(), 2)
                 for kutu in (1, 0):
+                    self._imlec_kenara(False)
                     self._tus("<Left>")
                     self.assertEqual(self._iskonto_kutusu(), kutu)
         self._tus("<Return>")
@@ -400,24 +431,40 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         self.assertEqual(self._editor_kolonu(), "miktar")
         self.assertEqual(editor.index("insert"), len(editor.get()) - 1)
 
-    def test_tablo_secili_satirda_sag_ok_ilk_hucreyi_acar(self):
-        from fatura_satir_hucre_edit import fatura_satir_hucre_etkilesim
+    def test_tablo_oklari_aktif_hucreyi_tasi_editor_acmaz(self):
+        from fatura_satir_hucre_edit import (
+            aktif_hucre_al,
+            aktif_hucre_ayarla,
+            aktif_hucre_yatay_tasi,
+            fatura_satir_hucre_etkilesim,
+            focus_editable_cell,
+        )
 
         fatura_satir_hucre_etkilesim(self.dlg)
         tablo = self.dlg.satir_tablosu
-        tablo.selection_set("0")
-        tablo.focus_force()
-        self._pompala()
-        tablo.event_generate("<Right>")
+        sira = self._beklenen_sira()
+        aktif_hucre_ayarla(self.dlg, 0, sira[0])
+        # Doğrudan taşı (Tk event_generate önceki test after-kuyruğunda kırılgan)
+        self.assertEqual(aktif_hucre_yatay_tasi(self.dlg, False), "break")
+        self.assertIsNone(getattr(self.dlg, "_satir_hucre_editor", None))
+        self.assertEqual(aktif_hucre_al(self.dlg), (0, sira[1]))
+        self.assertEqual(aktif_hucre_yatay_tasi(self.dlg, True), "break")
+        self.assertEqual(aktif_hucre_al(self.dlg), (0, sira[0]))
+        self.assertEqual(aktif_hucre_yatay_tasi(self.dlg, True), "break")
+        self.assertEqual(aktif_hucre_al(self.dlg), (0, sira[0]))
+        # Enter / F2 yolu: aktif hücrede editör
+        focus_editable_cell(self.dlg, 0, sira[0])
         self._bekle()
-        self.assertEqual(self._editor_kolonu(), "miktar")
+        self.assertEqual(self._editor_kolonu(), sira[0])
         self._editor().event_generate("<Escape>")
         self._pompala()
+        self.assertIsNone(getattr(self.dlg, "_satir_hucre_editor", None))
+        aktif_hucre_ayarla(self.dlg, 0, sira[-1])
         tablo.focus_force()
         self._pompala()
-        tablo.event_generate("<Left>")
+        tablo.event_generate("<F2>")
         self._bekle()
-        self.assertEqual(self._editor_kolonu(), self._beklenen_sira()[-1])
+        self.assertEqual(self._editor_kolonu(), sira[-1])
 
     def test_iskonto_satirda_kademeli_yazilir_pencere_acilmaz(self):
         import tkinter as tk
@@ -485,7 +532,7 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         tablo = self.dlg.satir_tablosu
         for i in range(len(self.dlg.satirlar)):
             bb = tablo.bbox(str(i), "miktar")
-            if bb and bb[1] == y:
+            if bb and abs(bb[1] - y) <= 2:
                 return i
         self.fail(f"Editör satırı (y={y}) bulunamadı")
 
@@ -519,8 +566,8 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
         self.assertEqual(self._editor_kolonu(), "iskonto")
         self.assertEqual(self._editor_satiri(), 1)
 
-    def test_urun_hucresine_cift_tik_ve_f2_stok_kartini_acar(self):
-        from fatura_satir_hucre_edit import fatura_satir_hucre_etkilesim
+    def test_urun_hucresine_cift_tik_stok_f2_duzenler(self):
+        from fatura_satir_hucre_edit import aktif_hucre_ayarla, fatura_satir_hucre_etkilesim
 
         fatura_satir_hucre_etkilesim(self.dlg)
         tablo = self.dlg.satir_tablosu
@@ -537,24 +584,16 @@ class FaturaSatirHucreEditTest(unittest.TestCase):
             kart.assert_called_once()
             self.assertEqual(kart.call_args.args[1].stok_kodu, "U001")
             self.assertIsNone(getattr(self.dlg, "_satir_hucre_editor", None))
-        # F2: tablo odaktayken seçili satırın stok kartı; kaydet vb. tetiklenmez
-        tablo.selection_set("0")
+        # F2: tablo odaktayken aktif hücreyi düzenler; stok kartı / kaydet tetiklenmez
+        aktif_hucre_ayarla(self.dlg, 0, "miktar")
         tablo.focus_force()
         self._pompala()
         with patch("stok_ui.StokKartiDialog") as kart, patch.object(self.dlg, "kaydet") as kaydet:
             tablo.event_generate("<F2>")
             self._bekle()
-        kart.assert_called_once()
-        kaydet.assert_not_called()
-        # Bağlı kartı olmayan satır: kısa bilgi, hata yok
-        self.dlg.satirlar[0]["urun_kodu"] = ""
-        tablo.focus_force()
-        self._pompala()
-        with patch("stok_ui.StokKartiDialog") as kart, patch("satir_klavye.messagebox.showinfo") as bilgi:
-            tablo.event_generate("<F2>")
-            self._bekle()
         kart.assert_not_called()
-        bilgi.assert_called_once()
+        kaydet.assert_not_called()
+        self.assertEqual(self._editor_kolonu(), "miktar")
 
     def test_ust_alanlarda_enter_ve_oklarla_gezinilir(self):
         from tkinter import ttk

@@ -1077,10 +1077,30 @@ class TeklifDialog(tk.Toplevel):
             font=("Segoe UI", 10, "bold"),
             background="#E8EEF5",
             foreground=LACIVERT,
-            relief="raised",
-            borderwidth=1,
+            # raised/solid / Treeheading.border başlık metnini ortalar; ızgara overlay'de
+            relief="flat",
+            borderwidth=0,
             padding=(6, ftema.scale_height(ftema.TABLO_BASLIK_PAD_TABAN)),
         )
+        try:
+            stil.layout(
+                "TeklifSatir.Treeview.Heading",
+                [
+                    ("Treeheading.cell", {"sticky": "nswe"}),
+                    (
+                        "Treeheading.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [
+                                ("Treeheading.image", {"side": "right", "sticky": ""}),
+                                ("Treeheading.text", {"sticky": "we"}),
+                            ],
+                        },
+                    ),
+                ],
+            )
+        except tk.TclError:
+            pass
         stil.map(
             "TeklifSatir.Treeview.Heading",
             background=[("active", "#D5DEEA")],
