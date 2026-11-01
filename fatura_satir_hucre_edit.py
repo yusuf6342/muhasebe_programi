@@ -272,13 +272,15 @@ def focus_editable_cell(dialog, row_id: int, column_id: str, *, deneme: int = 0)
         _kolonu_gorunur_kaydir(tablo, column_id)
         box = _hucre_bbox(tablo, iid, column_id)
     if not box:
+        try:
+            dialog.update_idletasks()
+        except tk.TclError:
+            pass
+        box = _hucre_bbox(tablo, iid, column_id)
+    if not box:
         if deneme < 4:
-            try:
-                dialog.update_idletasks()
-            except tk.TclError:
-                pass
             dialog.after(
-                25,
+                10,
                 lambda: focus_editable_cell(dialog, row_id, column_id, deneme=deneme + 1),
             )
         return
@@ -370,7 +372,20 @@ def _kolonu_gorunur_kaydir(tablo: ttk.Treeview, kolon: str) -> None:
         pass
 
 
+def _odak_cikinca_iptal(dialog) -> None:
+    """Bekleyen FocusOut→uygula zamanlayıcısını iptal et (Kaydet/geçiş yarışı)."""
+    aid = getattr(dialog, "_satir_odak_cikis_after", None)
+    if aid is None:
+        return
+    try:
+        dialog.after_cancel(aid)
+    except (tk.TclError, ValueError):
+        pass
+    dialog._satir_odak_cikis_after = None
+
+
 def _editor_kapat(dialog) -> None:
+    _odak_cikinca_iptal(dialog)
     ed = getattr(dialog, "_satir_hucre_editor", None)
     if ed is None:
         return
@@ -379,6 +394,38 @@ def _editor_kapat(dialog) -> None:
     except tk.TclError:
         pass
     dialog._satir_hucre_editor = None
+    if getattr(dialog, "_satir_editor_aciliyor", False):
+        return
+    # Editör kapandıktan sonra vurgulu yazı + Excel çizgilerini gecikmeli geri çiz
+    plan = getattr(dialog, "_fatura_satir_vurgulu_overlay_planla", None)
+    if callable(plan):
+        try:
+            plan(30)
+        except Exception:
+            pass
+    yenile = getattr(dialog, "_tree_excel_cizgileri_yenile", None)
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if callable(yenile) and tablo is not None:
+
+        def _excel_gecikmeli():
+            if getattr(dialog, "_satir_editor_aciliyor", False):
+                return
+            ed2 = getattr(dialog, "_satir_hucre_editor", None)
+            if ed2 is not None:
+                try:
+                    if ed2.winfo_exists():
+                        return
+                except tk.TclError:
+                    pass
+            try:
+                yenile(tablo, "satir", "FaturaSatir.Treeview")
+            except Exception:
+                pass
+
+        try:
+            dialog.after(80, _excel_gecikmeli)
+        except tk.TclError:
+            pass
 
 
 def acik_editor(dialog):
@@ -406,8 +453,22 @@ def _odak_cikinca_uygula(dialog, editor, *parcalar) -> None:
     """Odak editör dışına (aynı penceredeki başka bir alana) geçince değer yazılır ve editör kapanır."""
 
     def _cikti(_e=None):
+        _odak_cikinca_iptal(dialog)
+
         def _kontrol():
+            dialog._satir_odak_cikis_after = None
+            if getattr(dialog, "_kayit_isleniyor", False) or getattr(
+                dialog, "_onay_isleniyor", False
+            ):
+                return
+            if getattr(dialog, "_satir_editor_uygulaniyor", False):
+                return
             if getattr(dialog, "_satir_hucre_editor", None) is not editor:
+                return
+            try:
+                if not editor.winfo_exists():
+                    return
+            except tk.TclError:
                 return
             # Mesaj kutusu / başka uygulama odağı almışsa pencerenin son odağı hâlâ editördür
             try:
@@ -419,7 +480,8 @@ def _odak_cikinca_uygula(dialog, editor, *parcalar) -> None:
             editoru_birak(dialog)
 
         try:
-            dialog.after(120, _kontrol)
+            # Kısa gecikme: Kaydet/oval buton odak değişiminde çift uygula olmasın
+            dialog._satir_odak_cikis_after = dialog.after(40, _kontrol)
         except tk.TclError:
             pass
 
@@ -429,17 +491,31 @@ def _odak_cikinca_uygula(dialog, editor, *parcalar) -> None:
 
 def acik_editoru_uygula(dialog) -> bool:
     """Kaydet öncesi açık hücre editöründeki değeri satıra yazar; geçersizse False."""
+    _odak_cikinca_iptal(dialog)
     ed = getattr(dialog, "_satir_hucre_editor", None)
     if ed is None:
+        return True
+    try:
+        if not ed.winfo_exists():
+            dialog._satir_hucre_editor = None
+            return True
+    except tk.TclError:
+        dialog._satir_hucre_editor = None
         return True
     fn = getattr(ed, "_uygula_fn", None)
     if fn is None:
         _editor_kapat(dialog)
         return True
     dialog._satir_gezinme_kilit = True
+    dialog._satir_editor_uygulaniyor = True
     try:
         fn()
+    except tk.TclError:
+        # Ölü Entry/Combobox — değeri zorla 0 sayma; editörü bırak
+        _editor_kapat(dialog)
+        return False
     finally:
+        dialog._satir_editor_uygulaniyor = False
         dialog._satir_gezinme_kilit = False
     return getattr(dialog, "_satir_hucre_editor", None) is None
 
@@ -499,14 +575,30 @@ def uzlasma_etkisini_kaldir(dialog, *, yalniz_referansli: bool = False) -> bool:
     return True
 
 
-def _yenile_koru(dialog, tablo, iid: str):
+def _yenile_koru(dialog, tablo, iid: str, *, deger_degisti: bool = True):
     # GENEL Entry odak bayrağı takılı kalırsa alt toplam güncellenmez
     try:
         dialog._genel_toplam_duzenleniyor = False
     except Exception:
         pass
+    if not deger_degisti:
+        # Salt gezinme: tabloyu silip yeniden kurma / overlay yenileme yok
+        try:
+            tablo.selection_set(iid)
+            tablo.focus(iid)
+            tablo.see(iid)
+        except tk.TclError:
+            pass
+        return
     kaydir = tablo.yview()
-    dialog._satir_listesini_yenile()
+    tek = getattr(dialog, "_satir_tek_satir_yenile", None)
+    if callable(tek):
+        try:
+            tek(int(iid))
+        except Exception:
+            dialog._satir_listesini_yenile()
+    else:
+        dialog._satir_listesini_yenile()
     dialog._toplamlari_guncelle()
     try:
         tablo.selection_set(iid)
@@ -535,24 +627,35 @@ def hucre_duzenle(
     if kolon in getattr(dialog, "DUZENLENEMEZ_KOLONLAR", ()):
         return
     dialog._aktif_hucre = (int(idx), kolon)
-    if kolon == "miktar":
-        miktar_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "birim":
-        birim_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "fiyat":
-        fiyat_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "para_birimi":
-        pb_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "kur":
-        kur_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "iskonto":
-        iskonto_yuzde_hucre(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "iskonto_tutar":
-        iskonto_tutar_hucre(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "kdv":
-        kdv_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
-    elif kolon == "aciklama":
-        aciklama_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+    dialog._satir_editor_aciliyor = True
+    # Overlay yenileme yarışını kes — tıklama gecikmesinin ana nedeni
+    iptal = getattr(dialog, "_fatura_satir_vurgulu_overlay_iptal", None)
+    if callable(iptal):
+        try:
+            iptal()
+        except Exception:
+            pass
+    try:
+        if kolon == "miktar":
+            miktar_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "birim":
+            birim_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "fiyat":
+            fiyat_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "para_birimi":
+            pb_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "kur":
+            kur_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "iskonto":
+            iskonto_yuzde_hucre(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "iskonto_tutar":
+            iskonto_tutar_hucre(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "kdv":
+            kdv_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+        elif kolon == "aciklama":
+            aciklama_hucre_duzenle(dialog, idx=idx, event=event, on_done=on_done)
+    finally:
+        dialog._satir_editor_aciliyor = False
 
 
 def _satir_ici_var(dialog) -> bool:
@@ -613,15 +716,18 @@ def _tab_ilerle(dialog, idx: int, kolon: str, geri: bool = False, satir_yon: int
             finally:
                 dialog._hucre_giris_geri = False
         finally:
-            try:
-                dialog.after(80, lambda: setattr(dialog, "_satir_gezinme_kilit", False))
-            except tk.TclError:
-                dialog._satir_gezinme_kilit = False
+            # Kilidi hemen aç — 80ms gecikme hızlı ↓/Enter'da editörsüz hücre bırakıyordu
+            dialog._satir_gezinme_kilit = False
 
+    # Senkron geçiş: after_idle ölçümde/hızlı tuşta bir sonraki tuşu yutuyordu
     try:
-        dialog.after_idle(_ac)
+        _ac()
     except tk.TclError:
-        dialog.after(30, _ac)
+        dialog._satir_gezinme_kilit = False
+        try:
+            dialog.after_idle(_ac)
+        except tk.TclError:
+            pass
 
 
 def _ok_ile_gec(editor, yon: int) -> bool:
@@ -719,12 +825,13 @@ def miktar_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
             return "break"
         if not _stok_kontrol(dialog, idx, yeni_temel, kod):
             return "break"
-        if _d(satir.get("miktar")) != yeni:
+        degisti = _d(satir.get("miktar")) != yeni
+        if degisti:
             uzlasma_etkisini_kaldir(dialog)
         satir["miktar"] = str(yeni)
         satir["temel_miktar"] = str(yeni_temel)
         _editor_kapat(dialog)
-        _yenile_koru(dialog, tablo, iid)
+        _yenile_koru(dialog, tablo, iid, deger_degisti=degisti)
         if tab:
             _tab_ilerle(dialog, idx, "miktar", geri=geri, satir_yon=satir_yon)
         if on_done:
@@ -950,16 +1057,18 @@ def fiyat_hucre_duzenle(dialog, *, idx: int, event=None, on_done=None) -> None:
                 return "break"
         except Exception:
             pass
-        if yeni != _d(mevcut_deger):
+        degisti = yeni != _d(mevcut_deger)
+        if degisti:
             uzlasma_etkisini_kaldir(dialog)
         if doviz_giris:
             satir["birim_fiyat_doviz"] = str(yeni)
             satir["birim_satis_fiyati"] = str(_tl_fiyat(yeni, satir))
         else:
             satir["birim_satis_fiyati"] = str(yeni)
-        satir["manuel_fiyat"] = True
+        if degisti:
+            satir["manuel_fiyat"] = True
         _editor_kapat(dialog)
-        _yenile_koru(dialog, tablo, iid)
+        _yenile_koru(dialog, tablo, iid, deger_degisti=degisti)
         if tab:
             _tab_ilerle(dialog, idx, "fiyat", geri=geri, satir_yon=satir_yon)
         if on_done:
@@ -1613,13 +1722,10 @@ def fatura_satir_hucre_etkilesim(dialog) -> None:
             if ilk:
                 aktif_hucre_ayarla(dialog, idx, ilk, tablo_odak=False)
             return None
-        # Kısa gecikme: seçim + odak otursun, çift tık ile çakışmasın
-        def _ac(_i=idx, _k=kolon):
-            if getattr(dialog, "_satir_cift_tik_engel", False):
-                return
-            hucre_duzenle(dialog, idx=_i, kolon=_k, event=event)
-
-        dialog.after(180, _ac)
+        # Senkron aç — after_idle + overlay ButtonRelease yarışı 100ms+ gecikme üretiyordu.
+        # Çift tık (ürün kartı) _satir_cift_tik_engel ile ikinci açılışı keser.
+        if not getattr(dialog, "_satir_cift_tik_engel", False):
+            hucre_duzenle(dialog, idx=idx, kolon=kolon, event=event)
         return None
 
     def _cift_tik(event):

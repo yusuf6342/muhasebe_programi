@@ -18,4 +18,6 @@ Kişisel/veritabanı içeriği yok. Makineye özel yollar yerel aktarım yönerg
 ## Kaynak
 
 - Repo: `yusuf6342/muhasebe_programi` · dal: `main`
-- Ev worktree referansı: `muhasebe_programi_uzak_20261101_152451` (commit SHA teslim raporunda)
+- Ev worktree: `muhasebe_programi_uzak_20261101_152451`
+- Commit SHA: teslim raporunda / `git rev-parse origin/main`
+- Veri yedek (Git dışı, ev): `CinMuhasebe_Teslim_Yedek_20261101_220608` — USB ile taşınacak

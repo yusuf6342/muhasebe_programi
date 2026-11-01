@@ -7295,10 +7295,18 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             bg=ftema.BEYAZ, fg=ftema.METIN,
         )
         self._fatura_ust_aciklama.grid(row=2, column=1, rowspan=3, sticky="nsew", pady=py)
-        if "aciklama" not in self.girdiler or self.girdiler.get("aciklama") is None:
-            # Gizli Entry senkron kaynağı (kayıt / alt not ile uyum)
-            _ack = ttk.Entry(bolum3)
-            self.girdiler["aciklama"] = _ack
+        # Stub paneli (_siparis_miras_ust_panelini_kaldir) destroy edilince eski
+        # girdiler['aciklama'] Entry ölü kalır → Kaydet'te «invalid command name !entry…».
+        # Her kurulumda canlı gizli Entry zorunlu.
+        _eski_ack = self.girdiler.get("aciklama") if hasattr(self, "girdiler") else None
+        _ack_canli = False
+        if _eski_ack is not None:
+            try:
+                _ack_canli = bool(_eski_ack.winfo_exists())
+            except tk.TclError:
+                _ack_canli = False
+        if not _ack_canli:
+            self.girdiler["aciklama"] = ttk.Entry(bolum3)
         kayitli_ack = ""
         if self.fatura and getattr(self.fatura, "aciklama", None):
             kayitli_ack = str(self.fatura.aciklama or "")
@@ -7485,6 +7493,36 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         except tk.TclError:
             pass
 
+    def _aciklama_metni_oku(self) -> str:
+        """Kayıt için açıklama: önce canlı Text/Not, sonra girdiler Entry.
+
+        Ölü stub Entry'ye bağımlı kalmaz (invalid command name önlemi).
+        """
+        ust = getattr(self, "_fatura_ust_aciklama", None)
+        if ust is not None:
+            try:
+                if ust.winfo_exists():
+                    return ust.get("1.0", "end-1c").rstrip()
+            except tk.TclError:
+                pass
+        if hasattr(self, "_fatura_not_alani"):
+            try:
+                from fatura_not_alani import not_oku
+
+                not_w = self._fatura_not_alani()
+                if not_w is not None:
+                    return not_oku(not_w).rstrip()
+            except Exception:
+                pass
+        ack = self.girdiler.get("aciklama") if hasattr(self, "girdiler") else None
+        if ack is not None:
+            try:
+                if ack.winfo_exists():
+                    return (ack.get() or "").rstrip()
+            except tk.TclError:
+                pass
+        return ""
+
     def _fatura_ust_aciklama_senkron(self):
         """Üst Açıklama ↔ girdiler['aciklama'] ↔ alt Notlar (tek kayıt alanı)."""
         w = getattr(self, "_fatura_ust_aciklama", None)
@@ -7497,6 +7535,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         ack = self.girdiler.get("aciklama") if hasattr(self, "girdiler") else None
         if ack is not None:
             try:
+                if not ack.winfo_exists():
+                    # Ölü stub yerine canlı senkron Entry
+                    parent = getattr(self, "_fatura_ust_sag", None) or self
+                    ack = ttk.Entry(parent)
+                    self.girdiler["aciklama"] = ack
                 if ack.get() != metin:
                     ack.delete(0, "end")
                     ack.insert(0, metin)
@@ -9934,23 +9977,40 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             return
         self._vurgulu_overlay_bagli = True
 
+    def _fatura_satir_vurgulu_overlay_iptal(self) -> None:
+        """Bekleyen overlay yenilemesini iptal et (hücre editörü açılırken yarış olmasın)."""
+        aid = getattr(self, "_vurgulu_overlay_after", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+            self._vurgulu_overlay_after = None
+        self._vurgulu_overlay_bekliyor = False
+
     def _fatura_satir_vurgulu_overlay_planla(self, gecikme: int = 0) -> None:
         """Art arda gelen yenileme istekleri tek çizimde birleşir (her çizim tüm satırları yeniden kurar)."""
+        if getattr(self, "_satir_hucre_editor", None) is not None or getattr(
+            self, "_satir_editor_aciliyor", False
+        ):
+            return
         if getattr(self, "_vurgulu_overlay_bekliyor", False):
             return
         self._vurgulu_overlay_bekliyor = True
 
         def _ciz():
+            self._vurgulu_overlay_after = None
             self._vurgulu_overlay_bekliyor = False
             self._fatura_satir_vurgulu_overlay_ciz()
 
         try:
             if gecikme:
-                self.after(gecikme, _ciz)
+                self._vurgulu_overlay_after = self.after(gecikme, _ciz)
             else:
-                self.after_idle(_ciz)
+                self._vurgulu_overlay_after = self.after_idle(_ciz)
         except tk.TclError:
             self._vurgulu_overlay_bekliyor = False
+            self._vurgulu_overlay_after = None
 
     def _fatura_satir_vurgulu_overlay_temizle(self) -> None:
         for w in getattr(self, "_vurgulu_overlayler", []) or []:
@@ -9965,7 +10025,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         if not hasattr(self, "satir_tablosu"):
             return
         tablo = self.satir_tablosu
-        # Açık hücre editörünün üstüne yeni etiket çizilmesin; kapanınca liste yenilenir
+        # Açık / açılmakta olan hücre editörünün üstüne yeni etiket çizilmesin
+        if getattr(self, "_satir_editor_aciliyor", False):
+            return
         editor = getattr(self, "_satir_hucre_editor", None)
         if editor is not None:
             try:
@@ -10067,13 +10129,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                         tablo.focus_set()
                     except tk.TclError:
                         return "break"
-                    if _e is not None:
-
-                        def _ac():
-                            if not getattr(self, "_satir_cift_tik_engel", False):
-                                _duzenle(_iid, _kolon, _e)
-
-                        self.after(180, _ac)
+                    if _e is not None and not getattr(self, "_satir_cift_tik_engel", False):
+                        _duzenle(_iid, _kolon, _e)
                     return "break"
 
                 def _cift(_e=None, _iid=iid, _kolon=kolon):
@@ -11581,6 +11638,93 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 )
             )
 
+    def _satir_tek_satir_yenile(self, sira: int) -> None:
+        """Tek satır değerlerini günceller; tüm tabloyu silip kurmaz (klavye hızı)."""
+        if not hasattr(self, "satir_tablosu"):
+            return
+        if not (0 <= sira < len(self.satirlar or [])):
+            raise IndexError(sira)
+        veri = self.satirlar[sira]
+        _, indirim, net, kdv, _, _, _ = self._satir_hesapla(veri)
+        miktar = decimal(veri.get("miktar") or 0, "Miktar")
+        pb = (veri.get("satir_para_birimi") or veri.get("para_birimi") or "TRY").upper()
+        if pb == "TL":
+            pb = "TRY"
+        try:
+            kur = Decimal(str(veri.get("kur") or 1))
+        except Exception:
+            kur = Decimal("1")
+        if pb == "TRY":
+            kur = Decimal("1")
+        isk_metin = self._iskonto_goster(veri)
+        kdv_oran = decimal(veri.get("kdv_orani") or 0, "KDV", Decimal("0"))
+        from database.fatura_kdv_service import kdv_oran_metni
+
+        kdv_goster = kdv_oran_metni(kdv_oran)
+        yon = getattr(self, "_fatura_kurus_yon", "normal")
+        if miktar > 0:
+            net_birim = kurus_yuvarla(
+                (net / miktar) * (Decimal("1") + kdv_oran / Decimal("100")),
+                yon,
+            )
+        else:
+            net_birim = Decimal("0")
+        etiketler = ("cift",) if sira % 2 else ("tek",)
+        if bool(veri.get("manuel_fiyat")):
+            etiketler = tuple(etiketler) + ("manuel_fiyat",)
+        if bool(veri.get("dagitima_kapali")):
+            etiketler = tuple(etiketler) + ("dagitima_kapali",)
+        if sira in getattr(self, "_satir_isaretleri", ()):
+            etiketler = tuple(etiketler) + ("isaretli",)
+        fiyat_metin = para_goster(veri.get("birim_satis_fiyati") or 0)
+        if pb != "TRY" and kur > 0:
+            try:
+                bf_doviz = Decimal(str(veri.get("birim_satis_fiyati") or 0)) / kur
+            except Exception:
+                bf_doviz = Decimal("0")
+            doviz_metin = f"{bf_doviz:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            fiyat_metin = f"{doviz_metin} {pb}"
+        kur_metin = "1" if pb == "TRY" else (
+            f"{kur:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+        if bool(veri.get("manuel_fiyat")):
+            fiyat_metin = f"✦ {fiyat_metin}"
+        if bool(veri.get("dagitima_kapali")):
+            fiyat_metin = f"🔒 {fiyat_metin}"
+        isaret = "☑" if sira in getattr(self, "_satir_isaretleri", ()) else "☐"
+        degerler = (
+            isaret,
+            sira + 1,
+            veri.get("urun_kodu", ""),
+            veri.get("urun_adi", ""),
+            veri.get("barkod", ""),
+            miktar_goster(miktar),
+            veri.get("birim", ""),
+            fiyat_metin,
+            pb,
+            kur_metin,
+            isk_metin,
+            para_goster(indirim),
+            kdv_goster,
+            para_goster(kdv),
+            para_goster(net_birim),
+            para_goster(net + kdv),
+            veri.get("aciklama", ""),
+            *self._satir_ek_degerleri(veri),
+        )
+        iid = str(sira)
+        try:
+            if self.satir_tablosu.exists(iid):
+                self.satir_tablosu.item(iid, values=degerler, tags=etiketler)
+            else:
+                self.satir_tablosu.insert("", "end", iid=iid, values=degerler, tags=etiketler)
+        except tk.TclError:
+            self._satir_listesini_yenile()
+            return
+        # Editör açıkken overlay yenileme yok; kapanınca liste/odak zaten planlar
+        if getattr(self, "_satir_hucre_editor", None) is None:
+            self._fatura_satir_vurgulu_overlay_planla(50)
+
     def _satir_ek_degerleri(self, _veri) -> tuple:
         """Belge türüne özgü ek kolon değerleri (SATIR_KOLON_EKRANI sırasıyla)."""
         return ()
@@ -12663,7 +12807,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             "tahsilat_tutari": tahsilat,
             "tahsilat_sekli": ilk_tahsilat.get("odeme_sekli"),
             "tahsilat_hesabi": ilk_tahsilat.get("hesap"),
-            "aciklama": self.girdiler["aciklama"].get().rstrip(),
+            "aciklama": self._aciklama_metni_oku(),
             "dokuman_yolu": (getattr(self, "_dokuman_yolu", None) or "").strip(),
             "tl_brut_toplam": brut,
             "tl_genel_toplam": net,

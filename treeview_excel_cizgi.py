@@ -75,6 +75,17 @@ class TreeviewExcelCizgi:
                 yatay_sb = w
 
         def planla(_event=None):
+            # Hücre editörü açıkken / açılırken Excel çizgi yenilemesi UI'yi saniyelerce kilitliyordu
+            host = self.host
+            if getattr(host, "_satir_editor_aciliyor", False):
+                return
+            ed = getattr(host, "_satir_hucre_editor", None)
+            if ed is not None:
+                try:
+                    if ed.winfo_exists():
+                        return
+                except tk.TclError:
+                    pass
             if self._after is not None:
                 try:
                     self.host.after_cancel(self._after)
