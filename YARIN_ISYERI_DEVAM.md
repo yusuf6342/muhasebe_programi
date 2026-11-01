@@ -5,7 +5,7 @@ Kişisel/veritabanı içeriği yok. Makineye özel yollar yerel aktarım yönerg
 ## Sıra
 
 1. İşyerindeki açık programı ve gerçek veri kaynağını belirle; kaydedilmemiş işi yedekle.
-2. Uzak `origin/main` son commit SHA’sını doğrula; yerel iş varsa silmeden güvenli pull/birleştir.
+2. Uzak `origin/main` son commit SHA’sını doğrula (`1ca2a6b…`); yerel iş varsa silmeden güvenli pull/birleştir.
 3. Teslim paketinin SHA-256 / MANIFEST ve SQLite `integrity_check` sonuçlarını kontrol et.
 4. **TEST** veri paketini işyerinde ayrı TEST konumuna aç — üretim DB üzerine yazma.
 5. Gerçek veri gerekiyorsa firma UID/dönem ve iki taraftaki yeni kayıt farklarını karşılaştır; kör üzerine yazma.
@@ -19,5 +19,6 @@ Kişisel/veritabanı içeriği yok. Makineye özel yollar yerel aktarım yönerg
 
 - Repo: `yusuf6342/muhasebe_programi` · dal: `main`
 - Ev worktree: `muhasebe_programi_uzak_20261101_152451`
-- Commit SHA: teslim raporunda / `git rev-parse origin/main`
+- Commit SHA: `1ca2a6b331f4374f72b3dda995bb77ae963298f9`
+- EXE paket (Git dışı): `CinMuhasebe_EV_TEST_GUNCEL_2026-11-01_2214`
 - Veri yedek (Git dışı, ev): `CinMuhasebe_Teslim_Yedek_20261101_220608` — USB ile taşınacak

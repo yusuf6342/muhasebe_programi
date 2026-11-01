@@ -19,15 +19,20 @@ Hız raporu (kişisel veri yok): `FATURA_FARE_KLAVYE_HIZ_RAPORU_2026-11-01.md`
 
 ## Git
 
-- Commit SHA: *(commit sonrası doldurulur)*
+- Commit SHA: `1ca2a6b331f4374f72b3dda995bb77ae963298f9`
 - Dal: `main` → `origin/main` (`yusuf6342/muhasebe_programi`)
+- Bağlantı: https://github.com/yusuf6342/muhasebe_programi/commit/1ca2a6b331f4374f72b3dda995bb77ae963298f9
 
 ## Son EXE
 
-- Klasör: *(derleme sonrası)*
-- SHA-256: *(derleme sonrası)*
-- Kısayol: `Cin Muhasebe GUNCEL EV TEST 2026-11-01.lnk`
-- Veri: `%LOCALAPPDATA%\CinMuhasebeTest\data` (**TEST**)
+- Derleme kaynak commit: `1ca2a6b`
+- Klasör: `C:\Users\Pc\Documents\CinMuhasebe_EV_TEST_GUNCEL_2026-11-01_2214\`
+- EXE: `...\CinMuhasebe.exe` (~18.9 MB)
+- Derleme zamanı: 2026-11-01 22:13
+- SHA-256: `17659C6F119AB03882B22CBA25E5A215FE68B6C57A132B15826C29EEE583254A`
+- Kısayol: `Cin Muhasebe GUNCEL EV TEST 2026-11-01.lnk` (masaüstü; hedef yukarıdaki paket)
+- Veri: `%LOCALAPPDATA%\CinMuhasebeTest\data` (**TEST**; `veri_konumu.txt` + `test_kurulumu.txt`)
+- Açılış: PID doğrulandı; giriş ekranı kullanıcıda
 
 ## Veri yedeği (Git dışı)
 
