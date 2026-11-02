@@ -543,7 +543,18 @@ class GirisPaneli(tk.Frame):
         if not self._bitti(jeton):
             return
         self.bayat_lbl.configure(text="Güncel değil")
-        self.durum_lbl.configure(text=f"Yenileme başarısız: {hata}", fg=UYARI)
+        try:
+            from database.giris_ozet_service import _kullanici_hata_mesaji
+
+            kisa = _kullanici_hata_mesaji(hata if isinstance(hata, BaseException) else Exception(str(hata)))
+        except Exception:
+            kisa = "Veri yüklenemedi"
+        self.durum_lbl.configure(text=f"Yenileme başarısız: {kisa}", fg=UYARI)
+        # Kartlara SQL basma — tutar alanı — kalsın
+        for i in range(min(4, len(self.kartlar))):
+            deger = self.kartlar[i]["deger"].cget("text")
+            if deger in ("…", "Hata", "") or (isinstance(deger, str) and "OperationalError" in deger):
+                self._kart_yaz(i, "—", kisa, renk=PASIF)
 
     def _geldi(self, jeton, sonuc):
         if not self._bitti(jeton):
@@ -648,8 +659,12 @@ class GirisPaneli(tk.Frame):
         sat = s["satis"]
         engel = self._kullanilamaz(sat)
         if engel:
+            # Hata/yetkisiz: tutar 0,00 değil; — + kısa mesaj (SQL kartta yok)
+            alt = sat.get("mesaj") or (
+                "Bu bölümü görüntüleme yetkiniz yok." if engel == "Yetkisiz" else "Veri yüklenemedi"
+            )
             for i in (0, 1):
-                self._kart_yaz(i, engel, sat.get("mesaj", ""), renk=PASIF)
+                self._kart_yaz(i, "—", alt, renk=PASIF)
         else:
             dn = go.donemler(d)
             for i, ad, onceki in ((0, "bugun", "önceki ay aynı gün"), (1, "ay", "önceki ay aynı dönem")):
@@ -664,7 +679,10 @@ class GirisPaneli(tk.Frame):
         v = s["likit"]
         engel = self._kullanilamaz(v)
         if engel:
-            self._kart_yaz(2, engel, v.get("mesaj", ""), renk=PASIF)
+            alt = v.get("mesaj") or (
+                "Bu bölümü görüntüleme yetkiniz yok." if engel == "Yetkisiz" else "Veri yüklenemedi"
+            )
+            self._kart_yaz(2, "—", alt, renk=PASIF)
         else:
             kal = v["kalemler"]
             self._kart_yaz(2, para_tr(v["likit"]), "Kasa ve mevduat toplamı (blokaj bilgisi yok)",
@@ -672,7 +690,10 @@ class GirisPaneli(tk.Frame):
         b = s["borc"]
         engel = self._kullanilamaz(b)
         if engel:
-            self._kart_yaz(3, engel, b.get("mesaj", ""), renk=PASIF)
+            alt = b.get("mesaj") or (
+                "Bu bölümü görüntüleme yetkiniz yok." if engel == "Yetkisiz" else "Veri yüklenemedi"
+            )
+            self._kart_yaz(3, "—", alt, renk=PASIF)
         else:
             t = b["toplam"]
             rozet = []

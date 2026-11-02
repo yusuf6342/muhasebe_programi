@@ -494,7 +494,9 @@ class KasadanBankayaYatirDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self._kasa_map = {}
         self._banka_map = {}
@@ -854,7 +856,9 @@ class BankadanCekilenDialog(tk.Toplevel):
         self.title("Bankadan Çekilen — Güncelle" if belge_no else "Bankadan Çekilen")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self._kasa_map = {}
         self._banka_map = {}
@@ -1201,7 +1205,9 @@ class HavaleFisDialog(tk.Toplevel):
         self.title(f"{baslik} — Güncelle" if belge_no else baslik)
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.cari_service import CariService
 
@@ -1530,6 +1536,9 @@ class BankalarArasiVirmanDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.resizable(True, True)
         self.minsize(560, 480)
 
@@ -2051,7 +2060,9 @@ class BankaIslemKkOdemeDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.cari_service import CariService
 
@@ -2474,7 +2485,9 @@ class BankaIslemPosTahsilatDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.cari_service import CariService
 
@@ -2859,9 +2872,10 @@ class HesapDialog(tk.Toplevel):
         self.hesap = hesap
         self.result = None
         self.title("Kasa" + (" Düzenle" if hesap else " Ekle"))
-        self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         row = 0
         ttk.Label(self, text="Hesap Adı").grid(row=row, column=0, padx=12, pady=5, sticky="w")
@@ -2977,6 +2991,9 @@ class AltHesapIslemDialog(tk.Toplevel):
         self.geometry("820x520")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
@@ -3106,7 +3123,9 @@ class MevduatEvrakDialog(tk.Toplevel):
         self.title(basliklar.get(tur, "Mevduat Evrakı"))
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.cari_service import CariService
 
@@ -3282,6 +3301,9 @@ class MevduatIslemleriDialog(tk.Toplevel):
         self.minsize(860, 520)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
@@ -3453,6 +3475,9 @@ class KmhIslemleriDialog(tk.Toplevel):
         self.minsize(900, 560)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
@@ -3686,6 +3711,9 @@ class PosIslemleriDialog(tk.Toplevel):
         self.minsize(900, 560)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         # Yalnız otomatik mahsup açıksa arka plan aktarımı
         FinansService.pos_valor_vadesi_gelenleri_aktar(
@@ -3867,7 +3895,9 @@ class PosTahsilatDialog(tk.Toplevel):
         self.title("POS Tahsilat (Kredi / Banka Kartı)")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.cari_service import CariService
 
@@ -3966,6 +3996,9 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         self.minsize(940, 600)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
@@ -4263,7 +4296,9 @@ class KartTarihleriDegistirDialog(tk.Toplevel):
         self.minsize(520, 480)
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         from database.kredi_karti_ekstre_service import KrediKartiEkstreService
 
@@ -4461,7 +4496,9 @@ class KrediKartiTanimDialog(tk.Toplevel):
         self.title("Kredi Kartı Tanımı" + (" — Düzenle" if kart_id else " — Yeni"))
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         kart = FinansService.kredi_karti_getir(kart_id) if kart_id else None
         banka = FinansService.banka_karti_getir(banka_karti_id)
@@ -4664,6 +4701,9 @@ class KrediKartiOdemeDialog(tk.Toplevel):
         self.title("Kredi Kartı Ödeme Evrakı")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("760x640")
         self.minsize(680, 560)
         self.resizable(True, True)
@@ -4973,6 +5013,9 @@ class KredilerIslemleriDialog(tk.Toplevel):
         self.minsize(980, 640)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")
@@ -5185,6 +5228,9 @@ class BankaKrediKullandirDialog(tk.Toplevel):
         self.minsize(780, 620)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         # Butonlar önce alta sabitlenir — kesilmez / okunur kalır
         butonlar = ttk.Frame(self, padding=(12, 8))
@@ -5718,7 +5764,9 @@ class BankaKrediTaksitOdemeDialog(tk.Toplevel):
         self.title("Kredi Taksit Ödeme")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         try:
             b = FinansService.banka_kredi_taksit_detay(taksit_id)
@@ -5816,7 +5864,9 @@ class AltHesapDuzenleDialog(tk.Toplevel):
         self.title(f"Alt hesap — {tur_ad}")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         form = ttk.Frame(self, padding=12)
         form.pack(fill="both", expand=True)
@@ -5907,8 +5957,10 @@ class BankaAnaKartDialog(tk.Toplevel):
         self.title("Banka Ana Kartı" + (f" — {kart.banka_adi}" if kart else " — Yeni"))
         self.geometry("1100x860")
         self.minsize(980, 740)
-        self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.alanlar = {}
         self.pos_taksit_oranlari = {}
         self.bakiye_etiketleri = {}

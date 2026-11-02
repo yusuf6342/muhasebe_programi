@@ -101,6 +101,9 @@ class SatisFaturaSevkiyatDialog(tk.Toplevel):
         except tk.TclError:
             pass
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = tk.Frame(self, bg=LACIVERT)
         ust.pack(fill="x")

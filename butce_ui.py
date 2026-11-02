@@ -1805,6 +1805,9 @@ def _excel_aktar_dialog(app, plan_id: int):
     dlg.title("Excel önizleme / aktarım")
     dlg.transient(app)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     ttk.Label(
         dlg,
         text=(

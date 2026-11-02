@@ -649,7 +649,6 @@ class FormDialog(tk.Toplevel):
         super().__init__(parent)
         self.title(baslik)
         self.transient(parent.winfo_toplevel())
-        self.resizable(False, False)
         self.sonuc = None
         self._istek = uuid.uuid4().hex
         self.alanlar = alanlar
@@ -682,6 +681,9 @@ class FormDialog(tk.Toplevel):
         ttk.Button(alt, text="Vazgeç", command=self.destroy).pack(side="left")
         self.bind("<Escape>", lambda _e: self.destroy())
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
     def _tamam(self) -> None:
         sonuc = {"_istek": self._istek}
@@ -711,7 +713,6 @@ class TransferDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Fon Transferi")
         self.transient(parent.winfo_toplevel())
-        self.resizable(False, False)
         self.fonlar = fonlar
         self.sonuc = None
         self._istek = uuid.uuid4().hex
@@ -752,6 +753,9 @@ class TransferDialog(tk.Toplevel):
         self.bind("<Escape>", lambda _e: self.destroy())
         self._onizle()
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
     def _onizle(self) -> None:
         try:
@@ -918,6 +922,9 @@ class TopluOranDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Stok Grubuna Toplu Fon Oranı")
         self.transient(parent.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("820x520")
         self.parent_sayfa = parent
         self.onizleme: list[dict] = []

@@ -34,19 +34,23 @@ KOLONLAR = (
 
 
 class FaturaIrsaliyeSecimDialog(tk.Toplevel):
-    """Seçili müşterinin faturalanmaya uygun satış irsaliyeleri."""
+    """Seçili carinin faturalanmaya uygun irsaliyeleri (yon: satis|alis)."""
 
-    def __init__(self, parent, cari):
+    def __init__(self, parent, cari, *, yon: str = "satis"):
         super().__init__(parent)
         if cari is None or getattr(cari, "id", None) is None:
             raise ValueError("Cari gerekli.")
         self.cari = cari
+        self.yon = (yon or "satis").strip().lower()
+        if self.yon not in ("satis", "alis"):
+            self.yon = "satis"
         self.result = None  # irsaliye_id
         self._kayitlar: list[dict] = []
         self._iid_map: dict[str, dict] = {}
         self._sirala_kolon = "tarih"
         self._sirala_ters = True
 
+        yon_baslik = "Alış" if self.yon == "alis" else "Satış"
         self.title(f"İrsaliyeden Getir — {cari.cari_kodu} {cari.unvan}")
         self.geometry("920x480")
         self.minsize(760, 360)
@@ -55,9 +59,9 @@ class FaturaIrsaliyeSecimDialog(tk.Toplevel):
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 6))
         ust.pack(fill="x")
-        ttk.Label(ust, text="Faturalanacak Satış İrsaliyeleri", font=("Segoe UI", 12, "bold")).pack(
-            anchor="w"
-        )
+        ttk.Label(
+            ust, text=f"Faturalanacak {yon_baslik} İrsaliyeleri", font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w")
         ttk.Label(
             ust,
             text=f"{cari.cari_kodu} — {cari.unvan}",
@@ -108,15 +112,27 @@ class FaturaIrsaliyeSecimDialog(tk.Toplevel):
 
     def yenile(self):
         try:
-            from database.satis_irsaliyesi_service import faturalanacak_kalan
+            if self.yon == "alis":
+                from database.alis_faturasi_service import AlisFaturasiService
 
-            irsaliyeler = SatisFaturasiService.acik_irsaliyeler(cari_id=int(self.cari.id))
+                irsaliyeler = AlisFaturasiService.acik_irsaliyeler(cari_id=int(self.cari.id))
+
+                def _kalan(s):
+                    return Decimal(str(getattr(s, "miktar", 0) or 0)) - Decimal(
+                        str(getattr(s, "faturalanan_miktar", 0) or 0)
+                    )
+            else:
+                from database.satis_irsaliyesi_service import faturalanacak_kalan
+
+                irsaliyeler = SatisFaturasiService.acik_irsaliyeler(cari_id=int(self.cari.id))
+                _kalan = faturalanacak_kalan
+
             self._kayitlar = []
             for ir in irsaliyeler:
                 kalan_satir = 0
                 kalan_tutar = Decimal("0")
                 for s in ir.satirlar or []:
-                    k = faturalanacak_kalan(s)
+                    k = _kalan(s)
                     if k <= 0:
                         continue
                     kalan_satir += 1
@@ -124,18 +140,24 @@ class FaturaIrsaliyeSecimDialog(tk.Toplevel):
                     isk = Decimal(str(getattr(s, "iskonto_orani", 0) or 0))
                     net = fiyat * (Decimal("1") - isk / Decimal("100"))
                     kalan_tutar += Decimal(str(k)) * net
+                if kalan_satir <= 0:
+                    continue
+                siparis_no = ""
+                if getattr(ir, "siparis", None) is not None:
+                    siparis_no = getattr(ir.siparis, "siparis_no", "") or ""
                 self._kayitlar.append(
                     {
                         "irsaliye_id": int(ir.id),
                         "irsaliye_no": ir.irsaliye_no or "",
-                        "tarih": _tarih(getattr(ir, "irsaliye_tarihi", None) or getattr(ir, "tarih", None)),
+                        "tarih": _tarih(
+                            getattr(ir, "irsaliye_tarihi", None) or getattr(ir, "tarih", None)
+                        ),
                         "durum": ir.durum or "",
-                        "siparis": (ir.siparis.siparis_no if ir.siparis else "") or "",
+                        "siparis": siparis_no,
                         "kalan_satir": kalan_satir,
                         "kalan": kalan_tutar,
                         "_ara": turkce_normalize(
-                            f"{ir.irsaliye_no} {ir.durum} "
-                            f"{ir.siparis.siparis_no if ir.siparis else ''}"
+                            f"{ir.irsaliye_no} {ir.durum} {siparis_no}"
                         ),
                     }
                 )
@@ -202,8 +224,8 @@ class FaturaIrsaliyeSecimDialog(tk.Toplevel):
         self.destroy()
 
 
-def fatura_icin_irsaliye_sec(parent, cari) -> int | None:
+def fatura_icin_irsaliye_sec(parent, cari, *, yon: str = "satis") -> int | None:
     """Modal seçim; seçilen irsaliye id veya None."""
-    dlg = FaturaIrsaliyeSecimDialog(parent, cari)
+    dlg = FaturaIrsaliyeSecimDialog(parent, cari, yon=yon)
     parent.wait_window(dlg)
     return dlg.result

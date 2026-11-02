@@ -99,6 +99,9 @@ class TedarikciEvraklariDialog(tk.Toplevel):
         evrak_penceresi_boyutlandir(self, genislik=1100, yukseklik=560, min_genislik=720, min_yukseklik=360)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 6))
         ust.pack(fill="x")

@@ -29,6 +29,9 @@ class CariAcikKalemlerDialog(tk.Toplevel):
         self.cari_id = int(cari_id)
         self.title(f"Açık Kalemler — {cari_adi}")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("1020x480")
         self.minsize(640, 320)
         self._satirlar: dict[str, dict] = {}

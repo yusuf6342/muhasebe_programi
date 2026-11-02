@@ -62,6 +62,9 @@ class SilmeOnayDialog(tk.Toplevel):
         self.geometry("520x420")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.configure(padx=12, pady=10)
 
         ttk.Label(self, text="Silinecek kayıt", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -523,6 +526,9 @@ class SilinenKayitDetayDialog(tk.Toplevel):
         self.geometry("780x560")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         try:
             self.detay = AuditDeleteService.get_deleted_record_detail(log_id)

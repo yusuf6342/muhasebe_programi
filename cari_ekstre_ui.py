@@ -123,6 +123,9 @@ class StokDetayliCariEkstreDialog(tk.Toplevel):
         self.resizable(True, True)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 6))
         ust.pack(fill="x")

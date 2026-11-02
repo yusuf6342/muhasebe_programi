@@ -37,6 +37,7 @@ def _modelleri_yukle():
     import database.models.stok  # noqa: F401
     import database.models.firma  # noqa: F401
     import database.models.donem  # noqa: F401
+    import database.models.kart_turu  # noqa: F401 — cari/stok FK: kart_alt_turleri
     import database.models.alis_faturasi  # noqa: F401
     import database.models.alis_iade_faturasi  # noqa: F401
     import database.models.alis_irsaliyesi  # noqa: F401

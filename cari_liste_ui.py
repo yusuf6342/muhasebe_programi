@@ -456,6 +456,9 @@ class CariListeKolonAyarDialog(tk.Toplevel):
         self.geometry("620x560")
         self.minsize(520, 400)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._on_uygula = on_uygula
         self.ayarlar = deepcopy(ayarlar or cari_liste_varsayilan_ayarlari())
         self._vars: dict[str, tk.BooleanVar] = {}
@@ -592,7 +595,9 @@ class CariTopluGrupDialog(tk.Toplevel):
         self.title("Toplu Sektör Grubu Ata")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._secili = list(secili_idler)
         self._kayitlar = list(kayit_ozet)  # {id, kod, unvan, grup}
         self._on_basarili = on_basarili

@@ -300,6 +300,9 @@ class DonenSermayePaneli(ttk.Frame):
         pen.title(f"{r['etiket']} — ayrıntı")
         pen.geometry("620x420")
         pen.transient(self.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(pen)
         ttk.Label(pen, text=f"{r['etiket']}: {ds.tutar_metni(r['tutar'])} TL "
                             f"({_tarih_tr(self._sonuc['tarih'])} sonu)",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
@@ -351,6 +354,9 @@ class DemirbasGruplariDialog(tk.Toplevel):
         self.title("Demirbaş stok grupları")
         self.geometry("720x560")
         self.transient(parent.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._on_kaydet = on_kaydet
         ttk.Label(self, wraplength=680, justify="left", text=(
             "İşaretlenen grup ve tüm alt grupları ile bunlara bağlı kartlar Dönen Sermaye Bilançosu stok "

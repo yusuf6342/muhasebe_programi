@@ -342,6 +342,21 @@ def firma_db_ac(company_id: int, db_path: str | Path) -> None:
             logging.getLogger(__name__).exception(
                 "satis_fiyat_listesi schema (firma_db_ac aynı yol)"
             )
+        try:
+            from database.konsinye_service import KonsinyeService
+
+            KonsinyeService._schema_hazir_engine_id = None
+            KonsinyeService.ensure_schema()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("konsinye schema (firma_db_ac aynı yol)")
+        try:
+            alis_siparis_schemasini_guncelle(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("alis_siparis/irsaliye schema (firma_db_ac aynı yol)")
         return
 
     yeni = company_db.open(company_id, yol)
@@ -365,14 +380,29 @@ def firma_db_ac(company_id: int, db_path: str | Path) -> None:
 
         logging.getLogger(__name__).exception("satis_fiyat_listesi schema (firma_db_ac)")
     try:
-        from database.kart_turu_service import KartTuruService
+        from database.konsinye_service import KonsinyeService
 
-        KartTuruService._schema_hazir = False
-        KartTuruService.schema_ve_seed()
+        KonsinyeService._schema_hazir_engine_id = None
+        KonsinyeService.ensure_schema()
     except Exception:
         import logging
 
-        logging.getLogger(__name__).exception("kart_turu schema (firma_db_ac)")
+        logging.getLogger(__name__).exception("konsinye schema (firma_db_ac)")
+        try:
+            from database.kart_turu_service import KartTuruService
+
+            KartTuruService._schema_hazir = False
+            KartTuruService.schema_ve_seed()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("kart_turu schema (firma_db_ac)")
+        try:
+            alis_siparis_schemasini_guncelle(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("alis_siparis/irsaliye schema (firma_db_ac)")
 
 
 def firma_db_kapat() -> None:
@@ -797,6 +827,38 @@ def alis_siparis_schemasini_guncelle(hedef_engine=None) -> None:
                             f'ADD COLUMN "{alan}" NUMERIC(7, 2) DEFAULT 0 NOT NULL'
                         )
                     )
+    alis_irsaliye_schemasini_guncelle(hedef)
+
+
+def alis_irsaliye_schemasini_guncelle(hedef_engine=None) -> None:
+    """Alış irsaliyesi eksik kolonları — veri kaybetmeden, tekrar güvenli ALTER."""
+    hedef = hedef_engine if hedef_engine is not None else engine
+    if not inspect(hedef).has_table("alis_irsaliyeleri"):
+        return
+    ai_sutunlar = {s["name"] for s in inspect(hedef).get_columns("alis_irsaliyeleri")}
+    ai_eklenecekler = {
+        "giris_depo": "VARCHAR(100)",
+        "harici_irsaliye_no": "VARCHAR(50)",
+        "harici_irsaliye_tarihi": "DATE",
+        "teslim_adresi": "VARCHAR(500)",
+        "teslim_il": "VARCHAR(50)",
+        "teslim_ilce": "VARCHAR(50)",
+        "planlanan_teslim": "DATE",
+        "teslim_kisi": "VARCHAR(100)",
+        "teslim_telefon": "VARCHAR(30)",
+        "sevkiyat_yontemi": "VARCHAR(50)",
+        "nakliyeci": "VARCHAR(100)",
+        "arac_plaka": "VARCHAR(20)",
+        "sofor_adi": "VARCHAR(100)",
+        "sofor_telefon": "VARCHAR(30)",
+        "takip_no": "VARCHAR(50)",
+    }
+    eksik_ai = {a: t for a, t in ai_eklenecekler.items() if a not in ai_sutunlar}
+    if not eksik_ai:
+        return
+    with hedef.begin() as connection:
+        for alan, tip in eksik_ai.items():
+            connection.execute(text(f'ALTER TABLE "alis_irsaliyeleri" ADD COLUMN "{alan}" {tip}'))
 
 
 def cari_kart_schemasini_guncelle() -> None:
@@ -1244,32 +1306,7 @@ def cari_kart_schemasini_guncelle() -> None:
                 connection.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_{tablo}_{alan}" ON "{tablo}" ("{alan}")'))
 
     alis_siparis_schemasini_guncelle(engine)
-
-    # Alış irsaliyesi: giriş deposu, harici irsaliye ve teslim alma / sevkiyat alanları
-    if inspect(engine).has_table("alis_irsaliyeleri"):
-        ai_sutunlar = {s["name"] for s in inspect(engine).get_columns("alis_irsaliyeleri")}
-        ai_eklenecekler = {
-            "giris_depo": "VARCHAR(100)",
-            "harici_irsaliye_no": "VARCHAR(50)",
-            "harici_irsaliye_tarihi": "DATE",
-            "teslim_adresi": "VARCHAR(500)",
-            "teslim_il": "VARCHAR(50)",
-            "teslim_ilce": "VARCHAR(50)",
-            "planlanan_teslim": "DATE",
-            "teslim_kisi": "VARCHAR(100)",
-            "teslim_telefon": "VARCHAR(30)",
-            "sevkiyat_yontemi": "VARCHAR(50)",
-            "nakliyeci": "VARCHAR(100)",
-            "arac_plaka": "VARCHAR(20)",
-            "sofor_adi": "VARCHAR(100)",
-            "sofor_telefon": "VARCHAR(30)",
-            "takip_no": "VARCHAR(50)",
-        }
-        eksik_ai = {a: t for a, t in ai_eklenecekler.items() if a not in ai_sutunlar}
-        if eksik_ai:
-            with engine.begin() as connection:
-                for alan, tip in eksik_ai.items():
-                    connection.execute(text(f'ALTER TABLE "alis_irsaliyeleri" ADD COLUMN "{alan}" {tip}'))
+    # alis_irsaliye kolonları alis_siparis_schemasini_guncelle içinde de uygulanır
 
     finans_hesap_schemasini_guncelle(engine)
 
@@ -1478,6 +1515,14 @@ def cari_kart_schemasini_guncelle() -> None:
         SatisFaturasiService.sevkiyat_schema_hazirla()
     except Exception:
         pass
+    try:
+        from database.konsinye_service import KonsinyeService
+
+        KonsinyeService.ensure_schema()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("konsinye schema (migrate)")
     try:
         from database.cari_yetkili_service import CariYetkiliService
 

@@ -469,12 +469,14 @@ class HesapDialog(tk.Toplevel):
     ):
         super().__init__(parent)
         self.title("Alt Hesap" if ust_hesap and not hesap_id else "Hesap Kartı")
-        self.resizable(False, False)
         self.hesap_id = hesap_id
         self.on_save = on_save
         self.ust_hesap = ust_hesap
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         frm = ttk.Frame(self, padding=16)
         frm.pack(fill="both", expand=True)
@@ -672,6 +674,9 @@ class FisDialog(tk.Toplevel):
         self.on_save = on_save
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=10)
         ust.pack(fill="x")

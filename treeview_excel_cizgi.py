@@ -35,6 +35,7 @@ class TreeviewExcelCizgi:
         self.tiklama_sonrasi = tiklama_sonrasi
         self.yenile_sonrasi = yenile_sonrasi
         self._cizgiler: list[tk.Frame] = []
+        self._bos_canvas: tk.Canvas | None = None
         self._after: Any = None
         self._kurulu = False
         self._onceki_yscroll = None
@@ -48,6 +49,12 @@ class TreeviewExcelCizgi:
             except tk.TclError:
                 pass
         self._cizgiler = []
+        if self._bos_canvas is not None:
+            try:
+                self._bos_canvas.destroy()
+            except tk.TclError:
+                pass
+            self._bos_canvas = None
         if self._after is not None:
             try:
                 self.host.after_cancel(self._after)
@@ -393,7 +400,7 @@ class TreeviewExcelCizgi:
                     dikey_sinir(x, ust, h_band)
                 yatay_sinir(x, alt, w)
 
-        # Boş alan
+        # Boş alan — tek Canvas ile görünür yüksekliği doldur (yüzlerce Frame yok)
         if satir_bantlari:
             y = satir_bantlari[-1][1]
             if len(satir_bantlari) >= 2:
@@ -404,19 +411,54 @@ class TreeviewExcelCizgi:
             y = baslik_h
             rh = rh_stil
 
-        # Boş alan: tüm yüksekliği doldurmak yüzlerce Frame yaratıyordu; birkaç satır yeter
-        guvenlik = 0
-        max_bos = 6
-        while y + rh <= tablo_h and guvenlik < max_bos and kolon_xw:
-            for sira, (x, w) in enumerate(kolon_xw):
-                if x + w < 0:
-                    continue
-                dikey_sinir(x + w - 1, y, rh)
-                if sira == 0:
-                    dikey_sinir(x, y, rh)
-                yatay_sinir(x, y + rh, w)
-            y += rh
-            guvenlik += 1
+        kalan_h = tablo_h - y
+        if kalan_h >= max(4, rh // 2) and kolon_xw and rh >= 8:
+            if self._bos_canvas is None or not self._bos_canvas.winfo_exists():
+                bg = "#FFFFFF"
+                try:
+                    stil = ttk.Style(self.host)
+                    bg = stil.lookup(self.style_name, "background") or bg
+                except tk.TclError:
+                    pass
+                cv = tk.Canvas(tree, highlightthickness=0, bd=0, bg=bg)
+                cv.bind("<Button-1>", _tiklama_aktar)
+                cv.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
+                cv.bind("<Button-3>", _sag_tik)
+                self._bos_canvas = cv
+            else:
+                cv = self._bos_canvas
+            try:
+                cv.configure(width=max(1, tablo_w), height=max(1, kalan_h))
+                cv.place(x=0, y=y, width=tablo_w, height=kalan_h, bordermode="ignore")
+                cv.delete("all")
+                # Yatay satır sınırları
+                yy = rh
+                while yy <= kalan_h + 1:
+                    for x, w in kolon_xw:
+                        if x + w < 0 or x >= tablo_w:
+                            continue
+                        x0 = max(0, x)
+                        x1 = min(tablo_w, x + w)
+                        if x1 > x0:
+                            cv.create_line(x0, yy, x1, yy, fill=CIZGI_RENK, width=1)
+                    yy += rh
+                # Dikey sütun sınırları
+                for sira, (x, w) in enumerate(kolon_xw):
+                    if x + w < 0:
+                        continue
+                    x_right = x + w - 1
+                    if 0 <= x_right < tablo_w:
+                        cv.create_line(x_right, 0, x_right, kalan_h, fill=CIZGI_RENK, width=1)
+                    if sira == 0 and 0 <= x < tablo_w:
+                        cv.create_line(x, 0, x, kalan_h, fill=CIZGI_RENK, width=1)
+                cv.lift()
+            except tk.TclError:
+                pass
+        elif self._bos_canvas is not None:
+            try:
+                self._bos_canvas.place_forget()
+            except tk.TclError:
+                pass
 
         # Kullanılmayan havuz çerçevelerini kaldır
         for fr in havuz[kullanilan:]:
@@ -430,6 +472,12 @@ class TreeviewExcelCizgi:
         for fr in self._cizgiler:
             try:
                 fr.lift()
+            except tk.TclError:
+                pass
+        if self._bos_canvas is not None:
+            try:
+                if self._bos_canvas.winfo_ismapped():
+                    self._bos_canvas.lift()
             except tk.TclError:
                 pass
 

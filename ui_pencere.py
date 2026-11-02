@@ -156,6 +156,181 @@ def is_alanina_sigdir(
     }
 
 
+def _transient_bagli_mi(win: tk.Misc) -> bool:
+    """True = Windows büyüt/küçült kromunu gizleyen transient bağ var.
+
+    Tk ``wm transient`` boşken ``''`` döner; köke bağlanınca ``'.'`` veya
+    ``<window object: '.'>`` gelebilir — ikisi de gerçek bağdır (önceden ``'.'``
+    yanlışlıkla «bağ yok» sayılıyordu ve iconify başarısız oluyordu).
+    """
+    try:
+        tr = win.wm_transient()
+    except tk.TclError:
+        return False
+    if tr is None:
+        return False
+    s = str(tr).strip()
+    if not s:
+        return False
+    # Boş string dışı her transient (kök '.' dahil) Windows'ta iconify'yi engeller
+    return True
+
+
+def pencere_os_krom_ac(win: tk.Misc, *, minsize_makul: bool = True) -> None:
+    """Windows başlık denetimlerini aç: simge durumuna indir / büyüt-geri al / kapat.
+
+    ``transient(parent)`` Windows'ta büyüt/küçült düğmelerini gizler; bu yardımcı
+    transient bağını kaldırır, ``resizable(True,True)`` ve makul minsize uygular.
+    ``grab_set`` (modal) korunabilir — yalnız boyutlandırma kromunu etkiler.
+    Tekrar güvenli ve ucuz: transient yoksa ve bayrak setse no-op.
+    Küçük yardımcı popup'lara uygulamayın.
+    """
+    zaten = bool(getattr(win, "_os_krom_acik", False))
+    bagli = _transient_bagli_mi(win)
+    if zaten and not bagli and not minsize_makul:
+        # belge_penceresini_hazirla sonrası idle/after tekrarları: iş yok
+        return
+    if bagli:
+        try:
+            win.wm_transient("")
+        except tk.TclError:
+            try:
+                win.transient(None)  # type: ignore[arg-type]
+            except Exception:
+                pass
+        # Bazı Tk sürümlerinde ilk çağrı bağ bırakmaz; tekrar dene
+        if _transient_bagli_mi(win):
+            try:
+                win.wm_transient("")
+            except tk.TclError:
+                pass
+    try:
+        win.resizable(True, True)
+    except tk.TclError:
+        pass
+    if minsize_makul and not zaten:
+        try:
+            _x, _y, aw, ah = calisma_alani(win)
+            min_w = min(800, max(560, aw // 2))
+            min_h = min(500, max(360, ah // 2))
+            win.minsize(min_w, min_h)
+        except Exception:
+            try:
+                win.minsize(640, 420)
+            except tk.TclError:
+                pass
+    try:
+        setattr(win, "_os_krom_acik", True)
+    except Exception:
+        pass
+    if not getattr(win, "_os_krom_map_bagli", False):
+        try:
+            win.bind("<Unmap>", _krom_unmap, add="+")
+            win.bind("<Map>", _krom_map, add="+")
+            setattr(win, "_os_krom_map_bagli", True)
+        except tk.TclError:
+            pass
+
+
+def _krom_unmap(event) -> None:
+    """Simge durumuna inerken grab'i bırak — modal kilit uygulamayı dondurmasın."""
+    win = event.widget
+    # Bind yalnızca Toplevel'e konur; yine de çocuk Unmap/yanlış hedef gelirse yut.
+    if not isinstance(win, (tk.Tk, tk.Toplevel)):
+        return
+    try:
+        if str(win.state()) != "iconic":
+            return
+    except (tk.TclError, AttributeError):
+        return
+    try:
+        if win.grab_current() == win:
+            setattr(win, "_os_krom_grab_bekliyor", True)
+            win.grab_release()
+    except tk.TclError:
+        pass
+
+
+def _krom_map(event) -> None:
+    """Geri gelince daha önce bırakılan grab'i geri ver."""
+    win = event.widget
+    if not isinstance(win, (tk.Tk, tk.Toplevel)):
+        return
+    if not getattr(win, "_os_krom_grab_bekliyor", False):
+        return
+    try:
+        if str(win.state()) == "iconic":
+            return
+    except (tk.TclError, AttributeError):
+        return
+    try:
+        win.grab_set()
+        setattr(win, "_os_krom_grab_bekliyor", False)
+    except tk.TclError:
+        pass
+
+
+def pencere_asagi(win: tk.Misc) -> None:
+    """Görev çubuğuna indir; kayıt silmez / kapatmaz. Grab kilidini bırakır."""
+    try:
+        if win.grab_current() == win:
+            setattr(win, "_os_krom_grab_bekliyor", True)
+            win.grab_release()
+    except tk.TclError:
+        pass
+    if _transient_bagli_mi(win):
+        pencere_os_krom_ac(win, minsize_makul=False)
+    try:
+        win.iconify()
+    except tk.TclError:
+        try:
+            win.wm_transient("")
+            win.iconify()
+        except tk.TclError:
+            pass
+
+
+def pencere_buyut_toggle(
+    win: tk.Misc,
+    *,
+    onceki_attr: str = "_pencere_onceki_geometry",
+    btn: tk.Misc | None = None,
+) -> str:
+    """``zoomed`` ↔ önceki boyut; düğme metni □ / ❐ güncellenir."""
+    try:
+        durum = str(win.state() or "")
+    except tk.TclError:
+        durum = ""
+    try:
+        if durum == "zoomed":
+            win.state("normal")
+            geo = getattr(win, onceki_attr, None)
+            if geo:
+                try:
+                    win.geometry(geo)
+                except tk.TclError:
+                    pass
+            if btn is not None:
+                try:
+                    btn.configure(text="□")
+                except tk.TclError:
+                    pass
+        else:
+            try:
+                setattr(win, onceki_attr, win.geometry())
+            except tk.TclError:
+                setattr(win, onceki_attr, None)
+            win.state("zoomed")
+            if btn is not None:
+                try:
+                    btn.configure(text="❐")
+                except tk.TclError:
+                    pass
+    except tk.TclError:
+        pass
+    return "break"
+
+
 def belge_penceresini_hazirla(
     win: tk.Toplevel,
     *,
@@ -164,11 +339,14 @@ def belge_penceresini_hazirla(
     varsayilan_genislik: int = 1200,
     varsayilan_yukseklik: int = 720,
     maximize: bool = True,
+    os_krom: bool = True,
 ) -> dict[str, Any]:
     """Belge kartını iş alanına oturtur; görev çubuğunun altında kalmaz.
 
     - minsize, ekranın %85'ini aşmaz (küçük çözünürlük / yüksek DPI)
     - maximize=True → state('zoomed'); başarısızsa iş alanına geometry
+    - os_krom=True → transient kaldırılır (Windows — □ ✕); idle sonrası da
+      yenilenir (çağıran ``transient(parent)`` sonra yazsa bile)
     """
     try:
         zaten_buyuk = maximize and str(win.state()) == "zoomed"
@@ -217,6 +395,22 @@ def belge_penceresini_hazirla(
     else:
         try:
             win.geometry(f"{gw}x{gh}+{gx}+{gy}")
+        except tk.TclError:
+            pass
+
+    if os_krom:
+        # Hemen uygula; sonradan transient yazılırsa tek ucuz idle+after ile temizle
+        pencere_os_krom_ac(win, minsize_makul=False)
+
+        def _krom_yenile(w=win):
+            if not w.winfo_exists():
+                return
+            if _transient_bagli_mi(w):
+                pencere_os_krom_ac(w, minsize_makul=False)
+
+        try:
+            win.after_idle(_krom_yenile)
+            win.after(80, _krom_yenile)
         except tk.TclError:
             pass
 

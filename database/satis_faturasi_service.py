@@ -240,8 +240,18 @@ class SatisFaturasiService:
             return list(session.scalars(select(Cari).where(Cari.aktif.is_(True)).order_by(Cari.cari_kodu)).all())
 
     @staticmethod
+    def _konsinye_schema_hazirla() -> None:
+        try:
+            from database.konsinye_service import KonsinyeService
+
+            KonsinyeService.ensure_schema()
+        except Exception:
+            pass
+
+    @staticmethod
     def listele() -> list[dict[str, Any]]:
         """Tam fatura + satır yükler (ağır). Liste ekranı için listele_ozet() kullanın."""
+        SatisFaturasiService._konsinye_schema_hazirla()
         with get_session() as session:
             faturalar = session.scalars(select(SatisFaturasi).options(
                 selectinload(SatisFaturasi.cari), selectinload(SatisFaturasi.satirlar),
@@ -382,6 +392,7 @@ class SatisFaturasiService:
 
     @staticmethod
     def getir(fatura_id):
+        SatisFaturasiService._konsinye_schema_hazirla()
         with get_session() as session:
             return session.scalar(select(SatisFaturasi).options(
                 selectinload(SatisFaturasi.cari), selectinload(SatisFaturasi.siparis),

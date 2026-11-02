@@ -999,8 +999,7 @@ class CariDialog(tk.Toplevel):
             self.state("zoomed")
         except tk.TclError:
             pass
-        # transient sonra kaldırılır — Windows büyüt/küçült için
-        self.transient(parent)
+        # transient kullanma — Windows —/□/✕ ve iconify için gerekli
         self.grab_set()
         self.configure(bg=ACIK_BG)
         stil_uygula(root=self)
@@ -4870,20 +4869,10 @@ class CariDialog(tk.Toplevel):
 
     def _cari_pencere_boyutlandirma_ac(self) -> None:
         """Cari kart yeniden boyutlanabilir olsun; büyüt/küçült çalışsın."""
-        try:
-            self.wm_transient("")
-        except tk.TclError:
-            try:
-                self.transient(None)
-            except Exception:
-                pass
-        try:
-            self.resizable(True, True)
-        except tk.TclError:
-            pass
-        try:
-            from ui_pencere import belge_penceresini_hazirla
+        from ui_pencere import belge_penceresini_hazirla, pencere_os_krom_ac
 
+        pencere_os_krom_ac(self)
+        try:
             belge_penceresini_hazirla(
                 self,
                 min_genislik=1040,
@@ -4893,18 +4882,6 @@ class CariDialog(tk.Toplevel):
                 maximize=True,
             )
         except Exception:
-            try:
-                from ui_pencere import calisma_alani
-
-                _x, _y, aw, ah = calisma_alani(self)
-                min_w = min(800, max(640, aw // 2))
-                min_h = min(500, max(420, ah // 2))
-                self.minsize(min_w, min_h)
-            except Exception:
-                try:
-                    self.minsize(720, 480)
-                except tk.TclError:
-                    pass
             try:
                 self.state("zoomed")
             except tk.TclError:
@@ -4919,40 +4896,19 @@ class CariDialog(tk.Toplevel):
 
     def _cari_pencere_asagi(self, _event=None):
         """Görev çubuğuna indir (minimize)."""
-        try:
-            self.iconify()
-        except tk.TclError:
-            pass
+        from ui_pencere import pencere_asagi
+
+        pencere_asagi(self)
 
     def _cari_pencere_buyut_toggle(self, _event=None):
         """Tam ekran (zoomed) ↔ önceki boyut."""
-        try:
-            durum = str(self.state() or "")
-        except tk.TclError:
-            durum = ""
-        btn = getattr(self, "_btn_pencere_buyut", None)
-        try:
-            if durum == "zoomed":
-                self.state("normal")
-                geo = getattr(self, "_cari_onceki_geometry", None)
-                if geo:
-                    try:
-                        self.geometry(geo)
-                    except tk.TclError:
-                        pass
-                if btn is not None:
-                    btn.configure(text="□")
-            else:
-                try:
-                    self._cari_onceki_geometry = self.geometry()
-                except tk.TclError:
-                    self._cari_onceki_geometry = None
-                self.state("zoomed")
-                if btn is not None:
-                    btn.configure(text="❐")
-        except tk.TclError:
-            pass
-        return "break"
+        from ui_pencere import pencere_buyut_toggle
+
+        return pencere_buyut_toggle(
+            self,
+            onceki_attr="_cari_onceki_geometry",
+            btn=getattr(self, "_btn_pencere_buyut", None),
+        )
 
     def yeni_kart(self):
         """Boş form → doldur → Kaydet akışı için yeni cari kartı açar."""

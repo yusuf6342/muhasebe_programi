@@ -302,6 +302,9 @@ class _SecimDialog(tk.Toplevel):
         self.title(baslik)
         self.configure(bg=ACIK_BG)
         self.transient(parent.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry(f"{genislik}x520")
         self.result = None
         self._yukle = yukle
@@ -396,6 +399,9 @@ class MasrafDagitimDialog(tk.Toplevel):
         self.title("Masraf Dağıtımı")
         self.configure(bg=ACIK_BG)
         self.transient(parent.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         ekran_g, ekran_y = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{min(1320, max(800, ekran_g - 40))}x{min(800, max(560, ekran_y - 100))}+10+10")
         self.minsize(800, 520)
@@ -1113,6 +1119,9 @@ class BagliMasraflarDialog(tk.Toplevel):
         super().__init__(parent)
         self.configure(bg=ACIK_BG)
         self.transient(parent.winfo_toplevel())
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("1080x460")
         self.alis_fatura_id = int(alis_fatura_id) if alis_fatura_id else None
         self.kaynak_id = int(kaynak_id) if kaynak_id else None

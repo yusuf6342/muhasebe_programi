@@ -2533,8 +2533,10 @@ class StokKartiDialog(tk.Toplevel):
         self._depo_token = 0
         self.rapor_grubu_zorunlu = bool(rapor_grubu_zorunlu)
         self.title("Stok Kartını Düzenle" if stok else "Yeni Stok Kartı")
-        self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.configure(bg=ACIK_BG)
         self.protocol("WM_DELETE_WINDOW", self._kapat_istegi)
         stok_stil_uygula(root=self)

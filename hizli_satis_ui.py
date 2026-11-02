@@ -300,6 +300,9 @@ class HizliSatisPencere(tk.Toplevel):
                 pass
         self.minsize(1100, 650)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self.sepet_model = HizliSatisSepet()
         self.secili_cari: dict | None = None
@@ -2262,6 +2265,9 @@ class HizliSatisPencere(tk.Toplevel):
         dialog.title(f"Fiyat Listesi — {satir.stok_kodu}")
         dialog.transient(self)
         dialog.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(dialog)
         ttk.Label(
             dialog,
             text=(
@@ -2409,6 +2415,9 @@ class HizliSatisPencere(tk.Toplevel):
         win.title(f"Stok Hareketleri — {satir.stok_kodu}")
         win.transient(self)
         win.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(win)
         win.geometry("1060x470")
         filtre_lbl = ttk.Label(win, text="", font=("Segoe UI", 10, "bold"))
         filtre_lbl.pack(padx=10, pady=(10, 4), anchor="w")

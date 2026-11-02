@@ -441,6 +441,9 @@ class DuzeltmeDialog(tk.Toplevel):
         self.title("Kartla gider ödemesi — kayıt düzeltmesi")
         self.geometry("900x760")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.sonra = sonra
         self.anahtar = uuid.uuid4().hex
         self.bilgi = gk.duzeltme_bilgisi(gider_kart_odeme_id)
@@ -545,6 +548,9 @@ class IadeDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Banka iadesi kaydet")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.kayit, self.sonra = kayit, sonra
         self.anahtar = uuid.uuid4().hex
         cer = ttk.Frame(self, padding=12)
@@ -614,6 +620,9 @@ class GiderKartOdemeleriDialog(tk.Toplevel):
         self.title("Kartla Gider Ödemeleri")
         self.geometry("1160x480")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._kayitlar: dict[str, dict] = {}
         cer = ttk.Frame(self, padding=10)
         cer.pack(fill="both", expand=True)

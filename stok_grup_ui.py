@@ -48,9 +48,11 @@ class StokGrupDialog(tk.Toplevel):
         self._kaydediliyor = False
         self.duzenle = duzenle
         self.title("Grup Düzenle" if duzenle else "Yeni Stok Grubu")
-        self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("460x360")
 
         fr = ttk.Frame(self, padding=14)
@@ -206,6 +208,9 @@ class StokGrupTopluTasiDialog(tk.Toplevel):
         self.geometry("640x480")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         fr = ttk.Frame(self, padding=12)
         fr.pack(fill="both", expand=True)

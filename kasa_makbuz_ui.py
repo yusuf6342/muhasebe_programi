@@ -502,6 +502,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.minsize(min(640, gen), min(420, yuk))
         self.geometry(f"{genislik}x{yukseklik}+{x + (gen - genislik) // 2}+{y + max(0, (yuk - yukseklik) // 2)}")
         self.resizable(True, True)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
     def _tekerlek(self, event):
         try:

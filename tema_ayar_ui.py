@@ -42,6 +42,9 @@ def tema_ayarlari_ac(parent) -> None:
     win.title("Görünüm — Tema")
     win.transient(parent)
     win.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(win)
     win.geometry("560x520")
     try:
         win.minsize(520, 440)

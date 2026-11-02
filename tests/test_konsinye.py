@@ -94,6 +94,7 @@ class VerilenKonsinyeKabulTest(unittest.TestCase):
     def setUp(self):
         self.o = StokOrtami(self._testMethodName[:18])
         KonsinyeService._schema_hazir = False
+        KonsinyeService._schema_hazir_engine_id = None
         KonsinyeService.ensure_schema()
         with get_session() as s:
             stok = s.scalar(select(StokKarti).where(StokKarti.stok_kodu == "U001"))
@@ -164,6 +165,7 @@ class AlinanKonsinyeTest(unittest.TestCase):
     def setUp(self):
         self.o = StokOrtami(self._testMethodName[:18])
         KonsinyeService._schema_hazir = False
+        KonsinyeService._schema_hazir_engine_id = None
         KonsinyeService.ensure_schema()
         with get_session() as s:
             stok = s.scalar(select(StokKarti).where(StokKarti.stok_kodu == "U001"))
@@ -222,6 +224,7 @@ class KonsinyeRaporTest(unittest.TestCase):
     def setUp(self):
         self.o = StokOrtami(self._testMethodName[:18])
         KonsinyeService._schema_hazir = False
+        KonsinyeService._schema_hazir_engine_id = None
         KonsinyeService.ensure_schema()
         with get_session() as s:
             stok = s.scalar(select(StokKarti).where(StokKarti.stok_kodu == "U001"))

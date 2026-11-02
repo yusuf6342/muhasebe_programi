@@ -734,6 +734,9 @@ class HizmetHareketlerDialog(tk.Toplevel):
         self.geometry("860x480")
         self.minsize(720, 400)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         ttk.Label(
             self,
             text="Bu pencere yalnızca hareketleri gösterir; tutar/vergi yeniden hesaplanmaz.",
@@ -803,6 +806,9 @@ class HizmetKartiDialog(tk.Toplevel):
         self.minsize(860, 600)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         mevcut = HizmetService.getir(hizmet_id) if hizmet_id else None
 

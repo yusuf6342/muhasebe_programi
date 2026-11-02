@@ -286,13 +286,25 @@ def takvim_butonu(parent, entry, on_select=None, *, text="Takvim", width=8):
 
 
 def takvim_entry_bagla(entry, on_select=None):
-    """Tarih alanına tek tık → yakında takvim; Esc iptal; klavye yazımı korunur."""
+    """Tarih alanına tek tık → yakında takvim; Esc iptal; klavye yazımı korunur.
+
+    Programatik doldurma veya takvimden dönen odak yeniden açmaz; yalnız Button-1.
+    Aynı alan için tek takvim; zaten açıksa yenisini açmaz (takvim_ac).
+    """
 
     def _tikla(_event=None):
+        global _acik_takvim
         try:
             top = entry.winfo_toplevel()
         except tk.TclError:
             return
+        # Zaten bu entry için açıksa tekrar after_idle tetikleme
+        if _acik_takvim is not None:
+            try:
+                if _acik_takvim.winfo_exists() and getattr(_acik_takvim, "entry", None) is entry:
+                    return
+            except tk.TclError:
+                pass
         # break yok: imleç alana gelsin, Esc sonrası yazılabilir kalsın
         top.after_idle(lambda: takvim_ac(top, entry, on_select=on_select))
 
@@ -300,14 +312,29 @@ def takvim_entry_bagla(entry, on_select=None):
     return entry
 
 
-def tarih_alani(parent, satir, baslik, alan, deger, girdiler, on_select=None, sutun=0, genislik=28):
-    """Label + tarih entry + Takvim butonu."""
+def tarih_alani(
+    parent,
+    satir,
+    baslik,
+    alan,
+    deger,
+    girdiler,
+    on_select=None,
+    sutun=0,
+    genislik=28,
+    *,
+    takvim_dugmesi: bool = True,
+):
+    """Label + tarih entry; isteğe bağlı Takvim butonu (varsayılan açık — eski çağrılar)."""
     ttk.Label(parent, text=baslik).grid(row=satir, column=sutun, padx=8, pady=5, sticky="w")
     cerceve = ttk.Frame(parent)
     cerceve.grid(row=satir, column=sutun + 1, padx=8, pady=5, sticky="ew")
     entry = ttk.Entry(cerceve, width=genislik)
     entry.pack(side="left", fill="x", expand=True)
     entry.insert(0, deger)
-    takvim_butonu(cerceve, entry, on_select=on_select)
+    if takvim_dugmesi:
+        takvim_butonu(cerceve, entry, on_select=on_select)
+    else:
+        takvim_entry_bagla(entry, on_select=on_select)
     girdiler[alan] = entry
     return entry

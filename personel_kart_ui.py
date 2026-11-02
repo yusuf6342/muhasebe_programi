@@ -26,7 +26,9 @@ class PersonelKartDialog(tk.Toplevel):
         self.geometry("980x700")
         self.minsize(900, 620)
         self.configure(bg=ACIK_BG)
-        self.transient(app)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._foto_pil = None
         self._foto_tk = None
         self._foto_bekleyen = None

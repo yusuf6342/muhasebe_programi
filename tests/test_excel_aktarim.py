@@ -75,9 +75,12 @@ class ExcelAktarimTest(unittest.TestCase):
             yol = Path(tmp) / "musteri.xlsx"
             ImportTemplateService.olustur(tip, yol)
             self.assertTrue(yol.is_file())
-            okuma = ExcelReaderService.oku(yol)
+            # Veriler: yalnız başlık; örnek satırlar Örnekler sayfasında
+            okuma = ExcelReaderService.oku(yol, sayfa="Veriler")
             self.assertTrue(any("nvan" in b.casefold() for b in okuma.basliklar))
-            self.assertGreaterEqual(len(okuma.satirlar), 1)
+            self.assertEqual(len(okuma.satirlar), 0)
+            ornek = ExcelReaderService.oku(yol, sayfa="Örnekler")
+            self.assertGreaterEqual(len(ornek.satirlar), 1)
             esleme = ColumnMappingService.otomatik_esle(tip, okuma.basliklar)
             self.assertIn("unvan", esleme.esleme.values())
 

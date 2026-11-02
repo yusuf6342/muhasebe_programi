@@ -33,6 +33,9 @@ class BankaAltHesapDetayDialog(tk.Toplevel):
         self.geometry("1250x740")
         self.minsize(1000, 600)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.kart = FinansService.banka_karti_getir(kart_id)
         if not self.kart:
             self.destroy()

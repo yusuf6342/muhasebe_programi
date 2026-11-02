@@ -116,8 +116,10 @@ class HizliStokKartiDialog(tk.Toplevel):
         self.result = None
         self.title("Hızlı Stok Kartı")
         self.geometry("520x560")
-        self.resizable(False, True)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         # grab_set yok — fatura arka planda kalsın; kontrollü modal benzeri
         try:
             self.lift()

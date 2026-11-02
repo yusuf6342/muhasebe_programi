@@ -112,6 +112,22 @@ class MukerrerTedarikciFaturaHatasi(ValueError):
 
 class AlisFaturasiService:
     @staticmethod
+    def _schema_hazirla() -> None:
+        """Alış satır şeması (konsinye kolonu vb.) — eksik ALTER sessiz uygulanır."""
+        try:
+            from database.konsinye_service import KonsinyeService
+
+            KonsinyeService.ensure_schema()
+        except Exception:
+            pass
+        try:
+            from database.database import alis_irsaliye_schemasini_guncelle
+
+            alis_irsaliye_schemasini_guncelle()
+        except Exception:
+            pass
+
+    @staticmethod
     def mukerrer_tedarikci_faturasi(session, cari_id, tedarikci_fatura_no, haric_id=None):
         """Aynı tedarikçinin aynı fatura numaralı iptal edilmemiş kaydı (firma ayrı veritabanındadır)."""
         no = (tedarikci_fatura_no or "").strip()
@@ -147,6 +163,7 @@ class AlisFaturasiService:
         urun_kodu = (urun_kodu or "").strip()
         if not urun_kodu:
             return []
+        AlisFaturasiService._schema_hazirla()
         with get_session() as session:
             satirlar = session.scalars(
                 select(AlisFaturasiSatiri)
@@ -182,6 +199,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def listele() -> list[dict[str, Any]]:
+        AlisFaturasiService._schema_hazirla()
         with get_session() as session:
             faturalar = session.scalars(
                 select(AlisFaturasi)
@@ -377,6 +395,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def getir(fatura_id):
+        AlisFaturasiService._schema_hazirla()
         with get_session() as session:
             return session.scalar(
                 select(AlisFaturasi)
@@ -402,16 +421,21 @@ class AlisFaturasiService:
             )
 
     @staticmethod
-    def acik_irsaliyeler():
+    def acik_irsaliyeler(cari_id: int | None = None):
         with get_session() as session:
-            return list(
-                session.scalars(
-                    select(AlisIrsaliyesi)
-                    .where(AlisIrsaliyesi.durum.in_(("AÇIK", "KISMİ FATURALANDI")))
-                    .options(selectinload(AlisIrsaliyesi.cari), selectinload(AlisIrsaliyesi.satirlar))
-                    .order_by(AlisIrsaliyesi.id.desc())
-                ).all()
+            q = (
+                select(AlisIrsaliyesi)
+                .where(AlisIrsaliyesi.durum.in_(("AÇIK", "KISMİ FATURALANDI")))
+                .options(
+                    selectinload(AlisIrsaliyesi.cari),
+                    selectinload(AlisIrsaliyesi.satirlar),
+                    selectinload(AlisIrsaliyesi.siparis),
+                )
+                .order_by(AlisIrsaliyesi.id.desc())
             )
+            if cari_id is not None:
+                q = q.where(AlisIrsaliyesi.cari_id == int(cari_id))
+            return list(session.scalars(q).all())
 
     @staticmethod
     def _net_birim_maliyet(birim_fiyat: Decimal, iskonto_orani: Decimal, iskonto2=0, iskonto3=0) -> Decimal:
@@ -424,6 +448,7 @@ class AlisFaturasiService:
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None):
+        AlisFaturasiService._schema_hazirla()
         yazma_zorunlu("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")
         tarih, vade = veriler["fatura_tarihi"], veriler["vade_tarihi"]
         if tarih > date.today():
@@ -1169,12 +1194,15 @@ class AlisFaturasiService:
         """ARAY000001 formatında artan alış fatura numarası."""
         onek = "ARAY"
         with get_session() as session:
-            numaralar = session.scalars(
-                select(AlisFaturasi.fatura_no).where(AlisFaturasi.fatura_no.like(f"{onek}%"))
-            ).all()
+            # Sabit uzunluklu ARAY###### — max(string) = max(sıra); tüm satırları çekme
+            son = session.scalar(
+                select(func.max(AlisFaturasi.fatura_no)).where(
+                    AlisFaturasi.fatura_no.like(f"{onek}%")
+                )
+            )
             max_sira = 0
-            for no in numaralar:
-                kuyruk = str(no)[len(onek):]
+            if son:
+                kuyruk = str(son)[len(onek) :]
                 if kuyruk.isdigit():
-                    max_sira = max(max_sira, int(kuyruk))
+                    max_sira = int(kuyruk)
             return f"{onek}{max_sira + 1:06d}"

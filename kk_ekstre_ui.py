@@ -123,6 +123,9 @@ class KkEkstreDetayDialog(tk.Toplevel):
         self.transient(parent)
         try:
             self.grab_set()
+            from ui_pencere import pencere_os_krom_ac
+
+            pencere_os_krom_ac(self)
         except tk.TclError:
             pass
 
@@ -385,6 +388,9 @@ class KkEkstreOdemeDialog(tk.Toplevel):
         self.transient(parent)
         try:
             self.grab_set()
+            from ui_pencere import pencere_os_krom_ac
+
+            pencere_os_krom_ac(self)
         except tk.TclError:
             pass
 

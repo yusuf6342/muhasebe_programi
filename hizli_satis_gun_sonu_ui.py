@@ -90,6 +90,9 @@ class HizliSatisGunSonuDialog(tk.Toplevel):
         self.bind("<F5>", lambda _e: self._yenile())
         try:
             self.grab_set()
+            from ui_pencere import pencere_os_krom_ac
+
+            pencere_os_krom_ac(self)
         except tk.TclError:
             pass
         # wait_visibility mainloop olmadan kilitlenir; idle ile yükle/odakla

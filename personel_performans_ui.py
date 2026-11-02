@@ -49,6 +49,9 @@ def _is_formu(app, *, kayit: dict | None, on_ok) -> None:
     dlg.title("İş düzenle" if kayit else "Yeni iş")
     dlg.transient(app)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     dlg.geometry("520x480")
     dlg.minsize(480, 420)
 

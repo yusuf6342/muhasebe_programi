@@ -110,6 +110,9 @@ def proje_yeni_dialog(app, sonra=None) -> None:
     dlg.title("Yeni Proje")
     dlg.transient(app)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     dlg.geometry("480x420")
     frm = ttk.Frame(dlg, padding=16)
     frm.pack(fill="both", expand=True)

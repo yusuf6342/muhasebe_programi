@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — Cin Muhasebe (CinMuhasebe.exe)."""
+"""PyInstaller spec — Cin Muhasebe (CinMuhasebe.exe).
 
+Canlı:  dist/CinMuhasebe
+TEST:   CIN_TEST_BUILD=1 → dist/CinMuhasebe_TEST  (canlı klasörüne yazmaz)
+"""
+
+import os
 import sys
 from pathlib import Path
 
 block_cipher = None
 ROOT = Path(SPECPATH).resolve()
 BRANDING = ROOT / "assets" / "branding"
+# TEST derlemesi ayrı COLLECT klasörü kullanır
+COLLECT_NAME = "CinMuhasebe_TEST" if os.environ.get("CIN_TEST_BUILD", "").strip() in ("1", "true", "True", "yes") else "CinMuhasebe"
 # EXE icon alanı yalnızca .ico kabul eder — PNG kullanma.
 # Öncelik: CinLogo.ico (önerilen), yoksa eski cin_muhasebe.ico
 ICO = BRANDING / "CinLogo.ico"
@@ -322,7 +329,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    name="CinMuhasebe",
+    name=COLLECT_NAME,
     strip=False,
     upx=False,
     upx_exclude=[],

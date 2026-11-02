@@ -574,6 +574,9 @@ class KrediTaksitOdemePenceresi(tk.Toplevel):
         self.geometry("600x760")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         try:
             self.bilgi = BankaKrediService.bekleyen_taksitler()
             self.detay = next(

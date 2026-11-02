@@ -204,9 +204,11 @@ class FirmaDialog(tk.Toplevel):
         self.firma = firma
         self.result = None
         self.title("Firma Düzenle" if firma else "Yeni Firma")
-        self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self.degerler = {}
         alanlar = (
@@ -306,6 +308,9 @@ class PriceSelectionDialog(tk.Toplevel):
         self.geometry("760x300")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.on_select = on_select
         self._son_secim = None
         ttk.Label(self, text=f"Ürün: {product_code}").pack(anchor="w", padx=12, pady=(12, 6))
@@ -452,6 +457,9 @@ class SiparisSatiriDialog(tk.Toplevel):
         self.title("Sipariş Satırı")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.girdiler = {}
         self._son_urun_arama = ""
         for satir, (baslik, alan) in enumerate(self.alanlar):
@@ -558,6 +566,9 @@ class SiparisTahsilatiDialog(tk.Toplevel):
         self.title("Tahsilat")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._odeme_sekilleri = tuple(odeme_sekilleri) if odeme_sekilleri else ODEME_SEKILLERI
         self._max_tutar = None
         if max_tutar is not None:
@@ -704,6 +715,9 @@ class CariTahsilatOdemeDialog(tk.Toplevel):
         self.title("Tahsilat Gir" if tur == "tahsilat" else "Ödeme Gir")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         from satis_tema import font as sfont
         from tutar_bicim import baslik_isim_fontu, tutar_alani
         from ui_pencere import evrak_penceresi_boyutlandir, kaydirilabilir_govde
@@ -891,6 +905,9 @@ class CariVirmanDialog(tk.Toplevel):
         self.title("Yeni Cari Virman Fişi")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.cari_map = {}
         self._olustur()
         for alan, cari_id in (("kaynak", kaynak_id), ("hedef", hedef_id)):
@@ -1093,6 +1110,9 @@ class KkCekimiDialog(tk.Toplevel):
         )
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.musteri_map = {}
         self.tedarikci_map = {}
         self._olustur()
@@ -1356,6 +1376,9 @@ class UrunHareketGecmisiDialog(tk.Toplevel):
         self.minsize(640, 320)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         ttk.Label(
             self,
             text=f"{baslik}  |  Ürün: {urun_kodu}",
@@ -1399,6 +1422,9 @@ class KarlilikAnaliziDialog(tk.Toplevel):
         self.minsize(900, 480)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._onceki_geometri = None
         self._tam_ekran = False
         self._kpi = {}
@@ -1647,8 +1673,10 @@ class SatisSiparisiDialog(tk.Toplevel):
             varsayilan_yukseklik=720,
             maximize=True,
         )
-        self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.satirlar = []
         self.tahsilatlar = []
         self.mevcut_borc = Decimal("0")
@@ -4711,6 +4739,9 @@ class MusteriSecimDialog(tk.Toplevel):
         self.minsize(700, 360)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         try:
             from ui_pencere import popup_ortala
 
@@ -5087,31 +5118,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
     def _fatura_pencere_boyutlandirma_ac(self) -> None:
         """Fatura kartı yeniden boyutlanabilir olsun; büyüt/küçült çalışsın."""
-        try:
-            # transient kaldır → Windows başlığında büyüt/küçült görünür
-            self.wm_transient("")
-        except tk.TclError:
-            try:
-                self.transient(None)
-            except Exception:
-                pass
-        try:
-            self.resizable(True, True)
-        except tk.TclError:
-            pass
-        try:
-            # Çok yüksek minsize yarı ekranda büyütmeyi kilitler — makul taban
-            from ui_pencere import calisma_alani
+        from ui_pencere import pencere_os_krom_ac
 
-            _x, _y, aw, ah = calisma_alani(self)
-            min_w = min(800, max(640, aw // 2))
-            min_h = min(500, max(420, ah // 2))
-            self.minsize(min_w, min_h)
-        except Exception:
-            try:
-                self.minsize(720, 480)
-            except tk.TclError:
-                pass
+        pencere_os_krom_ac(self)
 
     def _fatura_hazirlaniyor_goster(self):
         if getattr(self, "_fatura_hazir_lbl", None):
@@ -14096,6 +14105,9 @@ class SatisIadeFaturasiDialog(SatisFaturasiDialog):
         pencere.title(f"Geçmiş Satışlar · {musteri.unvan} · {kod}")
         pencere.geometry("1180x520")
         pencere.transient(self)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(pencere)
         tk.Label(
             pencere, text=f"{musteri.unvan} — {kod} ürününün onaylı satışları (yeniden eskiye)",
             font=("Segoe UI", 12, "bold"), fg="#0d2b52",
@@ -14542,6 +14554,9 @@ class CariSatisIadeListesiDialog(tk.Toplevel):
         self.minsize(700, 360)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         tk.Label(
             self, text=f"SATIŞ İADE FATURALARI — {unvan}",
             font=("Segoe UI", 13, "bold"), fg="#0d2b52",
@@ -14623,9 +14638,11 @@ class StokGirisiDialog(tk.Toplevel):
         super().__init__(parent)
         self.result = None
         self.title("Stok Girişi")
-        self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         stoklar = StokService.stoklari_ara()
         self.stok_map = {f"{s.stok_kodu} - {s.stok_adi}": s for s in stoklar}
         self.stok = ttk.Combobox(self, values=tuple(self.stok_map), state="readonly", width=38)

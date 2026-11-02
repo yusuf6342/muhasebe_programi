@@ -111,6 +111,9 @@ class LotEtiketYazdirDialog(tk.Toplevel):
         self.title("Lot Etiketlerini Yazdır")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.resizable(True, True)
         self.geometry("820x480")
         self._is: dict[str, Any] | None = None
@@ -343,6 +346,9 @@ class LotEtiketBekleyenPencere(tk.Toplevel):
         self.title("Etiket Bekleyenler")
         self.geometry("720x400")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         cer = ttk.Frame(self, padding=8)
         cer.pack(fill="both", expand=True)
         self.tablo = ttk.Treeview(

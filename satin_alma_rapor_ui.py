@@ -186,6 +186,7 @@ class RaporEkrani:
         self.rapor_btn = tk_buton(butonlar, "Raporla", self.raporla, rol="ara")
         self.rapor_btn.pack(side="left", padx=(0, 6))
         tk_buton(butonlar, "Excel'e Aktar", self.excel_aktar, rol="duzenle").pack(side="left", padx=6)
+        tk_buton(butonlar, "Excel'den Al", self.excel_karsilastir, rol="duzenle").pack(side="left", padx=6)
         tk_buton(butonlar, "PDF'e Aktar", self.pdf_aktar, rol="duzenle").pack(side="left", padx=6)
         tk_buton(butonlar, "Yazdır / Önizle", self.yazdir, rol="yazdir").pack(side="left", padx=6)
         tk_buton(butonlar, "Sütunlar", self.kolon_secici, rol="duzenle").pack(side="left", padx=6)
@@ -1094,12 +1095,116 @@ class RaporEkrani:
             return
         messagebox.showinfo(self.baslik, f"Excel dosyası kaydedildi:\n{yol}", parent=self.app)
 
+    def excel_karsilastir(self) -> None:
+        """Excel'den Al — rapor verisini değiştirmez; karşılaştırma özeti gösterir."""
+        if not _yetki("excel_pdf"):
+            messagebox.showwarning(self.baslik, "Excel/PDF aktarma yetkiniz yok.", parent=self.app)
+            return
+        # İlk görünür tabloyu program tarafı olarak kullan
+        tablo = None
+        program_satirlari: list[dict] = []
+        for t, satirlar in self._aktarim_tablolari():
+            if satirlar:
+                tablo = t
+                program_satirlari = list(satirlar)
+                break
+        if tablo is None:
+            messagebox.showinfo(
+                self.baslik,
+                "Karşılaştırma için önce raporu çalıştırın (program satırı yok).",
+                parent=self.app,
+            )
+            return
+        yol = filedialog.askopenfilename(
+            parent=self.app,
+            filetypes=[("Excel", "*.xlsx;*.xlsm"), ("Tüm dosyalar", "*.*")],
+            title="Karşılaştırılacak Excel dosyasını seçin",
+        )
+        if not yol:
+            return
+        try:
+            from excel_aktarim.karsilastirma import karsilastir
+            from excel_aktarim.reader import ExcelReaderService
+
+            okuma = ExcelReaderService.oku(yol)
+            kolonlar = self.gorunen_kolonlar(tablo)
+            # Başlık → anahtar eşlemesi
+            baslik_map = {k.baslik.strip().casefold(): k.anahtar for k in kolonlar}
+            excel_satirlari = []
+            for ham in okuma.satirlar:
+                kayit = {}
+                for baslik, deger in ham.items():
+                    anahtar = baslik_map.get(str(baslik).strip().casefold())
+                    if anahtar:
+                        kayit[anahtar] = deger
+                if kayit:
+                    excel_satirlari.append(kayit)
+            if not excel_satirlari:
+                messagebox.showwarning(
+                    self.baslik,
+                    "Excel satırları rapor kolonlarıyla eşleşmedi.\n"
+                    "Dosya bu raporun Excel'e Aktar çıktısı olmalı veya aynı başlıkları taşımalıdır.\n"
+                    "Bu işlem rapor verisini veya bakiyeleri değiştirmez.",
+                    parent=self.app,
+                )
+                return
+            # Anahtar: ilk metin kolonları (en fazla 3) + yoksa tüm metin
+            anahtarlar = [k.anahtar for k in kolonlar if k.tip == "metin"][:3]
+            if not anahtarlar:
+                anahtarlar = [kolonlar[0].anahtar]
+            tutar_alani = next((k.anahtar for k in kolonlar if k.tip in ("para", "fiyat")), None)
+            sonuc = karsilastir(
+                program_satirlari,
+                excel_satirlari,
+                anahtar_alanlar=anahtarlar,
+                tutar_alani=tutar_alani,
+            )
+            o = sonuc.ozet()
+            messagebox.showinfo(
+                self.baslik,
+                "Excel karşılaştırma (rapor/bakiye değişmedi)\n\n"
+                f"Eşleşen: {o['eslesen']}\n"
+                f"Yalnız programda: {o['sadece_program']}\n"
+                f"Yalnız Excel'de: {o['sadece_excel']}\n"
+                f"Tutar farklı: {o['tutar_farkli']}\n"
+                f"Belirsiz: {o['belirsiz']}\n\n"
+                f"Anahtar: {', '.join(anahtarlar)}",
+                parent=self.app,
+            )
+        except Exception as hata:  # noqa: BLE001
+            messagebox.showerror(self.baslik, f"Karşılaştırma yapılamadı:\n{hata}", parent=self.app)
+
     def excel_yaz(self, yol: str) -> None:
         from openpyxl import Workbook
         from openpyxl.styles import Font
 
+        from excel_aktarim.writer import SABLON_SURUM
+
         wb = Workbook()
         wb.remove(wb.active)
+        # Aktarım Bilgisi (ortak sözleşme)
+        bilgi = wb.create_sheet("Aktarım Bilgisi", 0)
+        bilgi["A1"] = "Alan"
+        bilgi["B1"] = "Değer"
+        bilgi["A1"].font = Font(bold=True)
+        bilgi["B1"].font = Font(bold=True)
+        kayit_sayisi = sum(len(s) for _t, s in self._aktarim_tablolari())
+        for i, (k, v) in enumerate(
+            [
+                ("Şablon Sürümü", SABLON_SURUM),
+                ("Kullanım Amacı", "rapor"),
+                ("Şablon Türü", self.baslik),
+                ("Filtreler", self.filtre_ozeti()),
+                ("Hazırlama Zamanı", datetime.now().strftime("%d.%m.%Y %H:%M:%S")),
+                ("Kayıt Sayısı", kayit_sayisi),
+            ],
+            start=2,
+        ):
+            bilgi.cell(i, 1, k)
+            bilgi.cell(i, 2, v)
+        bilgi.column_dimensions["A"].width = 22
+        bilgi.column_dimensions["B"].width = 60
+
         kullanilan: set[str] = set()
         for t, satirlar in self._aktarim_tablolari():
             ad = "".join("-" if c in '\\/*?:[]' else c for c in t.baslik).strip("' ")[:31] or "Sayfa"
@@ -1127,6 +1232,12 @@ class RaporEkrani:
                         v = str(v)
                     satir.append(v)
                 ws.append(satir)
+            # Veri başlık satırı (4) için filtre
+            if kolonlar and satirlar:
+                from openpyxl.utils import get_column_letter
+
+                ws.auto_filter.ref = f"A4:{get_column_letter(len(kolonlar))}{3 + len(satirlar)}"
+                ws.freeze_panes = "A5"
             for i, k in enumerate(kolonlar, 1):
                 ws.column_dimensions[ws.cell(row=4, column=i).column_letter].width = max(10, k.genislik // 7)
             if len(kolonlar) > YATAY_KOLON_SINIRI:

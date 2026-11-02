@@ -383,6 +383,9 @@ class YillikDevirSihirbazi(tk.Toplevel):
         self.title("Yıllık Devir Sihirbazı")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("960x640")
         self.minsize(800, 520)
         self.app = parent

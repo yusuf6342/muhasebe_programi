@@ -1371,6 +1371,9 @@ class EvrakDialog(tk.Toplevel):
         self.minsize(640, 520)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         # Cari listesi (Alınan→müşteri, Verilen→tedarikçi; yön değişince yenilenir)
         self.cari_map: dict[str, int] = {}
@@ -1923,6 +1926,9 @@ class _IslemDialogBase(tk.Toplevel):
         self.minsize(420, 260)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         dis = ttk.Frame(self, padding=12)
         dis.pack(fill="both", expand=True)
@@ -2333,6 +2339,9 @@ class EvrakHareketlerDialog(tk.Toplevel):
         self.geometry("760x380")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self.baslik = ttk.Label(self, font=("Segoe UI", 10, "bold"), padding=10)
         self.baslik.pack(anchor="w")

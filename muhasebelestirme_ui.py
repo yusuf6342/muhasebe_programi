@@ -164,6 +164,9 @@ class FinansIslemAyarlariDialog(tk.Toplevel):
         self.title("Finans İşlem Ayarları")
         self.geometry("1000x720")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         try:
             self.veri = fa.ekran_verisi()
         except Exception as hata:
@@ -646,6 +649,9 @@ class GecmisFinansDialog(tk.Toplevel):
         self.title("Geçmiş Finans Evrakları")
         self.geometry("1100x560")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.on_ekle = on_ekle
         self.veri: dict = {}
         ust = ttk.Frame(self, padding=8)

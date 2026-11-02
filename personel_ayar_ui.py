@@ -149,6 +149,9 @@ def _mevzuat_formu(parent, parametre, *, on_kaydet) -> None:
     dlg.title(f"Mevzuat — {_para_turkce_ad(parametre.kod)}")
     dlg.transient(parent)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     dlg.minsize(520, 360)
 
     govde = ttk.Frame(dlg, padding=12)
@@ -420,6 +423,9 @@ def _belge_turu_formu(parent, tur, *, on_kaydet) -> None:
     dlg.title(f"Belge türü — {tur.ad}")
     dlg.transient(parent)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     fr = ttk.Frame(dlg, padding=12)
     fr.pack(fill="both", expand=True)
 

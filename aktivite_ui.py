@@ -412,6 +412,9 @@ def _yeni_dialog(app, yenile_cb) -> None:
     dlg.title("Yeni aktivite")
     dlg.transient(app)
     dlg.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(dlg)
     frm = ttk.Frame(dlg, padding=12)
     frm.pack(fill="both", expand=True)
 

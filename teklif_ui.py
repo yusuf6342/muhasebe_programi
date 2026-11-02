@@ -338,19 +338,10 @@ class TeklifDialog(tk.Toplevel):
             maximize=True,
         )
         self.configure(bg=ACIK_GRI)
-        # transient yarı ekranda büyüt/küçültü kapatır — OS + araç çubuğu kontrolleri için kaldır
-        try:
-            self.wm_transient("")
-        except tk.TclError:
-            try:
-                self.transient(None)
-            except Exception:
-                pass
-        try:
-            self.resizable(True, True)
-        except tk.TclError:
-            pass
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._toolbar_kur()
         self._govde_kur()
         try:
@@ -443,40 +434,19 @@ class TeklifDialog(tk.Toplevel):
 
     def _teklif_pencere_asagi(self, _event=None):
         """Görev çubuğuna indir."""
-        try:
-            self.iconify()
-        except tk.TclError:
-            pass
+        from ui_pencere import pencere_asagi
+
+        pencere_asagi(self)
 
     def _teklif_pencere_buyut_toggle(self, _event=None):
         """Tam ekran (zoomed) ↔ önceki boyut."""
-        try:
-            durum = str(self.state() or "")
-        except tk.TclError:
-            durum = ""
-        btn = getattr(self, "_btn_pencere_buyut", None)
-        try:
-            if durum == "zoomed":
-                self.state("normal")
-                geo = getattr(self, "_teklif_onceki_geometry", None)
-                if geo:
-                    try:
-                        self.geometry(geo)
-                    except tk.TclError:
-                        pass
-                if btn is not None:
-                    btn.configure(text="□")
-            else:
-                try:
-                    self._teklif_onceki_geometry = self.geometry()
-                except tk.TclError:
-                    self._teklif_onceki_geometry = None
-                self.state("zoomed")
-                if btn is not None:
-                    btn.configure(text="❐")
-        except tk.TclError:
-            pass
-        return "break"
+        from ui_pencere import pencere_buyut_toggle
+
+        return pencere_buyut_toggle(
+            self,
+            onceki_attr="_teklif_onceki_geometry",
+            btn=getattr(self, "_btn_pencere_buyut", None),
+        )
 
     def _btn(self, parent, text, cmd, bg, fg=BEYAZ):
         b = tk.Button(

@@ -52,6 +52,9 @@ class HizmetSecDialog(tk.Toplevel):
         self.geometry("640x420")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.Frame(self, padding=8)
         ust.pack(fill="x")
@@ -134,6 +137,9 @@ class HizmetOdemeDialog(tk.Toplevel):
         self.geometry("420x240")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.girdiler = {}
         frame = ttk.Frame(self, padding=12)
         frame.pack(fill="both", expand=True)
@@ -228,6 +234,9 @@ class HizmetFaturaDialog(tk.Toplevel):
         self.minsize(860, 560)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         cariler = list(HizmetFaturasiService.aktif_cariler(self.kart_turu))
         if self.fatura and self.fatura.cari and self.fatura.cari not in cariler:

@@ -117,6 +117,9 @@ class UrunSecDialog(tk.Toplevel):
         self.minsize(720, 280)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         try:
             from ui_pencere import popup_ortala
 

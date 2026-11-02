@@ -34,6 +34,9 @@ class DepoTransferFisiDialog(tk.Toplevel):
         self.minsize(860, 520)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.LabelFrame(self, text="Fiş Bilgileri", padding=10)
         ust.pack(fill="x", padx=12, pady=10)

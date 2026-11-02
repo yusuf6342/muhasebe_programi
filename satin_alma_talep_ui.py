@@ -108,7 +108,9 @@ class SatinAlmaTalepDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
         self.title(TALEP_BASLIGI)
         self.configure(bg=ACIK_BG)
         evrak_penceresi_boyutlandir(self, genislik=1340, yukseklik=820, min_genislik=900, min_yukseklik=560)
-        self.transient(parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         # --- sarı evrak araç çubuğu (satın alma evrak düzeni)
         refs = ftema.ust_toolbar(self, baslik=TALEP_BASLIGI, fatura_no="Yeni", musteri_kisa="", durum="TASLAK")
@@ -1045,6 +1047,9 @@ class EklerDialog(tk.Toplevel):
         self.title("Talep ekleri")
         self.geometry("620x360")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         tk.Label(self, text=f"İzin verilen türler: {', '.join(sorted(EK_UZANTILARI))} — en fazla "
                             f"{EK_AZAMI_BAYT // 1024 // 1024} MB. Dosyanın kopyası firma klasöründe saklanır.",
                  fg=IKINCIL, anchor="w", justify="left", wraplength=590).pack(fill="x", padx=8, pady=(8, 0))
@@ -1114,6 +1119,9 @@ class BagliBelgelerDialog(tk.Toplevel):
         self.title(f"Bağlı belgeler — {talep_no}")
         self.geometry("720x380")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         tk.Label(self, text="Talepten oluşan sipariş ve ona bağlı irsaliye, fatura ve iade belgeleri. "
                             "Teslim miktarı irsaliye ve fatura arasında bir kez sayılır.",
                  fg=IKINCIL, anchor="w", wraplength=690, justify="left").pack(fill="x", padx=8, pady=(8, 0))
@@ -1153,6 +1161,9 @@ class SiparisTalepleriDialog(tk.Toplevel):
         self.title(f"Bağlı talepler — {siparis_no}")
         self.geometry("760x340")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.kayitlar = SatinAlmaTalepService.siparis_talepleri(int(siparis_id))
         self.tablo = ttk.Treeview(self, columns=("no", "tarih", "isteyen", "kod", "miktar", "birim"),
                                   show="headings", selectmode="browse")
@@ -1219,6 +1230,9 @@ class TalepAktarDialog(tk.Toplevel):
         self.configure(bg=ACIK_BG)
         self.geometry("1180x520")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.talep_id = talep_id
         self.satirlar = [s for s in SatinAlmaTalepService.aktarilabilir_satirlar()
                          if talep_id is None or s["talep_id"] == int(talep_id)]
@@ -1536,6 +1550,9 @@ class UrunBazliRaporDialog(tk.Toplevel):
         self.title("Ürün bazlı talep raporu")
         self.geometry("1320x540")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         ust = tk.Frame(self)
         ust.pack(fill="x", padx=8, pady=(8, 0))
         self.bas = self._alan(ust, "Başlangıç", date(date.today().year, 1, 1).strftime("%d.%m.%Y"))

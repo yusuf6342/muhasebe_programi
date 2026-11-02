@@ -373,6 +373,9 @@ class SabitGiderOdemeDialog(tk.Toplevel):
         self.configure(bg=ACIK_BG)
         self.geometry("560x430")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         ust = tk.Frame(self, bg=LACIVERT)
         ust.pack(fill="x")
         tk.Label(ust, text=f"{_buyuk(kalem['tur'])} — {kalem['hesap']}", bg=LACIVERT, fg=BEYAZ,

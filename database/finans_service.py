@@ -3725,7 +3725,9 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         if (hizmet.hizmet_turu or "").upper() != "GIDER":
             raise ValueError("Yalnızca gider hizmet kartı seçilebilir.")
 
-        belge_no = FinansService._finans_belge_no(session, "GDF")
+        belge_no = (veriler.get("belge_no") or "").strip() or FinansService._finans_belge_no(
+            session, "GDF"
+        )
         acik = aciklama or f"{hizmet.hizmet_kodu} — {hizmet.hizmet_adi}"
         if kart_hesabi is None:
             FinansService.cikis_kontrol(hesap, tutar, kart=hesap.banka_karti)

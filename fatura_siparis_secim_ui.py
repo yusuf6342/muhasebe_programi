@@ -35,19 +35,23 @@ KOLONLAR = (
 
 
 class FaturaSiparisSecimDialog(tk.Toplevel):
-    """Seçili müşterinin açık / kısmen faturalanmış satış siparişleri."""
+    """Seçili carinin açık / kısmen faturalanmış siparişleri (yon: satis|alis)."""
 
-    def __init__(self, parent, cari):
+    def __init__(self, parent, cari, *, yon: str = "satis"):
         super().__init__(parent)
         if cari is None or getattr(cari, "id", None) is None:
             raise ValueError("Cari gerekli.")
         self.cari = cari
+        self.yon = (yon or "satis").strip().lower()
+        if self.yon not in ("satis", "alis"):
+            self.yon = "satis"
         self.result = None  # siparis_id
         self._kayitlar: list[dict] = []
         self._iid_map: dict[str, dict] = {}
         self._sirala_kolon = "tarih"
         self._sirala_ters = True
 
+        yon_baslik = "Alış" if self.yon == "alis" else "Satış"
         self.title(f"Siparişten Getir — {cari.cari_kodu} {cari.unvan}")
         self.geometry("920x480")
         self.minsize(760, 360)
@@ -56,9 +60,9 @@ class FaturaSiparisSecimDialog(tk.Toplevel):
 
         ust = ttk.Frame(self, padding=(12, 10, 12, 6))
         ust.pack(fill="x")
-        ttk.Label(ust, text="Bekleyen Satış Siparişleri", font=("Segoe UI", 12, "bold")).pack(
-            anchor="w"
-        )
+        ttk.Label(
+            ust, text=f"Bekleyen {yon_baslik} Siparişleri", font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w")
         ttk.Label(
             ust,
             text=f"{cari.cari_kodu} — {cari.unvan}",
@@ -115,7 +119,7 @@ class FaturaSiparisSecimDialog(tk.Toplevel):
         try:
             data = cari_bekleyen_siparisleri(
                 int(self.cari.id),
-                yon="satis",
+                yon=self.yon,
                 dahil_tamamlanan=False,
                 dahil_iptal=False,
                 ara=None,
@@ -210,8 +214,8 @@ class FaturaSiparisSecimDialog(tk.Toplevel):
         self.destroy()
 
 
-def fatura_icin_siparis_sec(parent, cari) -> int | None:
+def fatura_icin_siparis_sec(parent, cari, *, yon: str = "satis") -> int | None:
     """Modal seçim; seçilen sipariş id veya None."""
-    dlg = FaturaSiparisSecimDialog(parent, cari)
+    dlg = FaturaSiparisSecimDialog(parent, cari, yon=yon)
     parent.wait_window(dlg)
     return dlg.result

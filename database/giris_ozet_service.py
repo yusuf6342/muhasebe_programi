@@ -1125,6 +1125,19 @@ def _sabit_donem_uret(d: date, bugun: date) -> None:
         pass
 
 
+def _kullanici_hata_mesaji(hata: BaseException) -> str:
+    """Kart / durum satırı için kısa mesaj; SQL ve traceback kullanıcıya basılmaz."""
+    metin = (str(hata) or hata.__class__.__name__).strip()
+    dusuk = metin.lower()
+    if "no such column" in dusuk or "no such table" in dusuk:
+        return "Veritabanı güncellemesi gerekli"
+    if "operationalerror" in hata.__class__.__name__.lower() or "operationalerror" in dusuk:
+        return "Veri yüklenemedi"
+    if "SQL:" in metin or "SELECT " in metin.upper() or len(metin) > 100:
+        return "Veri yüklenemedi"
+    return metin[:80]
+
+
 def _guvenli(ad: str, fn, sureler: dict, *, yetki: bool = True):
     if not yetki:
         return _bolum(YETKISIZ, mesaj="Bu bölümü görüntüleme yetkiniz yok.")
@@ -1135,7 +1148,7 @@ def _guvenli(ad: str, fn, sureler: dict, *, yetki: bool = True):
         import logging
 
         logging.getLogger("giris_ozet").exception("%s hesaplanamadı", ad)
-        return _bolum(HATA, mesaj=str(hata) or hata.__class__.__name__)
+        return _bolum(HATA, mesaj=_kullanici_hata_mesaji(hata))
     finally:
         sureler[ad] = round((time.perf_counter() - t0) * 1000)
 
@@ -1146,6 +1159,15 @@ def hesapla(tarih: date | None = None, sube_id: int | None = None, *, bugun: dat
     d = tarih or bugun
     if d > bugun:
         raise ValueError("Rapor tarihi gelecekte olamaz.")
+    # Satış satırı ORM yüklemesinden önce konsinye kolonu hazır olsun
+    try:
+        from database.konsinye_service import KonsinyeService
+
+        KonsinyeService.ensure_schema()
+    except Exception:
+        import logging
+
+        logging.getLogger("giris_ozet").exception("konsinye şema (giriş özeti öncesi)")
     _sabit_donem_uret(d, bugun)
     y = yetkiler()
     sureler: dict[str, int] = {}

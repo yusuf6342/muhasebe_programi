@@ -63,27 +63,36 @@ def _kullanici() -> str | None:
 
 
 class KonsinyeService:
-    _schema_hazir = False
+    # Engine kimliği — firma DB değişince yeniden çalışsın (eski True bayrağı başka firmayı atlamasın)
+    _schema_hazir_engine_id: int | None = None
+    _schema_hazir = False  # testler / geriye uyumluluk; asıl kapı engine id
 
     @staticmethod
     def ensure_schema() -> None:
-        if KonsinyeService._schema_hazir:
+        """Konsinye tabloları + satış/alış satırına ``konsinye_teslim_satiri_id`` (NULL izinli INTEGER).
+
+        Tekrar güvenli: kolon varsa ALTER yok. Aktif ``engine`` değişince yeniden uygulanır.
+        Başarı bayrağı yalnız kritik kolonlar doğrulandıktan sonra yazılır.
+        """
+        from database import database as dbmod
+
+        eng = getattr(dbmod, "engine", None) or engine
+        if eng is None:
             return
-        if engine is None:
+        eid = id(eng)
+        if KonsinyeService._schema_hazir_engine_id == eid:
             return
         import database.models.konsinye  # noqa: F401
         from sqlalchemy import inspect, text
 
         Base.metadata.create_all(
-            bind=engine,
+            bind=eng,
             tables=[
                 KonsinyeTeslim.__table__,
                 KonsinyeTeslimSatiri.__table__,
                 KonsinyeHareket.__table__,
             ],
         )
-        # Sürümlü / tekrarlanabilir kolon göçü
-        insp = inspect(engine)
         ekler = {
             "konsinye_teslim_satirlari": {
                 "fifo_birim_maliyet": "NUMERIC(18, 4) DEFAULT 0 NOT NULL",
@@ -106,7 +115,9 @@ class KonsinyeService:
                 "konsinye_teslim_satiri_id": "INTEGER",
             },
         }
-        with engine.begin() as conn:
+        eklendi = False
+        insp = inspect(eng)
+        with eng.begin() as conn:
             for tablo, kolonlar in ekler.items():
                 if not insp.has_table(tablo):
                     continue
@@ -114,7 +125,32 @@ class KonsinyeService:
                 for ad, tip in kolonlar.items():
                     if ad not in mevcut:
                         conn.execute(text(f'ALTER TABLE "{tablo}" ADD COLUMN "{ad}" {tip}'))
+                        eklendi = True
+        # Doğrulama — yarım kaldıysa başarı sayma
+        insp2 = inspect(eng)
+        for tablo, kritik in (
+            ("satis_faturasi_satirlari", "konsinye_teslim_satiri_id"),
+            ("alis_faturasi_satirlari", "konsinye_teslim_satiri_id"),
+        ):
+            if not insp2.has_table(tablo):
+                continue
+            mevcut = {c["name"] for c in insp2.get_columns(tablo)}
+            if kritik not in mevcut:
+                import logging
+
+                logging.getLogger(__name__).error(
+                    "Konsinye şema: %s.%s eklenemedi", tablo, kritik
+                )
+                return
+        KonsinyeService._schema_hazir_engine_id = eid
         KonsinyeService._schema_hazir = True
+        if eklendi:
+            try:
+                from database import giris_ozet_service as go
+
+                go.onbellegi_temizle()
+            except Exception:
+                pass
 
     @staticmethod
     def _belge_no(session, yon: str) -> str:

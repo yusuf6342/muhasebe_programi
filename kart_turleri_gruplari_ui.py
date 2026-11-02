@@ -256,6 +256,9 @@ def _tanim_form(app, *, baslik: str, alanlar, kaydet_fn: Callable) -> None:
     win.geometry("420x360")
     win.transient(app)
     win.grab_set()
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(win)
     vars_: dict[str, tk.StringVar] = {}
     for key, label, val in alanlar:
         fr = ttk.Frame(win)

@@ -393,6 +393,9 @@ class HizliSatisBasariDialog(tk.Toplevel):
         self.minsize(380, 240)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         kalan = sonuc.get("kalan") or Decimal("0")
         ekstra = ""

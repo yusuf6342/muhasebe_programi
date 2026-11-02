@@ -184,7 +184,9 @@ class PlanFormu(tk.Toplevel):
         self.title("Sabit gider planı" + (" — düzenle" if plan else " — yeni"))
         self.configure(bg=ACIK_BG)
         self.transient(parent)
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._plan = plan
         self._on_kaydet = on_kaydet
         _baslik(self, "SABİT GİDER PLANI")
@@ -317,6 +319,9 @@ class DonemlerDialog(tk.Toplevel):
         self.configure(bg=ACIK_BG)
         self.geometry("860x560")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self._plan = plan
         self._on_degisti = on_degisti
         self._donemler: dict[str, dict] = {}

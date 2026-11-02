@@ -622,8 +622,10 @@ class _TeslimDialog(tk.Toplevel):
         self.title("Yeni Konsinye Teslim" if yon == YON_VERILEN else "Yeni Konsinye Girişi")
         self.geometry("920x560")
         self.minsize(800, 480)
-        self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         ust = ttk.LabelFrame(self, text="Belge", padding=10)
         ust.pack(fill="x", padx=12, pady=10)

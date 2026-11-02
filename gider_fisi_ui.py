@@ -47,6 +47,9 @@ class GiderFisiDialog(tk.Toplevel):
         self.minsize(560, 400)
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         hesaplar = FinansService.gider_fisi_odeme_hesaplari()
         self.hesap_map = {_hesap_etiket(h, bakiye_goster=True): h for h in hesaplar}

@@ -1213,6 +1213,9 @@ class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
         self.geometry("980x560")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         from database.alis_siparisi_service import AlisSiparisiService
         from database.stok_service import StokService
         from database.tedarikci_teklif_service import TedarikciTeklifService
@@ -1388,6 +1391,9 @@ class TeklifKarsilastirmaDialog(tk.Toplevel):
         self.geometry("900x480")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         from database.tedarikci_teklif_service import TedarikciTeklifService
 
         self.svc = TedarikciTeklifService
@@ -1478,6 +1484,9 @@ class TedarikciFiyatDialog(tk.Toplevel):
         self.geometry("520x320")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         from database.alis_siparisi_service import AlisSiparisiService
         from database.stok_service import StokService
         from database.tedarikci_fiyat_service import TedarikciFiyatService

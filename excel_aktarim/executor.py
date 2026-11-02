@@ -16,7 +16,8 @@ from excel_aktarim.validation import DogrulamaRaporu, SatirSonuc
 
 
 def _batch_kodu() -> str:
-    return datetime.now().strftime("IMP-%Y%m%d-%H%M%S")
+    # Mikrosaniye: aynı saniyede ardışık batch çakışmasın
+    return datetime.now().strftime("IMP-%Y%m%d-%H%M%S-%f")
 
 
 class ImportAuditService:

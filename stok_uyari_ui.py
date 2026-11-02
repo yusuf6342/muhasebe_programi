@@ -874,6 +874,9 @@ def _liste_penceresi(parent, baslik, kolonlar, satirlar, yukseklik: int = 16) ->
     w.title(baslik)
     w.geometry("980x560")
     w.transient(parent)
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(w)
     if not satirlar:
         ttk.Label(w, text="Kayıt yok.").pack(anchor="w", padx=10, pady=(8, 0))
     _tablo_ekle(w, kolonlar, satirlar, yukseklik)
@@ -914,7 +917,9 @@ class AyarDialog(tk.Toplevel):
         self.title(f"Stok uyarı ayarı — {baslik}")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.v_kapsam = tk.StringVar(value="depo" if depo_id else "urun")
         ust = ttk.Frame(self, padding=12)
         ust.pack(fill="x")
@@ -1018,7 +1023,9 @@ class ErteleDialog(tk.Toplevel):
         self.title("Ertele")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both")
         ttk.Label(f, text=f"{adet} ihtiyaç kaydı ertelenecek. Süre bitince liste ve bildirimde yeniden görünür.\n"
@@ -1061,7 +1068,9 @@ class GenelAyarDialog(tk.Toplevel):
         self.title("Stok uyarıları — firma varsayılanları")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         g = StokUyariService.genel_ayarlar()
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both")
@@ -1115,6 +1124,9 @@ class SiparisDialog(tk.Toplevel):
         self.title("Satın alma siparişi hazırla (taslak)")
         self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.geometry("1280x640")
         self.minsize(1100, 520)
         self.resizable(True, True)

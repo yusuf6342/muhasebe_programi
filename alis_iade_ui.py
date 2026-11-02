@@ -107,8 +107,10 @@ class KaynaksizUyariDialog(tk.Toplevel):
         self.durum = durum
         self.title("Kaynak alış bulunamadı")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.configure(bg=BEYAZ)
-        self.resizable(True, False)
         ic = tk.Frame(self, bg=BEYAZ, padx=14, pady=12)
         ic.pack(fill="both", expand=True)
         tk.Label(ic, text=f"{urun_kodu} — {urun_adi}", bg=BEYAZ, fg=LACIVERT,
@@ -188,6 +190,9 @@ class KaynakSecDialog(tk.Toplevel):
         self.miktarlar: dict[int, Decimal] = {}
         self.title(f"Kaynak alış seç — {urun_kodu}")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.configure(bg=BEYAZ)
         _ekrana_sigdir(self, 980, 420, 640, 320)
         ic = tk.Frame(self, bg=BEYAZ, padx=10, pady=8)
@@ -267,6 +272,9 @@ class SatirDuzenleDialog(tk.Toplevel):
         self.result = None
         self.title(f"Satır — {satir.get('urun_kodu')}")
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.configure(bg=BEYAZ)
         ic = tk.Frame(self, bg=BEYAZ, padx=12, pady=10)
         ic.pack(fill="both", expand=True)
@@ -320,6 +328,9 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         self.configure(bg=ACIK_BG)
         self.title(BASLIK)
         _ekrana_sigdir(self, 1320, 820)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.iade = S.getir(iade_id) if iade_id else (S.getir(iade.id) if iade is not None else None)
         self.satirlar: list[dict] = []
         self._kirli = False
@@ -1341,6 +1352,9 @@ def _liste_sec(parent, baslik: str, etiketler: list[str]) -> int | None:
     pencere = tk.Toplevel(parent)
     pencere.title(baslik)
     pencere.transient(parent)
+    from ui_pencere import pencere_os_krom_ac
+
+    pencere_os_krom_ac(pencere)
     _ekrana_sigdir(pencere, 620, 380, 420, 260)
     sonuc: dict[str, int | None] = {"i": None}
     arama = ttk.Entry(pencere)
@@ -1580,6 +1594,9 @@ class BagliIadelerDialog(tk.Toplevel):
         self.title(f"Bağlı İadeler — {fatura_no}".rstrip(" —"))
         self.configure(bg=ACIK_BG)
         self.transient(parent)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         _ekrana_sigdir(self, 900, 520)
         tk.Label(self, text=f"BAĞLI İADELER  {fatura_no}", bg=LACIVERT, fg=BEYAZ, font=font(12, "bold"),
                  anchor="w", padx=12, pady=6).pack(fill="x")

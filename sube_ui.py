@@ -34,9 +34,10 @@ class SubeDialog(tk.Toplevel):
         self.sube = sube
         self.result = None
         self.title("Şube Düzenle" if sube else "Yeni Şube")
-        self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
         self.alanlar = {}
         for row, (label, key) in enumerate(
             (("Şube Kodu", "sube_kodu"), ("Şube Adı", "sube_adi"), ("Adres", "adres"), ("Telefon", "telefon"))
@@ -74,8 +75,10 @@ class SubeYonetimDialog(tk.Toplevel):
         self.title("Şubeler")
         self.geometry("720x420")
         self.minsize(560, 320)
-        self.transient(parent)
         self.grab_set()
+        from ui_pencere import pencere_os_krom_ac
+
+        pencere_os_krom_ac(self)
 
         self.tablo = ttk.Treeview(
             self,
