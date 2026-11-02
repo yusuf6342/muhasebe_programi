@@ -494,23 +494,32 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
         self.assertEqual(pencere.call_args.kwargs["fatura_id"], dlg.fatura.id)
         dlg.destroy()
 
-    def test_onayla_ve_yeni_faturayi_onaylar_ve_makbuz_acar(self):
+    def test_onayla_faturayi_onaylar_makbuz_otomatik_acmaz(self):
+        """Güncel akış: Onayla stok onaylar; makbuz ayrı «Tahsilat Makbuzu» ile açılır.
+
+        Eski birleşik «Onayla ve Yeni» kaldırıldı; onayla_ve_yeni yalnız onayla'ya yönlenir.
+        """
         dlg = self._yeni_fatura_doldur()
         mesajlar, yamalar = self._mesajlari_yakala()
         for y in yamalar:
             y.start()
         try:
             with patch("kasa_makbuz_ui.KasaMakbuzDialog") as pencere:
-                dlg.onayla_ve_yeni()
+                dlg.onayla()
+                pencere.assert_not_called()
+                with get_session() as s:
+                    son = s.scalar(select(SatisFaturasi).order_by(SatisFaturasi.id.desc()))
+                    self.assertTrue(son.onaylandi)
+                dlg._fatura_tahsilat_makbuzu_ac()
+                pencere.assert_called_once()
+                self.assertEqual(pencere.call_args.kwargs["fatura_id"], son.id)
         finally:
             for y in yamalar:
                 y.stop()
         self.assertFalse([m for m in mesajlar if m[0] == "error"], mesajlar)
-        with get_session() as s:
-            son = s.scalar(select(SatisFaturasi).order_by(SatisFaturasi.id.desc()))
-            self.assertTrue(son.onaylandi)
-        pencere.assert_called_once()
-        self.assertEqual(pencere.call_args.kwargs["fatura_id"], son.id)
+        # Yeşil Onaylı; aynı fatura ekranda kalır (otomatik Yeni yok)
+        self.assertTrue(dlg.fatura and dlg.fatura.onaylandi)
+        dlg.destroy()
 
     def _pompala(self, sure: float = 0.3):
         import time
@@ -538,7 +547,8 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
         self.assertEqual((dlg.fatura.durum, bool(dlg.fatura.onaylandi)), ("AÇIK", False))
         dlg.destroy()
 
-    def test_onayla_ve_yeni_makbuz_yeni_faturadan_once_acilir(self):
+    def test_onayla_yeni_fatura_acmaz_ayri_yeni_ve_makbuz(self):
+        """Onayla yeni fatura açmaz; Yeni ve Tahsilat Makbuzu ayrıdır."""
         from app import SatisFaturasiDialog
 
         dlg = self._yeni_fatura_doldur()
@@ -558,15 +568,20 @@ class FaturaTahsilatEkranTest(unittest.TestCase):
                     patch("satis_personeli_ui.aktif_satis_personelleri", return_value=[]), \
                     patch("satis_personeli_ui.satis_personeli_degistirme_yetkisi", return_value=True), \
                     patch("fatura_acilis_cache.satis_personelleri", return_value=[]):
-                dlg.onayla_ve_yeni()
+                dlg.onayla()
                 self._pompala(0.4)
+                pencere.assert_not_called()
+                self.assertNotIn("fatura", sira)
+                self.assertTrue(dlg.fatura and dlg.fatura.onaylandi)
+                dlg._fatura_tahsilat_makbuzu_ac()
+                pencere.assert_called_once()
+                self.assertEqual(sira, ["makbuz"])
+                self.assertTrue(pencere.call_args.kwargs.get("fatura_id"))
         finally:
             for y in yamalar:
                 y.stop()
         self.assertFalse([m for m in mesajlar if m[0] == "error"], mesajlar)
-        pencere.assert_called_once()
-        self.assertTrue(pencere.call_args.kwargs.get("fatura_ozet"))
-        self.assertEqual(sira[:2], ["makbuz", "fatura"])
+        dlg.destroy()
 
     def test_makbuz_acilisi_fatura_temasini_degistirmez(self):
         from tkinter import ttk

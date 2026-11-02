@@ -84,54 +84,49 @@ def _yatay_pay(info: dict) -> int:
 def arac_cubugu_sigdir_kur(dialog) -> None:
     """Dar pencerede işlem butonlarını ikinci satıra sarar; gizlemez.
 
-    Kaydet / Onayla / Yeni / Yazdır / Tahsilat / Diğer / Kapat öncelikli 1. satırda kalır;
-    sığmayanlar düzenli 2. satıra iner. Müşteri kısa adı gerekirse gizlenebilir.
+    Sığmayanlar düzenli 2. satıra iner. Müşteri kısa adı gerekirse gizlenebilir.
     """
     refs = getattr(dialog, "_fatura_toolbar", None) or {}
     cubuk, sol, sag = refs.get("cubuk"), refs.get("sol"), refs.get("sag")
-    sag2 = refs.get("sag2")
+    satirlar_frame = [sag]
+    for anahtar in ("sag2", "sag3"):
+        fr = refs.get(anahtar)
+        if fr is not None:
+            satirlar_frame.append(fr)
     if cubuk is None or sag is None or getattr(dialog, "_arac_sigdir", None):
         return
     try:
         cubuk.update_idletasks()
     except tk.TclError:
         return
-    # İlk kurulumda tüm butonlar sag (satır 1) içinde
-    sira = [w for w in sag.pack_slaves()]
-    if sag2 is not None:
-        sira.extend(w for w in sag2.pack_slaves())
-    bilgiler = {str(w): _pack_bilgisi(w) for w in sira}
-    kullanici = (getattr(dialog, "_aktif_kullanici_cubugu", None) or {}).get("cerceve")
+    # Kalıcı sıra: bir kez yakala (pack_forget sonrası slaves boşalmasın)
+    sira: list = []
+    for fr in satirlar_frame:
+        sira.extend(w for w in fr.pack_slaves())
+    if not sira:
+        return
+    padx_bilgi = {}
+    for w in sira:
+        try:
+            if w.winfo_manager() == "pack":
+                padx_bilgi[str(w)] = w.pack_info().get("padx", 2)
+            else:
+                padx_bilgi[str(w)] = 2
+        except tk.TclError:
+            padx_bilgi[str(w)] = 2
     musteri = refs.get("musteri")
     musteri_pay = 230
-
-    # 1. satırda tutmaya öncelik verilen düğmeler (soldan)
-    oncelik_attr = (
-        "_fatura_liste_btn",
-        "_btn_kaydet",
-        "kaydet_btn",
-        "kaydet_onay_btn",
-        "yeni_btn",
-        "_yazdir_mb",
-        "_tahsilat_makbuzu_btn",
-        "_analiz_mb",
-        "_diger_mb",
-        "_sevkiyat_btn",
-        "_dosyadan_aktar_btn",
-    )
-    oncelik_set = set()
-    for attr in oncelik_attr:
-        w = getattr(dialog, attr, None)
-        if w is not None:
-            oncelik_set.add(str(w))
-
     durum = {"anahtar": None}
     dialog._arac_sigdir = durum
+    dialog._arac_buton_sira = sira
 
     def _widget_genislik(w) -> int:
         try:
-            info = bilgiler.get(str(w)) or _pack_bilgisi(w)
-            return int(w.winfo_reqwidth()) + _yatay_pay(info)
+            req = int(w.winfo_reqwidth())
+            if req <= 1:
+                return 0  # ayırıcı / boş frame — satır hesabına katma
+            padx = padx_bilgi.get(str(w), 2)
+            return req + _yatay_pay({"padx": padx})
         except tk.TclError:
             return 0
 
@@ -144,30 +139,121 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                 w += musteri_pay
         return w
 
+    def _paketle(hedef, widgets):
+        for w in widgets:
+            try:
+                w.pack_forget()
+            except tk.TclError:
+                pass
+            px = padx_bilgi.get(str(w), 2)
+            try:
+                w.pack(side="left", padx=px, in_=hedef)
+            except tk.TclError:
+                try:
+                    w.pack(side="left", padx=2, in_=hedef)
+                except tk.TclError:
+                    pass
+
+    def _dagit(uygun: int, frame_list: list) -> list[list]:
+        """Butonları soldan sağa satırlara böl."""
+        satirlar: list[list] = [[] for _ in frame_list]
+        si = 0
+        kalan = uygun
+        for w in sira:
+            gw = _widget_genislik(w)
+            if gw <= 0:
+                satirlar[si].append(w)
+                continue
+            while si < len(satirlar) - 1 and kalan < gw:
+                si += 1
+                kalan = uygun
+            satirlar[si].append(w)
+            kalan -= gw
+        return satirlar
+
+    def _buton_genislik_ayarla(hedef: int | None) -> None:
+        """Kısa pencerede oval butonları daralt (2 satıra sığsın, tablo ezilmesin)."""
+        for w in sira:
+            if not isinstance(w, ftema.FaturaOvalButon):
+                continue
+            try:
+                if hedef is None:
+                    gw, _gh = ftema.fatura_buton_olculeri(dialog, grup=getattr(w, "_grup", "dis"))
+                else:
+                    gw = int(hedef)
+                if int(getattr(w, "_gw", 0) or 0) == gw:
+                    continue
+                w._gw = gw
+                w._canvas.configure(width=gw)
+                w._ciz()
+            except tk.TclError:
+                pass
+
     def _uygula(_e=None):
         try:
+            cubuk.update_idletasks()
             W = cubuk.winfo_width()
+            H = int(dialog.winfo_height())
         except tk.TclError:
             return
         if W < 100 or not sira:
             return
-        uygun = max(120, W - _tam_sol() - 36)
-        satir1: list = []
-        satir2: list = []
-        kalan = uygun
-        # Orijinal sırayı koru; taşanı 2. satıra al
-        for w in sira:
-            gw = _widget_genislik(w)
-            if not satir1 or kalan >= gw:
-                satir1.append(w)
+        try:
+            # Sol meta reqwidth şişebiliyor; sağ butonlara en az %55 bırak
+            sol_w = int(sol.winfo_reqwidth()) if sol is not None else 0
+            sol_w = min(sol_w, max(120, int(W * 0.40)))
+            uygun = max(220, W - sol_w - 20)
+        except tk.TclError:
+            uygun = max(220, W - _tam_sol() - 36)
+        # Kısa+dar: ikincil düğmeleri şeritten çıkar (Diğer menüde kalır) → tek satır, tabloya yer
+        kisa = H < 640
+        dar = W < 1250
+        ikincil_attr = ("_fatura_liste_btn", "_sevkiyat_btn", "_dosyadan_aktar_btn")
+        ikincil = {getattr(dialog, a, None) for a in ikincil_attr}
+        ikincil.discard(None)
+        aktif_sira = [w for w in sira if not (kisa and dar and w in ikincil)]
+        for w in ikincil:
+            try:
+                if kisa and dar:
+                    w.pack_forget()
+            except tk.TclError:
+                pass
+        # Kısa+dar: tek satır + dar buton; kısa (geniş): en fazla 2 satır
+        frame_list = satirlar_frame[:1] if (kisa and dar) else (
+            satirlar_frame[:2] if kisa else satirlar_frame
+        )
+        if kisa:
+            n_buton = max(1, len([w for w in aktif_sira if isinstance(w, ftema.FaturaOvalButon)]))
+            per_row = max(4, (n_buton + len(frame_list) - 1) // max(1, len(frame_list)))
+            hedef = max(92, min(130, (uygun // per_row) - 4))
+            _buton_genislik_ayarla(hedef)
+        else:
+            _buton_genislik_ayarla(None)
+
+        def _dagit_sira(uygun_w: int, frame_list_local: list, kaynak: list) -> list[list]:
+            satirlar: list[list] = [[] for _ in frame_list_local]
+            si = 0
+            kalan = uygun_w
+            for w in kaynak:
+                gw = _widget_genislik(w)
+                if gw <= 0:
+                    satirlar[si].append(w)
+                    continue
+                while si < len(satirlar) - 1 and kalan < gw:
+                    si += 1
+                    kalan = uygun_w
+                satirlar[si].append(w)
                 kalan -= gw
-            else:
-                satir2.append(w)
+            return satirlar
+
+        bolunmus = _dagit_sira(uygun, frame_list, aktif_sira)
+        while len(bolunmus) < len(satirlar_frame):
+            bolunmus.append([])
         musteri_gizle = bool(musteri is not None and (_tam_sol() + 40 > W))
         anahtar = (
-            tuple(str(w) for w in satir1),
-            tuple(str(w) for w in satir2),
+            tuple(tuple(str(w) for w in satir) for satir in bolunmus),
             musteri_gizle,
+            uygun,
         )
         if durum["anahtar"] == anahtar:
             return
@@ -185,32 +271,20 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                 w.pack_forget()
             except tk.TclError:
                 pass
-        for w in satir1:
+        for i, fr in enumerate(satirlar_frame):
+            widgets = bolunmus[i] if i < len(bolunmus) else []
             try:
-                w.pack(in_=sag, **bilgiler[str(w)])
-            except tk.TclError:
-                try:
-                    w.pack(side="left", padx=3, in_=sag)
-                except tk.TclError:
-                    pass
-        if sag2 is not None:
-            try:
-                if satir2:
-                    if sag2.winfo_manager() != "pack":
-                        sag2.pack(side="top", anchor="e", pady=(4, 0))
-                else:
-                    sag2.pack_forget()
+                if i == 0:
+                    pass  # sag her zaman pack
+                elif widgets:
+                    if fr.winfo_manager() != "pack":
+                        fr.pack(side="top", anchor="e", pady=(1 if kisa else 3, 0))
+                elif fr.winfo_manager() == "pack":
+                    fr.pack_forget()
             except tk.TclError:
                 pass
-            for w in satir2:
-                try:
-                    w.pack(in_=sag2, **bilgiler[str(w)])
-                except tk.TclError:
-                    try:
-                        w.pack(side="left", padx=3, in_=sag2)
-                    except tk.TclError:
-                        pass
-        _ = (kullanici, oncelik_set)
+            if widgets:
+                _paketle(fr, widgets)
 
     def _uygula_guvenli(e=None):
         try:
@@ -219,6 +293,7 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
             pass
 
     cubuk.bind("<Configure>", _uygula_guvenli, add="+")
+    dialog.after_idle(_uygula_guvenli)
     _uygula_guvenli()
 
 
@@ -595,6 +670,20 @@ def _detay_yuksekligi(dialog) -> None:
         detay["yukseklik"] = hedef
         try:
             detay["nb"].configure(height=hedef)
+        except tk.TclError:
+            pass
+    # Kısa pencere: alt özet/kart dikey payını sıkıştır → ürün tablosu ≥50 px
+    kisa = h < 640
+    if detay.get("_kisa_pad") != kisa:
+        detay["_kisa_pad"] = kisa
+        try:
+            ozet = detay.get("ozet")
+            if ozet is not None and ozet.winfo_manager() == "pack":
+                ozet.pack_configure(pady=(0 if kisa else 2, 0))
+            detay["nb"].grid_configure(pady=(2 if kisa else 4, 2 if kisa else 4))
+            sag = (getattr(dialog, "_fatura_alt_ozet", None) or {}).get("sag")
+            if sag is not None:
+                sag.grid_configure(pady=(4 if kisa else 6, 2 if kisa else 4))
         except tk.TclError:
             pass
 

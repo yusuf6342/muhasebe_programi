@@ -36,7 +36,7 @@ def _satir(i: int) -> dict:
 def _tahsilat(i: int) -> dict:
     return {
         "tahsilat_tarihi": datetime.date(2026, 10, 1), "tutar": Decimal("100") * (i + 1),
-        "odeme_sekli": "Nakit", "hesap": "Merkez Kasa", "aciklama": f"Tahsilat {i + 1}",
+        "odeme_sekli": "NAKİT / KASA", "hesap": "TEST KASA", "aciklama": f"Tahsilat {i + 1}",
     }
 
 
@@ -138,6 +138,17 @@ class FaturaYerlesimTest(unittest.TestCase):
 
     def _ana_dugmeler(self):
         d = self.dlg
+        refs = d._fatura_toolbar or {}
+        toolbar_cocuklar = []
+        for anahtar in ("sag", "sag2", "sag3"):
+            fr = refs.get(anahtar)
+            if fr is not None:
+                toolbar_cocuklar.extend(fr.winfo_children())
+        # pack_forget sonrası children boş olabilir; kalıcı sıradan da bak
+        for w in getattr(d, "_arac_buton_sira", None) or []:
+            if w not in toolbar_cocuklar:
+                toolbar_cocuklar.append(w)
+        kapat = next(w for w in toolbar_cocuklar if _metin(w) == "Kapat (Esc)")
         return {
             "Kaydet": d.kaydet_btn,
             "Onayla": d.kaydet_onay_btn,
@@ -145,9 +156,7 @@ class FaturaYerlesimTest(unittest.TestCase):
             "Tahsilat Makbuzu": d._tahsilat_makbuzu_btn,
             "Yazdır / PDF": d._yazdir_mb,
             "Diğer İşlemler": d._diger_mb,
-            "Kapat": next(
-                w for w in d._fatura_toolbar["sag"].winfo_children() if _metin(w) == "Kapat (Esc)"
-            ),
+            "Kapat": kapat,
         }
 
     def _yerlesimi_dogrula(self, g, y, *, tahsilat=False):

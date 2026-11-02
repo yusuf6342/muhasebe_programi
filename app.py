@@ -5266,6 +5266,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._fatura_toolbar = refs
         self.onay_durum_etiket = refs["rozet"]
         sag = refs["sag"]
+        # Butonlar sag_dis çocuğu olmalı ki dar pencerede sag2 satırına pack(in_=) çalışsın
+        # (Tk: -in hedefi, widget ebeveyninin kendisi veya soyundan olmalı)
+        bp = refs.get("sag_dis") or sag
 
         # Kompakt panel-dışı ölçü önbelleği
         ftema.fatura_buton_olcu_sifirla()
@@ -5273,68 +5276,72 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         ftema.fatura_buton_olculeri(self, grup="panel")
 
         liste_btn = ftema.oval_buton(
-            sag, "Fatura Listesi (F3)", self._fatura_listesini_ac, rol="yardimci", grup="dis"
+            bp, "Fatura Listesi (F3)", self._fatura_listesini_ac, rol="yardimci", grup="dis"
         )
-        liste_btn.pack(side="left", padx=2)
+        liste_btn.pack(side="left", padx=2, in_=sag)
         self._fatura_liste_btn = liste_btn
         self._tooltip_bagla(liste_btn, "Satış Fatura Listesini Aç")
         self.kaydet_btn = ftema.oval_buton(
-            sag, "Kaydet (F1)", self.kaydet, rol="kaydet", grup="dis"
+            bp, "Kaydet (F1)", self.kaydet, rol="kaydet", grup="dis"
         )
-        self.kaydet_btn.pack(side="left", padx=2)
+        self.kaydet_btn.pack(side="left", padx=2, in_=sag)
         self._btn_kaydet = self.kaydet_btn  # Güncelle metni / kayıt kilidi
         # Onayla (F4) ve Yeni ayrı; birleşik «Onayla ve Yeni» kaldırıldı
         self.kaydet_onay_btn = ftema.oval_buton(
-            sag, "Onayla (F4)", self.onayla, rol="onayla", grup="dis"
+            bp, "Onayla (F4)", self.onayla, rol="onayla", grup="dis"
         )
-        self.kaydet_onay_btn.pack(side="left", padx=2)
+        self.kaydet_onay_btn.pack(side="left", padx=2, in_=sag)
         self.onay_btn = self.kaydet_onay_btn  # geriye uyumluluk
         self.yeni_btn = ftema.oval_buton(
-            sag, "Yeni", self._fatura_yeni_ac, rol="petrol", grup="dis"
+            bp, "Yeni", self._fatura_yeni_ac, rol="petrol", grup="dis"
         )
-        self.yeni_btn.pack(side="left", padx=2)
+        self.yeni_btn.pack(side="left", padx=2, in_=sag)
         self._tooltip_bagla(self.yeni_btn, "Yeni boş satış faturası aç")
         # Siparişten Getir yalnız ürün şeridinde (Alt+S); üstte tekrar edilmez
         self._siparis_getir_btn = None
 
         from fatura_yerlesim import yazdir_menusu_kur
 
-        self._yazdir_mb = yazdir_menusu_kur(self, sag)
-        self._yazdir_mb.pack(side="left", padx=2)
+        self._yazdir_mb = yazdir_menusu_kur(self, bp)
+        self._yazdir_mb.pack(side="left", padx=2, in_=sag)
         self._tahsilat_makbuzu_btn = ftema.oval_buton(
-            sag, "Tahsilat Makbuzu", self._fatura_tahsilat_makbuzu_ac, rol="petrol", grup="dis"
+            bp, "Tahsilat Makbuzu", self._fatura_tahsilat_makbuzu_ac, rol="petrol", grup="dis"
         )
-        self._tahsilat_makbuzu_btn.pack(side="left", padx=2)
+        self._tahsilat_makbuzu_btn.pack(side="left", padx=2, in_=sag)
         self._tooltip_bagla(
             self._tahsilat_makbuzu_btn,
             "Bu faturaya bağlı yeni tahsilat makbuzu (kalan tutar önerilir)",
         )
 
-        self._analiz_menu_kur(sag)
-        self._diger_islemler_menu_kur(sag)
+        self._analiz_menu_kur(bp)
+        self._analiz_mb.pack_forget()
+        self._analiz_mb.pack(side="left", padx=2, in_=sag)
+        self._diger_islemler_menu_kur(bp)
+        self._diger_mb.pack_forget()
+        self._diger_mb.pack(side="left", padx=2, in_=sag)
 
         n_sevk = len(getattr(self, "_sevkiyat_kopyalari", None) or [])
         sevk_metin = f"Sevkiyat ({n_sevk})" if n_sevk > 1 else "Sevkiyat"
         self._sevkiyat_btn = ftema.oval_buton(
-            sag, sevk_metin, self._sevkiyat_bilgileri_ac, rol="yardimci", grup="dis"
+            bp, sevk_metin, self._sevkiyat_bilgileri_ac, rol="yardimci", grup="dis"
         )
-        self._sevkiyat_btn.pack(side="left", padx=2)
+        self._sevkiyat_btn.pack(side="left", padx=2, in_=sag)
         self._tooltip_bagla(
             self._sevkiyat_btn,
             "Sevkiyat ve Teslimat Bilgileri — irsaliye kopyaları / manuel teslimat",
         )
         self._dosyadan_aktar_btn = ftema.oval_buton(
-            sag, "Dosyadan Aktar", self._fatura_dosyadan_aktar, rol="yardimci", grup="dis"
+            bp, "Dosyadan Aktar", self._fatura_dosyadan_aktar, rol="yardimci", grup="dis"
         )
-        self._dosyadan_aktar_btn.pack(side="left", padx=2)
+        self._dosyadan_aktar_btn.pack(side="left", padx=2, in_=sag)
         self._tooltip_bagla(
             self._dosyadan_aktar_btn,
             "Excel / PDF / XML — bu faturaya kalem veya yeni taslak",
         )
 
         ftema.oval_buton(
-            sag, "Kapat (Esc)", self._fatura_esc_kapat, rol="yardimci", grup="dis"
-        ).pack(side="left", padx=(6, 0))
+            bp, "Kapat (Esc)", self._fatura_esc_kapat, rol="yardimci", grup="dis"
+        ).pack(side="left", padx=(6, 0), in_=sag)
 
         try:
             from kullanici_degistir_ui import aktif_kullanici_cubugu
@@ -5362,7 +5369,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 self._fatura_kullanici_degisti()
 
             cubuk = aktif_kullanici_cubugu(
-                sag,
+                bp,
                 active_screen="SATIS_FATURA",
                 get_document_meta=_fatura_meta,
                 dirty_check=_fatura_dirty,
@@ -5376,7 +5383,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                         ch.configure(bg="#1B2A4A", fg="#FFFFFF")
             except tk.TclError:
                 pass
-            cubuk["cerceve"].pack(side="left", padx=(12, 0))
+            cubuk["cerceve"].pack(side="left", padx=(12, 0), in_=sag)
             self._aktif_kullanici_cubugu = cubuk
         except Exception:
             pass
@@ -5452,6 +5459,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             label="Maliyet Altı Satış Ayarı…",
             command=self._fatura_maliyet_alti_ayari,
         )
+        menu.add_separator()
+        # Kısa/dar şeritte gizlenen ikinciller buradan erişilir
+        menu.add_command(label="Fatura Listesi (F3)", command=self._fatura_listesini_ac)
+        menu.add_command(label="Sevkiyat", command=self._sevkiyat_bilgileri_ac)
+        menu.add_command(label="Dosyadan Aktar", command=self._fatura_dosyadan_aktar)
         menu.add_separator()
         menu.add_command(
             label="E-Fatura (yakında)",

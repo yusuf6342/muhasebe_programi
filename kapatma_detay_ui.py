@@ -387,11 +387,27 @@ class OdemeKapatmaBilgisi(ttk.Frame):
         ttk.Button(self.ic, text="Kapatma Detayı", command=self.detay_ac).pack(side="left", padx=(10, 0))
         self.ic.bind("<Configure>", self._boyut)
         self._tuval.bind("<Configure>", self._boyut)
+        self._tuval.bind("<Shift-MouseWheel>", self._yatay_tekerlek)
+
+    def _yatay_tekerlek(self, e):
+        try:
+            self._tuval.xview_scroll(-1 if e.delta > 0 else 1, "units")
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _kisa_pencere(self) -> bool:
+        try:
+            return int(self.winfo_toplevel().winfo_height()) < 640
+        except (tk.TclError, TypeError, ValueError):
+            return False
 
     def _kaydirma_ayarla(self, bas, son):
         self._kaydirma.set(bas, son)
         try:
-            if float(bas) <= 0.0 and float(son) >= 1.0:
+            # Kısa fatura penceresinde çubuk dikey yer çalar; ürün tablosu öncelikli.
+            # Yatay kaydırma tuval üzerinden (Shift+tekerlek) kalır.
+            if self._kisa_pencere() or (float(bas) <= 0.0 and float(son) >= 1.0):
                 self._kaydirma.pack_forget()
             elif not self._kaydirma.winfo_ismapped():
                 self._kaydirma.pack(side="top", fill="x")
@@ -401,6 +417,8 @@ class OdemeKapatmaBilgisi(ttk.Frame):
     def _boyut(self, _e=None):
         try:
             self._tuval.configure(scrollregion=self._tuval.bbox("all"), height=self.ic.winfo_reqheight())
+            if self._kisa_pencere() and self._kaydirma.winfo_ismapped():
+                self._kaydirma.pack_forget()
         except tk.TclError:
             pass
 

@@ -899,13 +899,14 @@ def ust_toolbar(
     )
     musteri_lbl.pack(side="left")
 
-    # Sağ: iki sıkı satıra sarılabilir kompakt işlem butonları
+    # Sağ: dar pencerede 2–3 satıra sarılabilir kompakt işlem butonları
     sag_dis = tk.Frame(cubuk, bg=LACIVERT)
     sag_dis.pack(side="right", padx=6, pady=3)
     sag = tk.Frame(sag_dis, bg=LACIVERT)
     sag.pack(side="top", anchor="e")
     sag2 = tk.Frame(sag_dis, bg=LACIVERT)
-    # sag2 yalnızca taşan butonlar olduğunda pack edilir
+    sag3 = tk.Frame(sag_dis, bg=LACIVERT)
+    # sag2/sag3 yalnızca taşan butonlar olduğunda pack edilir
 
     # Sarı ayırıcı çizgi
     tk.Frame(cubuk, bg=SARI, height=2).pack(side="bottom", fill="x")
@@ -915,6 +916,7 @@ def ust_toolbar(
         "sol": sol,
         "sag": sag,
         "sag2": sag2,
+        "sag3": sag3,
         "sag_dis": sag_dis,
         "fatura_no": no_lbl,
         "rozet": rozet,

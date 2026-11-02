@@ -12,10 +12,10 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from database.database import get_session
-from database.models.cari import CariIslem, SatisHareketi
+from database.models.cari import CariIslem, CariKapatma, SatisHareketi
 
 logger = logging.getLogger("cari_bakiye")
 
@@ -41,6 +41,61 @@ def _d(deger) -> Decimal:
 
 def _kurus(tutar) -> Decimal:
     return _d(tutar).quantize(KURUS, rounding=ROUND_HALF_UP)
+
+
+def _satis_hareketi_borc_alacak(
+    tutar, kalan, *, defterde_kapanan: Decimal = Decimal("0")
+) -> tuple[Decimal, Decimal]:
+    """Çift kayıtsız SatisHareketi borç/alacak payı.
+
+    Kapanan (tutar − kalan) alacak yazılır; fakat aynı kapanma CariIslem + CariKapatma
+    ile deftere düşmüşse (TMK tahsilat makbuzu vb.) ikinci kez sayılmaz.
+    """
+    t = _d(tutar)
+    k = _d(kalan)
+    defterde = max(Decimal("0"), _d(defterde_kapanan))
+    if t >= 0:
+        kapanan = max(Decimal("0"), t - max(k, Decimal("0")))
+        sessiz = max(Decimal("0"), kapanan - defterde)
+        alacak_ek = sessiz
+        if k < 0 and defterde <= 0:
+            # Sessiz fazla tahsilat (defter satırı yok)
+            alacak_ek += -k
+        return t, alacak_ek
+    return Decimal("0"), -t
+
+
+def _defterde_kapanan_toplamlari(
+    session, hareket_idler: list[int], islem_belgeleri: set[str]
+) -> dict[int, Decimal]:
+    """hedef_hareket_id → CariIslem belgesi olan aktif kapatma tutarı toplamı."""
+    ids = [int(i) for i in hareket_idler if i is not None]
+    if not ids or not islem_belgeleri:
+        return {}
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        if not sa_inspect(session.connection()).has_table(CariKapatma.__tablename__):
+            return {}
+    except Exception:
+        return {}
+    sonuc: dict[int, Decimal] = {}
+    for bas in range(0, len(ids), 500):
+        parca = ids[bas : bas + 500]
+        for hid, toplam in session.execute(
+            select(
+                CariKapatma.hedef_hareket_id,
+                func.coalesce(func.sum(CariKapatma.tutar), 0),
+            )
+            .where(
+                CariKapatma.hedef_hareket_id.in_(parca),
+                CariKapatma.iptal.is_(False),
+                CariKapatma.kaynak_belge_no.in_(list(islem_belgeleri)),
+            )
+            .group_by(CariKapatma.hedef_hareket_id)
+        ):
+            sonuc[int(hid)] = _d(toplam)
+    return sonuc
 
 
 def _as_of_date(as_of) -> date | None:
@@ -98,6 +153,11 @@ def _kayitlari_topla(
         session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cid)).all()
     )
     islem_belgeleri = {(i.belge_no or "") for i in islemler}
+    defterde = _defterde_kapanan_toplamlari(
+        session,
+        [int(h.id) for h in hareketler if getattr(h, "id", None)],
+        islem_belgeleri,
+    )
 
     kayitlar: list[tuple[date | None, str, Decimal, Decimal]] = []
 
@@ -113,21 +173,12 @@ def _kayitlari_topla(
             pb = (getattr(h, "para_birimi", None) or "TRY").upper()
             if pb != pb_filtre:
                 continue
-        # Çift kayıtsız SatisHareketi: yalnız tutarı borç yazmak, kapanan kısmı yok sayar
-        # ve bakiyeyi şişirir (risk kalan_acik ile doğru kalır). Kapanan = tutar − kalan → alacak.
-        tutar = _d(h.satis_tutari)
-        kalan = _d(getattr(h, "kalan_acik_tutar", None))
-        if tutar >= 0:
-            kapanan = max(Decimal("0"), tutar - max(kalan, Decimal("0")))
-            borc_ek = tutar
-            alacak_ek = kapanan
-            if kalan < 0:
-                # Avans / fazla tahsilat
-                alacak_ek += -kalan
-        else:
-            # Negatif satış tutarı (iade benzeri) — nadir; tutarı alacak say
-            borc_ek = Decimal("0")
-            alacak_ek = -tutar
+        # Çift kayıtsız SatisHareketi: kapanan alacak; CariIslem'li kapatmalar hariç
+        borc_ek, alacak_ek = _satis_hareketi_borc_alacak(
+            h.satis_tutari,
+            getattr(h, "kalan_acik_tutar", None),
+            defterde_kapanan=defterde.get(int(h.id), Decimal("0")),
+        )
         kayitlar.append((h.satis_tarihi, bn, borc_ek, alacak_ek))
 
     for islem in islemler:
@@ -261,29 +312,37 @@ def liste_bakiyeleri(
                     continue
                 borclar[int(cid)] += _d(borc)
                 alacaklar[int(cid)] += _d(alacak)
-            for cid, bn, tutar, kalan, pb in session.execute(
-                select(
-                    SatisHareketi.cari_id,
-                    SatisHareketi.belge_no,
-                    SatisHareketi.satis_tutari,
-                    SatisHareketi.kalan_acik_tutar,
-                    SatisHareketi.para_birimi,
-                ).where(SatisHareketi.cari_id.in_(parca))
-            ):
+            hareket_satirlari = list(
+                session.execute(
+                    select(
+                        SatisHareketi.id,
+                        SatisHareketi.cari_id,
+                        SatisHareketi.belge_no,
+                        SatisHareketi.satis_tutari,
+                        SatisHareketi.kalan_acik_tutar,
+                        SatisHareketi.para_birimi,
+                    ).where(SatisHareketi.cari_id.in_(parca))
+                )
+            )
+            tum_belgeler = set()
+            for belgeler in islem_belgeleri.values():
+                tum_belgeler |= belgeler
+            defterde = _defterde_kapanan_toplamlari(
+                session,
+                [int(r[0]) for r in hareket_satirlari],
+                tum_belgeler,
+            )
+            for hid, cid, bn, tutar, kalan, pb in hareket_satirlari:
                 bn = bn or ""
                 if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
                     continue
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
-                t = _d(tutar)
-                k = _d(kalan)
-                if t >= 0:
-                    borclar[int(cid)] += t
-                    alacaklar[int(cid)] += max(Decimal("0"), t - max(k, Decimal("0")))
-                    if k < 0:
-                        alacaklar[int(cid)] += -k
-                else:
-                    alacaklar[int(cid)] += -t
+                b, a = _satis_hareketi_borc_alacak(
+                    tutar, kalan, defterde_kapanan=defterde.get(int(hid), Decimal("0"))
+                )
+                borclar[int(cid)] += b
+                alacaklar[int(cid)] += a
     return {cid: _kurus(_kurus(borclar[cid]) - _kurus(alacaklar[cid])) for cid in ids}
 
 
@@ -319,29 +378,37 @@ def liste_bakiyeleri_detay(
                     continue
                 borclar[int(cid)] += _d(borc)
                 alacaklar[int(cid)] += _d(alacak)
-            for cid, bn, tutar, kalan, pb in session.execute(
-                select(
-                    SatisHareketi.cari_id,
-                    SatisHareketi.belge_no,
-                    SatisHareketi.satis_tutari,
-                    SatisHareketi.kalan_acik_tutar,
-                    SatisHareketi.para_birimi,
-                ).where(SatisHareketi.cari_id.in_(parca))
-            ):
+            hareket_satirlari = list(
+                session.execute(
+                    select(
+                        SatisHareketi.id,
+                        SatisHareketi.cari_id,
+                        SatisHareketi.belge_no,
+                        SatisHareketi.satis_tutari,
+                        SatisHareketi.kalan_acik_tutar,
+                        SatisHareketi.para_birimi,
+                    ).where(SatisHareketi.cari_id.in_(parca))
+                )
+            )
+            tum_belgeler = set()
+            for belgeler in islem_belgeleri.values():
+                tum_belgeler |= belgeler
+            defterde = _defterde_kapanan_toplamlari(
+                session,
+                [int(r[0]) for r in hareket_satirlari],
+                tum_belgeler,
+            )
+            for hid, cid, bn, tutar, kalan, pb in hareket_satirlari:
                 bn = bn or ""
                 if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
                     continue
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
-                t = _d(tutar)
-                k = _d(kalan)
-                if t >= 0:
-                    borclar[int(cid)] += t
-                    alacaklar[int(cid)] += max(Decimal("0"), t - max(k, Decimal("0")))
-                    if k < 0:
-                        alacaklar[int(cid)] += -k
-                else:
-                    alacaklar[int(cid)] += -t
+                b, a = _satis_hareketi_borc_alacak(
+                    tutar, kalan, defterde_kapanan=defterde.get(int(hid), Decimal("0"))
+                )
+                borclar[int(cid)] += b
+                alacaklar[int(cid)] += a
     sonuc: dict[int, dict[str, Any]] = {}
     for cid in ids:
         tb = _kurus(borclar[cid])
