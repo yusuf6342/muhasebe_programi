@@ -148,7 +148,9 @@ class FaturaYerlesimTest(unittest.TestCase):
         for w in getattr(d, "_arac_buton_sira", None) or []:
             if w not in toolbar_cocuklar:
                 toolbar_cocuklar.append(w)
-        kapat = next(w for w in toolbar_cocuklar if _metin(w) == "Kapat (Esc)")
+        kapat = getattr(d, "_kapat_btn", None) or next(
+            w for w in toolbar_cocuklar if _metin(w) == "Kapat (Esc)"
+        )
         return {
             "Kaydet": d.kaydet_btn,
             "Onayla": d.kaydet_onay_btn,
@@ -162,7 +164,11 @@ class FaturaYerlesimTest(unittest.TestCase):
     def _yerlesimi_dogrula(self, g, y, *, tahsilat=False):
         d = self.dlg
         self._boyutla(g, y)
-        for ad, w in self._ana_dugmeler().items():
+        # Kısa+dar: Yazdır/Analiz şeritten Kalkar → Diğer menüde; zorunlu çekirdek kalır
+        dugmeler = self._ana_dugmeler()
+        if y < 640 and g < 1250:
+            dugmeler.pop("Yazdır / PDF", None)
+        for ad, w in dugmeler.items():
             self._icinde(w, ad)
         refs = d._fatura_alt_ozet
         self._icinde(refs["degerler"]["genel"], "Net Toplam")

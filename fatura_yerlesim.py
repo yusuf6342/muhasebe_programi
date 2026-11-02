@@ -190,6 +190,10 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                 pass
 
     def _uygula(_e=None):
+        # Açılış layout fırtınasında tekrarlı pack/çizim yapma
+        if getattr(dialog, "_fatura_yukleniyor", False) or getattr(dialog, "_fatura_layout_sakin", False):
+            dialog._arac_sigdir_ertelendi = True
+            return
         try:
             cubuk.update_idletasks()
             W = cubuk.winfo_width()
@@ -205,10 +209,16 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
             uygun = max(220, W - sol_w - 20)
         except tk.TclError:
             uygun = max(220, W - _tam_sol() - 36)
-        # Kısa+dar: ikincil düğmeleri şeritten çıkar (Diğer menüde kalır) → tek satır, tabloya yer
+        # Kısa+dar: ikincilleri şeritten çıkar (Diğer menüde) → tek satır, tablo ≥50 px
         kisa = H < 640
         dar = W < 1250
-        ikincil_attr = ("_fatura_liste_btn", "_sevkiyat_btn", "_dosyadan_aktar_btn")
+        ikincil_attr = (
+            "_fatura_liste_btn",
+            "_sevkiyat_btn",
+            "_dosyadan_aktar_btn",
+            "_yazdir_mb",
+            "_analiz_mb",
+        )
         ikincil = {getattr(dialog, a, None) for a in ikincil_attr}
         ikincil.discard(None)
         aktif_sira = [w for w in sira if not (kisa and dar and w in ikincil)]
@@ -218,17 +228,37 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
                     w.pack_forget()
             except tk.TclError:
                 pass
-        # Kısa+dar: tek satır + dar buton; kısa (geniş): en fazla 2 satır
+        # Kısa+dar: tek satır; kısa (geniş): en fazla 2 satır
         frame_list = satirlar_frame[:1] if (kisa and dar) else (
             satirlar_frame[:2] if kisa else satirlar_frame
         )
         if kisa:
             n_buton = max(1, len([w for w in aktif_sira if isinstance(w, ftema.FaturaOvalButon)]))
             per_row = max(4, (n_buton + len(frame_list) - 1) // max(1, len(frame_list)))
-            hedef = max(92, min(130, (uygun // per_row) - 4))
+            hedef = max(80, min(112, (uygun // per_row) - 4))
             _buton_genislik_ayarla(hedef)
+            # Sabit sağdaki Kapat da aynı kompakt ölçüye gelsin
+            kapat = getattr(dialog, "_kapat_btn", None)
+            if isinstance(kapat, ftema.FaturaOvalButon):
+                try:
+                    if int(getattr(kapat, "_gw", 0) or 0) != int(hedef):
+                        kapat._gw = int(hedef)
+                        kapat._canvas.configure(width=int(hedef))
+                        kapat._ciz()
+                except tk.TclError:
+                    pass
         else:
             _buton_genislik_ayarla(None)
+            kapat = getattr(dialog, "_kapat_btn", None)
+            if isinstance(kapat, ftema.FaturaOvalButon):
+                try:
+                    gw, _gh = ftema.fatura_buton_olculeri(dialog, grup="dis")
+                    if int(getattr(kapat, "_gw", 0) or 0) != gw:
+                        kapat._gw = gw
+                        kapat._canvas.configure(width=gw)
+                        kapat._ciz()
+                except tk.TclError:
+                    pass
 
         def _dagit_sira(uygun_w: int, frame_list_local: list, kaynak: list) -> list[list]:
             satirlar: list[list] = [[] for _ in frame_list_local]
@@ -293,8 +323,8 @@ def arac_cubugu_sigdir_kur(dialog) -> None:
             pass
 
     cubuk.bind("<Configure>", _uygula_guvenli, add="+")
+    # Tek idle geçişi; açılışta _fatura_yukleniyor bitince ayrıca tetiklenir
     dialog.after_idle(_uygula_guvenli)
-    _uygula_guvenli()
 
 
 def _diger_menusune_tasinanlari_ekle(

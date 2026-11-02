@@ -5188,6 +5188,23 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._fatura_hazirlaniyor_gizle()
         self._fatura_yukleniyor = False
         self._fatura_form_kirli = False
+        # Açılışta ertelenen Excel ızgara + araç çubuğu sığdırma
+        for attr in ("_satir_excel_overlay", "_tahsilat_excel_overlay"):
+            ov = getattr(self, attr, None)
+            if ov is not None and getattr(ov, "_yukleme_bekliyor", False):
+                try:
+                    ov.yukleme_bitince_yenile()
+                except Exception:
+                    pass
+        if getattr(self, "_arac_sigdir_ertelendi", False) or getattr(self, "_arac_sigdir", None):
+            self._arac_sigdir_ertelendi = False
+            try:
+                refs = getattr(self, "_fatura_toolbar", None) or {}
+                cubuk = refs.get("cubuk")
+                if cubuk is not None:
+                    cubuk.event_generate("<Configure>")
+            except tk.TclError:
+                pass
         # Yerleşim bittikten sonra bir kez Müşteri Adı odağı
         self.after(30, self._fatura_ilk_musteri_odak)
 
@@ -5339,10 +5356,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             "Excel / PDF / XML — bu faturaya kalem veya yeni taslak",
         )
 
-        ftema.oval_buton(
+        # Kapat: sag_dis sağ kenarına sabit (sarma satırına girmez; her zaman görünür)
+        self._kapat_btn = ftema.oval_buton(
             bp, "Kapat (Esc)", self._fatura_esc_kapat, rol="yardimci", grup="dis"
-        ).pack(side="left", padx=(6, 0), in_=sag)
+        )
+        self._kapat_btn.pack(side="right", padx=(6, 0))
 
+        # Aktif kullanıcı: sol meta satırında (şerit yüksekliği artmaz; sağdan taşmaz)
         try:
             from kullanici_degistir_ui import aktif_kullanici_cubugu
 
@@ -5368,22 +5388,32 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             def _fatura_yetki(_yeni=None):
                 self._fatura_kullanici_degisti()
 
+            # meta: fatura no + rozet + müşteri kısa ad çerçevesi (üst şerit sol)
+            sol = refs.get("sol")
+            meta_parent = None
+            if sol is not None:
+                for ch in sol.winfo_children():
+                    if isinstance(ch, tk.Frame) and ch is not sol:
+                        # başlık Label'dan sonraki meta Frame
+                        meta_parent = ch
+            if meta_parent is None:
+                meta_parent = sol or bp
             cubuk = aktif_kullanici_cubugu(
-                bp,
+                meta_parent,
                 active_screen="SATIS_FATURA",
                 get_document_meta=_fatura_meta,
                 dirty_check=_fatura_dirty,
                 on_changed=_fatura_yetki,
-                bg="#1B2A4A",
+                bg=ftema.LACIVERT,
             )
             try:
-                cubuk["cerceve"].configure(bg="#1B2A4A")
+                cubuk["cerceve"].configure(bg=ftema.LACIVERT)
                 for ch in cubuk["cerceve"].winfo_children():
                     if isinstance(ch, tk.Label):
-                        ch.configure(bg="#1B2A4A", fg="#FFFFFF")
+                        ch.configure(bg=ftema.LACIVERT, fg=ftema.BEYAZ)
             except tk.TclError:
                 pass
-            cubuk["cerceve"].pack(side="left", padx=(12, 0), in_=sag)
+            cubuk["cerceve"].pack(side="left", padx=(14, 0))
             self._aktif_kullanici_cubugu = cubuk
         except Exception:
             pass
@@ -5464,6 +5494,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         menu.add_command(label="Fatura Listesi (F3)", command=self._fatura_listesini_ac)
         menu.add_command(label="Sevkiyat", command=self._sevkiyat_bilgileri_ac)
         menu.add_command(label="Dosyadan Aktar", command=self._fatura_dosyadan_aktar)
+        menu.add_command(label="Yazdır / PDF…", command=self._fatura_ctrl_p_onizleme)
+        # Kısa şeritte Analiz düğmesi gizlenince erişim (etikette «Analiz» yok — menü ayrımı)
+        from database.access import kar_izinli, maliyet_izinli
+
+        if kar_izinli() or maliyet_izinli():
+            menu.add_command(label="Kâr / Maliyet…", command=self.karlilik_analizi_ac)
         menu.add_separator()
         menu.add_command(
             label="E-Fatura (yakında)",
@@ -7387,6 +7423,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         import fatura_tema as ftema
 
         try:
+            self._fatura_layout_sakin = True
             # Önce mevcut boyutları koru; yalnızca taşma varsa aşağıda kıs
             if getattr(self, "adres_gorunum", None) is not None:
                 self.adres_gorunum.configure(height=ftema.form_cok_satir_text_yukseklik(2))
@@ -7467,6 +7504,8 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 self._fatura_ust_yukseklik_px = int(ust.winfo_height()) or hedef
         except tk.TclError:
             pass
+        finally:
+            self._fatura_layout_sakin = False
         self._fatura_cok_satir_hizalandi = True
 
     def _fatura_ust_responsive(self, event=None):
@@ -7571,6 +7610,10 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         if getattr(self, "_fatura_ilk_odak_yapildi", False):
             return
         if getattr(self, "_fatura_kilitli", False):
+            return
+        # Yerleşim bitmeden odak verme — ölçüm ve kullanıcı deneyimi tutarlı olsun
+        if getattr(self, "_fatura_yukleniyor", False):
+            self.after(30, self._fatura_ilk_musteri_odak)
             return
         w = getattr(self, "musteri_adi", None)
         if w is None:

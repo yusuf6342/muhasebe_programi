@@ -277,17 +277,28 @@ def aktif_kullanici_cubugu(
     """Üst çubuk: Aktif kullanıcı adı + Kullanıcı Değiştir butonu."""
     bg = bg or ACIK_GRI
     cerceve = tk.Frame(parent, bg=bg)
-    tk.Label(cerceve, text="Aktif Kullanıcı:", bg=bg, fg=KOYU, font=("Segoe UI", 9)).pack(
+    # Lacivert fatura şeridinde kısa etiket; açık zeminlerde tam metin
+    koyu = False
+    try:
+        from fatura_tema import _renk_koyu_mu
+
+        koyu = _renk_koyu_mu(str(bg))
+    except Exception:
+        koyu = str(bg).lower() in ("#0b2a4a", "#1b2a4a", "#163e66")
+    etiket = "Kullanıcı:" if koyu else "Aktif Kullanıcı:"
+    fg_etiket = "#FFFFFF" if koyu else KOYU
+    fg_ad = "#FFD54F" if koyu else LACIVERT
+    tk.Label(cerceve, text=etiket, bg=bg, fg=fg_etiket, font=("Segoe UI", 9)).pack(
         side="left", padx=(0, 4)
     )
     ad_lbl = tk.Label(
         cerceve,
         text=aktif_kullanici_adi(),
         bg=bg,
-        fg=LACIVERT,
-        font=("Segoe UI", 10, "bold"),
+        fg=fg_ad,
+        font=("Segoe UI", 9 if koyu else 10, "bold"),
     )
-    ad_lbl.pack(side="left", padx=(0, 8))
+    ad_lbl.pack(side="left", padx=(0, 6))
 
     def _yenile(_old=None, _new=None):
         try:
@@ -315,14 +326,14 @@ def aktif_kullanici_cubugu(
 
     btn = tk.Button(
         cerceve,
-        text="Kullanıcı Değiştir",
+        text="Değiştir" if koyu else "Kullanıcı Değiştir",
         command=_ac,
         bg=SARI,
         fg=LACIVERT,
         relief="flat",
-        font=("Segoe UI", 9, "bold"),
-        padx=8,
-        pady=3,
+        font=("Segoe UI", 8 if koyu else 9, "bold"),
+        padx=6 if koyu else 8,
+        pady=1 if koyu else 3,
         cursor="hand2",
     )
     btn.pack(side="left")

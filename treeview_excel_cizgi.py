@@ -39,6 +39,7 @@ class TreeviewExcelCizgi:
         self._kurulu = False
         self._onceki_yscroll = None
         self._onceki_xscroll = None
+        self._yukleme_bekliyor = False
 
     def temizle(self) -> None:
         for w in self._cizgiler:
@@ -75,9 +76,12 @@ class TreeviewExcelCizgi:
                 yatay_sb = w
 
         def planla(_event=None):
-            # Hücre editörü açıkken / açılırken Excel çizgi yenilemesi UI'yi saniyelerce kilitliyordu
+            # Hücre editörü / fatura açılışı sırasında çizgi yenilemesi UI'yi kilitlemesin
             host = self.host
             if getattr(host, "_satir_editor_aciliyor", False):
+                return
+            if getattr(host, "_fatura_yukleniyor", False):
+                self._yukleme_bekliyor = True
                 return
             ed = getattr(host, "_satir_hucre_editor", None)
             if ed is not None:
@@ -91,7 +95,8 @@ class TreeviewExcelCizgi:
                     self.host.after_cancel(self._after)
                 except tk.TclError:
                     pass
-            self._after = self.host.after(15, self.yenile)
+            # Configure fırtınasını tek yenilemede birleştir (15 ms yetmiyordu)
+            self._after = self.host.after(50, self.yenile)
 
         onceki_y = tree.cget("yscrollcommand")
         onceki_x = tree.cget("xscrollcommand")
@@ -204,10 +209,23 @@ class TreeviewExcelCizgi:
             cum += w
         return kenarlar
 
+    def yukleme_bitince_yenile(self) -> None:
+        """Fatura açılışı bittikten sonra ertelenmiş çizgi yenilemesini çalıştır."""
+        self._yukleme_bekliyor = False
+        if self._after is not None:
+            try:
+                self.host.after_cancel(self._after)
+            except tk.TclError:
+                pass
+        self._after = self.host.after(30, self.yenile)
+
     def yenile(self) -> None:
         self._after = None
         tree = self.tree
-        self.temizle()
+        host = self.host
+        if getattr(host, "_fatura_yukleniyor", False):
+            self._yukleme_bekliyor = True
+            return
         try:
             if not tree.winfo_ismapped():
                 return
@@ -228,7 +246,9 @@ class TreeviewExcelCizgi:
         if tablo_h < 8 or tablo_w < 8:
             return
 
-        cizgiler = self._cizgiler
+        havuz = self._cizgiler
+        self._cizgiler = []
+        kullanilan = 0
 
         def _tiklama_aktar(event, cift=False):
             try:
@@ -281,13 +301,18 @@ class TreeviewExcelCizgi:
                 pass
             return "break"
 
-        def cizgi(**kwargs):
-            # Doğrudan Treeview üzerinde: bbox ile aynı koordinat sistemi
-            fr = tk.Frame(tree, bg=CIZGI_RENK, highlightthickness=0, bd=0, **kwargs)
-            fr.bind("<Button-1>", _tiklama_aktar)
-            fr.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
-            fr.bind("<Button-3>", _sag_tik)
-            cizgiler.append(fr)
+        def cizgi() -> tk.Frame:
+            nonlocal kullanilan
+            if kullanilan < len(havuz):
+                fr = havuz[kullanilan]
+            else:
+                # Doğrudan Treeview üzerinde: bbox ile aynı koordinat sistemi
+                fr = tk.Frame(tree, bg=CIZGI_RENK, highlightthickness=0, bd=0)
+                fr.bind("<Button-1>", _tiklama_aktar)
+                fr.bind("<Double-1>", lambda e: _tiklama_aktar(e, cift=True))
+                fr.bind("<Button-3>", _sag_tik)
+            kullanilan += 1
+            self._cizgiler.append(fr)
             return fr
 
         def yatay_sinir(x: int, y_tree: int, w: int) -> None:
@@ -297,7 +322,7 @@ class TreeviewExcelCizgi:
             if y_tree < 0 or y_tree >= tablo_h:
                 return
             # bordermode=ignore: tree iç kenar boşluğu tekrar eklenmez
-            cizgi(height=1, width=max(1, w)).place(
+            cizgi().place(
                 x=x, y=y_tree, width=max(1, w), height=1, bordermode="ignore"
             )
 
@@ -306,7 +331,7 @@ class TreeviewExcelCizgi:
                 return
             if x_tree < -2 or x_tree >= tablo_w + 2:
                 return
-            cizgi(width=1, height=max(1, h)).place(
+            cizgi().place(
                 x=x_tree, y=y_tree, width=1, height=max(1, h), bordermode="ignore"
             )
 
@@ -379,8 +404,10 @@ class TreeviewExcelCizgi:
             y = baslik_h
             rh = rh_stil
 
+        # Boş alan: tüm yüksekliği doldurmak yüzlerce Frame yaratıyordu; birkaç satır yeter
         guvenlik = 0
-        while y + rh <= tablo_h and guvenlik < 100 and kolon_xw:
+        max_bos = 6
+        while y + rh <= tablo_h and guvenlik < max_bos and kolon_xw:
             for sira, (x, w) in enumerate(kolon_xw):
                 if x + w < 0:
                     continue
@@ -391,9 +418,16 @@ class TreeviewExcelCizgi:
             y += rh
             guvenlik += 1
 
+        # Kullanılmayan havuz çerçevelerini kaldır
+        for fr in havuz[kullanilan:]:
+            try:
+                fr.destroy()
+            except tk.TclError:
+                pass
+
         # Çizgiler Treeview seçim boyasının üstünde kalsın; vurgulu/edit
         # etiketleri yenile_sonrasi ile çizgilerin üstüne alınır.
-        for fr in cizgiler:
+        for fr in self._cizgiler:
             try:
                 fr.lift()
             except tk.TclError:

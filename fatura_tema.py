@@ -365,13 +365,21 @@ BUTON_PALET = {
         "yazi": "#FFFFFF",
         "kenar": "#315653",
     },
-    # C) Yardımcı işlemler
+    # C) Yardımcı işlemler — açık paneller (Müşteri/Depo vb.)
     "yardimci": {
         "zemin": "#E7EDF3",
         "hover": "#D8E3ED",
         "basili": "#CCD9E5",
         "yazi": "#24374A",
         "kenar": "#BBC8D4",
+    },
+    # C2) Lacivert şerit üzerinde yardımcı — açık «sticker» plaka yok
+    "yardimci_koyu": {
+        "zemin": "#163E66",
+        "hover": "#1A4A78",
+        "basili": "#0F2F52",
+        "yazi": "#FFFFFF",
+        "kenar": "#2A5A8A",
     },
     # D) Sil / iptal
     "sil": {
@@ -381,6 +389,13 @@ BUTON_PALET = {
         "yazi": "#8B3540",
         "kenar": "#CFADB2",
     },
+    "sil_koyu": {
+        "zemin": "#5C2A32",
+        "hover": "#6E323C",
+        "basili": "#4A2229",
+        "yazi": "#F7D6DA",
+        "kenar": "#7A3E48",
+    },
     # Devre dışı (Onayla/Onaylı hariç)
     "disabled": {
         "zemin": "#E3E7EB",
@@ -388,6 +403,13 @@ BUTON_PALET = {
         "basili": "#E3E7EB",
         "yazi": "#5D6874",
         "kenar": "#CDD5DD",
+    },
+    "disabled_koyu": {
+        "zemin": "#143250",
+        "hover": "#143250",
+        "basili": "#143250",
+        "yazi": "#7A8FA8",
+        "kenar": "#1E4060",
     },
     # Onayla (kırmızı — genel palet uygulanmaz)
     "onayla": {
@@ -424,14 +446,13 @@ _BUTON_ROL_ESLE = {
 }
 
 # İki kompakt ölçü grubu (birbirine eşit olmak zorunda değil)
-# Panel içi: Yeni / Ara / Cari Kart — ~60–76 × 22–24
+# Panel içi: Yeni / Ara / Cari Kart — boyutlar korunur (~60–76 × 22–24)
 FATURA_PANEL_BUTON_ETIKETLER = ("Yeni", "Ara", "Cari Kart")
-# Panel dışı (üst şerit + satır araçları + tahsilat): ~112–140 × 26–30
+# Panel dışı (üst şerit + satır araçları): eşit kompakt ölçü (~90–112 × 24–26)
 FATURA_DIS_BUTON_ETIKETLER = (
     "Fatura Listesi (F3)",
     "Kaydet (F1)",
     "Güncelle (F1)",
-    "Tahsilatı Kaydet (F1)",
     "Onayla (F4)",
     "Onaylı",
     "Yeni",
@@ -449,9 +470,6 @@ FATURA_DIS_BUTON_ETIKETLER = (
     "Dağıtımı Geri Al",
     "Satır Sil",
     "Satır İşlemleri ▾",
-    "Tahsilat Ekle",
-    "Tahsilat Düzenle",
-    "Tahsilat Kaldır",
 )
 
 # Geriye uyumluluk
@@ -518,12 +536,12 @@ def fatura_buton_olculeri(
             root,
             FATURA_DIS_BUTON_ETIKETLER,
             font_pt=9,
-            h_min=26,
-            h_max=30,
-            h_hedef=28,
-            w_min=112,
-            w_max=140,
-            pad_x=16,
+            h_min=24,
+            h_max=26,
+            h_hedef=25,
+            w_min=90,
+            w_max=112,
+            pad_x=12,
         )
     _BUTON_OLCU_ONBELLEK[anahtar] = olcu
     return olcu
@@ -537,6 +555,31 @@ def fatura_buton_olcu_sifirla() -> None:
 def _palet_rol(rol: str) -> dict:
     anahtar = _BUTON_ROL_ESLE.get(rol, "yardimci")
     return BUTON_PALET.get(anahtar, BUTON_PALET["yardimci"])
+
+
+def _renk_koyu_mu(bg: str) -> bool:
+    """Lacivert toolbar / koyu zemin: açık gri oval plaka kullanılmasın."""
+    s = (bg or "").strip().lstrip("#").lower()
+    if not s:
+        return False
+    koyu_sabit = {
+        LACIVERT.lstrip("#").lower(),
+        LACIVERT_ORTA.lstrip("#").lower(),
+        LACIVERT_HOVER.lstrip("#").lower(),
+        "1b2a4a",
+        "0b2a4a",
+        "163e66",
+    }
+    if s in koyu_sabit:
+        return True
+    if len(s) == 6:
+        try:
+            r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+            # Göreli parlaklık
+            return (0.299 * r + 0.587 * g + 0.114 * b) < 90
+        except ValueError:
+            return False
+    return False
 
 
 class FaturaOvalButon(tk.Frame):
@@ -565,10 +608,12 @@ class FaturaOvalButon(tk.Frame):
             gh = int(yukseklik)
         # Toolbar lacivert üzerinde şeffaf görünüm için parent bg
         try:
-            bg_parent = parent.cget("bg")
+            bg_parent = str(parent.cget("bg") or ACIK_BG)
         except tk.TclError:
             bg_parent = ACIK_BG
         super().__init__(parent, bg=bg_parent, highlightthickness=0, bd=0)
+        self._bg_parent = bg_parent
+        self._koyu_ust = _renk_koyu_mu(bg_parent)
         self._metin = metin
         self._komut = komut
         self._rol = rol
@@ -605,8 +650,15 @@ class FaturaOvalButon(tk.Frame):
         self.cget = self._cget_api  # type: ignore[method-assign]
 
     def _renkler(self) -> dict:
+        eslenen = _BUTON_ROL_ESLE.get(self._rol, "yardimci")
         if not self._enabled and self._rol not in ("onayla", "onayli", "tehlike"):
-            return BUTON_PALET["disabled"]
+            return BUTON_PALET["disabled_koyu" if self._koyu_ust else "disabled"]
+        # Lacivert şeritte yardımcı/sil: paneldeki açık plaka yerine koyu kapsül
+        if self._koyu_ust:
+            if eslenen == "yardimci":
+                return BUTON_PALET["yardimci_koyu"]
+            if eslenen == "sil":
+                return BUTON_PALET["sil_koyu"]
         # Onaylı/onayla disabled olsa bile durum rengi korunsun
         return _palet_rol(self._rol)
 
@@ -628,21 +680,34 @@ class FaturaOvalButon(tk.Frame):
         c.delete("all")
         r = self._renkler()
         w, h = self._gw, self._gh
-        # Kompakt: 1 px gölge (alan tüketmesin)
-        if self._basili and self._enabled:
-            self._kapsul(1, 2, w - 1, h - 1, r["basili"], r["kenar"])
-            ty = h // 2 + 1
+        # Lacivert şerit: tek katmanlı kapsül (çift kenar / beyaz highlight yok → yama izi kalkar)
+        if self._koyu_ust:
+            if self._basili and self._enabled:
+                dolgu = r["basili"]
+                self._kapsul(1, 1, w - 1, h - 1, dolgu, r["kenar"])
+                ty = h // 2 + 1
+            else:
+                dolgu = r["hover"] if (self._hover and self._enabled) else r["zemin"]
+                self._kapsul(0, 0, w - 1, h - 1, dolgu, r["kenar"])
+                ty = h // 2
             yazi = r["yazi"]
+            if self._odak and self._enabled:
+                self._kapsul(1, 1, w - 2, h - 2, dolgu, ODAK_CERCVE)
         else:
-            self._kapsul(1, 2, w - 1, h - 1, r["kenar"])
-            dolgu = r["hover"] if (self._hover and self._enabled) else r["zemin"]
-            self._kapsul(0, 0, w - 2, h - 2, dolgu, r["kenar"])
-            isik = "#FFFFFF" if r["yazi"] == "#FFFFFF" or r["yazi"] == BEYAZ else "#F7FAFC"
-            c.create_line(6, 1, w - 6, 1, fill=isik, width=1)
-            ty = h // 2 - 1
-            yazi = r["yazi"]
-        if self._odak and self._enabled:
-            c.create_rectangle(0, 0, w - 1, h - 1, outline=ODAK_CERCVE, width=1)
+            if self._basili and self._enabled:
+                self._kapsul(1, 2, w - 1, h - 1, r["basili"], r["kenar"])
+                ty = h // 2 + 1
+                yazi = r["yazi"]
+            else:
+                self._kapsul(1, 2, w - 1, h - 1, r["kenar"])
+                dolgu = r["hover"] if (self._hover and self._enabled) else r["zemin"]
+                self._kapsul(0, 0, w - 2, h - 2, dolgu, r["kenar"])
+                isik = "#FFFFFF" if r["yazi"] in (BEYAZ, "#FFFFFF") else "#F7FAFC"
+                c.create_line(6, 1, w - 6, 1, fill=isik, width=1)
+                ty = h // 2 - 1
+                yazi = r["yazi"]
+            if self._odak and self._enabled:
+                c.create_rectangle(0, 0, w - 1, h - 1, outline=ODAK_CERCVE, width=1)
         c.create_text(w // 2, ty, text=self._metin, fill=yazi, font=self._font)
 
     def _bas(self, _e=None):
