@@ -108,11 +108,16 @@ class HizliStokKartiDialog(tk.Toplevel):
         baslangic: dict[str, Any] | None = None,
         mesaj_id: int | None = None,
         on_faturaya_ekle: Callable[[Any], None] | None = None,
+        satir_guncelle: Callable[[Any], None] | None = None,
+        barkod_kod_kopyala: bool = True,
+        odak_urun_adi: bool = False,
     ):
         super().__init__(parent)
         self.fatura_dialog = fatura_dialog or parent
         self.mesaj_id = mesaj_id
         self.on_faturaya_ekle = on_faturaya_ekle
+        self.satir_guncelle = satir_guncelle
+        self._odak_urun_adi = bool(odak_urun_adi)
         self.result = None
         self.title("Hızlı Stok Kartı")
         self.geometry("520x560")
@@ -138,7 +143,9 @@ class HizliStokKartiDialog(tk.Toplevel):
 
         bas = dict(baslangic or {})
         if not bas.get("stok_adi"):
-            bas["stok_adi"] = _urun_adi_arama(self.fatura_dialog)
+            # Satırdan açılışta boş ad bırak (odak ürün adı); şeritten açılışta arama metni
+            if not self.satir_guncelle:
+                bas["stok_adi"] = _urun_adi_arama(self.fatura_dialog)
         if not bas.get("depo"):
             bas["depo"] = _depo_fatura(self.fatura_dialog)
         if not bas.get("para_birimi"):
@@ -151,9 +158,9 @@ class HizliStokKartiDialog(tk.Toplevel):
             except Exception:
                 bas["kdv_orani"] = Decimal("20")
         if not bas.get("stok_kodu"):
-            # Barkod bulunamadı: hem stok kodu hem barkod aynı 13 haneli kod
             bar_aday = str(bas.get("barkod") or "").strip()
-            if bar_aday.isdigit() and len(bar_aday) == 13:
+            # Satırdan gelen ham barkodu stok koduna kopyalama (üretim ayrı kalsın)
+            if barkod_kod_kopyala and bar_aday.isdigit() and len(bar_aday) == 13:
                 bas["stok_kodu"] = bar_aday
             else:
                 try:
@@ -168,7 +175,7 @@ class HizliStokKartiDialog(tk.Toplevel):
 
         kod0 = normalize_stock_code_as_text(bas.get("stok_kodu"))
         bar0 = normalize_stock_code_as_text(bas.get("barkod"))
-        if is_13_digit_barcode(kod0) and not bar0:
+        if barkod_kod_kopyala and is_13_digit_barcode(kod0) and not bar0:
             bas["barkod"] = kod0
 
         self._alanlar: dict[str, tk.Variable | ttk.Combobox | ttk.Entry] = {}
@@ -219,11 +226,15 @@ class HizliStokKartiDialog(tk.Toplevel):
         self.barkod.insert(0, bas.get("barkod") or "")
         _satir("Barkod", r, self.barkod)
         r += 1
-        self._barkod_otomatik = bool(
-            is_13_digit_barcode(self.kod.get())
-            and normalize_stock_code_as_text(self.barkod.get())
-            == normalize_stock_code_as_text(self.kod.get())
-        )
+        if self.satir_guncelle is not None and (bas.get("barkod") or "").strip():
+            # Satırdan gelen ham barkod kullanıcı verisi — stok kodu yazınca ezilmesin
+            self._barkod_otomatik = False
+        else:
+            self._barkod_otomatik = bool(
+                is_13_digit_barcode(self.kod.get())
+                and normalize_stock_code_as_text(self.barkod.get())
+                == normalize_stock_code_as_text(self.kod.get())
+            )
         self.kod.bind("<KeyRelease>", self._stok_kodu_barkod_doldur)
         self.marka = ttk.Entry(govde, width=36)
         self.marka.insert(0, bas.get("marka") or "")
@@ -273,17 +284,35 @@ class HizliStokKartiDialog(tk.Toplevel):
         alt = ttk.Frame(govde)
         alt.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(alt, text="Vazgeç", command=self.destroy).pack(side="right")
-        ttk.Button(
-            alt, text="Kaydet ve Faturaya Ekle", command=lambda: self._kaydet(faturaya=True)
-        ).pack(side="right", padx=6)
-        ttk.Button(alt, text="Kaydet", command=lambda: self._kaydet(faturaya=False)).pack(
-            side="right"
-        )
+        if self.satir_guncelle is not None:
+            ttk.Button(
+                alt, text="Kaydet ve Satıra Uygula", command=lambda: self._kaydet(faturaya=True)
+            ).pack(side="right", padx=6)
+            ttk.Button(alt, text="Kaydet", command=lambda: self._kaydet(faturaya=True)).pack(
+                side="right", padx=6
+            )
+        else:
+            ttk.Button(
+                alt, text="Kaydet ve Faturaya Ekle", command=lambda: self._kaydet(faturaya=True)
+            ).pack(side="right", padx=6)
+            ttk.Button(alt, text="Kaydet", command=lambda: self._kaydet(faturaya=False)).pack(
+                side="right"
+            )
         ttk.Button(alt, text="Detaylı Stok Kartını Aç", command=self._detayli_ac).pack(
             side="left"
         )
 
         self.ad.focus_set()
+        if self._odak_urun_adi:
+            self.after(80, self._odak_ada)
+
+    def _odak_ada(self) -> None:
+        try:
+            self.ad.focus_set()
+            self.ad.selection_range(0, "end")
+            self.ad.icursor("end")
+        except tk.TclError:
+            pass
 
     def _stok_kodu_barkod_doldur(self, _event=None):
         from database.stok_kodu_barkod_service import (
@@ -291,6 +320,10 @@ class HizliStokKartiDialog(tk.Toplevel):
             normalize_stock_code_as_text,
         )
 
+        # Satırdan getirilen ham barkodu stok kodu yazınca ezme
+        if self.satir_guncelle is not None and (self.barkod.get() or "").strip():
+            if not getattr(self, "_barkod_otomatik", False):
+                return
         kod = normalize_stock_code_as_text(self.kod.get())
         bar = normalize_stock_code_as_text(self.barkod.get())
         if is_13_digit_barcode(kod):
@@ -401,7 +434,15 @@ class HizliStokKartiDialog(tk.Toplevel):
         if cakisan is not None:
             karar = self._mukerrer_dialog(cakisan)
             if karar == "ekle":
-                self._mevcut_faturaya_ekle(cakisan)
+                # Mevcut ürünü satıra eşleştir; başka kartın barkodunu silme/taşıma
+                if self.satir_guncelle is not None:
+                    try:
+                        self.satir_guncelle(cakisan)
+                    except Exception as exc:
+                        messagebox.showerror("Belge", str(exc), parent=self)
+                        return
+                else:
+                    self._mevcut_faturaya_ekle(cakisan)
                 self.destroy()
                 return
             if karar == "ac":
@@ -464,7 +505,13 @@ class HizliStokKartiDialog(tk.Toplevel):
             except Exception:
                 _LOG.exception("mesaj çözüldü işaretlenemedi")
 
-        if faturaya:
+        if self.satir_guncelle is not None:
+            try:
+                self.satir_guncelle(stok)
+            except Exception as exc:
+                messagebox.showerror("Belge", str(exc), parent=self)
+                return
+        elif faturaya:
             self._mevcut_faturaya_ekle(stok, fiyat_hint=veri.get("satis_fiyati"))
             if self.on_faturaya_ekle:
                 try:
@@ -618,6 +665,9 @@ def hizli_stok_karti_ac(
     urun_adi: str | None = None,
     mesaj_id: int | None = None,
     on_faturaya_ekle: Callable | None = None,
+    satir_guncelle: Callable | None = None,
+    barkod_kod_kopyala: bool = True,
+    odak_urun_adi: bool = False,
 ):
     """Yetki kontrolü + pencere aç."""
     if not yetki_var("stok_duzenleme", "yeni_kayit"):
@@ -630,8 +680,9 @@ def hizli_stok_karti_ac(
     bas = {}
     if barkod:
         bas["barkod"] = str(barkod).strip()
-        # Barkod bulunamadı → stok kodu da aynı metin
-        bas["stok_kodu"] = str(barkod).strip()
+        # Ham barkodu stok koduna ancak açıkça istenirse kopyala
+        if barkod_kod_kopyala:
+            bas["stok_kodu"] = str(barkod).strip()
     if urun_adi:
         bas["stok_adi"] = urun_adi
     dlg = HizliStokKartiDialog(
@@ -640,6 +691,9 @@ def hizli_stok_karti_ac(
         baslangic=bas,
         mesaj_id=mesaj_id,
         on_faturaya_ekle=on_faturaya_ekle,
+        satir_guncelle=satir_guncelle,
+        barkod_kod_kopyala=barkod_kod_kopyala,
+        odak_urun_adi=odak_urun_adi or bool(satir_guncelle),
     )
     fatura_dialog.wait_window(dlg)
     return dlg.result

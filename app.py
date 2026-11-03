@@ -10083,6 +10083,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             except tk.TclError:
                 pass
         self._vurgulu_overlayler = []
+        for w in getattr(self, "_yeni_urun_btnler", []) or []:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self._yeni_urun_btnler = []
 
     def _fatura_satir_vurgulu_overlay_ciz(self) -> None:
         """Yalnızca ürün adı / miktar / birim / net tutar hücrelerini büyük+koyu çiz."""
@@ -10148,6 +10154,14 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     metin = ""
                 # 1 px iç boşluk: Excel satır/sütun çizgisi harflerin üstüne binmesin
                 ic = 1
+                yer_w = max(2, w - 2 * ic)
+                if kolon == "urun_adi":
+                    try:
+                        from fatura_satir_yeni_urun import urun_adi_overlay_genislik_kis
+
+                        yer_w = urun_adi_overlay_genislik_kis(yer_w)
+                    except Exception:
+                        yer_w = max(2, yer_w - 26)
                 lbl = tk.Label(
                     tablo,
                     text=str(metin),
@@ -10161,7 +10175,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 lbl.place(
                     x=x + ic,
                     y=y + ic,
-                    width=max(2, w - 2 * ic),
+                    width=yer_w,
                     height=max(2, h - 2 * ic),
                 )
 
@@ -10207,6 +10221,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 lbl.bind("<Button-1>", _sec)
                 lbl.bind("<Double-1>", _cift)
                 self._vurgulu_overlayler.append(lbl)
+        try:
+            from fatura_satir_yeni_urun import yeni_urun_arti_butonlarini_ciz
+
+            yeni_urun_arti_butonlarini_ciz(self)
+        except Exception:
+            pass
 
     def _fatura_satir_vurgulu_kolon_basliklari(self) -> None:
         """Geriye uyumluluk — overlay kullanılıyor."""
@@ -10529,6 +10549,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         return True
 
     def _hizli_stok_karti_ac(self):
+        from fatura_satir_yeni_urun import _secili_satir_idx, satirdan_yeni_urun_ac
         from hizli_stok_karti_ui import hizli_stok_karti_ac
 
         if getattr(self, "_fatura_kilitli", False):
@@ -10537,6 +10558,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 "Onaylı faturada stok kartı eklemek için önce Onay Kaldır yapın.",
                 parent=self,
             )
+            return
+        # Aktif ürün satırı varken aynı satır bağlamını kullan
+        idx = _secili_satir_idx(self)
+        if idx is not None:
+            satirdan_yeni_urun_ac(self, idx)
             return
         giris = getattr(self, "_satir_ici_giris", None)
         if giris is not None:

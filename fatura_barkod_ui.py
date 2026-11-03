@@ -116,15 +116,101 @@ def belge_kancasi(dialog, ad: str):
     return getattr(dialog, ad)
 
 
-def _satir_birlestirilebilir(mevcut: dict, yeni: dict, *, depo: str) -> bool:
-    """Aynı stok/birim/fiyat/iskonto/KDV/depo/PB — özel satırlar birleşmez.
+def _satir_uid_ver(satir: dict) -> str:
+    """Kararlı satır kimliği — ekran sıra numarasına dayanmaz."""
+    uid = (satir.get("satir_uid") or "").strip()
+    if uid:
+        return uid
+    import uuid
 
-    Not: Barkod okutma akışı artık birleştirmez (her okuma ayrı satır).
-    Bu yardımcı diğer çağrılar / testler için korunur.
-    """
+    uid = uuid.uuid4().hex
+    satir["satir_uid"] = uid
+    return uid
+
+
+def _barkod_hedef_harita(dialog) -> dict:
+    h = getattr(dialog, "_barkod_hedef_map", None)
+    if h is None:
+        h = {}
+        dialog._barkod_hedef_map = h
+    return h
+
+
+def _barkod_hedef_kaydet(dialog, barkod: str, satir: dict) -> None:
+    kod = barkod_temizle(barkod)
+    if not kod:
+        return
+    _barkod_hedef_harita(dialog)[kod] = _satir_uid_ver(satir)
+
+
+def _barkod_satir_indeksi(dialog, barkod: str) -> int | None:
+    """Bu faturada barkodun tarama hedefi: önce harita, sonra belge sırası."""
+    kod = barkod_temizle(barkod)
+    if not kod:
+        return None
+    satirlar = getattr(dialog, "satirlar", None) or []
+    harita = _barkod_hedef_harita(dialog)
+    uid = harita.get(kod)
+    if uid:
+        for i, s in enumerate(satirlar):
+            if (s.get("satir_uid") or "") != uid:
+                continue
+            sb = barkod_temizle(s.get("barkod") or s.get("ham_barkod") or "")
+            if sb == kod:
+                return i
+            # Barkod değişmiş — hedef geçersiz
+            break
+        harita.pop(kod, None)
+    for i, s in enumerate(satirlar):
+        if s.get("siparis_satiri_id") or s.get("irsaliye_satiri_id"):
+            continue
+        sb = barkod_temizle(s.get("barkod") or s.get("ham_barkod") or "")
+        if sb == kod:
+            harita[kod] = _satir_uid_ver(s)
+            return i
+    return None
+
+
+def _miktar_artir(dialog, idx: int, *, miktar_ekle: Decimal = Decimal("1")) -> int | None:
+    """Mevcut satırda miktar +1; fiyat/iskonto dokunulmaz."""
+    from fatura_satir_birim_service import temel_miktar
+    from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
+
+    if not (0 <= idx < len(dialog.satirlar)):
+        return None
+    mevcut = dialog.satirlar[idx]
+    yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
+    artis_onayla = belge_kancasi(dialog, "_satir_miktar_artisi_onayla")
+    if artis_onayla is not None and not artis_onayla(mevcut, yeni_miktar):
+        _durum_yaz(dialog, f"Miktar artırılmadı: {mevcut.get('urun_adi') or mevcut.get('barkod') or ''}", hata=True)
+        return None
+    uzlasma_etkisini_kaldir(dialog, yalniz_referansli=True)
+    mevcut["miktar"] = str(yeni_miktar)
+    mevcut["temel_miktar"] = str(
+        temel_miktar(
+            yeni_miktar,
+            mevcut.get("birim") or "Adet",
+            (mevcut.get("urun_kodu") or "").strip(),
+        )
+    )
+    dialog._fatura_satirlari_hazir = True
+    dialog._duzenlenen_satir = None
+    dialog._satir_listesini_yenile()
+    dialog._toplamlari_guncelle()
+    etiket = "cozulmemis_vurgu" if satir_cozulmemis_mi(mevcut) else "barkod_vurgu"
+    _satiri_vurgula(dialog, idx, etiket=etiket)
+    ad = (mevcut.get("urun_adi") or "").strip() or (mevcut.get("barkod") or "")
+    _durum_yaz(dialog, f"{ad} → miktar {mevcut.get('miktar')}")
+    dialog._son_barkod_idx = idx
+    return idx
+
+
+def _satir_birlestirilebilir(mevcut: dict, yeni: dict, *, depo: str) -> bool:
+    """Aynı stok/birim/fiyat/iskonto/KDV/depo/PB — özel satırlar birleşmez."""
     if mevcut.get("siparis_satiri_id") or mevcut.get("irsaliye_satiri_id"):
         return False
-    if mevcut.get("cozulmemis") or yeni.get("cozulmemis"):
+    # Çözülmemiş satırlar yalnız aynı barkodla (_barkod_satir_indeksi) birleşir
+    if satir_cozulmemis_mi(mevcut) or satir_cozulmemis_mi(yeni):
         return False
     if (mevcut.get("urun_kodu") or "").strip() != (yeni.get("urun_kodu") or "").strip():
         return False
@@ -486,7 +572,7 @@ def _barkod_olayi_isle(dialog, olay: dict) -> None:
                 )
             else:
                 dialog._son_barkod_idx = _satira_uygula(
-                    dialog, kayit, okutulan_barkod=kod, birlestir=False
+                    dialog, kayit, okutulan_barkod=kod, birlestir=True
                 )
                 _ses_basari()
         elif durum == "coklu":
@@ -666,8 +752,11 @@ def _coklu_sec(dialog, liste: list[dict]) -> dict | None:
 
 def _cozulmemis_sablon(barkod: str, *, neden: str = "") -> dict:
     """Ürün adı boş, miktar 1, stok uydurulmamış satır."""
+    import uuid
+
     kod = barkod_temizle(barkod)
     return {
+        "satir_uid": uuid.uuid4().hex,
         "urun_kodu": kod,  # Barkod sütunu varsa oraya da yazılır; kod alanında da görünür
         "urun_adi": "",
         "aciklama": "",
@@ -702,8 +791,14 @@ def _cozulmemis_sablon(barkod: str, *, neden: str = "") -> dict:
 def _cozulmemis_satir_ekle(
     dialog, barkod: str, *, neden: str = "", sira_id: int | None = None
 ) -> int | None:
-    """Tanımsız/çakışan barkodu ürün adı boş satıra yazar; modal açmaz."""
+    """Tanımsız/çakışan barkodu ürün adı boş satıra yazar; aynı barkodda miktar artar."""
     from satir_ici_urun_giris import ekleme_konumu
+
+    kod = barkod_temizle(barkod)
+    # Aynı tanımsız barkod → mevcut boş adlı satırda miktar +1
+    idx_mevcut = _barkod_satir_indeksi(dialog, kod)
+    if idx_mevcut is not None and satir_cozulmemis_mi(dialog.satirlar[idx_mevcut]):
+        return _miktar_artir(dialog, idx_mevcut)
 
     konum = ekleme_konumu(dialog)
     sablon = _cozulmemis_sablon(barkod, neden=neden)
@@ -722,11 +817,12 @@ def _cozulmemis_satir_ekle(
         if hazir is None:
             _durum_yaz(dialog, f"Eklenmedi: {barkod}", hata=True)
             return None
-        # Kancanın ürün adı doldurmasını engelle
         hazir["urun_adi"] = ""
         hazir["cozulmemis"] = True
         hazir["barkod"] = sablon["barkod"]
         hazir["ham_barkod"] = sablon["ham_barkod"]
+        if not hazir.get("satir_uid"):
+            hazir["satir_uid"] = sablon["satir_uid"]
         sablon = hazir
 
     from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
@@ -739,21 +835,21 @@ def _cozulmemis_satir_ekle(
         dialog.satirlar.append(sablon)
         idx = len(dialog.satirlar) - 1
 
+    _barkod_hedef_kaydet(dialog, kod, sablon)
     dialog._fatura_satirlari_hazir = True
     dialog._duzenlenen_satir = None
     dialog._satir_listesini_yenile()
     dialog._toplamlari_guncelle()
     _satiri_vurgula(dialog, idx, etiket="cozulmemis_vurgu")
     _durum_yaz(dialog, f"Tanımsız: {barkod} → satır {idx + 1}", hata=True)
-    # Mesaj paneli her taramada DB yazmasın (seri okutmayı yavaşlatır); satır yeterli.
     dialog._son_barkod_idx = idx
     return idx
 
 
 def _satira_uygula(
-    dialog, kayit: dict, *, okutulan_barkod: str, birlestir: bool = False
+    dialog, kayit: dict, *, okutulan_barkod: str, birlestir: bool = True
 ) -> int | None:
-    """Yeni satır ekle. birlestir=False (varsayılan): her okuma ayrı satır."""
+    """Yeni satır ekle veya aynı barkodda miktar +1 (varsayılan: birleştir)."""
     from satir_ici_urun_giris import ekleme_konumu
 
     konum = ekleme_konumu(dialog)
@@ -817,7 +913,10 @@ def _satira_uygula(
     except Exception:
         pb = "TRY"
 
+    import uuid
+
     sablon = {
+        "satir_uid": uuid.uuid4().hex,
         "urun_kodu": satir_kod or stok_kodu,
         "urun_adi": satir_ad or kayit.get("stok_adi") or "",
         "aciklama": "",
@@ -863,84 +962,103 @@ def _satira_uygula(
 
     hedef_idx = None
     if birlestir and konum is None:
-        for i, mevcut in enumerate(dialog.satirlar):
-            ayni_barkod = (
-                (mevcut.get("barkod") or "").strip() == (sablon["barkod"] or "").strip()
-                and bool(sablon["barkod"])
-            )
-            ayni_kod = (mevcut.get("urun_kodu") or "").strip() == sablon["urun_kodu"]
-            if (ayni_barkod or ayni_kod) and _satir_birlestirilebilir(
-                mevcut, sablon, depo=depo
-            ):
-                hedef_idx = i
-                break
+        aday = _barkod_satir_indeksi(dialog, okutulan_barkod or sablon["barkod"])
+        if aday is not None:
+            mevcut = dialog.satirlar[aday]
+            if satir_cozulmemis_mi(mevcut):
+                # Aynı barkodlu boş adlı satırı ürünle doldur; bu tarama miktarı +1
+                from fatura_urun_aktar_service import stoktan_satir_sablonu
 
-    if hedef_idx is None:
-        try:
-            maliyetler = StokService.maliyetler(sablon["urun_kodu"], depo) if depo else {}
-            for alan, anahtar in (
-                ("fifo_birim_maliyeti", "fifo"),
-                ("son_alis_birim_maliyeti", "son_alis"),
-                ("ortalama_birim_maliyeti", "ortalama"),
-                ("agirlikli_ortalama_birim_maliyeti", "agirlikli"),
-            ):
-                sablon[alan] = str(maliyetler.get(anahtar, 0))
-        except Exception:
-            pass
-        hazirla = belge_kancasi(dialog, "_yeni_satir_hazirla")
-        if hazirla is not None:
-            hazir = hazirla(sablon)
-            if hazir is None:
-                _durum_yaz(
-                    dialog,
-                    f"Eklenmedi: {sablon.get('urun_adi') or sablon['urun_kodu']}",
-                    hata=True,
+                eski_miktar = _d(mevcut.get("miktar"), Decimal("1"))
+                ham = (mevcut.get("ham_barkod") or mevcut.get("barkod") or okutulan_barkod or "").strip()
+                uid = _satir_uid_ver(mevcut)
+                try:
+                    dolu = stoktan_satir_sablonu(
+                        dialog,
+                        urun_kodu=sablon["urun_kodu"],
+                        urun_adi=sablon["urun_adi"],
+                        birim=sablon["birim"],
+                        miktar=eski_miktar,
+                        product_id=product_id,
+                        barkod=ham or sablon["barkod"],
+                    )
+                except TypeError:
+                    dolu = dict(sablon)
+                    dolu["miktar"] = str(eski_miktar)
+                except Exception:
+                    dolu = dict(sablon)
+                    dolu["miktar"] = str(eski_miktar)
+                dolu["satir_uid"] = uid
+                dolu["ham_barkod"] = ham
+                dolu["barkod"] = ham or dolu.get("barkod") or sablon["barkod"]
+                dolu["cozulmemis"] = False
+                dolu.pop("cozulmemis_neden", None)
+                dialog.satirlar[aday] = dolu
+                _barkod_hedef_kaydet(dialog, okutulan_barkod or ham, dolu)
+                return _miktar_artir(dialog, aday, miktar_ekle=miktar_ekle)
+            if _satir_birlestirilebilir(mevcut, sablon, depo=depo):
+                hedef_idx = aday
+        if hedef_idx is None:
+            for i, mevcut in enumerate(dialog.satirlar):
+                ayni_barkod = (
+                    barkod_temizle(mevcut.get("barkod") or mevcut.get("ham_barkod") or "")
+                    == barkod_temizle(okutulan_barkod or sablon["barkod"] or "")
+                    and bool(okutulan_barkod or sablon["barkod"])
                 )
-                return None
-            sablon = hazir
-    else:
-        artis_onayla = belge_kancasi(dialog, "_satir_miktar_artisi_onayla")
-        mevcut = dialog.satirlar[hedef_idx]
-        if artis_onayla is not None and not artis_onayla(
-            mevcut, _d(mevcut.get("miktar")) + miktar_ekle
+                ayni_kod = (mevcut.get("urun_kodu") or "").strip() == sablon["urun_kodu"]
+                if (ayni_barkod or ayni_kod) and _satir_birlestirilebilir(
+                    mevcut, sablon, depo=depo
+                ):
+                    hedef_idx = i
+                    break
+
+    if hedef_idx is not None:
+        _barkod_hedef_kaydet(dialog, okutulan_barkod or sablon["barkod"], dialog.satirlar[hedef_idx])
+        return _miktar_artir(dialog, hedef_idx, miktar_ekle=miktar_ekle)
+
+    try:
+        maliyetler = StokService.maliyetler(sablon["urun_kodu"], depo) if depo else {}
+        for alan, anahtar in (
+            ("fifo_birim_maliyeti", "fifo"),
+            ("son_alis_birim_maliyeti", "son_alis"),
+            ("ortalama_birim_maliyeti", "ortalama"),
+            ("agirlikli_ortalama_birim_maliyeti", "agirlikli"),
         ):
+            sablon[alan] = str(maliyetler.get(anahtar, 0))
+    except Exception:
+        pass
+    hazirla = belge_kancasi(dialog, "_yeni_satir_hazirla")
+    if hazirla is not None:
+        hazir = hazirla(sablon)
+        if hazir is None:
             _durum_yaz(
-                dialog, f"Miktar artırılmadı: {mevcut.get('urun_adi') or ''}", hata=True
+                dialog,
+                f"Eklenmedi: {sablon.get('urun_adi') or sablon['urun_kodu']}",
+                hata=True,
             )
             return None
+        if not hazir.get("satir_uid"):
+            hazir["satir_uid"] = sablon["satir_uid"]
+        sablon = hazir
 
     from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
 
     uzlasma_etkisini_kaldir(dialog, yalniz_referansli=True)
-    if hedef_idx is not None:
-        mevcut = dialog.satirlar[hedef_idx]
-        yeni_miktar = _d(mevcut.get("miktar")) + miktar_ekle
-        mevcut["miktar"] = str(yeni_miktar)
-        mevcut["temel_miktar"] = str(
-            temel_miktar(
-                yeni_miktar, mevcut.get("birim") or birim_satir, sablon["urun_kodu"]
-            )
-        )
-        if not (mevcut.get("barkod") or "").strip() and sablon["barkod"]:
-            mevcut["barkod"] = sablon["barkod"]
-        idx = hedef_idx
-        artis = True
-    else:
-        sablon["temel_miktar"] = str(ek_temel)
-        if hasattr(dialog, "_doviz_para_birimi"):
-            try:
-                from doviz_fatura_panel import doviz_satir_kaydet_oncesi
+    sablon["temel_miktar"] = str(ek_temel)
+    if hasattr(dialog, "_doviz_para_birimi"):
+        try:
+            from doviz_fatura_panel import doviz_satir_kaydet_oncesi
 
-                sablon = doviz_satir_kaydet_oncesi(dialog, sablon)
-            except Exception:
-                pass
-        if konum is not None and 0 <= konum <= len(dialog.satirlar):
-            idx = konum
-            dialog.satirlar.insert(idx, sablon)
-        else:
-            dialog.satirlar.append(sablon)
-            idx = len(dialog.satirlar) - 1
-        artis = False
+            sablon = doviz_satir_kaydet_oncesi(dialog, sablon)
+        except Exception:
+            pass
+    if konum is not None and 0 <= konum <= len(dialog.satirlar):
+        idx = konum
+        dialog.satirlar.insert(idx, sablon)
+    else:
+        dialog.satirlar.append(sablon)
+        idx = len(dialog.satirlar) - 1
+    _barkod_hedef_kaydet(dialog, okutulan_barkod or sablon["barkod"], sablon)
 
     dialog._fatura_satirlari_hazir = True
     dialog._duzenlenen_satir = None
@@ -948,10 +1066,7 @@ def _satira_uygula(
     dialog._toplamlari_guncelle()
     _satiri_vurgula(dialog, idx)
     ad = sablon.get("urun_adi") or kayit.get("stok_adi") or kayit.get("stok_kodu")
-    if artis:
-        _durum_yaz(dialog, f"{ad} → miktar {dialog.satirlar[idx].get('miktar')}")
-    else:
-        _durum_yaz(dialog, f"Eklendi: {ad}")
+    _durum_yaz(dialog, f"Eklendi: {ad}")
     if hasattr(dialog, "barkod_okut_entry"):
         try:
             dialog.barkod_okut_entry.delete(0, "end")
@@ -967,6 +1082,7 @@ def _satira_uygula(
                     pass
     except Exception:
         pass
+    dialog._son_barkod_idx = idx
     return idx
 
 

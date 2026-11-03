@@ -1160,6 +1160,11 @@ class SatirIciUrunGirisi:
                     label="Ürünü Değiştir…", command=lambda: self.urun_degistir_baslat(idx), state=durum
                 )
             menu.add_command(label="Stok Kartını Aç", command=lambda: self.stok_karti_ac(idx))
+            menu.add_command(
+                label="Yeni Ürün Ekle",
+                command=lambda i=idx: self._satirdan_yeni_urun(i),
+                state=durum if self._stok_yetkisi() else "disabled",
+            )
         if self.kisa_urun and idx is None:
             menu.add_command(
                 label="Yeni Ürün Ekle (kısa)", command=self.yeni_kayit_ekle,
@@ -1698,6 +1703,16 @@ class SatirIciUrunGirisi:
             return bool(yetki_var("stok_duzenleme", "yeni_kayit"))
         except Exception:
             return True
+
+    def _satirdan_yeni_urun(self, idx: int):
+        from fatura_satir_yeni_urun import satirdan_yeni_urun_ac
+
+        self._popup_kapat()
+        self._modal_acik = True
+        try:
+            satirdan_yeni_urun_ac(self.dialog, idx)
+        finally:
+            self._modal_acik = False
 
     def yeni_stok_karti(self, *, satira_ekle: bool = False):
         """Hızlı stok kartını açar; kaydedilen kartı döner (iptalde None).
