@@ -41,7 +41,7 @@ def _mock_dialog(satirlar=None, depo="ANA DEPO"):
 
 
 def test_barkod_stok_yetersiz_miktar_yinede_artar():
-    """Stok 0 olsa bile 3 okutmada miktar 3; stok kontrolü çağrılmaz."""
+    """Stok 0 olsa bile 3 okutmada 3 satır (birleştirme yok); stok kontrolü çağrılmaz."""
     from fatura_barkod_ui import _satira_uygula
 
     dialog = _mock_dialog()
@@ -66,10 +66,10 @@ def test_barkod_stok_yetersiz_miktar_yinede_artar():
         "fatura_satir_birim_service.temel_miktar", side_effect=lambda m, b, k: Decimal(str(m))
     ):
         for _ in range(3):
-            _satira_uygula(dialog, kayit, okutulan_barkod="1031109304")
+            _satira_uygula(dialog, kayit, okutulan_barkod="1031109304", birlestir=False)
         kontrol.assert_not_called()
-    assert len(dialog.satirlar) == 1
-    assert Decimal(str(dialog.satirlar[0]["miktar"])) == Decimal("3")
+    assert len(dialog.satirlar) == 3
+    assert all(Decimal(str(s["miktar"])) == Decimal("1") for s in dialog.satirlar)
     dialog._satir_listesini_yenile.assert_called()
     dialog._toplamlari_guncelle.assert_called()
 

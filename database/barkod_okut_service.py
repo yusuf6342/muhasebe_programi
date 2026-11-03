@@ -17,11 +17,15 @@ _KONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def barkod_temizle(ham: str | None) -> str:
-    """Boşluk/kontrol karakterlerini temizler; güvenli barkod metni döner."""
+    """Boşluk/kontrol karakterlerini temizler; güvenli barkod metni döner.
+
+    Sayıya çevirmez; baştaki sıfırlar ve harf/rakam korunur. Üst sınır
+    stok barkod alanıyla uyumlu (100); rastgele EAN kısaltması yapılmaz.
+    """
     metin = (ham or "").strip()
     metin = _KONTROL.sub("", metin).strip()
-    if len(metin) > 64:
-        metin = metin[:64]
+    if len(metin) > 100:
+        metin = metin[:100]
     return metin
 
 

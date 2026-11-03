@@ -10337,6 +10337,11 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         )
         self._giris_irsaliye_btn.grid(row=0, column=2, sticky="w", padx=(0, gap), pady=0)
 
+        # Barkod: İrsaliyeden Getir ile Satır İşlemleri arasında — kesintisiz okutma
+        from fatura_barkod_ui import fatura_barkod_serit_alani_kur
+
+        fatura_barkod_serit_alani_kur(self, ic, column=3, gap=gap)
+
         # Uzlaşılan Tutar — Yeni Stok Kartı sağında; Fiyatları Düzenle / Dağıtımı Geri Al / Vazgeç
         uzlas_cer = ttk.Frame(ic, style="FaturaGiris.TFrame")
         uzlas_cer.grid(row=0, column=7, sticky="e", padx=0, pady=0)
@@ -10378,14 +10383,18 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         from fatura_yerlesim import satir_islemleri_dugmesi
 
         self._satir_islemleri_mb = satir_islemleri_dugmesi(self, ic)
-        self._satir_islemleri_mb.grid(row=0, column=3, sticky="w", padx=(0, gap))
+        self._satir_islemleri_mb.grid(row=0, column=4, sticky="w", padx=(0, gap))
 
         self._satir_ici_giris_kur()
+        # Şerit barkod alanı birincil odak; satır-içi giriş barkod_okut_entry'yi ezmesin
+        if getattr(self, "serit_barkod_entry", None) is not None:
+            self.barkod_okut_entry = self.serit_barkod_entry
         self.bind("<Alt-s>", self._fatura_siparisten_getir)
         self.bind("<Alt-S>", self._fatura_siparisten_getir)
         self.bind("<Alt-i>", self._fatura_irsaliyeden_getir)
         self.bind("<Alt-I>", self._fatura_irsaliyeden_getir)
         self.bind("<F6>", self._f6_hizli_stok)
+        self.bind("<F8>", self._barkod_odak)
 
         if butonlar is not None:
             try:
@@ -10399,6 +10408,12 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._barkod_isleniyor = False
         if not hasattr(self, "_barkod_durum"):
             self._barkod_durum = None
+        if not hasattr(self, "_barkod_kuyruk"):
+            from collections import deque
+
+            self._barkod_kuyruk = deque()
+        if not hasattr(self, "_barkod_nesil"):
+            self._barkod_nesil = 0
 
     def _f6_hizli_stok(self, _event=None):
         self._hizli_stok_karti_ac()
@@ -10424,7 +10439,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             fiyat_turu="satis",
             ilk_rol="barkod",
         )
-        self.barkod_okut_entry = giris.entry
+        # Şerit barkod birincil; yoksa satır-içi giriş
+        if getattr(self, "serit_barkod_entry", None) is None:
+            self.barkod_okut_entry = giris.entry
         self._satir_toplu_yenile = lambda: (self._satir_listesini_yenile(), self._toplamlari_guncelle())
 
     def _satir_ici_urun_ekle(self, degerler, konum):
@@ -10443,10 +10460,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
         self._son_barkod_idx = None
         self._satir_ekleme_konumu = konum
+        onceki_odak = getattr(self, "_barkod_odak_serit", True)
+        self._barkod_odak_serit = False  # satır-içi tarama şeride imleç çekmesin
         try:
             fatura_barkod_isle(self, metin)
         finally:
             self._satir_ekleme_konumu = None
+            self._barkod_odak_serit = onceki_odak
         return self._son_barkod_idx
 
     def _satir_ici_miktara_git(self, idx):
@@ -10480,6 +10500,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             product_id=product_id,
         )
         sablon["aciklama"] = eski.get("aciklama") or ""
+        # Okunan ham barkod izlensin; çözülmemiş işaret kalkar
+        ham = (eski.get("ham_barkod") or eski.get("barkod") or "").strip()
+        if ham and not (sablon.get("barkod") or "").strip():
+            sablon["barkod"] = ham
+        sablon["ham_barkod"] = ham or (sablon.get("barkod") or "")
+        sablon["cozulmemis"] = False
+        sablon.pop("cozulmemis_neden", None)
         hazirla = belge_kancasi(self, "_yeni_satir_hazirla")
         if hazirla is not None:
             sablon = hazirla(sablon)
@@ -11629,6 +11656,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 etiketler = tuple(etiketler) + ("manuel_fiyat",)
             if bool(veri.get("dagitima_kapali")):
                 etiketler = tuple(etiketler) + ("dagitima_kapali",)
+            try:
+                from fatura_barkod_ui import satir_cozulmemis_mi
+
+                if satir_cozulmemis_mi(veri):
+                    etiketler = tuple(etiketler) + ("cozulmemis",)
+            except Exception:
+                pass
             if sira in self._satir_isaretleri:
                 etiketler = tuple(etiketler) + ("isaretli",)
             # Birim Fiyat satırın PB'sinde; tutar kolonları TL (başlıklarda belirtilir)
@@ -11680,6 +11714,9 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             )
             self.satir_tablosu.tag_configure(
                 "dagitima_kapali", foreground="#6A1B9A"
+            )
+            self.satir_tablosu.tag_configure(
+                "cozulmemis", background="#FFF8E1", foreground="#5D4037"
             )
         except tk.TclError:
             pass
@@ -12395,12 +12432,16 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 bf_doviz = getattr(satir, "birim_fiyat_doviz", 0) or 0
                 if fatura_pb == "TRY":
                     bf_doviz = 0
+                _ad = (satir.urun_adi or "").strip()
+                _bk = (satir.barkod or "").strip()
                 self.satirlar.append({
                     "irsaliye_satiri_id": satir.irsaliye_satiri_id,
                     "siparis_satiri_id": satir.siparis_satiri_id,
                     "urun_kodu": satir.urun_kodu,
                     "urun_adi": satir.urun_adi,
                     "barkod": satir.barkod or "",
+                    "ham_barkod": _bk,
+                    "cozulmemis": (not _ad) and bool(_bk),
                     "aciklama": satir.aciklama or "",
                     "miktar": satir.miktar,
                     "birim": satir.birim,
@@ -13070,6 +13111,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 parent=self,
             )
             return
+        try:
+            from fatura_barkod_ui import cozulmemis_engelle_ve_yonlendir
+
+            if cozulmemis_engelle_ve_yonlendir(self):
+                return
+        except Exception:
+            pass
         self._kayit_isleniyor = True
         ilk_kayit = not (self.fatura and getattr(self.fatura, "id", None))
         try:
@@ -13180,6 +13228,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         if self.fatura and (self.fatura.durum or "") == "İPTAL":
             messagebox.showerror("Onay", "İptal edilmiş fatura onaylanamaz.", parent=self)
             return
+        try:
+            from fatura_barkod_ui import cozulmemis_engelle_ve_yonlendir
+
+            if cozulmemis_engelle_ve_yonlendir(self):
+                return
+        except Exception:
+            pass
         self._fatura_dogrulama_guncelle()
         if not messagebox.askyesno(
             "Faturayı onayla",
