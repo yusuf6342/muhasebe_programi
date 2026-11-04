@@ -20,9 +20,21 @@ class StokUyariAyari(Base):
 
     __tablename__ = "stok_uyari_ayarlari"
     __table_args__ = (
-        Index("uq_stok_uyari_ayar_urun", "stok_id", unique=True, sqlite_where=text("depo_id IS NULL")),
-        Index("uq_stok_uyari_ayar_depo", "stok_id", "depo_id", unique=True,
-              sqlite_where=text("depo_id IS NOT NULL")),
+        Index(
+            "uq_stok_uyari_ayar_urun",
+            "stok_id",
+            unique=True,
+            sqlite_where=text("depo_id IS NULL"),
+            postgresql_where=text("depo_id IS NULL"),
+        ),
+        Index(
+            "uq_stok_uyari_ayar_depo",
+            "stok_id",
+            "depo_id",
+            unique=True,
+            sqlite_where=text("depo_id IS NOT NULL"),
+            postgresql_where=text("depo_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -50,7 +62,14 @@ class StokUyariGenelAyar(Base):
 class StokIhtiyac(Base):
     __tablename__ = "stok_ihtiyaclari"
     __table_args__ = (
-        Index("uq_stok_ihtiyac_aktif", "stok_id", "depo_id", unique=True, sqlite_where=text("aktif = 1")),
+        Index(
+            "uq_stok_ihtiyac_aktif",
+            "stok_id",
+            "depo_id",
+            unique=True,
+            sqlite_where=text("aktif = 1"),
+            postgresql_where=text("aktif IS TRUE"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

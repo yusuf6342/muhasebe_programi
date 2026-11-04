@@ -528,9 +528,21 @@ def kasa_makbuz_schemasini_guncelle(hedef_engine) -> None:
     if not insp.has_table("kasa_makbuzlari"):
         return
     with hedef_engine.begin() as connection:
-        var = connection.execute(
-            text("SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_kasa_makbuz_no'")
-        ).first()
+        from database.dialect_utils import postgres_mi, sqlite_mi
+
+        if sqlite_mi(connection):
+            var = connection.execute(
+                text(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_kasa_makbuz_no'"
+                )
+            ).first()
+        else:
+            var = connection.execute(
+                text(
+                    "SELECT 1 FROM pg_indexes WHERE schemaname='public' "
+                    "AND indexname='ux_kasa_makbuz_no'"
+                )
+            ).first()
         if var:
             return
         mukerrer = connection.execute(
@@ -546,12 +558,20 @@ def kasa_makbuz_schemasini_guncelle(hedef_engine) -> None:
                 "ux_kasa_makbuz_no oluşturulmadı: mükerrer makbuz numarası var (%s)", mukerrer[0]
             )
             return
-        connection.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ux_kasa_makbuz_no ON kasa_makbuzlari "
-                "(upper(trim(makbuz_no))) WHERE makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"
+        if postgres_mi(connection):
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_kasa_makbuz_no ON kasa_makbuzlari "
+                    "(upper(btrim(makbuz_no))) WHERE makbuz_no IS NOT NULL AND btrim(makbuz_no) <> ''"
+                )
             )
-        )
+        else:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_kasa_makbuz_no ON kasa_makbuzlari "
+                    "(upper(trim(makbuz_no))) WHERE makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"
+                )
+            )
 
 
 def _para_birimi_normalize(kod: str | None) -> str | None:

@@ -789,6 +789,7 @@ Index(
     func.upper(func.trim(KasaMakbuzu.__table__.c.makbuz_no)),
     unique=True,
     sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+    postgresql_where=text("makbuz_no IS NOT NULL AND btrim(makbuz_no) <> ''"),
 )
 
 
@@ -827,6 +828,7 @@ Index(
     func.upper(func.trim(CariVirmanMakbuzu.__table__.c.makbuz_no)),
     unique=True,
     sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+    postgresql_where=text("makbuz_no IS NOT NULL AND btrim(makbuz_no) <> ''"),
 )
 
 

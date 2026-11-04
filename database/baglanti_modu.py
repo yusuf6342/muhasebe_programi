@@ -39,7 +39,7 @@ class PostgresBaglanti:
     # Firma DB adı uygulama içinde seçilir; burada varsayılan şablon
     kullanici: str = "cin_app"
     # Parola dosyada saklanmaz; Windows Credential Manager / env ile
-    sslmode: str = "require"
+    sslmode: str = "prefer"
     ortam: str = OrtamEtiketi.DENEME.value
     firma_db: str | None = None
     terminal_kimligi: str | None = None
@@ -95,7 +95,8 @@ class BaglantiAyari:
             port=int(pg_raw.get("port") or 5432),
             sistem_db=_db_adi_temizle(pg_raw.get("sistem_db") or "cin_sistem"),
             kullanici=str(pg_raw.get("kullanici") or "cin_app"),
-            sslmode=str(pg_raw.get("sslmode") or "require"),
+            # DENEME/local için prefer; üretimde verify-full önerilir (UI'dan seçilir)
+            sslmode=str(pg_raw.get("sslmode") or "prefer"),
             ortam=str(pg_raw.get("ortam") or OrtamEtiketi.DENEME.value),
             firma_db=(str(pg_raw["firma_db"]) if pg_raw.get("firma_db") else None),
             terminal_kimligi=(

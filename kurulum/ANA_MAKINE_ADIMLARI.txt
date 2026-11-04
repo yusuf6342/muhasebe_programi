@@ -1,0 +1,40 @@
+CİN MUHASEBE — ANA MAKİNEDE (DESKTOP-CGSE5GK) YAPILACAKLAR
+Tarih: 04.11.2026
+Bu dosya terminal (DESKTOP-FL08BVD) üzerinde hazırlanmıştır; sunucu kurulumu
+burada otomatik yapılmadı / yapıldığı iddia edilmez.
+
+Önkoşul: ping -4 DESKTOP-CGSE5GK terminalden başarılı (daha önce doğrulandı).
+Örnek IPv4: 192.168.1.114 — DHCP rezervasyonu yok; kurulum anında IP'yi yeniden
+doğrulayın. Bu adresi koda sabitlemeyin.
+
+1) PostgreSQL 17 (64 bit, kararlı) kurun
+   winget install --id PostgreSQL.PostgreSQL.17
+   Servisin çalıştığını doğrulayın (services.msc → postgresql-x64-17).
+
+2) Yönetici PowerShell, depo kökünde:
+   powershell -ExecutionPolicy Bypass -File kurulum\sunucu\01_pg_deneme_hazirla.ps1
+   (cin_sistem_deneme / cin_firma_deneme oluşturur; mevcut DB'leri silmez)
+
+3) postgresql.conf / pg_hba.conf / Windows Güvenlik Duvarı
+   — listen_addresses: LAN arayüzü
+   — hostssl … scram-sha-256 (trust / 0.0.0.0/0 yok)
+   — TCP 5432 yalnız Özel ağ + yetkili terminaller
+   — Modem WAN port yönlendirmesi yok
+
+4) TEST yedeğinden aktarım (canlı GERÇEK veri değil):
+   set MUHASEBE_PG_PASSWORD=...
+   .venv\Scripts\python.exe tools\_sqlite_to_postgres_gecis.py --dry-run
+   .venv\Scripts\python.exe tools\_sqlite_to_postgres_gecis.py --uygula ^
+     --hedef-host 127.0.0.1 --sistem-db cin_sistem_deneme --firma-db cin_firma_deneme
+   Mutabakat farkı varsa aktarımı başarılı saymayın (kurulum\GECIS_RAPORU.json).
+
+5) Ana PC Cin Muhasebe → Servis Sistem → Bağlantı Ayarları
+   Kip: Yerel ağ | Host: 127.0.0.1 | Ortam: DENEME | Bağlantıyı Sına | Kaydet
+   Masaüstü kısayolunda DENEME açıkça görünsün; GERÇEK kısayolu değişmesin.
+
+6) Terminal (FL08BVD vb.):
+   kurulum\terminal\01_baglanti_deneme.ps1 -AnaHost <GUNCEL_LAN_IP>
+   Programda aynı sunucu IP/port/firma/DENEME; Bağlantıyı Sına.
+   TCP True ≠ uygulama hazır; oturum + kayıt yenileme ayrıca doğrulanır.
+
+7) Yedek: kurulum\sunucu\02_pg_yedek_al.ps1

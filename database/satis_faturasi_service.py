@@ -1649,18 +1649,17 @@ class SatisFaturasiService:
         """RAY-00001 formatında artan satış fatura numarası (tek sorgu)."""
         from sqlalchemy import text
 
+        from database.belge_no_sql import max_sayisal_kuyruk
+
         onek = SATIS_FATURA_ONEKI
         with get_session() as session:
             try:
-                max_sira = session.execute(
-                    text(
-                        "SELECT MAX(CAST(SUBSTR(fatura_no, :bas) AS INTEGER)) "
-                        "FROM satis_faturalari WHERE fatura_no LIKE :patern "
-                        "AND SUBSTR(fatura_no, :bas) GLOB '[0-9]*'"
-                    ),
-                    {"bas": len(onek) + 1, "patern": f"{onek}%"},
-                ).scalar()
-                max_sira = int(max_sira or 0)
+                max_sira = max_sayisal_kuyruk(
+                    session,
+                    tablo="satis_faturalari",
+                    kolon="fatura_no",
+                    onek=onek,
+                )
             except Exception:
                 numaralar = session.scalars(
                     select(SatisFaturasi.fatura_no).where(

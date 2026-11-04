@@ -47,8 +47,23 @@ def sqlite_engine(db_path, *, echo: bool = False) -> Engine:
     return eng
 
 
+def _pg_connect_hazirlik(dbapi_connection, _connection_record) -> None:
+    """İlk bağlantıda tr_norm yoksa kur (her bağda hafif kontrol)."""
+    try:
+        cur = dbapi_connection.cursor()
+        cur.execute("SELECT 1 FROM pg_proc WHERE proname = 'tr_norm' LIMIT 1")
+        var = cur.fetchone()
+        if not var:
+            from database.pg_helpers import TR_NORM_SQL
+
+            cur.execute(TR_NORM_SQL)
+        cur.close()
+    except Exception:
+        _LOG.debug("tr_norm kurulum atlandı", exc_info=True)
+
+
 def postgres_engine(url: str, *, echo: bool = False) -> Engine:
-    return create_engine(
+    eng = create_engine(
         url,
         echo=echo,
         pool_pre_ping=True,
@@ -57,6 +72,8 @@ def postgres_engine(url: str, *, echo: bool = False) -> Engine:
         pool_timeout=PG_POOL_TIMEOUT,
         pool_recycle=PG_POOL_RECYCLE,
     )
+    event.listen(eng, "connect", _pg_connect_hazirlik)
+    return eng
 
 
 def sistem_engine_olustur(ayar: BaglantiAyari, *, sqlite_path=None, echo: bool = False) -> Engine:
@@ -71,8 +88,16 @@ def sistem_engine_olustur(ayar: BaglantiAyari, *, sqlite_path=None, echo: bool =
             "Bağlantı ayarlarından veya MUHASEBE_PG_PASSWORD ile tanımlayın."
         )
     try:
-        return postgres_engine(ayar.postgres.dsn_sistem(parola), echo=echo)
+        eng = postgres_engine(ayar.postgres.dsn_sistem(parola), echo=echo)
+        from database.schema_surum import schema_uyum_kontrol
+
+        schema_uyum_kontrol(eng)
+        return eng
     except Exception as exc:
+        from database.schema_surum import SchemaUyumsuzlugu
+
+        if isinstance(exc, SchemaUyumsuzlugu):
+            raise
         raise AgBaglantiHatasi(
             f"Sistem veritabanına bağlanılamadı ({ayar.postgres.ozet()}):\n{exc}"
         ) from exc

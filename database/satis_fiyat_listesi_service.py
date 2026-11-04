@@ -90,7 +90,9 @@ def stok_fiyat_schemasini_guncelle(eng: Engine | None = None) -> dict[str, Any]:
     yedek = _yedek_al(db_path) if db_path and db_path.is_file() else None
 
     with eng.begin() as conn:
-        canli = {r[1] for r in conn.execute(text("PRAGMA table_info(stok_fiyatlari)")).fetchall()}
+        from database.dialect_utils import kolon_adlari
+
+        canli = set(kolon_adlari(conn, "stok_fiyatlari"))
         for alan, tip in _STOK_FIYAT_EK_KOLONLAR.items():
             if alan in canli:
                 continue

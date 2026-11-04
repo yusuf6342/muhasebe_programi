@@ -17,10 +17,34 @@ from database.baglanti_modu import ayari_yukle
 from database.engine_factory import firma_engine_olustur
 
 
+def _pg_db_adi_coz(db_path: Path | str, firma_db: str | None) -> str | None:
+    """LAN: pg:cin_firma_x | yalnız db adı | ayar.firma_db."""
+    if firma_db:
+        return firma_db
+    ham = str(db_path or "").strip()
+    if ham.startswith("pg:"):
+        return ham[3:].strip() or None
+    # Dosya yolu değilse (slash/.db yok) doğrudan DB adı kabul et
+    if ham and "\\" not in ham and "/" not in ham and not ham.lower().endswith(".db"):
+        return ham
+    ayar = ayari_yukle()
+    return ayar.postgres.firma_db
+
+
 def _engine_olustur(db_path: Path, *, firma_db: str | None = None) -> Engine:
     """Varsayılan: yerel SQLite. LAN kipinde ayar dosyasındaki PostgreSQL."""
     ayar = ayari_yukle()
-    return firma_engine_olustur(ayar, sqlite_path=db_path, firma_db=firma_db)
+    if ayar.ag_mi:
+        ad = _pg_db_adi_coz(db_path, firma_db)
+        if not ad:
+            from database.engine_factory import AgBaglantiHatasi
+
+            raise AgBaglantiHatasi(
+                "Yerel ağ kipinde firma veritabanı adı yok. "
+                "Bağlantı Ayarları → Firma DB veya şirket kaydında pg:cin_firma_… kullanın."
+            )
+        return firma_engine_olustur(ayar, sqlite_path=None, firma_db=ad)
+    return firma_engine_olustur(ayar, sqlite_path=db_path, firma_db=None)
 
 
 class CompanyDatabase:
@@ -51,6 +75,23 @@ class CompanyDatabase:
         return self._engine is not None
 
     def open(self, company_id: int, db_path: str | Path) -> Engine:
+        ayar = ayari_yukle()
+        if ayar.ag_mi:
+            etiket = str(db_path)
+            if self._engine is not None and str(self._db_path) == etiket and self._company_id == company_id:
+                return self._engine
+            self.close()
+            self._engine = _engine_olustur(Path("."), firma_db=_pg_db_adi_coz(db_path, None))
+            self._session_factory = sessionmaker(
+                bind=self._engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+            )
+            self._company_id = company_id
+            self._db_path = Path(etiket)  # etiket; dosya değil
+            return self._engine
+
         yol = Path(db_path).resolve()
         if self._engine is not None and self._db_path == yol and self._company_id == company_id:
             return self._engine

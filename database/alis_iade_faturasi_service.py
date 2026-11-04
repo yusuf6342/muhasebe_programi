@@ -98,14 +98,16 @@ def kaynak_imzasi(urun_kodu: str, temel_miktar, cari_id, depo: str) -> str:
 
 def _no_uret(session) -> str:
     """AIF000001 biçiminde, firma veritabanında artan iade numarası (eşzamanlıda unique kısıtı korur)."""
+    from database.belge_no_sql import max_sayisal_kuyruk
+
     onek = "AIF"
     try:
-        en_buyuk = session.execute(
-            text(
-                "SELECT MAX(CAST(SUBSTR(iade_no, 4) AS INTEGER)) FROM alis_iade_faturalari "
-                "WHERE iade_no LIKE 'AIF%' AND SUBSTR(iade_no, 4) GLOB '[0-9]*'"
-            )
-        ).scalar()
+        en_buyuk = max_sayisal_kuyruk(
+            session,
+            tablo="alis_iade_faturalari",
+            kolon="iade_no",
+            onek=onek,
+        )
     except Exception:  # noqa: BLE001
         en_buyuk = None
     return f"{onek}{int(en_buyuk or 0) + 1:06d}"

@@ -1,0 +1,44 @@
+CİN MUHASEBE — DENEME AĞ SÜRÜMÜ DURUM (devam talimatı 2026-11-04)
+Dal: feature/yerel-ag-postgresql
+Bu makine (geliştirme/terminal): DESKTOP-FL08BVD
+İşyeri sunucu hedefi: DESKTOP-CGSE5GK (burada otomatik PG servis kurulumu YOK)
+
+Etiket: Kod ve kurulum paketleri ilerletildi; işyeri kabul testi bekliyor.
+Canlı kullanıma hazır iddiası YOKTUR.
+
+--- 7.4 Madde durumu ---
+
+PostgreSQL şema ve kullanılan modüllerin uyumluluğu: EKSİK (kısmi)
+  Kanıt: partial index postgresql_where; belge_no_sql (~); dialect kolon_adlari;
+  tr_norm PG SQL + connect hook; create_all migration tool. Hâlâ çok PRAGMA/
+  sqlite_master üretim yolu (envanter). Fiziksel PG create_all bu oturumda
+  çalıştırılamadı (bin var, servis/TCP yok / connection refused).
+
+Kaynak/hedef veri aktarımı mutabakatı: EKSİK
+  Kanıt: tools/_sqlite_to_postgres_gecis.py artık --uygula + sayım farkı raporu.
+  Gerçek PG hedefe --uygula DENENMEDİ (sunucu yok).
+
+Ana makine sunucu kurulumu ve servis başlangıcı: DENENMEDİ
+  Kanıt: kurulum/sunucu/01_pg_deneme_hazirla.ps1 + ANA_MAKINE_ADIMLARI.txt
+  hazır; DESKTOP-CGSE5GK üzerinde çalıştırılmadı.
+
+Terminal kurulumu ve aynı firmaya gerçek bağlantı: DENENMEDİ
+  Kanıt: kurulum/terminal/01_baglanti_deneme.ps1; TCP örneği 192.168.1.114:5432
+  (IP DHCP — sabitleme). Uygulama oturumu denenmedi.
+
+Eşzamanlı kayıt/onay, çakışma ve bağlantı kopması: DENENMEDİ / EKSİK
+  Kanıt: kodda atomik row_version güçlendirmesi tam değil; LAN testi yok.
+
+Yeni terminal ekleme ve ölçülmüş kapasite: DENENMEDİ
+  Mimari sınır yok; ölçüm yapılmadı.
+
+Yedekten geri yükleme: EKSİK
+  Kanıt: 02_pg_yedek_al.ps1 (pg_dump kümesi); restore denemesi yok.
+
+Alt toplam/ürün satırı/barkod/yazıcı: DENENMEDİ (ağda)
+  Önceki SQLite düzeltmeleri korunmalı; ağda doğrulanmadı. Fiziksel barkod/yazıcı yok.
+
+--- Kullanıcıdan gereken ---
+1) DESKTOP-CGSE5GK: ANA_MAKINE_ADIMLARI.txt adımları
+2) Güncel LAN IP ile terminal TCP + Bağlantıyı Sına
+3) DENEME’de eşzamanlı fatura / Wi-Fi kopma kabul testi
