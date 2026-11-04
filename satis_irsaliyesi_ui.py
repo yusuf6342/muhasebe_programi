@@ -519,7 +519,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         )
 
     def _notlar_ve_toplam(self):
-        frame = self._panel("Açıklama, Notlar ve Toplamlar")
+        frame = self._panel("Açıklama ve Notlar")
         self._girdi(frame, 0, 0, "Açıklama", "aciklama", width=60, colspan=5)
         for i, metin in enumerate(("Müşteri Notu (çıktıda)", "Sevk Notu (çıktıda)", "İç Not (müşteriye gitmez)")):
             tk.Label(frame, text=metin, bg=BEYAZ, fg=IKINCIL, font=font(9, root=self)).grid(
@@ -530,13 +530,17 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
         self.ic_not = tk.Text(frame, height=3, width=30, relief="solid", bd=1)
         for i, w in enumerate((self.musteri_notu, self.sevk_notu, self.ic_not)):
             w.grid(row=2, column=i * 2, columnspan=2, padx=4, sticky="ew")
-        self.toplam = tk.Label(
-            frame, text="", bg=ACIK_SARI, fg=KOYU_LACIVERT, font=font(11, "bold", self),
-            anchor="w", padx=10, pady=6,
-        )
-        self.toplam.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(8, 0), padx=4)
         for c in range(6):
             frame.columnconfigure(c, weight=1)
+        # İrsaliye toplamı kaydırılan içerikte değil — pencere altında sabit (talimat 2026-11-04)
+        band = tk.Frame(self, bg=ACIK_SARI, highlightthickness=1, highlightbackground=CIZGI)
+        self._irsaliye_toplam_band = band
+        self.toplam = tk.Label(
+            band, text="", bg=ACIK_SARI, fg=KOYU_LACIVERT, font=font(11, "bold", self),
+            anchor="w", padx=12, pady=8,
+        )
+        self.toplam.pack(fill="x")
+        band.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
 
     def _kisayollar(self):
         self.bind("<F2>", lambda _e: self.kaydet())

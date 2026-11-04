@@ -77,6 +77,7 @@ class AlisFaturasiAcilisTest(unittest.TestCase):
 
     def test_pencere_acilir_toplamlar_alt_bantta(self):
         from alis_ui import AlisFaturasiDialog
+        from decimal import Decimal
 
         root = tk.Tk()
         root.withdraw()
@@ -88,6 +89,27 @@ class AlisFaturasiAcilisTest(unittest.TestCase):
             alt = dlg.nametowidget(toplam.pack_info()["in"])
             self.assertEqual(alt.winfo_manager(), "pack")
             self.assertEqual(alt.pack_info()["side"], "bottom")
+            self.assertTrue(toplam.winfo_ismapped())
+            self.assertGreater(toplam.winfo_reqheight(), 0)
+            # Canvas kaydırma kaldırıldı — orta alan doğrudan expand
+            self.assertIsNone(getattr(dlg, "canvas", object()))
+            # Örnek iki satır %20 KDV: Ara 73,50 / KDV 14,70 / Net 88,20
+            dlg.satirlar = [
+                {
+                    "urun_kodu": "A", "urun_adi": "1", "miktar": "1", "birim": "Adet",
+                    "birim_fiyat": "65", "iskonto_orani": "0", "iskonto_orani_2": "0",
+                    "iskonto_orani_3": "0", "kdv_orani": "20",
+                },
+                {
+                    "urun_kodu": "B", "urun_adi": "2", "miktar": "1", "birim": "Adet",
+                    "birim_fiyat": "8.5", "iskonto_orani": "0", "iskonto_orani_2": "0",
+                    "iskonto_orani_3": "0", "kdv_orani": "20",
+                },
+            ]
+            dlg._toplamlari_guncelle()
+            self.assertEqual(dlg._alis_satir_brut, Decimal("73.5"))
+            self.assertEqual(dlg._alis_net_toplam, Decimal("88.2"))
+            self.assertIn("88", dlg._alis_net_lbl.cget("text"))
             self.assertTrue(dlg.winfo_exists())
             dlg.destroy()
         finally:

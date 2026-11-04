@@ -695,11 +695,25 @@ class _TeslimDialog(tk.Toplevel):
             self.liste.column(k, width=100 if k != "ad" else 220)
         self.liste.pack(fill="both", expand=True)
 
+        # Bilgi amaçlı alt toplam (konsinye cari borç yazmaz; miktar × fiyat)
+        toplam_seridi = tk.Frame(self, bg=LACIVERT, padx=12, pady=6)
+        toplam_seridi.pack(side="bottom", fill="x")
+        self._konsinye_toplam_lbl = tk.Label(
+            toplam_seridi,
+            text="Kalem: 0  |  Miktar: 0  |  Tahmini Tutar: 0,00 TL",
+            bg=LACIVERT,
+            fg=SARI,
+            font=font(11, "bold", self),
+            anchor="e",
+        )
+        self._konsinye_toplam_lbl.pack(fill="x")
+
         alt = ttk.Frame(self)
-        alt.pack(fill="x", padx=12, pady=10)
+        alt.pack(side="bottom", fill="x", padx=12, pady=10)
         ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(alt, text="Kaydet ve Onayla", command=lambda: self._kaydet(True)).pack(side="right", padx=4)
         ttk.Button(alt, text="Taslak Kaydet", command=lambda: self._kaydet(False)).pack(side="right", padx=4)
+        self._toplamlari_guncelle()
 
     def _cari_sec(self, cari):
         self.cari_id = int(cari.id)
@@ -750,11 +764,34 @@ class _TeslimDialog(tk.Toplevel):
             "end",
             values=(kod, self.ad.get(), self.birim.get(), _miktar(mik), _miktar(fiyat)),
         )
+        self._toplamlari_guncelle()
         self.kod.delete(0, "end")
         self.ad.delete(0, "end")
         self.miktar.delete(0, "end")
         self.miktar.insert(0, "1")
         self.kod.focus_set()
+
+    def _toplamlari_guncelle(self) -> None:
+        lbl = getattr(self, "_konsinye_toplam_lbl", None)
+        if lbl is None:
+            return
+        miktar = Decimal("0")
+        tutar = Decimal("0")
+        for s in self.satirlar:
+            mik = Decimal(str(s.get("miktar") or 0))
+            fiyat = Decimal(str(s.get("birim_fiyat") or 0))
+            miktar += mik
+            tutar += mik * fiyat
+        def _para(v: Decimal) -> str:
+            return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        lbl.configure(
+            text=(
+                f"Kalem: {len(self.satirlar)}  |  "
+                f"Miktar: {_miktar(miktar)}  |  "
+                f"Tahmini Tutar: {_para(tutar)} TL"
+            )
+        )
 
     def _kaydet(self, onayla: bool):
         if not self.cari_id:

@@ -431,8 +431,12 @@ class HizmetFaturaDialog(tk.Toplevel):
         kaydir.pack(side="right", fill="y")
         self.tablo.bind("<Double-1>", lambda _e: self.satir_duzenle())
 
-        self.toplam_etiket = ttk.Label(kutu, text="", font=("Segoe UI", 10, "bold"))
-        self.toplam_etiket.pack(anchor="e", pady=(4, 0))
+        # Toplam satır alanında değil — pencere altında sabit band (kısa ekranda kaybolmasın)
+        band = ttk.Frame(self)
+        self._hizmet_toplam_band = band
+        self.toplam_etiket = ttk.Label(band, text="", font=("Segoe UI", 10, "bold"))
+        self.toplam_etiket.pack(anchor="e", padx=12, pady=6)
+        band.pack(side="bottom", fill="x")
 
     def _odeme_olustur(self, parent):
         baslik = "Tahsilatlar" if self.gelir_mi else "Ödemeler"

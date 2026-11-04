@@ -1795,22 +1795,14 @@ class AlisFaturasiDialog(tk.Toplevel):
             fatura_turu="ALIS",
             fatura_id_getir=lambda: getattr(self.fatura, "id", None) if self.fatura else None,
         )
-        self._odeme_kapatma_bilgisi.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
         self._odeme_kapatma_bilgisi.yenile()
 
+        # Orta alan: kaydırma canvas yok — ürün satırları kalan yüksekliği doldurur,
+        # alt toplam sticky bandda her zaman görünür kalır (talimat 2026-11-04).
         kaydirma_alani = ttk.Frame(self, padding=(6, 4))
-        kaydirma_alani.pack(fill="both", expand=True)
         self._kaydirma_alani = kaydirma_alani
-        self.canvas = tk.Canvas(kaydirma_alani, highlightthickness=0, bg=ftema.ACIK_BG)
-        dikey_kaydirma = ttk.Scrollbar(kaydirma_alani, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=dikey_kaydirma.set)
-        dikey_kaydirma.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.icerik = ttk.Frame(self.canvas, padding=6)
-        pencere = self.canvas.create_window((0, 0), window=self.icerik, anchor="nw")
-        self.icerik.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(pencere, width=e.width))
-        self.canvas.bind_all("<MouseWheel>", self._fare_tekerlegi)
+        self.canvas = None
+        self.icerik = kaydirma_alani
 
         self._ust_paneller_olustur()
         self._doviz_cerceve = ttk.LabelFrame(
@@ -1829,7 +1821,6 @@ class AlisFaturasiDialog(tk.Toplevel):
         baslik_gezinme_kur(
             self, [self._fatura_ust_panel, self._doviz_cerceve], son_hedef=self._satir_ici_giris.odakla
         )
-        # Ödemeler / Notlar sticky alt banda taşınır (_alis_sticky_footer_kur)
         self._alis_scroll_alt = None
 
         if fatura:
@@ -1850,11 +1841,9 @@ class AlisFaturasiDialog(tk.Toplevel):
         ftema.renkleri_tersle(self, haric=[self._alis_toolbar["rozet"]])
         self._fatura_yukleniyor = False
         self._fatura_form_kirli = False
-        # İlk kullanılabilir çerçeveden sonra doldur (update/idle ölçümünü şişirmesin)
         self.after(80, self._tedarikci_haritasini_doldur)
-        # Büyütmeyi kurulumdan sonraya bırak — açılış layout maliyetini düşürür
         try:
-            self.after_idle(lambda: self.state("zoomed") if self.winfo_exists() else None)
+            self.after_idle(lambda: self._alis_acilis_sonrasi() if self.winfo_exists() else None)
         except tk.TclError:
             pass
 
@@ -1927,7 +1916,7 @@ class AlisFaturasiDialog(tk.Toplevel):
         widget.bind("<Leave>", _gizle)
 
     def _alis_sticky_footer_kur(self):
-        """Üst butonlar + orta kaydırma + açık zeminli Notlar/Ödemeler + Net Toplam."""
+        """Üst araç çubuğu + orta ürün alanı + alt toplam bandı (kaydırmadan görünür)."""
         from ui_pencere import sticky_footer_layout, calisma_alani
 
         footer = getattr(self, "_alis_toplam_cerceve", None)
@@ -1940,22 +1929,37 @@ class AlisFaturasiDialog(tk.Toplevel):
                 footer.pack_forget()
             except tk.TclError:
                 pass
-        alt = tk.Frame(self, bg=ftema.ACIK_BG)
-        footer.pack(in_=alt, fill="x", padx=6, pady=(2, 4))
+        alt = getattr(self, "_alis_sticky_alt", None)
+        if alt is None or not alt.winfo_exists():
+            alt = tk.Frame(self, bg=ftema.ACIK_BG)
+            self._alis_sticky_alt = alt
+        footer.pack(in_=alt, fill="x", padx=6, pady=(2, 2))
         sticky_footer_layout(
             self,
             ust=getattr(self, "_alis_ust_butonlar", None),
             orta=getattr(self, "_kaydirma_alani", None),
             alt=alt,
         )
+        # Ödeme kapatma şeridi en altta (toplam bandının altında)
+        okb = getattr(self, "_odeme_kapatma_bilgisi", None)
+        if okb is not None:
+            try:
+                okb.pack_forget()
+            except tk.TclError:
+                pass
+            try:
+                okb.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
+            except tk.TclError:
+                pass
         try:
             _, _, _, ah = calisma_alani(self)
             if hasattr(self, "satir_tablosu"):
-                self.satir_tablosu.configure(height=12 if ah < 800 else 16)
+                # Sabit satır sayısı yerine ekrana göre; kalan alan Treeview expand ile dolar
+                self.satir_tablosu.configure(height=8 if ah < 800 else 12)
             if hasattr(self, "odeme_tablosu"):
-                self.odeme_tablosu.configure(height=3 if ah < 800 else 4)
+                self.odeme_tablosu.configure(height=2 if ah < 800 else 3)
             if hasattr(self, "ayrintili_notlar"):
-                self.ayrintili_notlar.configure(height=3 if ah < 800 else 4)
+                self.ayrintili_notlar.configure(height=2 if ah < 800 else 3)
         except Exception:
             pass
         try:
@@ -1965,8 +1969,26 @@ class AlisFaturasiDialog(tk.Toplevel):
         except Exception:
             pass
 
+    def _alis_acilis_sonrasi(self) -> None:
+        """Zoom sonrası sticky band ve ürün alanı yüksekliğini yenile."""
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            pass
+        try:
+            self._alis_sticky_footer_kur()
+            self.update_idletasks()
+        except Exception:
+            pass
+
     def _fare_tekerlegi(self, event):
-        self.canvas.yview_scroll(-int(event.delta / 120), "units")
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas.yview_scroll(-int(event.delta / 120), "units")
+        except tk.TclError:
+            pass
 
     def _f1_kaydet(self, _event=None):
         """F1 = Kaydet (alan odaktayken de)."""
@@ -3387,10 +3409,10 @@ class AlisFaturasiDialog(tk.Toplevel):
         nb.add(odeme_fr, text="Ödemeler")
         if "aciklama" not in self.girdiler:
             self.girdiler["aciklama"] = ttk.Entry(not_fr)
-        self.ayrintili_notlar = tk.Text(not_fr, height=4, width=40, relief="flat", bd=0)
+        self.ayrintili_notlar = tk.Text(not_fr, height=2, width=40, relief="flat", bd=0)
         self.ayrintili_notlar.pack(fill="both", expand=True)
         kolonlar = ("tarih", "tutar", "sekil", "hesap", "aciklama")
-        self.odeme_tablosu = ttk.Treeview(odeme_fr, columns=kolonlar, show="headings", height=4)
+        self.odeme_tablosu = ttk.Treeview(odeme_fr, columns=kolonlar, show="headings", height=2)
         for kolon, baslik in zip(kolonlar, ("Tarih", "Tutar", "Ödeme Şekli", "Hesap", "Açıklama")):
             self.odeme_tablosu.heading(kolon, text=baslik)
             self.odeme_tablosu.column(kolon, width=100)

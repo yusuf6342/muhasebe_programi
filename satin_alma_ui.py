@@ -1270,11 +1270,51 @@ class TedarikciTeklifDialog(_SatinAlmaSatirGirisi, tk.Toplevel):
             ],
         )
 
+        # Alt toplam: satır brütü + nakliye (KDV yok — teklif karşılaştırma tutarı)
+        toplam_seridi = tk.Frame(self, bg=LACIVERT, padx=12, pady=6)
+        toplam_seridi.pack(side="bottom", fill="x")
+        self._teklif_toplam_lbl = tk.Label(
+            toplam_seridi,
+            text="Kalem: 0  |  Satır: 0,00  |  Nakliye: 0,00  |  Teklif Toplamı: 0,00 TL",
+            bg=LACIVERT,
+            fg=SARI,
+            font=font(11, "bold", self),
+            anchor="e",
+        )
+        self._teklif_toplam_lbl.pack(fill="x")
+
         alt = ttk.Frame(self)
-        alt.pack(fill="x", padx=10, pady=8)
+        alt.pack(side="bottom", fill="x", padx=10, pady=8)
         ttk.Button(alt, text="Listeye Git", command=self.listeye_git).pack(side="left")
         ttk.Button(alt, text="Kaydet", command=self._kaydet).pack(side="right")
         ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right", padx=6)
+        self._toplamlari_guncelle()
+
+    def _satirlari_yenile(self) -> None:
+        super()._satirlari_yenile()
+        self._toplamlari_guncelle()
+
+    def _toplamlari_guncelle(self) -> None:
+        """Teklif satır tutarı = miktar × birim fiyat; genel = satırlar + nakliye."""
+        lbl = getattr(self, "_teklif_toplam_lbl", None)
+        if lbl is None:
+            return
+        satir_tutar = Decimal("0")
+        nakliye = Decimal("0")
+        for s in self.satirlar:
+            mik = Decimal(str(s.get("miktar") or 0))
+            fiyat = Decimal(str(s.get("birim_fiyat") or 0))
+            satir_tutar += mik * fiyat
+            nakliye += Decimal(str(s.get("nakliye_tutari") or 0))
+        genel = satir_tutar + nakliye
+        lbl.configure(
+            text=(
+                f"Kalem: {len(self.satirlar)}  |  "
+                f"Satır: {_para(satir_tutar)}  |  "
+                f"Nakliye: {_para(nakliye)}  |  "
+                f"Teklif Toplamı: {_para(genel)} TL"
+            )
+        )
 
     def listeye_git(self):
         """Alış Teklifleri listesine geçer; girilmiş satır varsa kaydetmeyi sorar."""
