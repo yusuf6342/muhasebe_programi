@@ -1920,54 +1920,54 @@ class AlisFaturasiDialog(tk.Toplevel):
         from ui_pencere import sticky_footer_layout, calisma_alani
 
         footer = getattr(self, "_alis_toplam_cerceve", None)
-        if footer is None:
+        alt = getattr(self, "_alis_sticky_alt", None)
+        if footer is None or alt is None:
             return
         try:
-            footer.grid_forget()
-        except tk.TclError:
-            try:
+            if footer.winfo_manager():
                 footer.pack_forget()
-            except tk.TclError:
-                pass
-        alt = getattr(self, "_alis_sticky_alt", None)
-        if alt is None or not alt.winfo_exists():
-            alt = tk.Frame(self, bg=ftema.ACIK_BG)
-            self._alis_sticky_alt = alt
-        footer.pack(in_=alt, fill="x", padx=6, pady=(2, 2))
+        except tk.TclError as exc:
+            _LOG.warning("Alış toplam paneli pack_forget: %s", exc)
+        try:
+            footer.pack(fill="x", padx=6, pady=(2, 2))
+        except tk.TclError as exc:
+            _LOG.exception("Alış toplam paneli pack başarısız: %s", exc)
+            raise
         sticky_footer_layout(
             self,
             ust=getattr(self, "_alis_ust_butonlar", None),
             orta=getattr(self, "_kaydirma_alani", None),
             alt=alt,
         )
-        # Ödeme kapatma şeridi en altta (toplam bandının altında)
+        # Ödeme kapatma şeridi en alta (sticky alt zaten bottom; sonraki bottom onun altına iner)
         okb = getattr(self, "_odeme_kapatma_bilgisi", None)
         if okb is not None:
             try:
-                okb.pack_forget()
-            except tk.TclError:
-                pass
+                if okb.winfo_manager():
+                    okb.pack_forget()
+            except tk.TclError as exc:
+                _LOG.warning("Ödeme kapatma şeridi pack_forget: %s", exc)
             try:
                 okb.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
-            except tk.TclError:
-                pass
+            except tk.TclError as exc:
+                _LOG.exception("Ödeme kapatma şeridi pack: %s", exc)
+                raise
         try:
             _, _, _, ah = calisma_alani(self)
             if hasattr(self, "satir_tablosu"):
-                # Sabit satır sayısı yerine ekrana göre; kalan alan Treeview expand ile dolar
                 self.satir_tablosu.configure(height=8 if ah < 800 else 12)
             if hasattr(self, "odeme_tablosu"):
                 self.odeme_tablosu.configure(height=2 if ah < 800 else 3)
             if hasattr(self, "ayrintili_notlar"):
                 self.ayrintili_notlar.configure(height=2 if ah < 800 else 3)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("Alış sticky yükseklik ayarı: %s", exc)
         try:
             from ui_pencere import pencere_os_krom_ac
 
             pencere_os_krom_ac(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("Alış pencere krom: %s", exc)
 
     def _alis_acilis_sonrasi(self) -> None:
         """Zoom sonrası sticky band ve ürün alanı yüksekliğini yenile."""
@@ -2080,10 +2080,13 @@ class AlisFaturasiDialog(tk.Toplevel):
             return bool(self.satirlar) or bool((self.tedarikci.get() or "").strip())
         return False
 
-    def _kaydet_kapatmadan(self) -> bool:
-        """Liste geçişi için kaydet; destroy yok."""
+    def _kaydet_kapatmadan(self, *, kapatirken: bool = False) -> bool:
+        """Kaydet; destroy yok. kapatirken=True ise UI yenilemeyi atlar (çıkış yolu)."""
+        if getattr(self, "_kaydet_isleniyor", False):
+            return False
         if self._kilit_uyar():
             return False
+        self._kaydet_isleniyor = True
         try:
             self._alis_editorleri_uygula()
             tedarikci = self.tedarikci_map.get(self.tedarikci.get())
@@ -2183,12 +2186,20 @@ class AlisFaturasiDialog(tk.Toplevel):
                 satirlar,
                 self.fatura.id if self.fatura else None,
             )
+            # DB yazıldı — kimliği hemen sabitle; UI yenileme hatası kaydı başarısız sayılmaz
             self.fatura = AlisFaturasiService.getir(self.result.id) or self.result
             self.kaynak_siparis = None
             self.kaynak_irsaliye = None
             self._fatura_persisted = True
-            self._faturayi_doldur()
-            self._toolbar_guncelle()
+            self._fatura_form_kirli = False
+            if kapatirken:
+                return True
+            try:
+                self._faturayi_doldur()
+                self._toolbar_guncelle()
+            except Exception:
+                _LOG.exception("Kayıt sonrası ekran yenileme hatası (kayıt başarılı, id=%s)", getattr(self.fatura, "id", None))
+                self._fatura_form_kirli = False
             # Mal girişi tamam — lot barkod + etiket penceresi (hata girişi geri almaz)
             try:
                 from database.lot_barkod_service import LotBarkodService
@@ -2198,7 +2209,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 if is_ozeti:
                     self.after(80, lambda o=is_ozeti: lot_etiket_sonrasi_ac(self, o))
             except Exception:
-                pass
+                _LOG.exception("Lot etiket sonrası açılamadı")
             return True
         except MukerrerTedarikciFaturaHatasi as hata:
             self._mukerrer_kaydi_goster(
@@ -2208,6 +2219,12 @@ class AlisFaturasiDialog(tk.Toplevel):
         except ValueError as hata:
             birim_hatasi_goster(self, hata) or messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
             return False
+        except Exception as hata:
+            _LOG.exception("Alış fatura kaydı başarısız")
+            messagebox.showerror("Fatura kaydedilemedi", str(hata), parent=self)
+            return False
+        finally:
+            self._kaydet_isleniyor = False
 
     def bagli_listeden_fatura_ac(self, fatura_id: int, *, document_type: str):
         from fatura_liste_pencere import DOC_ALIS
@@ -2734,17 +2751,30 @@ class AlisFaturasiDialog(tk.Toplevel):
 
     def kapat_istegi(self):
         """Kaydedilmemiş değişiklik varsa sorar; kayıt başarısızsa pencere açık kalır."""
-        if self._fatura_kirli_mi():
-            cevap = messagebox.askyesnocancel(
-                "Kaydedilmemiş değişiklikler",
-                "Alış faturasında kaydedilmemiş değişiklikler var.\nKaydetmek ister misiniz?",
-                parent=self,
-            )
-            if cevap is None:
-                return
-            if cevap and not self._kaydet_kapatmadan():
-                return
-        self.destroy()
+        if getattr(self, "_kapat_isleniyor", False):
+            return
+        self._kapat_isleniyor = True
+        try:
+            if self._fatura_kirli_mi():
+                cevap = messagebox.askyesnocancel(
+                    "Kaydedilmemiş değişiklikler",
+                    "Alış faturasında kaydedilmemiş değişiklikler var.\nKaydetmek ister misiniz?",
+                    parent=self,
+                )
+                if cevap is None:
+                    return
+                if cevap:
+                    if not self._kaydet_kapatmadan(kapatirken=True):
+                        return
+                    # Kayıt başarılı — soruyu yeniden açmadan kapat
+                    self._fatura_form_kirli = False
+            self.destroy()
+        finally:
+            try:
+                if self.winfo_exists():
+                    self._kapat_isleniyor = False
+            except tk.TclError:
+                pass
 
     def fatura_listeye_git(self):
         """Alış Faturaları listesine geçer ve bu faturayı listede seçer."""
@@ -3371,7 +3401,12 @@ class AlisFaturasiDialog(tk.Toplevel):
 
     def _alis_alt_ozet_kur(self):
         """Satıştaki gibi açık zemin: solda Notlar/Ödemeler, sağda hizalı toplamlar + Net."""
-        dis = tk.Frame(self, bg=ftema.ACIK_BG, padx=4, pady=2)
+        # Sticky taşıyıcı önce; toplam paneli onun gerçek çocuğu olmalı (pack(in_=) kardeş örtmesi yok).
+        alt = getattr(self, "_alis_sticky_alt", None)
+        if alt is None or not alt.winfo_exists():
+            alt = tk.Frame(self, bg=ftema.ACIK_BG)
+            self._alis_sticky_alt = alt
+        dis = tk.Frame(alt, bg=ftema.ACIK_BG, padx=4, pady=2)
         self._alis_toplam_cerceve = dis
         self._alis_satir_brut = Decimal("0")
         self._alis_net_toplam = Decimal("0")
@@ -3688,6 +3723,8 @@ class AlisFaturasiDialog(tk.Toplevel):
     def _alis_fatura_yenile(self):
         from satir_ici_urun_giris import toplu_ekleme_mi
 
+        if not getattr(self, "_fatura_yukleniyor", False):
+            self._form_degisti()
         if not toplu_ekleme_mi(self):
             self._satir_toplu_yenile()
 
@@ -4121,9 +4158,10 @@ class AlisFaturasiDialog(tk.Toplevel):
             )
 
     def _toplamlari_guncelle(self, borc=None):
-        """Satırlardan doğal alış fatura toplamlarını yeniden hesapla."""
-        if not getattr(self, "_fatura_yukleniyor", False):
-            self._fatura_form_kirli = True
+        """Satırlardan doğal alış fatura toplamlarını yeniden hesapla.
+
+        Yalnızca görüntü yenilemesi — kaydedilmemiş değişiklik sayılmaz.
+        """
         satirlar_hesap = []
         for veri in self.satirlar:
             satirlar_hesap.append({
@@ -4215,6 +4253,7 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.wait_window(dialog)
         if dialog.result:
             self.odemeler.append(dialog.result)
+            self._form_degisti()
             self._odeme_listesini_yenile()
 
     def odeme_duzenle(self):
@@ -4226,12 +4265,14 @@ class AlisFaturasiDialog(tk.Toplevel):
         self.wait_window(dialog)
         if dialog.result:
             self.odemeler[idx] = dialog.result
+            self._form_degisti()
             self._odeme_listesini_yenile()
 
     def odeme_kaldir(self):
         secim = self.odeme_tablosu.selection()
         if secim:
             self.odemeler.pop(int(secim[0]))
+            self._form_degisti()
             self._odeme_listesini_yenile()
 
     def _odeme_listesini_yenile(self):
@@ -4379,6 +4420,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "Aktarılacak yeni satır yok (açık miktar kalmadı veya zaten faturada).",
                 parent=self,
             )
+        self._form_degisti()
         self._bakiye_guncelle()
         self._satir_listesini_yenile()
 
@@ -4445,6 +4487,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 "Aktarılacak yeni satır yok (kalan yok veya zaten faturada).",
                 parent=self,
             )
+        self._form_degisti()
         self._bakiye_guncelle()
         self._satir_listesini_yenile()
 
