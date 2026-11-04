@@ -48,6 +48,39 @@ from cari_kart_tema import (
 BIRIM_SECENEKLERI = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top")
 ALIS_BELGE_BASLIGI = "ALIŞ FATURASI"
 ALIS_TABLO_STILI = "AlisSatir.Treeview"
+
+
+def _alis_miktar_birim_koru(eski: dict, yeni: dict) -> tuple:
+    """Ürün değişiminde miktarı koru; birimler uyumsuzsa (1, yeni_birim, True)."""
+    from database.stok_service import birim_anahtari
+
+    yeni_birim = (yeni.get("birim") or "Adet").strip() or "Adet"
+    eski_birim = (eski.get("birim") or "Adet").strip() or "Adet"
+    try:
+        eski_miktar = decimal(eski.get("miktar") or 1, "Miktar", Decimal("1"))
+    except Exception:
+        eski_miktar = Decimal("1")
+    if birim_anahtari(eski_birim) == birim_anahtari(yeni_birim):
+        return eski_miktar, yeni_birim, False
+    yeni_kod = (yeni.get("urun_kodu") or "").strip()
+    try:
+        from fatura_satir_birim_service import stok_aktif_birimleri
+
+        aktif = stok_aktif_birimleri(yeni_kod) if yeni_kod else []
+        if any(birim_anahtari(b) == birim_anahtari(eski_birim) for b in aktif):
+            return eski_miktar, eski_birim, False
+    except Exception:
+        pass
+    return Decimal("1"), yeni_birim, True
+
+
+def _alis_arti_yenile(dialog) -> None:
+    try:
+        from fatura_satir_yeni_urun import arti_butonlarini_yenile
+
+        arti_butonlarini_yenile(dialog)
+    except Exception:
+        pass
 # Geriye uyumluluk; gerçek değer form_pady() ile açılışta alınır (~1,5 mm / 2 kenar)
 ALIS_UST_PADY = 3
 SEVKIYAT_YONTEMLERI = ("", "Kara", "Hava", "Deniz", "Demiryolu", "Kurye", "Kendi Aracımız", "Tedarikçi Aracı")
@@ -160,6 +193,14 @@ class _AlisSatirGirisi:
     # True: "isk" hücresi 3 kademeli (10+5+2) iskonto girişi yapar (alış siparişi)
     _uclu_iskonto = False
 
+    def _alis_siparis_kilitli(self) -> bool:
+        """İptal / tamamen faturalı siparişte satır düzenleme kapalı."""
+        try:
+            durum = (self.durum.get() if hasattr(self, "durum") else "") or ""
+        except (tk.TclError, AttributeError):
+            durum = getattr(getattr(self, "siparis", None), "durum", "") or ""
+        return durum.upper() in ("İPTAL", "IPTAL", "FATURALI")
+
     def _alis_girisi_kur(self):
         from satir_ici_urun_giris import (
             HucreAlani, SatirHucreDuzenleyici, SatirIciUrunGirisi, iskonto_metni, sayi_metni,
@@ -175,6 +216,7 @@ class _AlisSatirGirisi:
             fiyat_turu="alis",
             alis_fiyati=lambda kod: StokService.son_alis_fiyati(kod, None),
             satir_menusu=self._alis_satir_menusu,
+            kilitli=self._alis_siparis_kilitli,
             **satin_alma_satir_ozellikleri(self),
         )
         self._hucre = SatirHucreDuzenleyici(
@@ -195,6 +237,7 @@ class _AlisSatirGirisi:
             uygula=self.alis_hucre_uygula,
             satir_sayisi=lambda: len(self.satirlar),
             bitince=self._satir_ici_giris.odakla,
+            kilitli=self._alis_siparis_kilitli,
         )
         self.satir_tablosu.bind("<Delete>", lambda _e: self.satir_sil())
         self._satir_ici_giris.tabloya_ekle()
@@ -291,6 +334,11 @@ class _AlisSatirGirisi:
         except ValueError:
             kdv = Decimal("20")
         sonuc = alis_fiyati_coz(self, kod, birim, kdv)
+        pid = degerler[7] if len(degerler) > 7 else None
+        try:
+            pid = int(pid) if pid not in (None, "") else None
+        except (TypeError, ValueError):
+            pid = None
         veri = {
             "urun_kodu": kod, "urun_adi": (degerler[1] if len(degerler) > 1 else "") or "",
             "aciklama": "", "miktar": Decimal("1"), "birim": birim,
@@ -298,6 +346,9 @@ class _AlisSatirGirisi:
             "iskonto_orani": Decimal("0"), "iskonto_orani_2": Decimal("0"), "iskonto_orani_3": Decimal("0"),
             "kdv_orani": kdv,
         }
+        if pid:
+            veri["product_id"] = pid
+            veri["stok_id"] = pid
         return sonucu_satira_yaz(veri, sonuc)
 
     def _alis_fiyati_yenile(self, idx: int) -> None:
@@ -351,6 +402,13 @@ class _AlisSatirGirisi:
         return idx
 
     def _alis_urun_degistir(self, idx: int, degerler) -> bool:
+        if getattr(self, "_alis_siparis_kilitli", lambda: False)():
+            messagebox.showwarning(
+                "Ürün",
+                "Kilitli belgede ürün değiştirmek için önce belge durumunu açın.",
+                parent=self,
+            )
+            return False
         if not (0 <= idx < len(self.satirlar)):
             return False
         eski = self.satirlar[idx]
@@ -364,10 +422,34 @@ class _AlisSatirGirisi:
         except ValueError as hata:
             messagebox.showwarning("Ürün", str(hata), parent=self)
             return False
-        veri["miktar"] = eski.get("miktar") or Decimal("1")
+        miktar, birim, birim_uyumsuz = _alis_miktar_birim_koru(eski, veri)
+        veri["miktar"] = miktar
+        veri["birim"] = birim
+        # Birim değiştiyse alış fiyatını yeni birime göre yeniden çöz
+        if (birim or "") != (eski.get("birim") or ""):
+            try:
+                from fiyat_kaynagi_ui import alis_fiyati_coz, sonucu_satira_yaz
+
+                sonuc = alis_fiyati_coz(self, veri.get("urun_kodu") or "", birim, veri.get("kdv_orani"))
+                if sonuc.fiyat is not None:
+                    veri[self._fiyat_alani] = sonuc.fiyat
+                sonucu_satira_yaz(veri, sonuc)
+            except Exception:
+                pass
         veri["aciklama"] = eski.get("aciklama") or ""
         self.satirlar[idx] = veri
         self._alis_yenile()
+        if birim_uyumsuz:
+            messagebox.showinfo(
+                "Birim",
+                f"Eski birim «{eski.get('birim') or ''}» yeni üründe uyumlu değil.\n"
+                f"Miktar 1 {birim} olarak ayarlandı — uygun birim ve miktarı siz belirleyin.",
+                parent=self,
+            )
+            try:
+                self._hucre.duzenle(idx, "miktar")
+            except Exception:
+                pass
         return True
 
     def alis_hucre_uygula(self, idx: int, kolon: str, metin: str) -> None:
@@ -457,6 +539,9 @@ class _AlisSatirGirisi:
     def satir_sil(self):
         from satir_ici_urun_giris import satir_editorlerini_kapat, satir_silme_sonrasi_temizle
 
+        if getattr(self, "_alis_siparis_kilitli", lambda: False)():
+            messagebox.showwarning("Sil", "Kilitli belgede satır silinemez.", parent=self)
+            return "break"
         idx = self._alis_secili()
         if idx is None:
             return "break"
@@ -1045,6 +1130,7 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
             ))
         self._satir_ici_giris.tabloya_ekle()
         self._toplamlari_guncelle()
+        _alis_arti_yenile(self)
 
     def _alis_yenile(self):
         self._satir_listesini_yenile()
@@ -2513,6 +2599,7 @@ class AlisFaturasiDialog(tk.Toplevel):
                 self._satir_ici_giris.tabloya_ekle()
         except Exception:
             pass
+        _alis_arti_yenile(self)
         etiket = getattr(self, "_onay_bilgi_lbl", None)
         if etiket is not None:
             try:
@@ -3615,6 +3702,16 @@ class AlisFaturasiDialog(tk.Toplevel):
         sonuc = alis_fiyati_coz(self, kod, birim, decimal(kdv_metin or 0, "KDV", Decimal("0")))
         fiyat = sonuc.fiyat if sonuc.fiyat is not None else Decimal("0")
         lot = self._onerilen_lot()
+        pid = degerler[7] if len(degerler) > 7 else None
+        try:
+            pid = int(pid) if pid not in (None, "") else None
+        except (TypeError, ValueError):
+            pid = None
+        if pid is None and stok is not None:
+            try:
+                pid = int(getattr(stok, "id", 0) or 0) or None
+            except (TypeError, ValueError):
+                pid = None
         veri = {
             "barkod": (getattr(stok, "barkod", None) or "") if stok else "",
             "urun_kodu": kod,
@@ -3629,6 +3726,9 @@ class AlisFaturasiDialog(tk.Toplevel):
             "lot_no": lot,
             "lot_girisi": lot,
         }
+        if pid:
+            veri["product_id"] = pid
+            veri["stok_id"] = pid
         sonucu_satira_yaz(veri, sonuc)
         return doviz_satir_kaydet_oncesi(self, veri)
 
@@ -3700,12 +3800,40 @@ class AlisFaturasiDialog(tk.Toplevel):
         except ValueError as hata:
             messagebox.showwarning("Ürün", str(hata), parent=self)
             return False
-        veri["miktar"] = eski.get("miktar") or "1"
+        miktar, birim, birim_uyumsuz = _alis_miktar_birim_koru(eski, veri)
+        veri["miktar"] = f"{miktar:f}"
+        veri["birim"] = birim
+        if (birim or "") != ((eski.get("birim") or "").strip() or "Adet"):
+            try:
+                from fiyat_kaynagi_ui import alis_fiyati_coz, sonucu_satira_yaz
+
+                sonuc = alis_fiyati_coz(
+                    self, veri.get("urun_kodu") or "", birim,
+                    decimal(veri.get("kdv_orani") or 0, "KDV", Decimal("0")),
+                )
+                if sonuc.fiyat is not None:
+                    veri["birim_fiyat"] = veri["birim_alis_fiyati"] = f"{sonuc.fiyat:f}"
+                    veri.pop("birim_fiyat_doviz", None)
+                    veri = doviz_satir_kaydet_oncesi(self, veri)
+                sonucu_satira_yaz(veri, sonuc)
+            except Exception:
+                pass
         veri["aciklama"] = eski.get("aciklama") or ""
-        veri["lot_no"] = eski.get("lot_no") or veri["lot_no"]
+        veri["lot_no"] = eski.get("lot_no") or veri.get("lot_no")
         veri["lot_girisi"] = veri["lot_no"]
         self.satirlar[idx] = veri
         self._alis_fatura_yenile()
+        if birim_uyumsuz:
+            messagebox.showinfo(
+                "Birim",
+                f"Eski birim «{eski.get('birim') or ''}» yeni üründe uyumlu değil.\n"
+                f"Miktar 1 {birim} olarak ayarlandı — uygun birim ve miktarı siz belirleyin.",
+                parent=self,
+            )
+            try:
+                self._hucre.duzenle(idx, "miktar")
+            except Exception:
+                pass
         return True
 
     def alis_fatura_hucre_uygula(self, idx: int, kolon: str, metin: str) -> None:
@@ -3941,6 +4069,7 @@ class AlisFaturasiDialog(tk.Toplevel):
         if giris is not None:
             giris.tabloya_ekle()
         self._toplamlari_guncelle()
+        _alis_arti_yenile(self)
 
     def _bakiye_guncelle(self):
         tedarikci = self.tedarikci_map.get(self.tedarikci.get())

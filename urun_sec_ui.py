@@ -238,7 +238,7 @@ class UrunSecDialog(tk.Toplevel):
         self._bilgi_cerceve.pack(fill="x", padx=12)
         self._bos_yeni_btn = ttk.Button(
             self._bilgi_cerceve,
-            text="Yeni Stok Kartı Oluştur",
+            text="+ Yeni Ürün Ekle",
             command=self.yeni_urun,
         )
         if self.sadece_stokta:
@@ -308,7 +308,7 @@ class UrunSecDialog(tk.Toplevel):
 
         alt = ttk.Frame(self, padding=12)
         alt.pack(fill="x")
-        self.yeni_btn = ttk.Button(alt, text="Yeni Stok Kartı", command=self.yeni_urun)
+        self.yeni_btn = ttk.Button(alt, text="+ Yeni Ürün Ekle", command=self.yeni_urun)
         self.yeni_btn.pack(side="left")
         ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Seç", command=self.sec).pack(side="right", padx=8)
@@ -545,29 +545,18 @@ class UrunSecDialog(tk.Toplevel):
             self.tablo.focus(ilk)
             self.tablo.see(ilk)
             if hasattr(self, "yeni_btn"):
-                self.yeni_btn.configure(text="Yeni Stok Kartı")
+                self.yeni_btn.configure(text="+ Yeni Ürün Ekle")
             try:
                 self._bos_yeni_btn.pack_forget()
             except tk.TclError:
                 pass
         else:
             self.bos_lbl.pack(in_=self._bilgi_cerceve, anchor="w", pady=(0, 4))
-            # En az 3 karakter aramada oluşturma düğmesi
-            sorgu_uzun = 0
-            try:
-                if self.ayrintili:
-                    sorgu_uzun = sum(len(k) for k in self._ayrinti_kelimeler() if k)
-                else:
-                    sorgu_uzun = max(
-                        len(self.kod_filtre.get().strip()),
-                        len(self.ad_filtre.get().strip()),
-                    )
-            except Exception:
-                sorgu_uzun = 0
-            if sorgu_uzun >= 3 and hasattr(self, "_bos_yeni_btn"):
+            # Boş sonuçta da «+ Yeni Ürün Ekle» görünür kalsın
+            if hasattr(self, "_bos_yeni_btn"):
                 self._bos_yeni_btn.pack(anchor="w", pady=(0, 4))
             if hasattr(self, "yeni_btn"):
-                self.yeni_btn.configure(text="Yeni Stok Kartı Oluştur")
+                self.yeni_btn.configure(text="+ Yeni Ürün Ekle")
 
     def _callback_degerleri(self, stok) -> tuple:
         """Sözleşme: kod, ad, birim, stok, fiyat, kaynak, kdv[, product_id]."""
@@ -745,25 +734,40 @@ class UrunSecDialog(tk.Toplevel):
     def yeni_urun(self):
         from hizli_stok_karti_ui import HizliStokKartiDialog
 
+        def _barkod_mu(metin: str) -> bool:
+            s = (metin or "").strip()
+            return s.isdigit() and len(s) >= 8
+
         if self.ayrintili:
             kelimeler = [k for k in self._ayrinti_kelimeler() if k]
-            baslangic_ad = " ".join(kelimeler)
-            baslangic_kod = self.kod_filtre.get().strip()
+            ham = " ".join(kelimeler).strip()
+            baslangic_kod = self.kod_filtre.get().strip() if hasattr(self, "kod_filtre") else ""
+            # Ayrıntılı tek kutuda barkod arandıysa ad alanına değil barkoda yaz
+            if _barkod_mu(ham):
+                baslangic_barkod, baslangic_ad = ham, ""
+            else:
+                baslangic_barkod, baslangic_ad = "", ham
+            if _barkod_mu(baslangic_kod) and not baslangic_barkod:
+                baslangic_barkod, baslangic_kod = baslangic_kod, ""
         else:
             baslangic_kod = self.kod_filtre.get().strip()
             baslangic_ad = self.ad_filtre.get().strip()
-        # Parent fatura dialog'u bul
+            baslangic_barkod = ""
+            if _barkod_mu(baslangic_kod):
+                baslangic_barkod, baslangic_kod = baslangic_kod, ""
+            elif _barkod_mu(baslangic_ad):
+                baslangic_barkod, baslangic_ad = baslangic_ad, ""
         fatura = self.master
+        baslangic = {"stok_kodu": "", "stok_adi": baslangic_ad}
+        if baslangic_barkod:
+            baslangic["barkod"] = baslangic_barkod
         dialog = HizliStokKartiDialog(
             self,
             fatura_dialog=fatura,
-            baslangic={
-                "stok_kodu": "",  # otomatik önerilecek
-                "stok_adi": baslangic_ad,
-            },
+            baslangic=baslangic,
+            barkod_kod_kopyala=False,
         )
-        # Manuel kod önerisi varsa kullanıcı değiştirebilir; boş bırakıldı ean otomatik
-        if baslangic_kod and len(baslangic_kod) >= 3:
+        if baslangic_kod and len(baslangic_kod) >= 3 and not _barkod_mu(baslangic_kod):
             try:
                 dialog.kod.delete(0, "end")
                 dialog.kod.insert(0, baslangic_kod[:50])

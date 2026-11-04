@@ -1136,23 +1136,39 @@ class SatisSiparisiKarti(tk.Toplevel):
             for s in self.satirlar
         )
 
+    def _onayli(self) -> bool:
+        """Kaydet ve Onayla sonrası (TASLAK dışı, iptal değil) — satır içeriği kilitli."""
+        durum = self._durum()
+        return bool(self.siparis is not None and durum not in ("TASLAK", "İPTAL", ""))
+
     def _duzenlenebilir(self) -> bool:
-        return not self._iptal()
+        """İçerik düzenlemesi: iptalde kapalı; onaylı ve henüz sevk/fatura yoksa kilitli.
+
+        Sevk/fatura edilmiş onaylı siparişte satır bazlı bağlı kurallar geçerlidir
+        (Onayı Kaldır bağlı belgede kapalı olduğu için tamamen kilitlenmez).
+        """
+        if self._iptal():
+            return False
+        if self._onayli() and not self._bagli():
+            return False
+        return True
 
     def _kilit_uygula(self):
         duz = self._duzenlenebilir()
         kayitli = self.siparis is not None
         bagli = self._bagli()
         durum = self._durum()
+        iptal_degil = not self._iptal()
         durumlar = {
             "kaydet": duz,
             "onayla": duz and durum == "TASLAK",
             "onay_kaldir": kayitli and durum not in ("TASLAK", "İPTAL") and not bagli,
-            "irsaliye": kayitli and duz,
-            "fatura": kayitli and duz,
+            # Sevk/fatura onaylı siparişte açık kalır
+            "irsaliye": kayitli and iptal_degil and durum != "TASLAK",
+            "fatura": kayitli and iptal_degil and durum != "TASLAK",
             "bagli": kayitli,
-            "iptal": kayitli and duz,
-            "sil": kayitli and not bagli,
+            "iptal": kayitli and iptal_degil and not bagli,
+            "sil": kayitli and durum == "TASLAK" and not bagli,
         }
         for anahtar, aktif in durumlar.items():
             try:
@@ -1215,6 +1231,12 @@ class SatisSiparisiKarti(tk.Toplevel):
                 pass
         self._durum_rozet_guncelle()
         self._meta_yenile()
+        try:
+            from fatura_satir_yeni_urun import arti_butonlarini_yenile
+
+            arti_butonlarini_yenile(self)
+        except Exception:
+            pass
 
     def _meta_yenile(self):
         no = ""
@@ -1628,12 +1650,21 @@ class SatisSiparisiKarti(tk.Toplevel):
                 from fiyat_kaynagi_ui import fiyat_yok_bildir
 
                 fiyat_yok_bildir(self, kod, f"{kod}: fiyat listesinde geçerli satış fiyatı yok; birim fiyatı girin.")
-        return {
+        pid = degerler[7] if len(degerler) > 7 else None
+        try:
+            pid = int(pid) if pid not in (None, "") else None
+        except (TypeError, ValueError):
+            pid = None
+        veri = {
             "urun_kodu": kod, "urun_adi": ad, "birim": birim, "miktar": Decimal("1"),
             "birim_fiyat": fiyat if fiyat is not None else Decimal("0"),
             "iskonto_orani": 0, "iskonto_orani_2": 0, "iskonto_orani_3": 0, "kdv_orani": kdv,
             "termin": None, "aciklama": "", "is_manual_item": False,
         }
+        if pid:
+            veri["product_id"] = pid
+            veri["stok_id"] = pid
+        return veri
 
     def urun_secildi(self, values):
         """UrunSecDialog geri çağrısı: ürünü yeni satır olarak ekler."""
@@ -1713,7 +1744,32 @@ class SatisSiparisiKarti(tk.Toplevel):
             return False
         if not self._stok_satiri_hazirla(veri):
             return False
-        veri["miktar"] = eski.get("miktar") or Decimal("1")
+        from database.stok_service import birim_anahtari
+
+        yeni_birim = (veri.get("birim") or "Adet").strip() or "Adet"
+        eski_birim = (eski.get("birim") or "Adet").strip() or "Adet"
+        eski_miktar = decimal(eski.get("miktar") or 1, "Miktar", Decimal("1"))
+        birim_uyumsuz = False
+        if birim_anahtari(eski_birim) == birim_anahtari(yeni_birim):
+            veri["miktar"] = eski_miktar
+        else:
+            try:
+                from fatura_satir_birim_service import stok_aktif_birimleri
+
+                aktif = stok_aktif_birimleri(veri.get("urun_kodu") or "")
+                if any(birim_anahtari(b) == birim_anahtari(eski_birim) for b in aktif):
+                    veri["miktar"] = eski_miktar
+                    veri["birim"] = eski_birim
+                    # Eski birimle fiyatı yeniden hesapla
+                    yeniden = self._cari_fiyati(veri.get("urun_kodu") or "", eski_birim, None)
+                    if yeniden is not None:
+                        veri["birim_fiyat"] = yeniden
+                else:
+                    veri["miktar"] = Decimal("1")
+                    birim_uyumsuz = True
+            except Exception:
+                veri["miktar"] = Decimal("1")
+                birim_uyumsuz = True
         veri["termin"] = eski.get("termin")
         veri["aciklama"] = eski.get("aciklama") or ""
         for anahtar in ("id", "delivery_term_days", "delivery_term_note"):
@@ -1721,6 +1777,17 @@ class SatisSiparisiKarti(tk.Toplevel):
                 veri[anahtar] = eski[anahtar]
         self.satirlar[idx] = veri
         self.satir_listesini_yenile()
+        if birim_uyumsuz:
+            messagebox.showinfo(
+                "Birim",
+                f"Eski birim «{eski_birim}» yeni üründe uyumlu değil.\n"
+                f"Miktar 1 {yeni_birim} olarak ayarlandı — uygun birim ve miktarı siz belirleyin.",
+                parent=self,
+            )
+            try:
+                self._hucre.duzenle(idx, "miktar")
+            except Exception:
+                pass
         return True
 
     def satir_hucre_uygula(self, idx: int, kolon: str, metin: str) -> None:
@@ -1729,6 +1796,8 @@ class SatisSiparisiKarti(tk.Toplevel):
 
         if not (0 <= idx < len(self.satirlar)):
             return
+        if not self._duzenlenebilir():
+            raise ValueError("Onaylı siparişte satır değiştirilemez. Önce Onayı Kaldır yapın.")
         s = self.satirlar[idx]
         bagli = self._satir_bagli_mi(s)
         yeni = dict(s)
@@ -1963,6 +2032,12 @@ class SatisSiparisiKarti(tk.Toplevel):
         self._satir_ici_giris.tabloya_ekle()
         self.toplam_guncelle()
         self.after_idle(self._siparis_excel_cizgileri_yenile)
+        try:
+            from fatura_satir_yeni_urun import arti_butonlarini_yenile
+
+            arti_butonlarini_yenile(self)
+        except Exception:
+            pass
 
     def toplam_guncelle(self):
         """Satır + uzlaşılan indirim/masraf → fatura ile aynı alt toplamlar."""

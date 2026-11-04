@@ -907,13 +907,16 @@ class SatirIciUrunGirisi:
         return "break"
 
     def _tablo_f10(self, _e=None):
-        """Dolu satır seçiliyse kartın kendi F10'u (ör. manuel fiyat) çalışır."""
+        """F10: dolu satırda ürün listesi (aynı satırı değiştir); boşta giriş listesi."""
         try:
             secim = [i for i in self.tablo.selection() if i != YENI_SATIR_IID]
         except tk.TclError:
             secim = []
         if secim:
-            return None
+            idx = satir_indeksi(self.tablo, secim[0])
+            if idx is not None:
+                self.urun_listesi_ile_degistir(idx)
+                return "break"
         return self._f10()
 
     def _secim_temizle(self, _e=None):
@@ -1085,6 +1088,20 @@ class SatirIciUrunGirisi:
         if iid != YENI_SATIR_IID:
             if self.acik_mi() and self._hedef_idx is None and not self._var.get().strip():
                 self.kapat()
+            # Dolu satırda ürün adına tek tık → mevcut stok kartı (+ / F10 ürün değiştirir).
+            # Manuel (stoksuz) satırda ad hücresi düzenlenebilir kalsın.
+            kolon = _kolon_adi(self.tablo, event.x)
+            ad_kolon = (self.kolonlar or {}).get("ad")
+            if ad_kolon and kolon == ad_kolon:
+                idx = satir_indeksi(self.tablo, iid)
+                if idx is not None:
+                    satirlar = getattr(self.dialog, "satirlar", None) or []
+                    if 0 <= idx < len(satirlar) and (
+                        satirlar[idx].get("is_manual_item") or satirlar[idx].get("manuel")
+                    ):
+                        return None
+                    self.stok_karti_ac(idx)
+                    return "break"
             return None
         if not self._hucre_editorlerini_birak():
             return "break"
@@ -1635,9 +1652,15 @@ class SatirIciUrunGirisi:
             coklu=hedef is None,
         )
         self.dialog.wait_window(dlg)
+        # Liste açıkken fatura onaylandıysa değişiklik uygulama
+        if self.kilitli():
+            self._hedef_idx = None
+            return
         if not secilenler:
             if rol is not None:
                 self.ac(rol, metin, hedef_idx=hedef)
+            else:
+                self._hedef_idx = None
             return
         if hedef is not None:
             self._hedef_idx = hedef
@@ -1694,7 +1717,16 @@ class SatirIciUrunGirisi:
         """Dolu satırda ürünü yalnızca açık kullanıcı işlemiyle değiştir."""
         if self.urun_degistir_fn is None or self.kilitli():
             return
-        self.ac("ad" if "ad" in self._roller() else None, "", hedef_idx=idx)
+        self.urun_listesi_ile_degistir(idx)
+
+    def urun_listesi_ile_degistir(self, idx: int) -> None:
+        """«+» / F10 — ürün listesi; seçim yalnız bu satıra yazılır."""
+        if self.urun_degistir_fn is None or self.kilitli():
+            return
+        if not (0 <= idx < len(getattr(self.dialog, "satirlar", []) or [])):
+            return
+        self._hedef_idx = idx
+        self.stok_listesi_ac()
 
     def _stok_yetkisi(self) -> bool:
         try:

@@ -324,6 +324,20 @@ def stoktan_satir_sablonu(
         "agirlikli_ortalama_birim_maliyeti": "0",
         "temel_miktar": str(temel_miktar(miktar_ekle, ana_birim, kod)),
     }
+    pid = None
+    if stok is not None:
+        try:
+            pid = int(getattr(stok, "id", 0) or 0) or None
+        except (TypeError, ValueError):
+            pid = None
+    if pid is None and product_id not in (None, ""):
+        try:
+            pid = int(product_id)
+        except (TypeError, ValueError):
+            pid = None
+    if pid:
+        sablon["product_id"] = pid
+        sablon["stok_id"] = pid
     try:
         if depo:
             maliyetler = StokService.maliyetler(kod, depo)

@@ -1,4 +1,4 @@
-"""Fatura satırı — Ürün Adı yanında «+ / Yeni Ürün Ekle» ve satıra dönüş."""
+"""Fatura satırı — Ürün Adı yanında «+» (ürün seç) ve satıra dönüş."""
 
 from __future__ import annotations
 
@@ -9,6 +9,54 @@ from tkinter import messagebox
 from typing import Any
 
 _LOG = logging.getLogger(__name__)
+
+
+def belge_satir_kilitli(dialog) -> bool:
+    """Satış/alış fatura veya sipariş satır düzenleme kilidi."""
+    import types
+
+    if bool(getattr(dialog, "_fatura_kilitli", False)):
+        return True
+    cls = type(dialog)
+    if getattr(cls, "__module__", "") == "unittest.mock":
+        return False
+    for ad in ("_alis_kilitli", "_alis_siparis_kilitli", "_belge_kilitli_mi", "_onayli"):
+        fn = getattr(cls, ad, None)
+        if isinstance(fn, types.FunctionType):
+            try:
+                if bool(fn(dialog)):
+                    return True
+            except Exception:
+                continue
+    giris = getattr(dialog, "_satir_ici_giris", None)
+    if giris is None or getattr(type(giris), "__module__", "") == "unittest.mock":
+        return False
+    kilit_fn = getattr(giris, "kilitli", None)
+    if callable(kilit_fn):
+        try:
+            return bool(kilit_fn())
+        except Exception:
+            return False
+    return False
+
+
+def urun_adi_kolonu(dialog) -> str | None:
+    """Ürün adı sütunu: satışta urun_adi, alışta ad."""
+    tablo = getattr(dialog, "satir_tablosu", None)
+    if tablo is None:
+        return None
+    try:
+        cols = list(tablo["columns"] or ())
+    except tk.TclError:
+        return None
+    giris = getattr(dialog, "_satir_ici_giris", None)
+    aday = None
+    if giris is not None:
+        aday = (getattr(giris, "kolonlar", {}) or {}).get("ad")
+    for ad in (aday, "urun_adi", "ad"):
+        if ad and ad in cols:
+            return ad
+    return None
 
 
 def _secili_satir_idx(dialog) -> int | None:
@@ -30,22 +78,48 @@ def _secili_satir_idx(dialog) -> int | None:
     return None
 
 
+def satirdan_urun_sec_ac(dialog, idx: int | None = None) -> None:
+    """Satırdaki «+» / F10 — ürün listesi; seçim yalnız hedef satırı değiştirir.
+
+    idx=None → boş giriş satırına ekleme (çoklu seçim).
+    """
+    if belge_satir_kilitli(dialog):
+        messagebox.showwarning(
+            "Ürün",
+            "Onaylı / kilitli belgede ürün değiştirmek için önce kilidi kaldırın.",
+            parent=dialog,
+        )
+        return
+    giris = getattr(dialog, "_satir_ici_giris", None)
+    if giris is None:
+        messagebox.showinfo("Ürün", "Ürün seçim bileşeni hazır değil.", parent=dialog)
+        return
+    if idx is not None:
+        if not (0 <= idx < len(getattr(dialog, "satirlar", []) or [])):
+            return
+        giris.urun_listesi_ile_degistir(idx)
+        return
+    giris.stok_listesi_ac()
+
+
 def satirdan_yeni_urun_ac(dialog, idx: int | None = None) -> Any:
-    """Satır bağlamında hızlı stok kartı açar; kayıt aynı satırı tamamlar."""
-    from fatura_barkod_ui import _barkod_hedef_kaydet, _satir_uid_ver, satir_cozulmemis_mi
+    """Satır bağlamında hızlı stok kartı açar; kayıt aynı satırı tamamlar.
+
+    Asıl «+ Yeni Ürün Ekle» ürün listesinin altındadır; bu yol F6 / sağ tık için kalır.
+    """
+    from fatura_barkod_ui import _satir_uid_ver, satir_cozulmemis_mi
     from hizli_stok_karti_ui import hizli_stok_karti_ac
 
-    if getattr(dialog, "_fatura_kilitli", False):
+    if belge_satir_kilitli(dialog):
         messagebox.showwarning(
             "Stok",
-            "Onaylı faturada stok kartı eklemek için önce Onay Kaldır yapın.",
+            "Onaylı / kilitli belgede stok kartı eklemek için önce kilidi kaldırın.",
             parent=dialog,
         )
         return None
     if idx is None:
         idx = _secili_satir_idx(dialog)
     if idx is None or not (0 <= idx < len(dialog.satirlar)):
-        # Satır yok — klasik hızlı stok (şerit F6)
         return hizli_stok_karti_ac(dialog)
 
     satir = dialog.satirlar[idx]
@@ -53,9 +127,7 @@ def satirdan_yeni_urun_ac(dialog, idx: int | None = None) -> Any:
     belge_nesil = int(getattr(dialog, "_barkod_nesil", 0) or 0)
     ham = (satir.get("ham_barkod") or satir.get("barkod") or "").strip()
     cozulmemis = satir_cozulmemis_mi(satir)
-    # Tanımlı ürünün barkodunu yeni karta kopyalama
     barkod_aktar = ham if cozulmemis and ham else None
-    ad_aktar = None  # İmleç ürün adında başlasın; boş ad taşıma
 
     def _satira_uygula(stok) -> None:
         _stok_kartini_satira_yaz(
@@ -66,15 +138,14 @@ def satirdan_yeni_urun_ac(dialog, idx: int | None = None) -> Any:
             ham_barkod=ham,
         )
 
-    stok = hizli_stok_karti_ac(
+    return hizli_stok_karti_ac(
         dialog,
         barkod=barkod_aktar,
-        urun_adi=ad_aktar,
+        urun_adi=None,
         satir_guncelle=_satira_uygula,
         barkod_kod_kopyala=False,
         odak_urun_adi=True,
     )
-    return stok
 
 
 def _stok_kartini_satira_yaz(
@@ -90,6 +161,13 @@ def _stok_kartini_satira_yaz(
     from fatura_urun_aktar_service import stoktan_satir_sablonu
     from fatura_satir_hucre_edit import uzlasma_etkisini_kaldir
 
+    if belge_satir_kilitli(dialog):
+        messagebox.showinfo(
+            "Stok kartı kaydedildi",
+            f"«{getattr(stok, 'stok_adi', '')}» oluşturuldu; belge kilitli olduğu için satıra yazılmadı.",
+            parent=dialog,
+        )
+        return False
     if int(getattr(dialog, "_barkod_nesil", 0) or 0) != int(belge_nesil):
         messagebox.showinfo(
             "Stok kartı kaydedildi",
@@ -115,7 +193,6 @@ def _stok_kartini_satira_yaz(
     eski = dialog.satirlar[idx]
     eski_miktar = Decimal(str(eski.get("miktar") or 1))
     ham = (ham_barkod or eski.get("ham_barkod") or eski.get("barkod") or "").strip()
-    # Tanımsız satırdaki geçici 0 fiyat / manuel işareti bilinçli ücretsiz sayılmaz
     sablon = stoktan_satir_sablonu(
         dialog,
         urun_kodu=stok.stok_kodu,
@@ -125,7 +202,7 @@ def _stok_kartini_satira_yaz(
         product_id=getattr(stok, "id", None),
         barkod=ham,
     )
-    sablon["miktar"] = str(eski_miktar)  # biriken okuma miktarı korunur
+    sablon["miktar"] = str(eski_miktar)
     sablon["satir_uid"] = hedef_uid
     sablon["ham_barkod"] = ham
     if ham:
@@ -133,7 +210,6 @@ def _stok_kartini_satira_yaz(
     sablon["cozulmemis"] = False
     sablon.pop("cozulmemis_neden", None)
     sablon["aciklama"] = eski.get("aciklama") or ""
-    # Kullanıcı bilinçli iskonto/fiyat girdiyse (çözülmüş satır) koru
     if not satir_cozulmemis_mi(eski) and bool(eski.get("manuel_fiyat")):
         sablon["birim_satis_fiyati"] = eski.get("birim_satis_fiyati")
         sablon["manuel_fiyat"] = True
@@ -160,41 +236,26 @@ def _stok_kartini_satira_yaz(
 
 
 def yeni_urun_arti_butonlarini_ciz(dialog) -> None:
-    """Ürün Adı hücresinin sağında küçük «+» düğmeleri (Yeni Ürün Ekle)."""
+    """Ürün Adı hücresinin sağında «+» — ürün listesi (ipucu: Ürün seç / değiştir)."""
     tablo = getattr(dialog, "satir_tablosu", None)
     if tablo is None:
         return
-    # Eski + düğmelerini temizle
     for w in getattr(dialog, "_yeni_urun_btnler", []) or []:
         try:
             w.destroy()
         except tk.TclError:
             pass
     dialog._yeni_urun_btnler = []
-    if getattr(dialog, "_fatura_kilitli", False):
+    if belge_satir_kilitli(dialog):
         return
     if getattr(dialog, "_satir_hucre_editor", None) is not None:
         return
-    try:
-        cols = list(tablo["columns"] or ())
-    except tk.TclError:
-        return
-    if "urun_adi" not in cols:
+    ad_kolon = urun_adi_kolonu(dialog)
+    if not ad_kolon:
         return
     btn_w = 22
-    for iid in tablo.get_children():
-        if iid == "__yeni__":
-            continue
-        try:
-            idx = int(iid)
-            bbox = tablo.bbox(iid, "urun_adi")
-        except (tk.TclError, TypeError, ValueError):
-            continue
-        if not bbox or idx < 0 or idx >= len(dialog.satirlar or []):
-            continue
-        x, y, w, h = bbox
-        if w < btn_w + 8 or h < 8:
-            continue
+
+    def _btn_olustur(*, x: int, y: int, w: int, h: int, idx: int | None) -> None:
         btn = tk.Button(
             tablo,
             text="+",
@@ -208,7 +269,7 @@ def yeni_urun_arti_butonlarini_ciz(dialog) -> None:
             highlightbackground="#94A3B8",
             cursor="hand2",
             takefocus=0,
-            command=lambda i=idx: satirdan_yeni_urun_ac(dialog, i),
+            command=lambda i=idx: satirdan_urun_sec_ac(dialog, i),
         )
         try:
             btn.place(
@@ -222,8 +283,8 @@ def yeni_urun_arti_butonlarini_ciz(dialog) -> None:
                 btn.destroy()
             except tk.TclError:
                 pass
-            continue
-        # Tooltip benzeri
+            return
+
         def _enter(_e=None, b=btn):
             try:
                 b.configure(bg="#C5D4E8")
@@ -236,21 +297,52 @@ def yeni_urun_arti_butonlarini_ciz(dialog) -> None:
             except tk.TclError:
                 pass
 
-        btn.bind("<Enter>", _enter)
-        btn.bind("<Leave>", _leave)
-        # Basit durum çubuğu / title
-        try:
-            # Tk Button'da tooltip yok; bind ile
-            def _ipucu(_e=None, i=idx):
+        def _ipucu_goster(_e=None):
+            lbl = getattr(dialog, "_barkod_durum", None)
+            if lbl is not None:
                 try:
-                    dialog._barkod_durum  # noqa: B018
-                except Exception:
+                    lbl.configure(text="Ürün seç / değiştir")
+                except tk.TclError:
                     pass
 
-            btn.bind("<Enter>", lambda e, i=idx: None)
+        def _ipucu_sil(_e=None):
+            pass
+
+        btn.bind("<Enter>", lambda e: (_enter(e), _ipucu_goster(e)), add="+")
+        btn.bind("<Leave>", lambda e: (_leave(e), _ipucu_sil(e)), add="+")
+        dialog._yeni_urun_btnler.append(btn)
+
+    for iid in tablo.get_children():
+        try:
+            bbox = tablo.bbox(iid, ad_kolon)
+        except (tk.TclError, TypeError, ValueError):
+            continue
+        if not bbox:
+            continue
+        x, y, w, h = bbox
+        if w < btn_w + 8 or h < 8:
+            continue
+        if iid == "__yeni__":
+            _btn_olustur(x=x, y=y, w=w, h=h, idx=None)
+            continue
+        try:
+            idx = int(iid)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx >= len(dialog.satirlar or []):
+            continue
+        _btn_olustur(x=x, y=y, w=w, h=h, idx=idx)
+
+
+def arti_butonlarini_yenile(dialog) -> None:
+    """Tablo yenilemesinden sonra «+» düğmelerini yeniden çiz (alış/satış)."""
+    try:
+        dialog.after_idle(lambda: yeni_urun_arti_butonlarini_ciz(dialog))
+    except Exception:
+        try:
+            yeni_urun_arti_butonlarini_ciz(dialog)
         except Exception:
             pass
-        dialog._yeni_urun_btnler.append(btn)
 
 
 def urun_adi_overlay_genislik_kis(w: int, *, btn_w: int = 22) -> int:

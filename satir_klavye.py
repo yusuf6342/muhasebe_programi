@@ -31,23 +31,46 @@ def urun_kolonlari(dialog) -> set[str]:
 
 
 def satir_stok_karti_ac(dialog, idx: int) -> bool:
-    """Satırın bağlı stok kartını açar; bağlı kart yoksa kısa bilgi verir. Açıldıysa True."""
+    """Satırın bağlı stok kartını açar; bağlı kart yoksa kısa bilgi verir. Açıldıysa True.
+
+    Onaylı faturada da açılır; karttaki düzenleme fatura satırına yazılmaz.
+    """
     satirlar = getattr(dialog, "satirlar", None) or []
     if not (0 <= idx < len(satirlar)):
         return False
     satir = satirlar[idx]
-    kod = (satir.get("urun_kodu") or "").strip()
-    if not kod or satir.get("is_manual_item") or satir.get("manuel"):
+    if satir.get("is_manual_item") or satir.get("manuel"):
         messagebox.showinfo("Stok", "Bu satır bir stok kartına bağlı değil.", parent=dialog)
+        return False
+    kod = (satir.get("urun_kodu") or "").strip()
+    pid = satir.get("product_id") or satir.get("stok_id")
+    try:
+        pid = int(pid) if pid not in (None, "") else None
+    except (TypeError, ValueError):
+        pid = None
+    if not kod and not pid:
+        messagebox.showinfo(
+            "Stok",
+            "Bu satır bir stok kartına bağlı değil. Ürün seçmek için «+» düğmesini kullanın.",
+            parent=dialog,
+        )
         return False
     try:
         from database.stok_service import StokService
         from stok_ui import StokKartiDialog
 
-        stok = next((s for s in StokService.stoklari_ara(kod) if (s.stok_kodu or "").strip() == kod), None)
+        stok = None
+        if pid:
+            stok = StokService.stok_getir(pid)
+        if stok is None and kod:
+            stok = next(
+                (s for s in StokService.stoklari_ara(kod) if (s.stok_kodu or "").strip() == kod),
+                None,
+            )
         if stok is None:
             messagebox.showinfo("Stok", "Stok kartı bulunamadı.", parent=dialog)
             return False
+        # Onaylı faturada satır güncelleme geri çağrısı verilmez — yalnızca görüntüleme/kart
         StokKartiDialog(dialog, stok)
         return True
     except Exception as exc:

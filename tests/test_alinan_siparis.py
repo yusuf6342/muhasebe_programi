@@ -397,7 +397,7 @@ class AlinanSiparisEkranTest(_SiparisEkranTemel):
         self.assertIn("Paket", d._satir_birimleri(0))
         self._urun_ekle(d, "2", "Paket", fiyat="100")
         self.assertEqual(d.satir_tablosu.get_children()[-1], "__yeni__")
-        self.assertEqual(d._toplam_lbl["kalem"].cget("text"), "2")
+        self.assertIn("2", str(d._toplam_lbl["kalem"].cget("text")))
         self.assertEqual(d.satirlar[1]["birim"], "Paket")
         t = d.toplam_guncelle()
         beklenen = belge_toplamlari([

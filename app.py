@@ -6359,8 +6359,23 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             pass
         return None
 
+    def _fatura_urun_listesi_f10(self, _event=None):
+        """F10 — ürün listesi (satırdaki «+» ile aynı akış); dolu satırda yalnız o satır değişir."""
+        from fatura_satir_yeni_urun import _secili_satir_idx, satirdan_urun_sec_ac
+
+        if getattr(self, "_fatura_kilitli", False):
+            messagebox.showwarning(
+                "Ürün",
+                "Onaylı faturada ürün değiştirmek için önce Onay Kaldır yapın.",
+                parent=self,
+            )
+            return "break"
+        idx = _secili_satir_idx(self)
+        satirdan_urun_sec_ac(self, idx)
+        return "break"
+
     def _fatura_manuel_fiyat_ac(self, _event=None):
-        """F10 / menü / çift tık — manuel birim fiyat diyaloğu."""
+        """Menü / araç — manuel birim fiyat diyaloğu (F10 ürün listesine ayrıldı)."""
         from fatura_manuel_fiyat_ui import (
             maliyet_alti_kontrol,
             manuel_fiyat_dialogu,
@@ -9858,7 +9873,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
         self.satir_tablosu.bind("<<TreeviewSelect>>", self._fatura_satir_secim_sade)
         self.bind("<F8>", lambda _e: self._barkod_odak())
-        self.bind("<F10>", self._fatura_manuel_fiyat_ac)
+        self.bind("<F10>", self._fatura_urun_listesi_f10)
 
         self._fiyat_sec_pencere = None
         self._fiyat_sec_atla = False
@@ -10195,6 +10210,15 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     except (TypeError, ValueError, tk.TclError):
                         pass
 
+                def _urun_adi_stok_ac(_iid):
+                    """Ürün adına tık → mevcut stok kartı (onaylı faturada da açık)."""
+                    try:
+                        from satir_klavye import satir_stok_karti_ac
+
+                        satir_stok_karti_ac(self, int(_iid))
+                    except (TypeError, ValueError, tk.TclError):
+                        pass
+
                 def _sec(_e=None, _iid=iid, _kolon=kolon):
                     from fatura_satir_hucre_edit import editoru_birak
 
@@ -10208,12 +10232,23 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     except tk.TclError:
                         return "break"
                     if _e is not None and not getattr(self, "_satir_cift_tik_engel", False):
-                        _duzenle(_iid, _kolon, _e)
+                        if _kolon == "urun_adi":
+                            _urun_adi_stok_ac(_iid)
+                        else:
+                            _duzenle(_iid, _kolon, _e)
                     return "break"
 
                 def _cift(_e=None, _iid=iid, _kolon=kolon):
                     self._satir_cift_tik_engel = True
                     self.after(250, lambda: setattr(self, "_satir_cift_tik_engel", False))
+                    if _kolon == "urun_adi":
+                        try:
+                            tablo.selection_set(_iid)
+                            tablo.focus(_iid)
+                        except tk.TclError:
+                            pass
+                        _urun_adi_stok_ac(_iid)
+                        return "break"
                     _sec()
                     _duzenle(_iid, _kolon, _e)
                     return "break"
@@ -10496,10 +10531,17 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
 
     def _satir_ici_urun_degistir(self, idx, degerler) -> bool:
         """Dolu satırda ürünü açıkça değiştir — eski birim/fiyat/KDV/bağ taşınmaz."""
-        from fatura_barkod_ui import belge_kancasi
+        from fatura_barkod_ui import _satir_uid_ver, belge_kancasi
         from fatura_urun_aktar_service import stoktan_satir_sablonu
         from satir_ici_urun_giris import kaynak_bagli_mi
 
+        if getattr(self, "_fatura_kilitli", False):
+            messagebox.showwarning(
+                "Ürünü Değiştir",
+                "Onaylı faturada ürün değiştirmek için önce Onay Kaldır yapın.",
+                parent=self,
+            )
+            return False
         if not (0 <= idx < len(self.satirlar)):
             return False
         eski = self.satirlar[idx]
@@ -10511,15 +10553,39 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             )
             return False
         product_id = degerler[7] if len(degerler) > 7 else None
+        yeni_kod = (degerler[0] or "").strip()
+        yeni_birim = (degerler[2] or "Adet").strip() or "Adet"
+        eski_birim = (eski.get("birim") or "Adet").strip() or "Adet"
+        eski_miktar = Decimal(str(eski.get("miktar") or 1))
+        from database.stok_service import birim_anahtari
+
+        miktar = Decimal("1")
+        birim = yeni_birim
+        birim_uyumsuz = False
+        if birim_anahtari(eski_birim) == birim_anahtari(yeni_birim):
+            miktar = eski_miktar
+        else:
+            try:
+                from fatura_satir_birim_service import stok_aktif_birimleri
+
+                aktif = stok_aktif_birimleri(yeni_kod)
+                if any(birim_anahtari(b) == birim_anahtari(eski_birim) for b in aktif):
+                    miktar = eski_miktar
+                    birim = eski_birim
+                else:
+                    birim_uyumsuz = True
+            except Exception:
+                birim_uyumsuz = True
         sablon = stoktan_satir_sablonu(
             self,
-            urun_kodu=degerler[0],
+            urun_kodu=yeni_kod,
             urun_adi=degerler[1],
-            birim=degerler[2],
-            miktar=Decimal(str(eski.get("miktar") or 1)),
+            birim=birim,
+            miktar=miktar,
             product_id=product_id,
         )
         sablon["aciklama"] = eski.get("aciklama") or ""
+        sablon["satir_uid"] = _satir_uid_ver(eski)
         # Okunan ham barkod izlensin; çözülmemiş işaret kalkar
         ham = (eski.get("ham_barkod") or eski.get("barkod") or "").strip()
         if ham and not (sablon.get("barkod") or "").strip():
@@ -10546,6 +10612,17 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
         self._duzenlenen_satir = None
         self._satir_listesini_yenile()
         self._toplamlari_guncelle()
+        if birim_uyumsuz:
+            messagebox.showinfo(
+                "Birim",
+                f"Eski birim «{eski_birim}» yeni üründe uyumlu değil.\n"
+                f"Miktar 1 {birim} olarak ayarlandı — uygun birim ve miktarı siz belirleyin.",
+                parent=self,
+            )
+            try:
+                self._satir_ici_miktara_git(idx)
+            except Exception:
+                pass
         return True
 
     def _hizli_stok_karti_ac(self):
