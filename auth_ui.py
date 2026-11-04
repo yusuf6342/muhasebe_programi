@@ -146,7 +146,11 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
     if not yol.is_file():
         raise FileNotFoundError(f"Firma veritabanı bulunamadı:\n{yol}")
 
+    from database.acil_asama_log import asama
+
+    asama(f"firma_oturumu_ac basla id={firma.id}")
     firma_db_ac(firma.id, yol)
+    asama("firma_db_ac bitti")
     oturum.set_company(
         company_id=firma.id,
         firma_kodu=firma.firma_kodu,
@@ -160,10 +164,20 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         AuditDeleteService.schema_hazirla()
     except Exception:
         pass
+    try:
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+        asama("KrediKartiEkstreService.schema_hazirla")
+        KrediKartiEkstreService.schema_hazirla()
+        asama("ekstre schema bitti")
+    except Exception:
+        pass
     from database.muhasebelestirme_service import MuhasebelestirmeService
 
     # Yedek alınamazsa/geçiş yarıda kalırsa firma açılmaz; hata kullanıcıya gösterilir, seçim yinelenebilir
+    asama("MuhasebelestirmeService.schema_hazirla")
     MuhasebelestirmeService.schema_hazirla()
+    asama("muhasebelestirme schema bitti")
     from database.cari_risk_service import schema_hazirla as cari_risk_schema_hazirla
 
     cari_risk_schema_hazirla()
@@ -195,6 +209,7 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
             kayit_id=str(firma.id),
             yeni_deger=firma.unvan,
         )
+    asama("firma_oturumu_ac TAMAM")
 
 
 def _ilk_parola_dosyasi() -> Path:

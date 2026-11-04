@@ -122,9 +122,14 @@ def test_ilk_acilis_sor(parent) -> bool | None:
 
 def baslatma_adimlari(progress) -> None:
     """Veritabanı ve servis hazırlığı — splash ilerleme geri çağrısı ile."""
+    from database.acil_asama_log import asama, oturum_baslat
+
+    oturum_baslat()
+    asama("baslatma_adimlari: sistem altyapısı")
     progress(5, "Sistem altyapısı başlatılıyor...")
     print("Sistem altyapısı başlatılıyor (system.db)...")
     sistem_bilgi = sistem_altyapisini_baslat()
+    asama(f"sistem_altyapisi bitti company={sistem_bilgi.get('company_db')}")
     print(f"Sistem DB: {sistem_bilgi.get('system_db')}")
     print(f"Aktif firma DB: {sistem_bilgi.get('company_db')}")
 
@@ -145,11 +150,14 @@ def baslatma_adimlari(progress) -> None:
     from database.muhasebelestirme_service import MuhasebelestirmeService
 
     db_yolu = MuhasebelestirmeService._db_yolu()
+    asama("sema_eksikleri denetimi")
     eksikler = sema_eksikleri(db.engine, Base.metadata)
     gerekli = bool(eksikler) or MuhasebelestirmeService.gecis_gerekli_mi()
+    asama(f"gecis gerekli={gerekli} eksik={len(eksikler)} ornek={eksikler[:5]}")
     if gerekli:
         print("Açılış geçişi gerekli:", ", ".join(eksikler[:10]) or "muhasebeleştirme ayarları")
         progress(22, "Güncelleme öncesi veritabanı yedeği alınıyor...")
+        asama("guvenli_gecis yedek+sema basliyor")
     _, yedek = guvenli_gecis(
         db_yolu,
         lambda: _sema_adimlari(progress),
@@ -157,6 +165,7 @@ def baslatma_adimlari(progress) -> None:
         etiket="acilis_gecisi",
         baglantilari_kapat=MuhasebelestirmeService._baglantilari_kapat,
     )
+    asama("guvenli_gecis bitti")
     if yedek:
         print("Açılış geçişi öncesi doğrulanmış yedek:", yedek.yol)
 
@@ -164,13 +173,17 @@ def baslatma_adimlari(progress) -> None:
     try:
         from database.kart_turu_service import KartTuruService
 
+        asama("KartTuruService.schema_ve_seed")
         KartTuruService.schema_ve_seed()
     except Exception as e:
         print("Kart türü şema uyarısı:", e)
 
+    kalan = sema_eksikleri(db.engine, Base.metadata)
+    asama(f"sema sonrasi kalan_eksik={len(kalan)} {kalan[:5]}")
     progress(90, "Arayüz hazırlanıyor...")
     print("Tablolar başarıyla oluşturuldu!")
     print(f"Veritabanı: {db.engine.url}")
+    asama("baslatma_adimlari TAMAM")
 
 
 def _sema_adimlari(progress) -> None:
@@ -222,6 +235,37 @@ def _sema_adimlari(progress) -> None:
     from database.gider_kart_odeme_service import schema_hazirla as gider_kart_schema_hazirla
 
     gider_kart_schema_hazirla(db.engine)
+
+    try:
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+        KrediKartiEkstreService.schema_hazirla()
+    except Exception as e:
+        print("Kredi kartı ekstre şema uyarısı:", e)
+
+    # create_all mevcut tablolara kolon eklemez; eksik soft-ALTER (her açılışta tam yedek döngüsünü keser)
+    try:
+        from sqlalchemy import inspect, text
+
+        insp = inspect(db.engine)
+        if insp.has_table("personel_calisma_donemleri"):
+            mevcut = {c["name"] for c in insp.get_columns("personel_calisma_donemleri")}
+            eklenecek = {
+                "gorev_id": "INTEGER",
+                "sube_id": "INTEGER",
+            }
+            eksik = {a: t for a, t in eklenecek.items() if a not in mevcut}
+            if eksik:
+                with db.engine.begin() as conn:
+                    for alan, tip in eksik.items():
+                        conn.execute(
+                            text(
+                                f'ALTER TABLE "personel_calisma_donemleri" '
+                                f'ADD COLUMN "{alan}" {tip}'
+                            )
+                        )
+    except Exception as e:
+        print("Personel çalışma dönemi şema uyarısı:", e)
 
     progress(80, "Çek/senet ve denetim hazırlanıyor...")
     try:

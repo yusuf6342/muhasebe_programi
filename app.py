@@ -14931,14 +14931,21 @@ class MuhasebeApp(tk.Tk):
             self.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
+        from database.acil_asama_log import asama as _acil_asama
+        from database.session_manager import oturum as _oturum_donem
+
+        _acil_asama("giris sonrasi: donem/menu/ana_sayfa")
         self._aktif_donemi_yukle()
+        _acil_asama(f"donem yuklendi: {_oturum_donem.donem_adi}")
         self._sistem_menu_gorunurluk_guncelle()
         self._oturum_cubugunu_guncelle()
         self.ana_sayfa_goster()
+        _acil_asama("ana_sayfa_goster bitti")
         self.deiconify()
         self.lift()
         self.focus_force()
         self._cin_basarili = True
+        _acil_asama("ana pencere hazir")
         try:
             from ui_tema import oturum_temasini_yukle
 
