@@ -1,4 +1,7 @@
-"""Firma operasyon veritabanı yöneticisi — dağınık SQLite bağlantısı açılmaz."""
+"""Firma operasyon veritabanı yöneticisi — dağınık SQLite bağlantısı açılmaz.
+
+Yerel ağ kipinde PostgreSQL (engine_factory); SQLite dosyası ağda açılmaz.
+"""
 
 from __future__ import annotations
 
@@ -7,30 +10,17 @@ from contextlib import contextmanager
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-
-def _sqlite_pragma(dbapi_connection, _connection_record) -> None:
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA cache_size=-65536")
-    cursor.close()
+from database.baglanti_modu import ayari_yukle
+from database.engine_factory import firma_engine_olustur
 
 
-def _engine_olustur(db_path: Path) -> Engine:
-    url = f"sqlite:///{db_path.resolve().as_posix()}"
-    eng = create_engine(
-        url,
-        echo=False,
-        connect_args={"check_same_thread": False, "timeout": 30},
-    )
-    event.listen(eng, "connect", _sqlite_pragma)
-    return eng
+def _engine_olustur(db_path: Path, *, firma_db: str | None = None) -> Engine:
+    """Varsayılan: yerel SQLite. LAN kipinde ayar dosyasındaki PostgreSQL."""
+    ayar = ayari_yukle()
+    return firma_engine_olustur(ayar, sqlite_path=db_path, firma_db=firma_db)
 
 
 class CompanyDatabase:

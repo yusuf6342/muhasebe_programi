@@ -1,0 +1,65 @@
+CİN MUHASEBE — ANA BİLGİSAYAR (SUNUCU) KURULUMU
+Tarih: 04.11.2026
+Durum: Ağ hazırlığı — PostgreSQL paketleri henüz canlı kullanıma hazır değildir.
+
+AMAÇ
+Ana bilgisayarda PostgreSQL servisi çalışır; ana makinedeki ve tüm terminallerdeki
+Cin Muhasebe aynı merkezî sistem + firma verilerine bağlanır.
+
+ÖN KOŞUL
+- Ana PC tercihen Ethernet ile modeme bağlı olsun.
+- Windows «Özel ağ» profili kullanılsın.
+- OneDrive içinde program/veri klasörü olmasın.
+- Canlı SQLite verisini yedeklemeden dönüşüm yapmayın.
+
+1) POSTGRESQL (64 bit, kararlı sürüm)
+- https://www.postgresql.org/download/windows/ adresinden 16.x veya 17.x
+  kararlı (RC/beta değil) kurun.
+- Kurulumda port: 5432 (farklıysa not alın).
+- Superuser parolasını güvenli saklayın; günlük Cin Muhasebe işlemlerinde
+  superuser kullanmayın.
+
+2) UYGULAMA ROLÜ (düşük yetki)
+psql ile (örnek; parolaları kendiniz üretin, bu dosyaya yazmayın):
+
+  CREATE ROLE cin_app LOGIN PASSWORD '***';
+  CREATE DATABASE cin_sistem OWNER cin_app;
+  -- Firma DB'leri ayrı: cin_firma_<kod>
+  CREATE DATABASE cin_firma_ray OWNER cin_app;
+
+3) ERİŞİM (yalnız işyeri LAN)
+postgresql.conf:
+  listen_addresses = 'ANA_PC_IP_VEYA_*'   -- yalnız LAN arayüzü tercih edilir
+pg_hba.conf (örnek, kendi alt ağınızı yazın):
+  hostssl  cin_sistem    cin_app   192.168.1.0/24   scram-sha-256
+  hostssl  cin_firma_ray cin_app   192.168.1.0/24   scram-sha-256
+  # trust veya 0.0.0.0/0 KULLANMAYIN
+
+Windows Güvenlik Duvarı: TCP 5432 yalnız «Özel» profilde, yetkili
+terminallere; güvenlik duvarını kapatmayın; modemden internete port açmayın.
+
+4) TLS
+Sunucu sertifikası host adı / IP ile eşleşsin. Private key terminallere
+dağıtılmasın. İstemci sslmode=require (veya verify-full).
+
+5) CİN MUHASEBE (ANA PC)
+- Programı OneDrive dışına kurun.
+- Bağlantı Ayarları → «Yerel ağ (PostgreSQL)»
+- Sunucu: 127.0.0.1 (veya kendi LAN IP), port 5432
+- Ortam: DENEME (pilot) veya GERÇEK
+- «Bağlantıyı Sına» → Kaydet → programı yeniden başlatın
+- Kısa yol adında DENEME / GERÇEK ayrımı görünsün
+
+6) YEDEK
+- pg_dump / pg_dumpall kullanın; yalnız klasör kopyası yeterli değildir.
+- Pilot: yazmaları kısa süre durdurup tutarlı dump alın.
+- Yedek ayrı disk/USB'ye; son başarılı yedek zamanını not edin.
+- Geri yüklemeyi canlıya değil ayrı DENEME veritabanına deneyin.
+
+7) YENİ TERMİNAL
+Veri kopyalamadan: terminal paketini kurun, aynı sunucu IP/port/firma ile
+bağlanın. Kod veya yeniden kurulum gerekmez.
+
+SORUN GİDERME
+- Bağlantı kopunca program yerel SQLite'a düşmez; hata gösterir.
+- İnternet yokken LAN çalışmalı; TCMB/bulut ayrı hata verir.

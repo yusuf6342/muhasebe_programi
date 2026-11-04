@@ -6,7 +6,7 @@ import socket
 import uuid
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from database.system.migration import migration_uygula, system_tablolari_olustur
@@ -348,23 +348,13 @@ ROLLER: list[tuple[str, str, str]] = [
 ]
 
 
-def _sqlite_pragma(dbapi_connection, _connection_record) -> None:
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
-
-
 def system_engine_olustur(system_db_path: Path):
+    """Yerel SQLite veya LAN PostgreSQL (baglanti_ayari.json)."""
+    from database.baglanti_modu import ayari_yukle
+    from database.engine_factory import sistem_engine_olustur
+
     system_db_path.parent.mkdir(parents=True, exist_ok=True)
-    eng = create_engine(
-        f"sqlite:///{system_db_path.resolve().as_posix()}",
-        echo=False,
-        connect_args={"check_same_thread": False, "timeout": 30},
-    )
-    event.listen(eng, "connect", _sqlite_pragma)
-    return eng
+    return sistem_engine_olustur(ayari_yukle(), sqlite_path=system_db_path)
 
 
 def _izinleri_doldur(session: Session) -> dict[str, Permission]:

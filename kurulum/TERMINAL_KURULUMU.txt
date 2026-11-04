@@ -1,0 +1,38 @@
+CİN MUHASEBE — TERMİNAL KURULUMU
+Tarih: 04.11.2026
+Durum: Ağ hazırlığı — tam LAN paketi henüz işyerinde kabul testinden geçmemiştir.
+
+AMAÇ
+Terminalde yalnızca Cin Muhasebe istemcisi kurulur. PostgreSQL sunucusu
+kurulmaz. Veri ana bilgisayardaki merkezî PostgreSQL'dedir.
+
+1) KURULUM
+- Terminal paketini OneDrive dışında bir klasöre kurun
+  (ör. C:\Program Files\CinMuhasebe veya C:\CinMuhasebe).
+- Masaüstü kısayolunda DENEME / GERÇEK ayrımı görünsün.
+
+2) İLK BAĞLANTI
+Program → Bağlantı Ayarları (veya ilk açılışta ağ kipine geçiş):
+  Çalışma kipi: Yerel ağ (PostgreSQL)
+  Sunucu adı / IP: ANA_BILGISAYAR_LAN_IP
+  Port: 5432 (farklıysa ana PC'deki değer)
+  Sistem DB / Firma DB: ana PC ile aynı
+  Ortam: DENEME veya GERÇEK (yanlış ortama yazmayın)
+  «Bağlantıyı Sına» → yeşil onay → Kaydet → yeniden başlat
+
+3) KULLANICI
+Cin Muhasebe kullanıcı adı/şifresi ile giriş yapın.
+Bu, PostgreSQL yönetici hesabı değildir.
+
+4) YENİ TERMİNAL EKLEME
+Aynı adımları tekrarlayın. Veri kopyalamayın, system.db taşımayın,
+kod değiştirmeyin. Yetkili kullanıcı ile aynı firmaya bağlanın.
+
+5) TERMİNAL ERİŞİMİNİ KALDIRMA
+Ana PC'de pg_hba / güvenlik duvarından IP'yi çıkarın veya kullanıcıyı
+pasifleştirin. Diğer terminaller çalışmaya devam eder.
+
+6) SORUN
+- Wi-Fi koptuğunda: diğer PC'ler çalışır; bu terminal sessizce yerel
+  SQLite oluşturmaz. Yeniden bağlanınca mükerrer kayıt üretmemeli.
+- Barkod / yazıcı / PDF: her fiziksel terminalde ayrı doğrulanmalı.

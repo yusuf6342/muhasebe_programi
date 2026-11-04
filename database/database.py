@@ -6,7 +6,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event, inspect, select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from database import sqlite_funcs as _sqlite_funcs  # noqa: F401  — tr_norm() (tüm motorlar)
@@ -217,28 +217,19 @@ def baslangic_veri_uyarisi() -> str | None:
         "Boş veritabanı ile devam edilsin mi?"
     )
 
-# SQLite veritabanı (firma operasyon DB — varsayılan: mevcut muhasebe.db)
+# Firma operasyon DB — varsayılan SQLite; LAN kipinde PostgreSQL (sessiz fallback yok)
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 
 
-def _sqlite_baglanti_ayarlari(dbapi_connection, _connection_record) -> None:
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    # Okuma önbelleği (MB cinsinden negatif = KB*1024); dayanıklılığı değiştirmez
-    cursor.execute("PRAGMA cache_size=-65536")
-    cursor.close()
+def _firma_engine_baslat():
+    from database.baglanti_modu import ayari_yukle
+    from database.engine_factory import firma_engine_olustur
+
+    return firma_engine_olustur(ayari_yukle(), sqlite_path=DB_PATH)
 
 
 # Veritabanı bağlantısı (arka plan thread + OneDrive kilidi için timeout)
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
-)
-event.listen(engine, "connect", _sqlite_baglanti_ayarlari)
+engine = _firma_engine_baslat()
 
 
 # Tüm firma (operasyon) modellerimizin temel sınıfı

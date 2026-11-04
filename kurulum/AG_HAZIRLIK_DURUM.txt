@@ -1,0 +1,35 @@
+CİN MUHASEBE — YEREL AĞ HAZIRLIĞI DURUM RAPORU
+Tarih: 04.11.2026
+Dal: feature/yerel-ag-postgresql
+Durum etiketi: Ağ hazırlığı (canlı LAN kullanıma HAZIR DEĞİL)
+
+=== MEVCUT DURUM ===
+- Varsayılan çalışma kipi: yerel tek bilgisayar (SQLite).
+- TEST veri: %LOCALAPPDATA%\CinMuhasebeTest\data
+- GERÇEK veri: MuhasebeProgrami\data (OneDrive dışı kurulum yolu)
+- Yedek (TEST): CinMuhasebeTest\yedekler_ag_hazirlik\tam_yedek_2026-11-04_141614
+- Bu makinede PostgreSQL sunucusu kurulu değil; canlı veri taşınmadı.
+
+=== YAPILAN DÖNÜŞÜM (iskelet) ===
+- database/baglanti_modu.py — yerel_sqlite | yerel_ag_postgres ayarı
+- database/engine_factory.py — PG havuz + sessiz SQLite fallback YOK
+- baglanti_ayari_ui.py + Servis Sistem «Bağlantı Ayarları»
+- company_database / system bootstrap → engine_factory üzerinden
+- requirements: psycopg[binary], keyring
+- kurulum/SUNUCU_KURULUMU.txt, TERMINAL_KURULUMU.txt
+- tools/_sqlite_pg_uyumluluk_envanter.py → SQLITE_PG_ENVANTER.txt (~599 eşleşme)
+- tools/_sqlite_to_postgres_gecis.py — iskelet (dry-run; tam kopya henüz yok)
+
+=== TESLİM EDİLECEK PAKETLER (henüz tamamlanmadı) ===
+- Ana PC: PostgreSQL + sunucu kurulum paketi + pg_dump yedek planı
+- Terminal: istemci EXE + Bağlantı Ayarları (PG sunucusu yok)
+- SQLite→PG geçiş aracı (doğrulanmış sayım/sequence)
+- Fiziksel LAN kabul testi (Wi-Fi terminaller)
+
+=== BİLİNEN EKSİKLER ===
+- PRAGMA / sqlite_master / sqlite3 doğrudan kullanımı yaygın; PG karşılıkları eksik
+- Modül düzeyinde database.engine hâlâ importta SQLite URL ile kuruluyor
+- Belge numarası / row_version atomikliği LAN’da yeniden doğrulanacak
+- TLS sertifika paketi, pg_hba gerçek IP’ler, fiziksel çok-terminal testi yok
+
+Kullanıcıya «ağ hazır» veya «terminaller canlıya bağlanabilir» iddiası YOKTUR.

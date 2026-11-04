@@ -1,0 +1,599 @@
+sqlite3_module	firma_secim_theme.py:5	import sqlite3
+sqlite3_module	firma_secim_theme.py:130	con = sqlite3.connect(f"file:{yol.resolve().as_posix()}?mode=ro", uri=True)
+PRAGMA	test_barkod_okut.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_barkod_okut.py:42	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_cari_fatura_detay.py:27	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_cari_fatura_detay.py:47	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_cari_kart_ui.py:24	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_cari_kart_ui.py:33	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_hizli_satis_pin.py:34	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_hizli_satis_pin.py:43	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_hizli_satis_service.py:37	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_hizli_satis_service.py:46	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_satis_fatura_kart_ui.py:25	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_satis_fatura_kart_ui.py:34	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_satis_personeli.py:27	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_satis_personeli.py:36	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_servis_sistem.py:26	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_servis_sistem.py:35	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_silinen_kayitlar.py:44	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_silinen_kayitlar.py:53	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_stok_kdv.py:29	cur.execute("PRAGMA foreign_keys=ON")
+PRAGMA	test_stok_kdv.py:165	conn.execute(text("PRAGMA foreign_keys=OFF"))
+PRAGMA	test_stok_kdv.py:190	conn.execute(text("PRAGMA foreign_keys=ON"))
+sqlite_url	test_stok_kdv.py:38	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	test_teklif_urun_arama.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	test_teklif_urun_arama.py:71	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_master	_tmp_cari_perf_reolc.py:21	"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+sqlite3_module	_tmp_cari_perf_reolc.py:5	import sqlite3
+sqlite3_module	_tmp_cari_perf_reolc.py:19	con = sqlite3.connect(DB)
+sqlite3_module	_tmp_kontrol_dogrula.py:6	import sqlite3
+sqlite3_module	_tmp_kontrol_dogrula.py:56	con = sqlite3.connect(str(SYS))
+sqlite3_module	_tmp_kontrol_dogrula.py:57	con.row_factory = sqlite3.Row
+sqlite_master	_tmp_senaryo_dogrula.py:150	text("SELECT name FROM sqlite_master WHERE type='table'")
+sqlite_master	database\acik_kalem_gecis.py:85	"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+PRAGMA	database\acik_kalem_gecis.py:97	butunluk = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	database\acik_kalem_gecis.py:25	import sqlite3
+sqlite3_module	database\acik_kalem_gecis.py:76	with closing(sqlite3.connect(f"file:{kaynak.resolve().as_posix()}?mode=ro", uri=True)) as src, \
+sqlite3_module	database\acik_kalem_gecis.py:77	closing(sqlite3.connect(hedef)) as dst:
+sqlite3_module	database\acik_kalem_gecis.py:83	with closing(sqlite3.connect(f"file:{Path(db_yolu).resolve().as_posix()}?mode=ro", uri=True)) as c:
+sqlite3_module	database\acik_kalem_gecis.py:96	with closing(sqlite3.connect(f"file:{Path(yedek).resolve().as_posix()}?mode=ro", uri=True)) as c:
+sqlite_url	database\acik_kalem_gecis.py:60	motor = create_engine(f"sqlite:///file:{yol}?mode=ro&uri=true", future=True)
+sqlite_url	database\acik_kalem_gecis.py:66	motor = create_engine(f"sqlite:///{Path(db_yolu).resolve().as_posix()}", future=True)
+tr_norm_sqlite_funcs	database\cari_service.py:1572	from database.sqlite_funcs import tr_icerir
+PRAGMA	database\company_database.py:17	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	database\company_database.py:18	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	database\company_database.py:19	cursor.execute("PRAGMA synchronous=NORMAL")
+PRAGMA	database\company_database.py:20	cursor.execute("PRAGMA foreign_keys=ON")
+PRAGMA	database\company_database.py:21	cursor.execute("PRAGMA cache_size=-65536")
+sqlite_url	database\company_database.py:26	url = f"sqlite:///{db_path.resolve().as_posix()}"
+sqlite_master	database\database.py:541	text("SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_kasa_makbuz_no'")
+PRAGMA	database\database.py:226	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	database\database.py:227	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	database\database.py:228	cursor.execute("PRAGMA synchronous=NORMAL")
+PRAGMA	database\database.py:229	cursor.execute("PRAGMA foreign_keys=ON")
+PRAGMA	database\database.py:231	cursor.execute("PRAGMA cache_size=-65536")
+tr_norm_sqlite_funcs	database\database.py:12	from database import sqlite_funcs as _sqlite_funcs  # noqa: F401  — tr_norm() (tüm motorlar)
+sqlite_url	database\database.py:221	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+tr_norm_sqlite_funcs	database\deleted_record_service.py:228	from database.sqlite_funcs import tr_herhangi_icerir
+sqlite3_module	database\devir_service.py:24	import sqlite3
+sqlite3_module	database\devir_service.py:443	conn = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+PRAGMA	database\engine_factory.py:31	cur.execute("PRAGMA journal_mode=WAL")
+PRAGMA	database\engine_factory.py:32	cur.execute("PRAGMA busy_timeout=30000")
+PRAGMA	database\engine_factory.py:33	cur.execute("PRAGMA synchronous=NORMAL")
+PRAGMA	database\engine_factory.py:34	cur.execute("PRAGMA foreign_keys=ON")
+PRAGMA	database\engine_factory.py:35	cur.execute("PRAGMA cache_size=-65536")
+sqlite_url	database\engine_factory.py:40	url = f"sqlite:///{db_path.resolve().as_posix()}"
+tr_norm_sqlite_funcs	database\firma_service.py:8	from database.sqlite_funcs import tr_herhangi_icerir
+sqlite_master	database\fon_service.py:200	sorgu = text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%fon%'")
+sqlite_master	database\gecis_guvenligi.py:85	"select name from sqlite_master where type='table' and name not like 'sqlite_%'")]
+PRAGMA	database\gecis_guvenligi.py:118	butunluk = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	database\gecis_guvenligi.py:15	import sqlite3
+sqlite3_module	database\gecis_guvenligi.py:82	c = sqlite3.connect(f"file:{Path(yol).as_posix()}?mode=ro", uri=True)
+sqlite3_module	database\gecis_guvenligi.py:116	c = sqlite3.connect(f"file:{hedef.as_posix()}?mode=ro", uri=True)
+sqlite3_module	database\gecis_guvenligi.py:132	k = sqlite3.connect(str(kaynak), timeout=30)
+sqlite3_module	database\gecis_guvenligi.py:133	h = sqlite3.connect(str(hedef))
+sqlite3_module	database\gecis_guvenligi.py:152	except (OSError, sqlite3.Error) as hata:
+sqlite3_module	database\gecis_guvenligi.py:162	except (OSError, sqlite3.Error) as hata:
+tr_norm_sqlite_funcs	database\invoice_scan_message_service.py:323	from database.sqlite_funcs import tr_herhangi_icerir
+PRAGMA	database\kart_bakiye_gecis.py:89	fk = cur.execute("PRAGMA foreign_keys").fetchone()[0]
+PRAGMA	database\kart_bakiye_gecis.py:90	cur.execute("PRAGMA foreign_keys=OFF")
+PRAGMA	database\kart_bakiye_gecis.py:95	eski_kolonlar = [r[1] for r in cur.execute(f'PRAGMA table_info("{tablo_adi}")').fetchall()]
+PRAGMA	database\kart_bakiye_gecis.py:97	cur.execute(f'PRAGMA index_list("{tablo_adi}")').fetchall()]:
+PRAGMA	database\kart_bakiye_gecis.py:118	hatalar = cur.execute(f'PRAGMA foreign_key_check("{tablo_adi}")').fetchall()
+PRAGMA	database\kart_bakiye_gecis.py:126	cur.execute(f"PRAGMA foreign_keys={'ON' if fk else 'OFF'}")
+sqlite_master	database\muhasebelestirme_service.py:277	text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='muhasebe_muhasebelestirme_ayarlari'")
+PRAGMA	database\muhasebelestirme_service.py:150	mevcut_idx = {r[1] for r in baglanti.execute(text("PRAGMA index_list('muhasebe_belge_durumlari')"))}
+PRAGMA	database\muhasebelestirme_service.py:160	for idx in baglanti.execute(text("PRAGMA index_list('muhasebe_fisleri')")).fetchall():
+PRAGMA	database\muhasebelestirme_service.py:163	kolonlar = [r[2] for r in baglanti.execute(text(f"PRAGMA index_info('{idx[1]}')")).fetchall()]
+tr_norm_sqlite_funcs	database\muhasebelestirme_service.py:1219	from database.sqlite_funcs import tr_herhangi_icerir
+tr_norm_sqlite_funcs	database\muhasebe_service.py:301	from database.sqlite_funcs import tr_herhangi_icerir
+PRAGMA	database\satis_fiyat_listesi_service.py:93	canli = {r[1] for r in conn.execute(text("PRAGMA table_info(stok_fiyatlari)")).fetchall()}
+tr_norm_sqlite_funcs	database\search_service.py:16	from database.sqlite_funcs import tr_herhangi_icerir, tr_icerir
+sqlite3_module	database\sqlite_funcs.py:15	import sqlite3
+sqlite3_module	database\sqlite_funcs.py:36	if not isinstance(dbapi_connection, sqlite3.Connection):
+sqlite3_module	database\sqlite_funcs.py:42	except (TypeError, sqlite3.NotSupportedError):
+tr_norm_sqlite_funcs	database\stok_grup_toplu_service.py:25	from database.sqlite_funcs import tr_icerir
+tr_norm_sqlite_funcs	database\stok_service.py:13	from database.sqlite_funcs import tr_esit, tr_herhangi_icerir, tr_icerir
+tr_norm_sqlite_funcs	database\tedarikci_fiyat_service.py:17	from database.sqlite_funcs import tr_herhangi_icerir
+PRAGMA	database\uzlasma_net_duzeltme.py:158	sonuc = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	database\uzlasma_net_duzeltme.py:26	import sqlite3
+sqlite3_module	database\uzlasma_net_duzeltme.py:157	with closing(sqlite3.connect(f"file:{Path(yedek).resolve().as_posix()}?mode=ro", uri=True)) as c:
+sqlite_master	entegrasyon\evo_odeme_baglanti_onar.py:54	linked = c.execute("SELECT 1 FROM sqlite_master WHERE name='evo_invoice_payment_links'").fetchone()
+PRAGMA	entegrasyon\evo_odeme_baglanti_onar.py:126	if c.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or c.execute('PRAGMA foreign_key_check').fetchone():raise Val
+PRAGMA	entegrasyon\evo_odeme_baglanti_onar.py:131	if dst.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Yedek hatası')
+PRAGMA	entegrasyon\evo_odeme_baglanti_onar.py:141	if c.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or c.execute('PRAGMA foreign_key_check').fetchone():raise Val
+sqlite3_module	entegrasyon\evo_odeme_baglanti_onar.py:6	import sqlite3
+sqlite3_module	entegrasyon\evo_odeme_baglanti_onar.py:30	return sqlite3.connect(Path(path).resolve().as_uri() + ('?mode=rw' if write else '?mode=ro'), uri=True, timeout=10)
+sqlite3_module	entegrasyon\evo_odeme_baglanti_onar.py:129	with closing(connect(path)) as src,closing(sqlite3.connect(backup)) as dst:
+sqlite3_module	inceleme\cari_risk_gecis_deneme.py:3	import sqlite3
+sqlite3_module	inceleme\cari_risk_gecis_deneme.py:16	c = sqlite3.connect(yol)
+sqlite_url	inceleme\cari_risk_gecis_deneme.py:22	motor = create_engine(f"sqlite:///{yol.as_posix()}")
+sqlite_master	inceleme\gecis_kopya_denemesi.py:30	tablolar = [r[0] for r in c.execute("select name from sqlite_master where type='table'")]
+sqlite3_module	inceleme\gecis_kopya_denemesi.py:13	import sqlite3
+sqlite3_module	inceleme\gecis_kopya_denemesi.py:28	c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+sqlite3_module	inceleme\gecis_kopya_denemesi.py:105	c = sqlite3.connect(f"file:{db_dosya}?mode=ro", uri=True)
+sqlite_master	inceleme\surum_oncesi_yedek.py:28	tablolar = [r[0] for r in c.execute("select name from sqlite_master where type='table'")]
+sqlite3_module	inceleme\surum_oncesi_yedek.py:14	import sqlite3
+sqlite3_module	inceleme\surum_oncesi_yedek.py:26	c = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+sqlite3_module	inceleme\surum_oncesi_yedek.py:35	c = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+sqlite3_module	inceleme\surum_oncesi_yedek.py:44	src = sqlite3.connect(f"file:{kaynak}?mode=ro", uri=True)
+sqlite3_module	inceleme\surum_oncesi_yedek.py:45	dst = sqlite3.connect(hedef)
+sqlite_master	inceleme\veri_ozeti.py:25	tablolar = [r[0] for r in c.execute("select name from sqlite_master where type='table'")]
+sqlite3_module	inceleme\veri_ozeti.py:11	import sqlite3
+sqlite3_module	inceleme\veri_ozeti.py:23	c = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+sqlite_url	scripts\_smoke_is_panosu_exe.py:26	engine = create_engine(f"sqlite:///{db.as_posix()}", future=True)
+PRAGMA	tests\stok_test_ortami.py:29	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\stok_test_ortami.py:66	f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False}
+PRAGMA	tests\test_aktivite_service.py:28	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_aktivite_service.py:38	f"sqlite:///{cls.db_path.as_posix()}",
+sqlite_url	tests\test_alis_faturasi_acilis.py:41	eng = create_engine(f"sqlite:///{path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tests\test_alis_irsaliye_fatura_stok.py:37	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_alis_irsaliye_fatura_stok.py:46	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_alis_onay_tedarikci.py:42	cur.execute("PRAGMA foreign_keys=ON")
+PRAGMA	tests\test_alis_onay_tedarikci.py:181	sutunlar = {r[1] for r in c.execute(text('PRAGMA table_info("alis_faturalari")'))}
+sqlite_url	tests\test_alis_onay_tedarikci.py:58	eng = create_engine(f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tests\test_alis_zinciri.py:31	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_alis_zinciri.py:59	eng = create_engine(f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tests\test_alt_hesap_iban.py:40	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_alt_hesap_iban.py:49	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_banka_kredi_odeme.py:31	self.engine = create_engine(f"sqlite:///{self.db_path}", future=True)
+sqlite_url	tests\test_butce_mvp.py:47	f"sqlite:///{db_path.as_posix()}",
+sqlite_url	tests\test_butce_nakit_excel_gm.py:44	f"sqlite:///{db_path.as_posix()}",
+PRAGMA	tests\test_cari_ortalama_valor.py:36	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_cari_ortalama_valor.py:245	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_cari_yetkili.py:25	cursor.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_cari_yetkili.py:99	self.engine = create_engine("sqlite:///:memory:")
+sqlite_url	tests\test_devir_schema.py:36	f"sqlite:///{db_path.as_posix()}",
+PRAGMA	tests\test_doc1_apel_stok_cari_akisi.py:41	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_doc1_apel_stok_cari_akisi.py:50	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_fatura_acilis_perf.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_fatura_acilis_perf.py:42	f"sqlite:///{path.as_posix()}",
+PRAGMA	tests\test_fatura_miktar_birim.py:42	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_fatura_miktar_birim.py:323	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_fatura_satir_hucre_edit.py:45	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_fatura_satir_hucre_edit.py:54	f"sqlite:///{path.as_posix()}",
+PRAGMA	tests\test_fatura_tiklama_kdv_kayit.py:27	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_fatura_tiklama_kdv_kayit.py:36	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_fiyatli_stok_ekstresi.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_fiyatli_stok_ekstresi.py:42	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_gider_kart_odeme.py:683	motor = create_engine(f"sqlite:///{yol}")
+sqlite_url	tests\test_gunluk_faiz_kabul_01_25.py:411	engine = create_engine(f"sqlite:///{db_path}", future=True)
+sqlite_url	tests\test_hizli_satis_acik_kapatma.py:373	eng = create_engine(f"sqlite:///{Path(tmp, 'eski.db').as_posix()}")
+sqlite_url	tests\test_hizli_satis_talimat_satir.py:516	eng = create_engine(f"sqlite:///{Path(tmp, 'eski.db').as_posix()}")
+PRAGMA	tests\test_hizmet_kart_duzenle_sil.py:22	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_hizmet_kart_duzenle_sil.py:32	f"sqlite:///{cls.db_path.as_posix()}",
+sqlite_master	tests\test_kart_bakiye_limit.py:428	ddl = c.execute("select sql from sqlite_master where name='kredi_karti_ekstreleri'").fetchone()[0]
+PRAGMA	tests\test_kart_bakiye_limit.py:463	self.assertEqual(c.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+sqlite3_module	tests\test_kart_bakiye_limit.py:9	import sqlite3
+sqlite3_module	tests\test_kart_bakiye_limit.py:427	c = sqlite3.connect(yol)
+sqlite3_module	tests\test_kart_bakiye_limit.py:459	c = sqlite3.connect(yol)
+sqlite_url	tests\test_kart_bakiye_limit.py:424	motor = create_engine(f"sqlite:///{yol.as_posix()}")
+PRAGMA	tests\test_kasa_doviz_kur.py:40	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_kasa_doviz_kur.py:49	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_masraf_dagitim.py:38	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_masraf_dagitim.py:47	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_masraf_dagitim_tamamlama.py:307	eng = create_engine(f"sqlite:///{Path(klasor).as_posix()}/eski.db")
+sqlite_master	tests\test_muhasebelestirme_eksikleri.py:52	sema = sorted(r[0] for r in c.execute("select sql from sqlite_master where sql is not null"))
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:8	import sqlite3
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:39	c = sqlite3.connect(self.db)
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:50	c = sqlite3.connect(self.db)
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:59	c = sqlite3.connect(self.db)
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:117	sqlite3.connect(baska).close()
+sqlite3_module	tests\test_muhasebelestirme_eksikleri.py:130	sqlite3.connect(bos).close()
+PRAGMA	tests\test_musteri_coklu_blok_arama.py:23	cursor.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_musteri_coklu_blok_arama.py:29	self.engine = create_engine("sqlite:///:memory:")
+sqlite_url	tests\test_musteri_coklu_blok_arama.py:154	cls.engine = create_engine("sqlite:///:memory:")
+sqlite_master	tests\test_performans_optimizasyon.py:242	"SELECT name FROM sqlite_master WHERE type='index' "
+PRAGMA	tests\test_performans_optimizasyon.py:35	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_performans_optimizasyon.py:44	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_personel_is_panosu.py:30	cls.engine = create_engine(f"sqlite:///{cls.db.as_posix()}", future=True)
+sqlite_url	tests\test_personel_modulu.py:35	cls.engine = create_engine(f"sqlite:///{cls.db.as_posix()}", future=True)
+sqlite_url	tests\test_personel_olcme_prim_mvp.py:78	cls.engine = create_engine(f"sqlite:///{cls.db.as_posix()}", future=True)
+sqlite_url	tests\test_personel_olcme_prim_mvp.py:410	cls.engine = create_engine(f"sqlite:///{cls.db.as_posix()}", future=True)
+PRAGMA	tests\test_pos_valor_is_gunu.py:43	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_pos_valor_is_gunu.py:63	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_proje_mvp.py:26	f"sqlite:///{db_path.as_posix()}",
+PRAGMA	tests\test_satin_alma_talep.py:31	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_satin_alma_talep.py:58	eng = create_engine(f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False})
+sqlite_url	tests\test_satin_alma_talep.py:331	eng = create_engine(f"sqlite:///{tmp.as_posix()}")
+PRAGMA	tests\test_search_service.py:23	cursor.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_search_service.py:29	self.engine = create_engine("sqlite:///:memory:")
+sqlite3_module	tests\test_sistem_ilk_kurulum.py:2	import sqlite3
+sqlite3_module	tests\test_sistem_ilk_kurulum.py:24	sqlite3.connect(muhasebe_db).close()
+PRAGMA	tests\test_sorulan_arama_gorevi.py:22	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_sorulan_arama_gorevi.py:32	f"sqlite:///{cls.db_path.as_posix()}",
+PRAGMA	tests\test_sorulan_urun_service.py:20	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_sorulan_urun_service.py:30	f"sqlite:///{cls.db_path.as_posix()}",
+PRAGMA	tests\test_stok_ayrintili_arama.py:19	cursor.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_ayrintili_arama.py:25	self.engine = create_engine("sqlite:///:memory:")
+PRAGMA	tests\test_stok_birim_donusturucu_kaydet.py:32	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_birim_donusturucu_kaydet.py:41	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_birlestir.py:43	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_birlestir.py:52	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_grubu_hiyerarsi.py:36	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_grubu_hiyerarsi.py:45	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_grup_toplu_eslestirme.py:36	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_grup_toplu_eslestirme.py:45	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_hareket_fifo_ekstre.py:34	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_hareket_fifo_ekstre.py:73	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_karti_birim_arama.py:34	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_karti_birim_arama.py:42	eng = create_engine(f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tests\test_stok_karti_depo_birim.py:47	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_karti_depo_birim.py:56	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	tests\test_stok_karti_ozet_sirasi.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tests\test_stok_karti_ozet_sirasi.py:50	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_master	tests\test_tahsilat_makbuzu.py:473	self.assertIsNotNone(c.execute(text("SELECT 1 FROM sqlite_master WHERE name='ux_kasa_makbuz_no'")).first())
+sqlite_master	tests\test_tahsilat_makbuzu.py:485	self.assertIsNone(c.execute(text("SELECT 1 FROM sqlite_master WHERE name='ux_kasa_makbuz_no'")).first())
+PRAGMA	tests\test_tahsilat_makbuzu.py:49	cur.execute("PRAGMA foreign_keys=ON")
+PRAGMA	tests\test_tahsilat_makbuzu.py:50	cur.execute("PRAGMA busy_timeout=5000")
+PRAGMA	tests\test_tahsilat_makbuzu.py:471	sutunlar = {r[1] for r in c.execute(text("PRAGMA table_info(kasa_makbuz_satirlari)"))}
+sqlite_url	tests\test_tahsilat_makbuzu.py:59	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tests\test_tahsilat_makbuzu.py:456	eng = create_engine(f"sqlite:///{(Path(klasor) / 'eski.db').as_posix()}")
+sqlite_url	tests\test_test_kurulumu.py:81	eng = create_engine(f"sqlite:///{system_db}")
+sqlite_url	tests\test_test_kurulumu.py:171	self.engine = create_engine(f"sqlite:///{d / 'system.db'}")
+PRAGMA	tests\test_turkce_i_arama.py:25	cursor.execute("PRAGMA foreign_keys=ON")
+tr_norm_sqlite_funcs	tests\test_turkce_i_arama.py:19	from database.sqlite_funcs import tr_herhangi_icerir, tr_icerir
+sqlite_url	tests\test_turkce_i_arama.py:74	self.engine = create_engine("sqlite:///:memory:")
+sqlite_url	tests\test_turkce_i_arama.py:127	self.engine = create_engine("sqlite:///:memory:")
+PRAGMA	tools\adet_katsayi_tanimla.py:156	kol = {r[1] for r in c.execute(f"PRAGMA table_info({tab})")}
+PRAGMA	tools\adet_katsayi_tanimla.py:353	rapor["integrity_sonrasi"] = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\adet_katsayi_tanimla.py:18	import sqlite3
+sqlite3_module	tools\adet_katsayi_tanimla.py:72	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\adet_katsayi_tanimla.py:73	c.row_factory = sqlite3.Row
+sqlite3_module	tools\adet_katsayi_tanimla.py:150	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\adet_katsayi_tanimla.py:151	c.row_factory = sqlite3.Row
+sqlite3_module	tools\adet_katsayi_tanimla.py:255	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\adet_katsayi_tanimla.py:352	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite_url	tools\adet_katsayi_tanimla.py:276	motor = create_engine(f"sqlite:///{db.resolve().as_posix()}", connect_args={"timeout": 30})
+sqlite3_module	tools\cari_acik_bakiye_valor_tarama.py:16	import sqlite3
+sqlite3_module	tools\cari_acik_bakiye_valor_tarama.py:36	con = sqlite3.connect(f"file:{SYSTEM.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\cari_acik_bakiye_valor_tarama.py:37	con.row_factory = sqlite3.Row
+sqlite_url	tools\cari_acik_bakiye_valor_tarama.py:91	eng = create_engine(f"sqlite:///{db_path.as_posix()}", future=True)
+sqlite_master	tools\hesap_bakiye_duzelt.py:29	"select name from sqlite_master where type='table' and name not like 'sqlite_%'")]
+PRAGMA	tools\hesap_bakiye_duzelt.py:47	butunluk = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\hesap_bakiye_duzelt.py:16	import sqlite3
+sqlite3_module	tools\hesap_bakiye_duzelt.py:26	c = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\hesap_bakiye_duzelt.py:39	kaynak = sqlite3.connect(str(db), timeout=30)
+sqlite3_module	tools\hesap_bakiye_duzelt.py:40	hedef = sqlite3.connect(str(yedek))
+sqlite3_module	tools\hesap_bakiye_duzelt.py:46	c = sqlite3.connect(f"file:{yedek.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\hesap_bakiye_duzelt.py:70	sistem = sqlite3.connect(f"file:{(veri / 'system.db').as_posix()}?mode=ro", uri=True)
+sqlite_master	tools\muhasebelestirme_durum_raporu.py:16	tablolar = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+sqlite3_module	tools\muhasebelestirme_durum_raporu.py:8	import sqlite3
+sqlite3_module	tools\muhasebelestirme_durum_raporu.py:15	c = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite_url	tools\muhasebelestirme_eksik_tarama.py:51	ham = create_engine(f"sqlite:///{(kopya / 'muhasebe.db').as_posix()}")
+sqlite3_module	tools\muhasebelestirme_gecis_deneme.py:13	import sqlite3
+sqlite3_module	tools\muhasebelestirme_gecis_deneme.py:25	k = sqlite3.connect(f"file:{kaynak.as_posix()}?mode=ro", uri=True, timeout=30)
+sqlite3_module	tools\muhasebelestirme_gecis_deneme.py:26	h = sqlite3.connect(str(hedef))
+sqlite_url	tools\muhasebe_hesap_baglantilari_uygula.py:215	eng = create_engine(f"sqlite:///{db.as_posix()}")
+sqlite_url	tools\muhasebe_hesap_baglantilari_uygula.py:228	eng = create_engine(f"sqlite:///{db.as_posix()}")
+PRAGMA	tools\ray_hesap_esleme_karsilastirma.py:144	fh_kolonlari = [r[1] for r in c.execute("PRAGMA table_info('finans_hesaplari')")]
+sqlite3_module	tools\ray_hesap_esleme_karsilastirma.py:15	import sqlite3
+sqlite3_module	tools\ray_hesap_esleme_karsilastirma.py:33	src = sqlite3.connect(f"file:{kaynak.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\ray_hesap_esleme_karsilastirma.py:34	dst = sqlite3.connect(hedef)
+sqlite3_module	tools\ray_hesap_esleme_karsilastirma.py:107	c = sqlite3.connect(kopya)
+sqlite3_module	tools\ray_hesap_esleme_karsilastirma.py:108	c.row_factory = sqlite3.Row
+sqlite_master	tools\ray_hesap_esleme_tamamla.py:210	if not c.execute(text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='finans_hesaplari'")).first():
+sqlite_master	tools\ray_hesap_esleme_tamamla.py:278	"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"))]
+PRAGMA	tools\ray_hesap_esleme_tamamla.py:332	dbapi.execute("PRAGMA foreign_keys=ON")
+PRAGMA	tools\ray_hesap_esleme_tamamla.py:406	return c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\ray_hesap_esleme_tamamla.py:22	import sqlite3
+sqlite3_module	tools\ray_hesap_esleme_tamamla.py:393	src = sqlite3.connect(f"file:{kaynak.as_posix()}?mode=ro", uri=True, timeout=30)
+sqlite3_module	tools\ray_hesap_esleme_tamamla.py:394	dst = sqlite3.connect(hedef)
+sqlite3_module	tools\ray_hesap_esleme_tamamla.py:404	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=30)
+sqlite_url	tools\ray_hesap_esleme_tamamla.py:327	eng = create_engine(f"sqlite:///{db.as_posix()}", connect_args={"timeout": 30})
+PRAGMA	tools\stok851_dogrula.py:42	return {r[1] for r in c.execute(f'PRAGMA table_info("{t}")')}
+sqlite3_module	tools\stok851_dogrula.py:17	import sqlite3
+sqlite3_module	tools\stok851_dogrula.py:37	except sqlite3.Error as hata:
+sqlite3_module	tools\stok851_dogrula.py:147	c = sqlite3.connect(f"file:{Path(a.db).as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok851_dogrula.py:148	c.row_factory = sqlite3.Row
+sqlite_master	tools\stok851_lot_onar.py:108	if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()}
+PRAGMA	tools\stok851_lot_onar.py:64	if c.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+PRAGMA	tools\stok851_lot_onar.py:157	dbapi_con.execute("PRAGMA foreign_keys=ON")
+PRAGMA	tools\stok851_lot_onar.py:230	rapor["integrity_sonrasi"] = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\stok851_lot_onar.py:16	import sqlite3
+sqlite3_module	tools\stok851_lot_onar.py:41	def _ro(yol: Path) -> sqlite3.Connection:
+sqlite3_module	tools\stok851_lot_onar.py:42	c = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok851_lot_onar.py:43	c.row_factory = sqlite3.Row
+sqlite3_module	tools\stok851_lot_onar.py:229	c = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite_url	tools\stok851_lot_onar.py:153	motor = create_engine(f"sqlite:///{db.resolve().as_posix()}", connect_args={"timeout": 30})
+PRAGMA	tools\stok_birim_inceleme_listesi.py:41	return {r[1] for r in cur.execute(f'PRAGMA table_info("{tablo}")')}
+sqlite3_module	tools\stok_birim_inceleme_listesi.py:13	import sqlite3
+sqlite3_module	tools\stok_birim_inceleme_listesi.py:45	con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok_birim_inceleme_listesi.py:46	con.row_factory = sqlite3.Row
+sqlite_master	tools\stok_grup_mukerrer_temizle.py:47	for (t,) in c.execute("select name from sqlite_master where type='table'"):
+sqlite_master	tools\stok_grup_mukerrer_temizle.py:156	for (t,) in a.execute("select name from sqlite_master where type='table'"):
+sqlite_master	tools\stok_grup_mukerrer_temizle.py:171	if not c.execute("select 1 from sqlite_master where name='stok_gruplari'").fetchone():
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:25	import sqlite3
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:45	def ref_kolonlari(c: sqlite3.Connection) -> list[tuple[str, str]]:
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:57	def anlik_durum(c: sqlite3.Connection, refs) -> dict:
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:67	def temizle(c: sqlite3.Connection) -> dict:
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:151	a = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:152	b = sqlite3.connect(hedef)
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:170	c = sqlite3.connect(a.db, isolation_level=None)
+sqlite3_module	tools\stok_grup_mukerrer_temizle.py:178	c = sqlite3.connect(a.db, isolation_level=None)
+sqlite3_module	tools\stok_kalanlar_olcum.py:18	import sqlite3
+sqlite3_module	tools\stok_kalanlar_olcum.py:35	src = sqlite3.connect(f"file:{kaynak.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok_kalanlar_olcum.py:36	dst = sqlite3.connect(str(hedef))
+sqlite_url	tools\stok_kalanlar_olcum.py:53	engine = create_engine(f"sqlite:///{kopya.as_posix()}", connect_args={"check_same_thread": False})
+sqlite_master	tools\stok_test_kayit_temizle.py:54	return [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+PRAGMA	tools\stok_test_kayit_temizle.py:58	return [(c[1], (c[2] or "").upper()) for c in cur.execute(f'PRAGMA table_info("{t}")')]
+PRAGMA	tools\stok_test_kayit_temizle.py:221	con.execute("PRAGMA foreign_keys=ON")
+PRAGMA	tools\stok_test_kayit_temizle.py:249	rapor["butunluk_sonrasi"] = con.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\stok_test_kayit_temizle.py:24	import sqlite3
+sqlite3_module	tools\stok_test_kayit_temizle.py:135	except sqlite3.Error:
+sqlite3_module	tools\stok_test_kayit_temizle.py:176	ro = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok_test_kayit_temizle.py:218	con = sqlite3.connect(str(db), timeout=30, isolation_level=None)
+sqlite3_module	tools\stok_test_kayit_temizle.py:251	ro = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok_uyari_performans.py:16	import sqlite3
+sqlite3_module	tools\stok_uyari_performans.py:33	src = sqlite3.connect(f"file:{kaynak.as_posix()}?mode=ro", uri=True)
+sqlite3_module	tools\stok_uyari_performans.py:34	dst = sqlite3.connect(str(hedef))
+sqlite_url	tools\stok_uyari_performans.py:65	engine = create_engine(f"sqlite:///{kopya.as_posix()}", connect_args={"check_same_thread": False})
+sqlite_url	tools\_alis_alt_toplam_shot.py:39	eng = create_engine(f"sqlite:///{path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tools\_alis_panel_shot_hiz.py:29	conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+sqlite3_module	tools\_alis_panel_shot_hiz.py:5	import sqlite3
+sqlite3_module	tools\_alis_panel_shot_hiz.py:27	conn = sqlite3.connect(str(src))
+sqlite3_module	tools\_alis_panel_shot_hiz.py:30	except sqlite3.Error:
+sqlite3_module	tools\_alis_panel_shot_hiz.py:32	bck = sqlite3.connect(str(dest))
+PRAGMA	tools\_ana_panel_sema_dogrula.py:26	conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PRAGMA	tools\_ana_panel_sema_dogrula.py:40	rows = c.execute(f'PRAGMA table_info("{tablo}")').fetchall()
+PRAGMA	tools\_ana_panel_sema_dogrula.py:51	out["integrity"] = c.execute("PRAGMA integrity_check").fetchone()[0]
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:5	import sqlite3
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:24	conn = sqlite3.connect(str(src))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:27	except sqlite3.Error:
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:29	bck = sqlite3.connect(str(dest))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:38	c = sqlite3.connect(str(db))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:47	c = sqlite3.connect(str(db))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:48	c.row_factory = sqlite3.Row
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:60	except sqlite3.Error as e:
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:72	src = sqlite3.connect(str(db))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:73	dst = sqlite3.connect(str(kopya))
+sqlite3_module	tools\_ana_panel_sema_dogrula.py:162	"(sqlite3.OperationalError) no such column: satis_faturasi_satirlari.konsinye_teslim_satiri_id "
+PRAGMA	tools\_ana_panel_sema_eksik_sim.py:27	info = cur.execute("PRAGMA table_info(satis_faturasi_satirlari)").fetchall()
+PRAGMA	tools\_ana_panel_sema_eksik_sim.py:48	r[1] for r in d.execute("PRAGMA table_info(satis_faturasi_satirlari)")
+PRAGMA	tools\_ana_panel_sema_eksik_sim.py:68	for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(satis_faturasi_satirlari)")
+PRAGMA	tools\_ana_panel_sema_eksik_sim.py:74	for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(satis_faturasi_satirlari)")
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:5	import sqlite3
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:21	c = sqlite3.connect(str(SRC))
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:22	d = sqlite3.connect(str(db))
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:68	for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(satis_faturasi_satirlari)")
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:74	for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(satis_faturasi_satirlari)")
+sqlite3_module	tools\_ana_panel_sema_eksik_sim.py:92	n_sonra = sqlite3.connect(str(db)).execute(
+sqlite_url	tools\_ana_panel_sema_eksik_sim.py:58	yeni = create_engine(f"sqlite:///{db.as_posix()}", future=True)
+sqlite_url	tools\_bul_m0033_foto.py:16	e = create_engine(f"sqlite:///{db.as_posix()}")
+PRAGMA	tools\_excel_oturumlu_apply_test.py:35	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tools\_excel_oturumlu_apply_test.py:69	f"sqlite:///{self.db_path.as_posix()}",
+sqlite_url	tools\_exe_fatura_dogrula_smoke.py:39	eng = create_engine(f"sqlite:///{adaylar[0].as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tools\_fatura_exe_perf.py:42	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	tools\_fatura_exe_perf.py:38	eng = create_engine(f"sqlite:///{path.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	tools\_incele_m0033_cek.py:120	cols = [x["name"] for x in s.execute(text("PRAGMA table_info(satis_siparisleri)")).mappings()]
+PRAGMA	tools\_mukerrer_test_db.py:21	cols = [r[1] for r in c.execute(text("PRAGMA table_info(alis_faturalari)")).fetchall()]
+sqlite_url	tools\_mukerrer_test_db.py:19	eng = create_engine(f"sqlite:///{db.as_posix()}")
+sqlite3_module	tools\_siparis_acik_birak_canli.py:5	import sqlite3
+sqlite3_module	tools\_siparis_acik_birak_canli.py:21	src = sqlite3.connect(f"file:{SRC}?mode=ro", uri=True)
+sqlite3_module	tools\_siparis_acik_birak_canli.py:22	dst = sqlite3.connect(str(hedef))
+sqlite3_module	tools\_siparis_acik_birak_canli.py:86	con = sqlite3.connect(str(hedef))
+PRAGMA	tools\_siparis_canli_dogrula.py:290	cols = {r[1] for r in con.execute("PRAGMA table_info(cari_kartlar)")}
+PRAGMA	tools\_siparis_canli_dogrula.py:297	cols = {r[1] for r in con.execute("PRAGMA table_info(cari_kartlar)")}
+sqlite3_module	tools\_siparis_canli_dogrula.py:138	import sqlite3
+sqlite3_module	tools\_siparis_canli_dogrula.py:140	src = sqlite3.connect(f"file:{kaynak}?mode=ro", uri=True)
+sqlite3_module	tools\_siparis_canli_dogrula.py:141	dst = sqlite3.connect(str(hedef))
+sqlite3_module	tools\_siparis_canli_dogrula.py:279	import sqlite3
+sqlite3_module	tools\_siparis_canli_dogrula.py:289	con = sqlite3.connect(str(db_yol))
+sqlite3_module	tools\_siparis_canli_dogrula.py:296	con = sqlite3.connect(str(db_yol))
+PRAGMA	tools\_siparis_kaydet_aktar_test.py:41	cols = {r[1] for r in con.execute("PRAGMA table_info(cari_kartlar)")}
+sqlite3_module	tools\_siparis_kaydet_aktar_test.py:6	import sqlite3
+sqlite3_module	tools\_siparis_kaydet_aktar_test.py:40	con = sqlite3.connect(dst / "muhasebe.db")
+sqlite3_module	tools\_siparis_kaydet_aktar_test.py:58	except sqlite3.Error:
+sqlite_master	tools\_sqlite_pg_uyumluluk_envanter.py:11	"sqlite_master": re.compile(r"sqlite_master"),
+PRAGMA	tools\_sqlite_pg_uyumluluk_envanter.py:12	"PRAGMA": re.compile(r"\bPRAGMA\b"),
+tr_norm_sqlite_funcs	tools\_sqlite_pg_uyumluluk_envanter.py:15	"tr_norm_sqlite_funcs": re.compile(r"from database\.sqlite_funcs|sqlite_funcs"),
+sqlite_url	tools\_sqlite_pg_uyumluluk_envanter.py:16	"sqlite_url": re.compile(r"sqlite:///"),
+sqlite_master	tools\_tani_m00700_mutabakat.py:94	text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%kapat%'")
+PRAGMA	tools\_tani_m00700_mutabakat.py:99	cols = s.execute(text(f"PRAGMA table_info({tname})")).fetchall()
+sqlite_master	tools\_test_db_fatura_aktarim_kontrol.py:31	for r in c.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+sqlite_url	tools\_test_db_fatura_aktarim_kontrol.py:27	eng = create_engine(f"sqlite:///{db.as_posix()}")
+sqlite3_module	tools\_tmp_db_backup.py:1	﻿import sqlite3, shutil
+sqlite3_module	tools\_tmp_db_backup.py:12	s=sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+sqlite3_module	tools\_tmp_db_backup.py:13	d=sqlite3.connect(str(dst))
+sqlite_master	tools\_tmp_db_inspect.py:9	tables=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%siparis%' OR name IN
+sqlite_master	tools\_tmp_db_inspect.py:23	print([r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")])
+sqlite_master	tools\_tmp_db_inspect.py:28	for t in [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")]:
+PRAGMA	tools\_tmp_db_inspect.py:13	cols=[r[1] for r in c.execute(f"PRAGMA table_info({t})")]
+PRAGMA	tools\_tmp_db_inspect.py:30	print("t", t, [r[1] for r in c.execute(f"PRAGMA table_info({t})")])
+sqlite3_module	tools\_tmp_db_inspect.py:1	﻿import sqlite3
+sqlite3_module	tools\_tmp_db_inspect.py:8	c=sqlite3.connect(str(db))
+sqlite3_module	tools\_tmp_db_inspect.py:22	c=sqlite3.connect(str(sysdb))
+sqlite_master	tools\_tmp_db_inspect2.py:6	print(pat, [r[0] for r in c.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '{pat}'")])
+sqlite_master	tools\_tmp_db_inspect2.py:12	for t in [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%cari%'")]:
+PRAGMA	tools\_tmp_db_inspect2.py:8	print("donem cols", [r[1] for r in c.execute("PRAGMA table_info(donemler)")])
+PRAGMA	tools\_tmp_db_inspect2.py:13	cols=[r[1] for r in c.execute(f"PRAGMA table_info({t})")]
+sqlite3_module	tools\_tmp_db_inspect2.py:1	﻿import sqlite3
+sqlite3_module	tools\_tmp_db_inspect2.py:4	c=sqlite3.connect(str(db))
+sqlite_url	tools\_verify_unvan_canli.py:22	eng = create_engine(f"sqlite:///{FIRMA_DB}")
+sqlite3_module	inceleme\cari_kartlari\exe_kopya_hazirla.py:13	import sqlite3
+sqlite3_module	inceleme\cari_kartlari\exe_kopya_hazirla.py:29	a = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\cari_kartlari\exe_kopya_hazirla.py:30	b = sqlite3.connect(str(dst))
+sqlite3_module	inceleme\cari_kartlari\exe_kopya_hazirla.py:43	s = sqlite3.connect(str(HEDEF / "system.db"))
+sqlite3_module	inceleme\evo_devir\ilk_giris_kontrol.py:12	import sqlite3
+sqlite3_module	inceleme\evo_devir\ilk_giris_kontrol.py:25	c = sqlite3.connect(f"file:{veri / 'system.db'}?mode=ro", uri=True)
+sqlite_master	inceleme\evo_devir\kasa_inceleme.py:23	tablolar = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+sqlite3_module	inceleme\evo_devir\kasa_inceleme.py:3	import sqlite3
+sqlite3_module	inceleme\evo_devir\kasa_inceleme.py:8	c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+sqlite3_module	inceleme\evo_devir\nakit_kasa_analiz.py:9	import sqlite3
+sqlite3_module	inceleme\evo_devir\nakit_kasa_analiz.py:113	sys_db = sqlite3.connect(f"file:{veri / 'system.db'}?mode=ro", uri=True)
+sqlite3_module	inceleme\evo_devir\nakit_kasa_analiz.py:117	con = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+sqlite_master	inceleme\evo_devir\stok_hassasiyet.py:74	"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('stok_birimleri','stok_birim_donusumleri')"
+sqlite3_module	inceleme\evo_devir\stok_hassasiyet.py:9	import sqlite3
+sqlite3_module	inceleme\evo_devir\stok_hassasiyet.py:32	sys_db = sqlite3.connect(f"file:{veri / 'system.db'}?mode=ro", uri=True)
+sqlite3_module	inceleme\evo_devir\stok_hassasiyet.py:34	con = sqlite3.connect(f"file:{veri / 'companies' / Path(yol).name}?mode=ro", uri=True)
+PRAGMA	inceleme\evo_devir\veri_wal_birlestir.py:14	print(db.name, "checkpoint:", c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone())
+sqlite3_module	inceleme\evo_devir\veri_wal_birlestir.py:5	import sqlite3
+sqlite3_module	inceleme\evo_devir\veri_wal_birlestir.py:13	c = sqlite3.connect(str(db))
+sqlite3_module	inceleme\evo_devir\veri_wal_birlestir.py:17	c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+sqlite_master	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:69	"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+PRAGMA	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:53	durum = kontrol.execute("PRAGMA integrity_check").fetchone()[0]
+PRAGMA	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:74	for _cid, ad, tip, *_ in c.execute(f'PRAGMA table_info("{t}")'):
+sqlite3_module	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:17	import sqlite3
+sqlite3_module	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:31	def _ro(yol: Path) -> sqlite3.Connection:
+sqlite3_module	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:32	return sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True, timeout=30)
+sqlite3_module	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:50	with _ro(db) as kaynak, sqlite3.connect(cikti) as dst:
+sqlite3_module	inceleme\fon_eksikleri\gercek_veri_yedek_ozet.py:52	with sqlite3.connect(f"file:{cikti.as_posix()}?mode=ro", uri=True) as kontrol:
+sqlite_url	inceleme\fon_eksikleri\kopya_uzerinde_dogrula.py:33	eng = create_engine(f"sqlite:///{kopya.as_posix()}", connect_args={"check_same_thread": False})
+sqlite3_module	inceleme\gider_kart\duzeltme_iade_kopya.py:152	import sqlite3
+sqlite3_module	inceleme\gider_kart\duzeltme_iade_kopya.py:154	b = sqlite3.connect(str(eg.KOPYA))
+sqlite_master	inceleme\gider_kart\gercek_kopya.py:45	tablolar = [r[0] for r in b.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+sqlite_master	inceleme\gider_kart\gercek_kopya.py:107	tablolar = [r[0] for r in b.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+PRAGMA	inceleme\gider_kart\gercek_kopya.py:101	kolon = {r[1] for r in b.execute("PRAGMA table_info(kredi_karti_odemeleri)")}
+PRAGMA	inceleme\gider_kart\gercek_kopya.py:102	kolon_t = {r[1] for r in b.execute("PRAGMA table_info(kredi_karti_odeme_taksitleri)")}
+sqlite3_module	inceleme\gider_kart\gercek_kopya.py:11	import sqlite3
+sqlite3_module	inceleme\gider_kart\gercek_kopya.py:43	b = sqlite3.connect(str(yol))
+sqlite3_module	inceleme\gider_kart\gercek_kopya.py:44	b.row_factory = sqlite3.Row
+sqlite3_module	inceleme\gider_kart\gercek_kopya.py:100	b = sqlite3.connect(str(yol))
+sqlite3_module	inceleme\giris_paneli\ay_satis_kontrol.py:4	import sqlite3
+sqlite3_module	inceleme\giris_paneli\ay_satis_kontrol.py:11	_s = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\ay_satis_kontrol.py:12	_d = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\ay_satis_kontrol.py:30	c = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\ay_satis_kontrol.py:36	except sqlite3.Error as hata:
+sqlite3_module	inceleme\giris_paneli\banka_fark_kontrol.py:4	import sqlite3
+sqlite3_module	inceleme\giris_paneli\banka_fark_kontrol.py:12	_s = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\banka_fark_kontrol.py:13	_d = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\banka_fark_kontrol.py:18	c = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\ekran_goruntusu.py:11	import sqlite3
+sqlite3_module	inceleme\giris_paneli\ekran_goruntusu.py:31	src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\ekran_goruntusu.py:32	dst = sqlite3.connect(str(KOPYA))
+sqlite_url	inceleme\giris_paneli\ekran_goruntusu.py:43	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite_master	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:24	"makbuz bagi": "select * from sqlite_master where name like '%makbuz_bag%'",
+sqlite3_module	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:4	import sqlite3
+sqlite3_module	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:11	_s = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:12	_d = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:44	c = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\fatura_tahsilat_bakiye.py:50	except sqlite3.Error as hata:
+sqlite_master	inceleme\giris_paneli\gercek_kopya_mutabakat.py:37	"SELECT count(*) FROM sqlite_master")]
+sqlite3_module	inceleme\giris_paneli\gercek_kopya_mutabakat.py:14	import sqlite3
+sqlite3_module	inceleme\giris_paneli\gercek_kopya_mutabakat.py:32	con = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\gercek_kopya_mutabakat.py:50	src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\gercek_kopya_mutabakat.py:51	dst = sqlite3.connect(str(KOPYA))
+sqlite_url	inceleme\giris_paneli\gercek_kopya_mutabakat.py:63	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite3_module	inceleme\giris_paneli\veri_sekli.py:7	import sqlite3
+sqlite3_module	inceleme\giris_paneli\veri_sekli.py:14	_s = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\giris_paneli\veri_sekli.py:15	_d = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\veri_sekli.py:81	c = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\giris_paneli\veri_sekli.py:85	except sqlite3.Error as hata:
+sqlite_master	inceleme\kart_bakiye\gercek_kopya.py:41	adlar = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+sqlite3_module	inceleme\kart_bakiye\gercek_kopya.py:16	import sqlite3
+sqlite3_module	inceleme\kart_bakiye\gercek_kopya.py:38	c = sqlite3.connect(f"file:{eg.KOPYA.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\kart_bakiye\gercek_kopya.py:223	with sqlite3.connect(eg.KOPYA) as c:
+sqlite3_module	inceleme\kdv_raporu\evo_fis_deneme.py:13	import sqlite3
+sqlite3_module	inceleme\kdv_raporu\evo_fis_deneme.py:24	_src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\kdv_raporu\evo_fis_deneme.py:25	_dst = sqlite3.connect(str(KOPYA))
+sqlite_url	inceleme\kdv_raporu\evo_fis_deneme.py:42	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite_master	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:50	"SELECT count(*) FROM sqlite_master WHERE name = 'kdv_devreden_kayitlari'")]
+sqlite3_module	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:13	import sqlite3
+sqlite3_module	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:27	_src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:28	_dst = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:44	con = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite_url	inceleme\kdv_raporu\kdv_raporu_gercek_kopya.py:59	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite3_module	inceleme\muhasebelestirme\cari_onek_dagilimi.py:4	import sqlite3
+sqlite3_module	inceleme\muhasebelestirme\cari_onek_dagilimi.py:9	c = sqlite3.connect(f"file:{Path(r['kopya'], 'muhasebe.db').as_posix()}?mode=ro", uri=True)
+sqlite_master	inceleme\muhasebelestirme\gercek_db_tara.py:22	for r in q("select name from sqlite_master where type='table' and name not like 'sqlite_%'")}
+sqlite3_module	inceleme\muhasebelestirme\gercek_db_tara.py:4	import sqlite3
+sqlite3_module	inceleme\muhasebelestirme\gercek_db_tara.py:9	c = sqlite3.connect(f"file:{DB.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\muhasebelestirme\gercek_db_tara.py:10	c.row_factory = sqlite3.Row
+sqlite3_module	inceleme\muhasebelestirme\gercek_db_tara.py:16	except sqlite3.Error as e:
+sqlite3_module	inceleme\odeme_takvimi\cek_senet_gercek_kopya.py:12	import sqlite3
+sqlite3_module	inceleme\odeme_takvimi\cek_senet_gercek_kopya.py:34	c = sqlite3.connect(f"file:{eg.KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\odeme_takvimi\son_kontrol.py:16	import sqlite3
+sqlite3_module	inceleme\odeme_takvimi\son_kontrol.py:46	c = sqlite3.connect(str(eg.KOPYA))
+sqlite3_module	inceleme\odeme_takvimi\son_kontrol.py:56	except sqlite3.Error:
+sqlite3_module	inceleme\stoklar\gercek_db_detay.py:4	import sqlite3
+sqlite3_module	inceleme\stoklar\gercek_db_detay.py:13	con = sqlite3.connect(f"file:{DB.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\stoklar\gercek_db_mutabakat.py:10	import sqlite3
+sqlite3_module	inceleme\stoklar\gercek_db_mutabakat.py:26	except sqlite3.Error as e:
+sqlite3_module	inceleme\stoklar\gercek_db_mutabakat.py:33	except sqlite3.Error as e:
+sqlite3_module	inceleme\stoklar\gercek_db_mutabakat.py:44	con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\stoklar\performans_olcum.py:11	import sqlite3
+sqlite3_module	inceleme\stoklar\performans_olcum.py:24	_src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\stoklar\performans_olcum.py:25	_dst = sqlite3.connect(str(KOPYA))
+sqlite_url	inceleme\stoklar\performans_olcum.py:54	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+PRAGMA	inceleme\stoklar\stok_inceleme_senaryolari.py:48	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	inceleme\stoklar\stok_inceleme_senaryolari.py:59	f"sqlite:///{self.db_path.as_posix()}", connect_args={"check_same_thread": False}
+sqlite3_module	inceleme\stoklar\stok_raporlari_gercek_kopya.py:11	import sqlite3
+sqlite3_module	inceleme\stoklar\stok_raporlari_gercek_kopya.py:24	_src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\stoklar\stok_raporlari_gercek_kopya.py:25	_dst = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\stoklar\stok_raporlari_gercek_kopya.py:41	con = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite_url	inceleme\stoklar\stok_raporlari_gercek_kopya.py:55	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite3_module	inceleme\stoklar\stok_verimlilik_gercek_kopya.py:13	import sqlite3
+sqlite3_module	inceleme\stoklar\stok_verimlilik_gercek_kopya.py:26	_src = sqlite3.connect(f"file:{KAYNAK.as_posix()}?mode=ro", uri=True)
+sqlite3_module	inceleme\stoklar\stok_verimlilik_gercek_kopya.py:27	_dst = sqlite3.connect(str(KOPYA))
+sqlite3_module	inceleme\stoklar\stok_verimlilik_gercek_kopya.py:43	con = sqlite3.connect(f"file:{yol.as_posix()}?mode=ro", uri=True)
+sqlite_url	inceleme\stoklar\stok_verimlilik_gercek_kopya.py:62	eng = create_engine(f"sqlite:///{KOPYA.as_posix()}", connect_args={"check_same_thread": False})
+sqlite3_module	entegrasyon\evo_devir\kasa_devir_duzelt.py:25	import sqlite3
+sqlite3_module	entegrasyon\evo_devir\kasa_devir_duzelt.py:159	src, dst = sqlite3.connect(str(kaynak)), sqlite3.connect(str(hedef / kaynak.name))
+sqlite_where	database\models\finans.py:791	sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+sqlite_where	database\models\finans.py:829	sqlite_where=text("makbuz_no IS NOT NULL AND trim(makbuz_no) <> ''"),
+sqlite_where	database\models\stok_uyari.py:23	Index("uq_stok_uyari_ayar_urun", "stok_id", unique=True, sqlite_where=text("depo_id IS NULL")),
+sqlite_where	database\models\stok_uyari.py:25	sqlite_where=text("depo_id IS NOT NULL")),
+sqlite_where	database\models\stok_uyari.py:53	Index("uq_stok_ihtiyac_aktif", "stok_id", "depo_id", unique=True, sqlite_where=text("aktif = 1")),
+sqlite_master	database\servis_sistem\backup_service.py:90	"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+PRAGMA	database\servis_sistem\backup_service.py:84	ok = conn.execute("PRAGMA integrity_check").fetchone()
+sqlite3_module	database\servis_sistem\backup_service.py:65	import sqlite3
+sqlite3_module	database\servis_sistem\backup_service.py:83	with sqlite3.connect(f"file:{hedef}?mode=ro", uri=True) as conn:
+PRAGMA	database\servis_sistem\database_integrity_service.py:29	"""PRAGMA integrity_check, foreign_keys, model vs tablo — mutasyon yok."""
+PRAGMA	database\servis_sistem\database_integrity_service.py:57	_p(25, "PRAGMA integrity_check...")
+PRAGMA	database\servis_sistem\database_integrity_service.py:90	rows = conn.execute(text("PRAGMA integrity_check")).fetchall()
+PRAGMA	database\servis_sistem\database_integrity_service.py:131	row = conn.execute(text("PRAGMA foreign_keys")).fetchone()
+PRAGMA	database\servis_sistem\database_integrity_service.py:140	aciklama="PRAGMA foreign_keys = ON",
+PRAGMA	database\servis_sistem\database_integrity_service.py:150	aciklama="PRAGMA foreign_keys = OFF (bu bağlantıda).",
+sqlite_master	database\servis_sistem\repair_service.py:344	# sqlite_master ile de doğrula
+sqlite_master	database\servis_sistem\repair_service.py:347	text("SELECT name FROM sqlite_master WHERE type='index'")
+sqlite_master	database\servis_sistem\repair_service.py:776	return "sqlite_master / inspector ile index varlığı doğrulanır."
+PRAGMA	database\system\bootstrap.py:353	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	database\system\bootstrap.py:354	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	database\system\bootstrap.py:355	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	database\system\bootstrap.py:362	f"sqlite:///{system_db_path.resolve().as_posix()}",
+tr_norm_sqlite_funcs	database\system\company_service.py:21	from database.sqlite_funcs import tr_herhangi_icerir
+sqlite_master	database\system\gecis.py:71	"SELECT name FROM sqlite_master WHERE type='table'"
+PRAGMA	database\system\gecis.py:115	for r in cur.execute('PRAGMA table_info("satis_faturalari")').fetchall()
+PRAGMA	database\system\gecis.py:122	for r in cur.execute('PRAGMA table_info("alis_faturalari")').fetchall()
+sqlite3_module	database\system\gecis.py:12	import sqlite3
+sqlite3_module	database\system\gecis.py:65	con = sqlite3.connect(str(db_path))
+sqlite3_module	database\system\gecis.py:86	except sqlite3.Error:
+tr_norm_sqlite_funcs	database\system\models.py:20	from database import sqlite_funcs as _sqlite_funcs  # noqa: F401  — tr_norm() (sistem motoru)
+tr_norm_sqlite_funcs	database\system\user_service.py:13	from database.sqlite_funcs import tr_herhangi_icerir
+PRAGMA	backup\net_giris_cikis_fiyat_20260919_133223\test_fiyatli_stok_ekstresi.py:33	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	backup\net_giris_cikis_fiyat_20260919_133223\test_fiyatli_stok_ekstresi.py:42	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	backup\net_giris_cikis_fiyat_20260919_133223\test_stok_hareket_fifo_ekstre.py:34	cur.execute("PRAGMA foreign_keys=ON")
+sqlite_url	backup\net_giris_cikis_fiyat_20260919_133223\test_stok_hareket_fifo_ekstre.py:73	f"sqlite:///{self.db_path.as_posix()}",
+PRAGMA	backup\perf_baseline_20260919_120822\database.py:80	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\perf_baseline_20260919_120822\database.py:81	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\perf_baseline_20260919_120822\database.py:82	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\perf_baseline_20260919_120822\database.py:75	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+PRAGMA	backup\perf_opt_20260919_121136\company_database.py:17	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\perf_opt_20260919_121136\company_database.py:18	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\perf_opt_20260919_121136\company_database.py:19	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\perf_opt_20260919_121136\company_database.py:24	url = f"sqlite:///{db_path.resolve().as_posix()}"
+PRAGMA	backup\perf_opt_20260919_121136\database.py:80	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\perf_opt_20260919_121136\database.py:81	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\perf_opt_20260919_121136\database.py:82	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\perf_opt_20260919_121136\database.py:75	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+PRAGMA	backup\toplu_grup_20260918_164622\database\database.py:80	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\toplu_grup_20260918_164622\database\database.py:81	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\toplu_grup_20260918_164622\database\database.py:82	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\toplu_grup_20260918_164622\database\database.py:75	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+PRAGMA	backup\toplu_grup_20260918_164622\database\system\bootstrap.py:244	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\toplu_grup_20260918_164622\database\system\bootstrap.py:245	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\toplu_grup_20260918_164622\database\system\bootstrap.py:246	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\toplu_grup_20260918_164622\database\system\bootstrap.py:253	f"sqlite:///{system_db_path.resolve().as_posix()}",
+PRAGMA	backup\stok_karti_20260918_155806\database\database.py:80	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\stok_karti_20260918_155806\database\database.py:81	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\stok_karti_20260918_155806\database\database.py:82	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\stok_karti_20260918_155806\database\database.py:75	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+PRAGMA	backup\stok_grubu_20260918_161058\database\database.py:80	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\stok_grubu_20260918_161058\database\database.py:81	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\stok_grubu_20260918_161058\database\database.py:82	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\stok_grubu_20260918_161058\database\database.py:75	DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+PRAGMA	backup\stok_grubu_20260918_161058\database\system\bootstrap.py:242	cursor.execute("PRAGMA journal_mode=WAL")
+PRAGMA	backup\stok_grubu_20260918_161058\database\system\bootstrap.py:243	cursor.execute("PRAGMA busy_timeout=30000")
+PRAGMA	backup\stok_grubu_20260918_161058\database\system\bootstrap.py:244	cursor.execute("PRAGMA synchronous=NORMAL")
+sqlite_url	backup\stok_grubu_20260918_161058\database\system\bootstrap.py:251	f"sqlite:///{system_db_path.resolve().as_posix()}",

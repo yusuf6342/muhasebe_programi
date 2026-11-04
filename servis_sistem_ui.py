@@ -618,6 +618,12 @@ def servis_sistem_goster(app) -> None:
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Yedek", str(exc), parent=app)
 
+    def baglanti_ayarlari():
+        """Yerel SQLite / yerel ağ PostgreSQL kipi (henüz LAN canlıya hazır değil)."""
+        from baglanti_ayari_ui import baglanti_ayari_ac
+
+        baglanti_ayari_ac(app)
+
     def _madde_satirlari(rapor: dict) -> list[dict]:
         return _normalize_maddeler(rapor)
 
@@ -907,6 +913,7 @@ Kritik: {ozet.get('kritik',0)}, Bilgi: {ozet.get('info',0)}</div>
         ("Yeniden Kontrol Et", yeniden),
         ("Sorun Detayı", lambda: _detay_dialog()),
         ("Yedek Al", yedek_al),
+        ("Bağlantı Ayarları", baglanti_ayarlari),
         ("Rapor / Excel", excel_aktar),
         ("HTML / Yazdır", html_aktar),
         ("Onarım Önizlemesi", onarim_onizle),
