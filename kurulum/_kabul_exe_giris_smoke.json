@@ -1,0 +1,76 @@
+{
+  "zaman": "2026-11-05T13:39:38",
+  "makine": "DESKTOP-FL08BVD",
+  "baglanti": {
+    "ok": true,
+    "kipi": "yerel_ag_postgres",
+    "ozet": "192.168.1.114:5432 / sistem=cin_sistem_deneme / firma=cin_firma_deneme / ortam=DENEME",
+    "server_version": "17.11",
+    "ortam": "DENEME"
+  },
+  "companies": [
+    {
+      "firma_kodu": "RAY001",
+      "unvan": "Ray Mobilya Aksesuarları",
+      "db_path": "pg:cin_firma_deneme",
+      "aktif": true
+    },
+    {
+      "firma_kodu": "TESTA7",
+      "unvan": "Test Firma Aşama7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "firma_kodu": "TESTA7_000000",
+      "unvan": "Test Firma Aşama7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "firma_kodu": "001",
+      "unvan": "DENEME AKTARIM",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "kullanici": "admin"
+    },
+    {
+      "id": 2,
+      "kullanici": "test_pasif_user"
+    },
+    {
+      "id": 3,
+      "kullanici": "test_satis_user"
+    },
+    {
+      "id": 4,
+      "kullanici": "test_gor_user"
+    },
+    {
+      "id": 5,
+      "kullanici": "MEHMET"
+    }
+  ],
+  "firma_ornek": {
+    "cari": 1098,
+    "stok": 3031,
+    "ornek_cari": {
+      "id": 1,
+      "unvan": "HASAN HÜSEYİN"
+    }
+  },
+  "durum": "GECTI",
+  "exe": {
+    "deneme_yol": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105\\program\\CinMuhasebe.exe",
+    "deneme_var": true,
+    "dist_yol": "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\dist\\CinMuhasebe\\CinMuhasebe.exe",
+    "dist_var": true,
+    "dist_mtime": "2026-11-05T13:38:40",
+    "not": "GUI oturumu: süreç açıldı (PID kaydı ayrı); pencere başlığı boş kaldı — yeniden derleme sonrası tekrar denenecek. API/PG duman testi bu dosyada."
+  }
+}

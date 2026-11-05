@@ -57,7 +57,12 @@ def pg_hedef_bos_mu(engine: Engine) -> bool:
 
 
 def pg_sequence_ayarla(conn: Connection, tablo: str, id_kolon: str = "id") -> None:
-    """SERIAL/identity kolonunu mevcut MAX(id) sonrasına alır."""
+    """id PK için sequence yoksa oluşturur, DEFAULT nextval bağlar, setval(MAX).
+
+    SQLAlchemy Integer PK create_all bazen PG'de SERIAL üretmez; aktarım sonrası
+    ham INSERT ve bazı sürücü yolları id NULL hatası verir. Bu fonksiyon eksik
+    bağlantıyı onarır; mevcut identity/serial varsa yalnız setval yapar.
+    """
     ad = "".join(c for c in tablo if c.isalnum() or c == "_")
     kol = "".join(c for c in id_kolon if c.isalnum() or c == "_")
     if ad != tablo or kol != id_kolon:
@@ -66,12 +71,28 @@ def pg_sequence_ayarla(conn: Connection, tablo: str, id_kolon: str = "id") -> No
         text("SELECT pg_get_serial_sequence(:t, :c)"),
         {"t": ad, "c": kol},
     ).scalar()
+    mx = conn.execute(text(f'SELECT COALESCE(MAX("{kol}"), 0) FROM "{ad}"')).scalar()
+    mx_i = int(mx or 0)
     if not seq:
-        return
-    mx = conn.execute(text(f'SELECT MAX("{kol}") FROM "{ad}"')).scalar()
-    if mx is None:
-        return
-    conn.execute(text("SELECT setval(:s, :v, true)"), {"s": seq, "v": int(mx)})
+        seq_name = f"{ad}_{kol}_seq"
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_class WHERE relname = :s AND relkind = 'S'"),
+            {"s": seq_name},
+        ).scalar()
+        if not exists:
+            conn.execute(text(f'CREATE SEQUENCE "{seq_name}"'))
+        conn.execute(text(f'ALTER SEQUENCE "{seq_name}" OWNED BY "{ad}"."{kol}"'))
+        conn.execute(
+            text(
+                f'ALTER TABLE "{ad}" ALTER COLUMN "{kol}" '
+                f"SET DEFAULT nextval('{seq_name}')"
+            )
+        )
+        seq = seq_name
+    if mx_i <= 0:
+        conn.execute(text("SELECT setval(:s, 1, false)"), {"s": seq})
+    else:
+        conn.execute(text("SELECT setval(:s, :v, true)"), {"s": seq, "v": mx_i})
 
 
 def pg_tr_norm_dosya() -> Path:

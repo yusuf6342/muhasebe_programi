@@ -1,0 +1,92 @@
+{
+  "zaman": "2026-11-05T13:45:00",
+  "makine_test": "DESKTOP-FL08BVD",
+  "rol": "terminal",
+  "ip": "192.168.1.133",
+  "pg_sunucu": "DESKTOP-CGSE5GK",
+  "pg_host": "192.168.1.114:5432",
+  "pg_version": "17.11",
+  "baslangic_rapor": "kurulum/GECIS_RAPORU.json",
+  "exe": {
+    "yol": "dist/CinMuhasebe/CinMuhasebe.exe",
+    "sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+    "boyut": 24376959,
+    "derleme": "2026-11-05T13:38:40",
+    "deneme_profil": "%LOCALAPPDATA%\\CinMuhasebeKabulDeneme_20261105",
+    "kisayol": "Cin Muhasebe - Ag Deneme - 05.11.2026.lnk"
+  },
+  "hedef_db": {
+    "sistem": "cin_sistem_deneme",
+    "firma": "cin_firma_deneme",
+    "izolasyon_kopya": null,
+    "izolasyon_engel": "cin_app CREATEDB yok; 03_pg_kabul_kopya.ps1 ana makinede gerekli"
+  },
+  "ozet": {
+    "aktarilan_verilerin_durumu": "Mutabakat GECTI; 242 tablo sequence DEFAULT onarildi",
+    "deneme_uygulamasinin_durumu": "Profil/kısayol hazır; PG API GECTI; EXE pencere açıldı, tam UI turu tamamlanamadı",
+    "canli_gecise_hazir": false,
+    "canli_gecis_uygulandi": false,
+    "gunluk_baglanti_degistirildi": false,
+    "kalan_engeller": [
+      "Ana makinede CREATEDB ile cin_*_kabul_20261105 kopyaları",
+      "pg_restore ayrı hedef (04_pg_restore_ayri_hedef.ps1)",
+      "DESKTOP-CGSE5GK EXE GUI + iki PC eşzamanlı UI",
+      "Barkod/fatura UI senaryoları",
+      "Canlı veri 04.11 deneme aktarımından sonra güncellenmiş (EvoBulut 04-05.11 faturalar) — taze aktarım"
+    ]
+  },
+  "duzeltilen_hatalar": [
+    {
+      "ad": "pg_id_sequence_default_eksik",
+      "dosya": "database/pg_helpers.py",
+      "kanit": "kurulum/_kabul_sequence_onar.json",
+      "ozet": "242 firma tablosunda id DEFAULT nextval bağlandı"
+    },
+    {
+      "ad": "gecis_pg_yolunu_ezme_riski",
+      "dosya": "database/system/gecis.py",
+      "ozet": "pg: veya LAN kipinde AŞAMA6 SQLite geçişi atlanır"
+    },
+    {
+      "ad": "fatura_no_max_plus1_yarisi",
+      "dosya": "database/satis_faturasi_service.py, database/alis_faturasi_service.py",
+      "ozet": "fatura_no_ayir + pg_advisory_xact_lock aynı transaction içinde"
+    }
+  ],
+  "senaryolar": [
+    {"ad": "baslangic_dogrulama", "durum": "GECTI", "kanit": "kurulum/_kabul_baslangic_snapshot.json"},
+    {"ad": "mutabakat_satir_mali", "durum": "GECTI", "kanit": "kurulum/_kabul_mutabakat.json"},
+    {"ad": "izolasyon_db_kopya", "durum": "KALDI", "neden": "CREATEDB yetkisi yok"},
+    {"ad": "deneme_profil_kisayol", "durum": "GECTI"},
+    {"ad": "tls_require", "durum": "GECTI", "kanit": "kurulum/_kabul_tls_yedek.json"},
+    {"ad": "tls_verify_full", "durum": "GECTI", "kanit": "kurulum/_kabul_tls_yedek.json"},
+    {"ad": "tls_yanlis_host_red", "durum": "GECTI"},
+    {"ad": "pg_dump_yedek", "durum": "GECTI", "kanit": "kurulum/_kabul_tls_yedek.json"},
+    {"ad": "pg_restore_ayri_hedef", "durum": "DENENMEDI", "script": "kurulum/sunucu/04_pg_restore_ayri_hedef.ps1"},
+    {"ad": "exe_pencere_acilis", "durum": "GECTI", "not": "MainWindowTitle=Cin Muhasebe"},
+    {"ad": "exe_ui_giris_ekran_turu", "durum": "DENENMEDI"},
+    {"ad": "ana_makine_exe", "durum": "DENENMEDI"},
+    {"ad": "api_pg_duman", "durum": "GECTI", "kanit": "kurulum/_kabul_exe_giris_smoke.json"},
+    {"ad": "eszamanli_fatura_no_lock", "durum": "GECTI", "kanit": "kurulum/_kabul_islem_testleri.json"},
+    {"ad": "optimistic_lock", "durum": "GECTI"},
+    {"ad": "baglanti_kopma_tx_unique_timeout", "durum": "GECTI", "kanit": "kurulum/_kabul_baglanti_kopma.json"},
+    {"ad": "iki_pc_eszamanli_ui", "durum": "DENENMEDI"},
+    {"ad": "barkod_exe", "durum": "DENENMEDI"}
+  ],
+  "yedek": {
+    "klasor": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeTest\\yedekler_pg\\pg_kume_kabul_2026-11-05_131615",
+    "sistem_sha256": "99c70fe00c9d2ed46d6244a74b0c90d6d2f88ed3ce2961cf1ef7670b43f360e7",
+    "firma_sha256": "07e6e5fc02040d8e2bc8f5c45edbc55251ad7ab6e07230a5cda93f2619e49af4"
+  },
+  "dokuz_sayim": {
+    "cari_kartlar": 1098,
+    "stok_kartlari": 3031,
+    "satis_faturalari": 9771,
+    "alis_faturalari": 1080,
+    "stok_hareketleri": 31909,
+    "finans_hareketleri": 9819,
+    "finans_hesaplari": 169,
+    "satis_siparisleri": 228,
+    "satis_irsaliyeleri": 10
+  }
+}

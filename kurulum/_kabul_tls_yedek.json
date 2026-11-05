@@ -1,0 +1,70 @@
+{
+  "zaman": "2026-11-05T13:16:14",
+  "makine": "DESKTOP-FL08BVD",
+  "hedef": "192.168.1.114:5432",
+  "ca_dosyalari": {
+    "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\kurulum\\certs\\root.crt": false,
+    "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\kurulum\\certs\\ca.crt": false,
+    "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt": true,
+    "C:\\Program Files\\PostgreSQL\\17\\data\\root.crt": false
+  },
+  "tls_require": {
+    "sslmode": "require",
+    "host": "192.168.1.114",
+    "ok": true,
+    "pg_stat_ssl": {
+      "ssl": true,
+      "version": "TLSv1.3",
+      "cipher": "TLS_AES_256_GCM_SHA384"
+    },
+    "server_version": "17.11"
+  },
+  "tls_verify_full": {
+    "sslmode": "verify-full",
+    "host": "192.168.1.114",
+    "ok": true,
+    "pg_stat_ssl": {
+      "ssl": true,
+      "version": "TLSv1.3",
+      "cipher": "TLS_AES_256_GCM_SHA384"
+    },
+    "server_version": "17.11"
+  },
+  "tls_verify_full_with_ca": {
+    "sslmode": "verify-full",
+    "host": "192.168.1.114",
+    "ok": true,
+    "pg_stat_ssl": {
+      "ssl": true,
+      "version": "TLSv1.3",
+      "cipher": "TLS_AES_256_GCM_SHA384"
+    },
+    "server_version": "17.11"
+  },
+  "tls_yanlis_host_red": {
+    "ok": true,
+    "reddedildi": true,
+    "hata": "connection failed: connection to server at \"192.168.1.114\", port 5432 failed: certificate contains IP address with invalid length 16"
+  },
+  "yedek": {
+    "klasor": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeTest\\yedekler_pg\\pg_kume_kabul_2026-11-05_131615",
+    "sistem": {
+      "db": "cin_sistem_deneme",
+      "dosya": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeTest\\yedekler_pg\\pg_kume_kabul_2026-11-05_131615\\cin_sistem_deneme.dump",
+      "exit": 0,
+      "stderr": "",
+      "boyut": 60535,
+      "sha256": "99c70fe00c9d2ed46d6244a74b0c90d6d2f88ed3ce2961cf1ef7670b43f360e7",
+      "mtime": "2026-11-05T13:16:17"
+    },
+    "firma": {
+      "db": "cin_firma_deneme",
+      "dosya": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeTest\\yedekler_pg\\pg_kume_kabul_2026-11-05_131615\\cin_firma_deneme.dump",
+      "exit": 0,
+      "stderr": "",
+      "boyut": 3414510,
+      "sha256": "07e6e5fc02040d8e2bc8f5c45edbc55251ad7ab6e07230a5cda93f2619e49af4",
+      "mtime": "2026-11-05T13:16:23"
+    }
+  }
+}

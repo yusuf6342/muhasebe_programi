@@ -653,7 +653,8 @@ class SatisFaturasiService:
                 onceki_irsaliye_satirlari = []
                 yeni = True
                 fatura = SatisFaturasi(
-                    fatura_no=istenen_no or SatisFaturasiService.fatura_no(),
+                    fatura_no=istenen_no
+                    or SatisFaturasiService.fatura_no_ayir(session),
                     row_version=1,
                 )
                 session.add(fatura)
@@ -1645,33 +1646,46 @@ class SatisFaturasiService:
         return f"{onek}-{(tarih or date.today()):%Y%m%d}"
 
     @staticmethod
-    def fatura_no():
-        """RAY-00001 formatında artan satış fatura numarası (tek sorgu)."""
+    def fatura_no_ayir(session) -> str:
+        """Aynı transaction içinde artan fatura no (PG: advisory lock ile yarışsız).
+
+        MAX+1 kuralı korunur; eşzamanlı kayıtlarda aynı no üretilmez.
+        SQLite'ta kilit yok — tek kullanıcı yerel kullanım varsayılır; unique indeks güvence.
+        """
         from sqlalchemy import text
 
         from database.belge_no_sql import max_sayisal_kuyruk
 
         onek = SATIS_FATURA_ONEKI
-        with get_session() as session:
-            try:
-                max_sira = max_sayisal_kuyruk(
-                    session,
-                    tablo="satis_faturalari",
-                    kolon="fatura_no",
-                    onek=onek,
+        bind = session.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            # Transaction-scoped; kaydet() commit'ine kadar tutulur
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext('cin_satis_fatura_no'))"))
+        try:
+            max_sira = max_sayisal_kuyruk(
+                session,
+                tablo="satis_faturalari",
+                kolon="fatura_no",
+                onek=onek,
+            )
+        except Exception:
+            numaralar = session.scalars(
+                select(SatisFaturasi.fatura_no).where(
+                    SatisFaturasi.fatura_no.like(f"{onek}%")
                 )
-            except Exception:
-                numaralar = session.scalars(
-                    select(SatisFaturasi.fatura_no).where(
-                        SatisFaturasi.fatura_no.like(f"{onek}%")
-                    )
-                ).all()
-                max_sira = 0
-                for no in numaralar:
-                    kuyruk = str(no)[len(onek) :]
-                    if kuyruk.isdigit():
-                        max_sira = max(max_sira, int(kuyruk))
-            return f"{onek}{max_sira + 1:05d}"
+            ).all()
+            max_sira = 0
+            for no in numaralar:
+                kuyruk = str(no)[len(onek) :]
+                if kuyruk.isdigit():
+                    max_sira = max(max_sira, int(kuyruk))
+        return f"{onek}{max_sira + 1:05d}"
+
+    @staticmethod
+    def fatura_no():
+        """RAY-00001 formatında sonraki satış fatura numarası (önizleme / UI)."""
+        with get_session() as session:
+            return SatisFaturasiService.fatura_no_ayir(session)
 
     # ── Sevkiyat / teslimat kopyaları (faturaya kalıcı, kaynak irsaliyeden bağımsız) ──
 

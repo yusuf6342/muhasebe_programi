@@ -1,0 +1,2025 @@
+{
+  "zaman": "2026-11-05T13:22:02",
+  "sonuclar": [
+    {
+      "db": "cin_firma_deneme",
+      "tablolar": [
+        {
+          "tablo": "acik_kalem_gecis_kayitlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 39,
+          "sequence": "acik_kalem_gecis_kayitlari_id_seq"
+        },
+        {
+          "tablo": "aktivite_sefer_duraklar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "aktivite_sefer_duraklar_id_seq"
+        },
+        {
+          "tablo": "aktivite_seferler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "aktivite_seferler_id_seq"
+        },
+        {
+          "tablo": "aktivite_tekillik",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "aktivite_tekillik_id_seq"
+        },
+        {
+          "tablo": "aktivite_turleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 14,
+          "sequence": "aktivite_turleri_id_seq"
+        },
+        {
+          "tablo": "aktiviteler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "aktiviteler_id_seq"
+        },
+        {
+          "tablo": "alis_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1080,
+          "sequence": "alis_faturalari_id_seq"
+        },
+        {
+          "tablo": "alis_faturasi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2969,
+          "sequence": "alis_faturasi_satirlari_id_seq"
+        },
+        {
+          "tablo": "alis_iade_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "alis_iade_faturalari_id_seq"
+        },
+        {
+          "tablo": "alis_iade_faturasi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 11,
+          "sequence": "alis_iade_faturasi_satirlari_id_seq"
+        },
+        {
+          "tablo": "alis_iade_kaynak_dagilimlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "alis_iade_kaynak_dagilimlari_id_seq"
+        },
+        {
+          "tablo": "alis_irsaliyeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 20,
+          "sequence": "alis_irsaliyeleri_id_seq"
+        },
+        {
+          "tablo": "alis_irsaliyesi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 67,
+          "sequence": "alis_irsaliyesi_satirlari_id_seq"
+        },
+        {
+          "tablo": "alis_masraf_dagitimlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "alis_masraf_dagitimlari_id_seq"
+        },
+        {
+          "tablo": "alis_masraflari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "alis_masraflari_id_seq"
+        },
+        {
+          "tablo": "alis_siparisi_odemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "alis_siparisi_odemeleri_id_seq"
+        },
+        {
+          "tablo": "alis_siparisi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 39,
+          "sequence": "alis_siparisi_satirlari_id_seq"
+        },
+        {
+          "tablo": "alis_siparisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 16,
+          "sequence": "alis_siparisleri_id_seq"
+        },
+        {
+          "tablo": "bank_account_match_rules",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 31,
+          "sequence": "bank_account_match_rules_id_seq"
+        },
+        {
+          "tablo": "banka_kartlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 33,
+          "sequence": "banka_kartlari_id_seq"
+        },
+        {
+          "tablo": "banka_kredi_islem_gunlugu",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "banka_kredi_islem_gunlugu_id_seq"
+        },
+        {
+          "tablo": "banka_kredi_odemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "banka_kredi_odemeleri_id_seq"
+        },
+        {
+          "tablo": "banka_kredi_plan_versiyonlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "banka_kredi_plan_versiyonlari_id_seq"
+        },
+        {
+          "tablo": "banka_kredi_taksitleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 67,
+          "sequence": "banka_kredi_taksitleri_id_seq"
+        },
+        {
+          "tablo": "banka_kredileri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "banka_kredileri_id_seq"
+        },
+        {
+          "tablo": "butce_bilanco_hedefleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "butce_bilanco_hedefleri_id_seq"
+        },
+        {
+          "tablo": "butce_eslesmeler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "butce_eslesmeler_id_seq"
+        },
+        {
+          "tablo": "butce_planlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "butce_planlari_id_seq"
+        },
+        {
+          "tablo": "butce_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "butce_satirlari_id_seq"
+        },
+        {
+          "tablo": "cari_fotograflari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "cari_fotograflari_id_seq"
+        },
+        {
+          "tablo": "cari_islemleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 7421,
+          "sequence": "cari_islemleri_id_seq"
+        },
+        {
+          "tablo": "cari_kapatmalar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 49,
+          "sequence": "cari_kapatmalar_id_seq"
+        },
+        {
+          "tablo": "cari_kartlar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1100,
+          "sequence": "cari_kartlar_id_seq"
+        },
+        {
+          "tablo": "cari_risk_degisiklikleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 4,
+          "sequence": "cari_risk_degisiklikleri_id_seq"
+        },
+        {
+          "tablo": "cari_risk_olaylari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "cari_risk_olaylari_id_seq"
+        },
+        {
+          "tablo": "cari_satis_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 13099,
+          "sequence": "cari_satis_hareketleri_id_seq"
+        },
+        {
+          "tablo": "cari_usd_karsiliklari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 158,
+          "sequence": "cari_usd_karsiliklari_id_seq"
+        },
+        {
+          "tablo": "cari_virman_makbuzlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "cari_virman_makbuzlari_id_seq"
+        },
+        {
+          "tablo": "cari_yetkili_departmanlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "cari_yetkili_departmanlari_id_seq"
+        },
+        {
+          "tablo": "cari_yetkili_gorevleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "cari_yetkili_gorevleri_id_seq"
+        },
+        {
+          "tablo": "cari_yetkililer",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "cari_yetkililer_id_seq"
+        },
+        {
+          "tablo": "cek_senet_evraklari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 16,
+          "sequence": "cek_senet_evraklari_id_seq"
+        },
+        {
+          "tablo": "cek_senet_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 35,
+          "sequence": "cek_senet_hareketleri_id_seq"
+        },
+        {
+          "tablo": "deleted_record_logs",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "deleted_record_logs_id_seq"
+        },
+        {
+          "tablo": "demirbas_stok_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "demirbas_stok_gruplari_id_seq"
+        },
+        {
+          "tablo": "depo_transfer_fisi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "depo_transfer_fisi_satirlari_id_seq"
+        },
+        {
+          "tablo": "depo_transfer_fisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "depo_transfer_fisleri_id_seq"
+        },
+        {
+          "tablo": "depolar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "depolar_id_seq"
+        },
+        {
+          "tablo": "devir_denetim",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "devir_denetim_id_seq"
+        },
+        {
+          "tablo": "devir_eslesmeler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "devir_eslesmeler_id_seq"
+        },
+        {
+          "tablo": "devir_isleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "devir_isleri_id_seq"
+        },
+        {
+          "tablo": "donemler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "donemler_id_seq"
+        },
+        {
+          "tablo": "doviz_kurlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1346,
+          "sequence": "doviz_kurlari_id_seq"
+        },
+        {
+          "tablo": "faiz_oran_tanimlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "faiz_oran_tanimlari_id_seq"
+        },
+        {
+          "tablo": "faiz_urun_kurallari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "faiz_urun_kurallari_id_seq"
+        },
+        {
+          "tablo": "finans_evrak_kimlikleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "finans_evrak_kimlikleri_id_seq"
+        },
+        {
+          "tablo": "finans_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 9823,
+          "sequence": "finans_hareketleri_id_seq"
+        },
+        {
+          "tablo": "finans_hesaplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 169,
+          "sequence": "finans_hesaplari_id_seq"
+        },
+        {
+          "tablo": "firmalar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "firmalar_id_seq"
+        },
+        {
+          "tablo": "fon_belge_ek_bedelleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_belge_ek_bedelleri_id_seq"
+        },
+        {
+          "tablo": "fon_belge_oranlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_belge_oranlari_id_seq"
+        },
+        {
+          "tablo": "fon_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_hareketleri_id_seq"
+        },
+        {
+          "tablo": "fon_oran_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_oran_gecmisi_id_seq"
+        },
+        {
+          "tablo": "fon_para_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_para_hareketleri_id_seq"
+        },
+        {
+          "tablo": "fon_transferleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "fon_transferleri_id_seq"
+        },
+        {
+          "tablo": "fonlar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "fonlar_id_seq"
+        },
+        {
+          "tablo": "gider_alt_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_alt_gruplari_id_seq"
+        },
+        {
+          "tablo": "gider_ana_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 12,
+          "sequence": "gider_ana_gruplari_id_seq"
+        },
+        {
+          "tablo": "gider_butce_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_butce_satirlari_id_seq"
+        },
+        {
+          "tablo": "gider_dagitim_anahtarlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_dagitim_anahtarlari_id_seq"
+        },
+        {
+          "tablo": "gider_dagitim_paylari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_dagitim_paylari_id_seq"
+        },
+        {
+          "tablo": "gider_fisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 11,
+          "sequence": "gider_fisleri_id_seq"
+        },
+        {
+          "tablo": "gider_kart_duzeltmeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_kart_duzeltmeleri_id_seq"
+        },
+        {
+          "tablo": "gider_kart_iadeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_kart_iadeleri_id_seq"
+        },
+        {
+          "tablo": "gider_kart_odemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gider_kart_odemeleri_id_seq"
+        },
+        {
+          "tablo": "gunluk_faiz_kayitlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "gunluk_faiz_kayitlari_id_seq"
+        },
+        {
+          "tablo": "hizli_satis_bekleyen_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 15,
+          "sequence": "hizli_satis_bekleyen_satirlari_id_seq"
+        },
+        {
+          "tablo": "hizli_satis_bekleyenler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "hizli_satis_bekleyenler_id_seq"
+        },
+        {
+          "tablo": "hizli_satis_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "hizli_satis_gruplari_id_seq"
+        },
+        {
+          "tablo": "hizli_satis_hizli_urunler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "hizli_satis_hizli_urunler_id_seq"
+        },
+        {
+          "tablo": "hizmet_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "hizmet_faturalari_id_seq"
+        },
+        {
+          "tablo": "hizmet_faturasi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "hizmet_faturasi_satirlari_id_seq"
+        },
+        {
+          "tablo": "hizmet_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 4,
+          "sequence": "hizmet_hareketleri_id_seq"
+        },
+        {
+          "tablo": "hizmet_kartlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "hizmet_kartlari_id_seq"
+        },
+        {
+          "tablo": "hizmet_kaynak_engelleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "hizmet_kaynak_engelleri_id_seq"
+        },
+        {
+          "tablo": "import_batches",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "import_batches_id_seq"
+        },
+        {
+          "tablo": "import_changes",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "import_changes_id_seq"
+        },
+        {
+          "tablo": "import_mappings",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "import_mappings_id_seq"
+        },
+        {
+          "tablo": "import_rows",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "import_rows_id_seq"
+        },
+        {
+          "tablo": "invoice_import_audit",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 19,
+          "sequence": "invoice_import_audit_id_seq"
+        },
+        {
+          "tablo": "invoice_import_drafts",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "invoice_import_drafts_id_seq"
+        },
+        {
+          "tablo": "invoice_import_files",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "invoice_import_files_id_seq"
+        },
+        {
+          "tablo": "invoice_import_lines",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "invoice_import_lines_id_seq"
+        },
+        {
+          "tablo": "invoice_scan_messages",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "invoice_scan_messages_id_seq"
+        },
+        {
+          "tablo": "kart_alt_turleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 10,
+          "sequence": "kart_alt_turleri_id_seq"
+        },
+        {
+          "tablo": "kart_ana_turleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 12,
+          "sequence": "kart_ana_turleri_id_seq"
+        },
+        {
+          "tablo": "kart_bakiye_onarim_gunlugu",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "kart_bakiye_onarim_gunlugu_id_seq"
+        },
+        {
+          "tablo": "kasa_makbuz_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 30,
+          "sequence": "kasa_makbuz_satirlari_id_seq"
+        },
+        {
+          "tablo": "kasa_makbuzlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 883,
+          "sequence": "kasa_makbuzlari_id_seq"
+        },
+        {
+          "tablo": "kk_cekimleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 7,
+          "sequence": "kk_cekimleri_id_seq"
+        },
+        {
+          "tablo": "konsinye_hareketler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "konsinye_hareketler_id_seq"
+        },
+        {
+          "tablo": "konsinye_teslim_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "konsinye_teslim_satirlari_id_seq"
+        },
+        {
+          "tablo": "konsinye_teslimler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "konsinye_teslimler_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_ekstre_odeme_taksitleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "kredi_karti_ekstre_odeme_taksitleri_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_ekstre_odemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "kredi_karti_ekstre_odemeleri_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_ekstreleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 29,
+          "sequence": "kredi_karti_ekstreleri_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_odeme_taksitleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 36,
+          "sequence": "kredi_karti_odeme_taksitleri_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_odemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 4,
+          "sequence": "kredi_karti_odemeleri_id_seq"
+        },
+        {
+          "tablo": "kredi_karti_tanimlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3,
+          "sequence": "kredi_karti_tanimlari_id_seq"
+        },
+        {
+          "tablo": "masraf_dagitim_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "masraf_dagitim_gecmisi_id_seq"
+        },
+        {
+          "tablo": "masraf_dagitim_kaynak_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "masraf_dagitim_kaynak_satirlari_id_seq"
+        },
+        {
+          "tablo": "masraf_dagitim_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "masraf_dagitim_satirlari_id_seq"
+        },
+        {
+          "tablo": "masraf_dagitimlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "masraf_dagitimlari_id_seq"
+        },
+        {
+          "tablo": "muhasebe_belge_durumlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 11145,
+          "sequence": "muhasebe_belge_durumlari_id_seq"
+        },
+        {
+          "tablo": "muhasebe_finans_ayarlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "muhasebe_finans_ayarlari_id_seq"
+        },
+        {
+          "tablo": "muhasebe_fis_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 18,
+          "sequence": "muhasebe_fis_satirlari_id_seq"
+        },
+        {
+          "tablo": "muhasebe_fisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 7,
+          "sequence": "muhasebe_fisleri_id_seq"
+        },
+        {
+          "tablo": "muhasebe_hesap_eslemeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 39,
+          "sequence": "muhasebe_hesap_eslemeleri_id_seq"
+        },
+        {
+          "tablo": "muhasebe_hesap_plani",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 390,
+          "sequence": "muhasebe_hesap_plani_id_seq"
+        },
+        {
+          "tablo": "muhasebe_islem_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 178,
+          "sequence": "muhasebe_islem_gecmisi_id_seq"
+        },
+        {
+          "tablo": "muhasebe_kur_farki_kayitlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "muhasebe_kur_farki_kayitlari_id_seq"
+        },
+        {
+          "tablo": "muhasebe_muhasebelestirme_ayarlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "muhasebe_muhasebelestirme_ayarlari_id_seq"
+        },
+        {
+          "tablo": "musteri_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 12,
+          "sequence": "musteri_gruplari_id_seq"
+        },
+        {
+          "tablo": "odeme_sozleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "odeme_sozleri_id_seq"
+        },
+        {
+          "tablo": "odeme_sozu_baglantilari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "odeme_sozu_baglantilari_id_seq"
+        },
+        {
+          "tablo": "odeme_sozu_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "odeme_sozu_faturalari_id_seq"
+        },
+        {
+          "tablo": "odeme_sozu_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "odeme_sozu_gecmisi_id_seq"
+        },
+        {
+          "tablo": "party_match_rules",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "party_match_rules_id_seq"
+        },
+        {
+          "tablo": "personel_belge_kategorileri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 9,
+          "sequence": "personel_belge_kategorileri_id_seq"
+        },
+        {
+          "tablo": "personel_belge_surumleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_belge_surumleri_id_seq"
+        },
+        {
+          "tablo": "personel_belge_turleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 14,
+          "sequence": "personel_belge_turleri_id_seq"
+        },
+        {
+          "tablo": "personel_belgeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_belgeleri_id_seq"
+        },
+        {
+          "tablo": "personel_calisma_donemleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_calisma_donemleri_id_seq"
+        },
+        {
+          "tablo": "personel_degerlendirmeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_degerlendirmeleri_id_seq"
+        },
+        {
+          "tablo": "personel_erisim_loglari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_erisim_loglari_id_seq"
+        },
+        {
+          "tablo": "personel_fatura_h_donuk",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_fatura_h_donuk_id_seq"
+        },
+        {
+          "tablo": "personel_fotograflari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_fotograflari_id_seq"
+        },
+        {
+          "tablo": "personel_gecmis",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_gecmis_id_seq"
+        },
+        {
+          "tablo": "personel_gelisim_planlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_gelisim_planlari_id_seq"
+        },
+        {
+          "tablo": "personel_gorev_atamalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_gorev_atamalari_id_seq"
+        },
+        {
+          "tablo": "personel_gorevler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_gorevler_id_seq"
+        },
+        {
+          "tablo": "personel_hakedisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_hakedisleri_id_seq"
+        },
+        {
+          "tablo": "personel_hesap_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_hesap_hareketleri_id_seq"
+        },
+        {
+          "tablo": "personel_is_gecmis",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_is_gecmis_id_seq"
+        },
+        {
+          "tablo": "personel_is_kayitlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_is_kayitlari_id_seq"
+        },
+        {
+          "tablo": "personel_izin_hakedis",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_izin_hakedis_id_seq"
+        },
+        {
+          "tablo": "personel_izinleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_izinleri_id_seq"
+        },
+        {
+          "tablo": "personel_kariyer_kararlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_kariyer_kararlari_id_seq"
+        },
+        {
+          "tablo": "personel_kartlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_kartlari_id_seq"
+        },
+        {
+          "tablo": "personel_katki_olaylari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_katki_olaylari_id_seq"
+        },
+        {
+          "tablo": "personel_katkilar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_katkilar_id_seq"
+        },
+        {
+          "tablo": "personel_mevzuat_parametreleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "personel_mevzuat_parametreleri_id_seq"
+        },
+        {
+          "tablo": "personel_olcut_surumleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 4,
+          "sequence": "personel_olcut_surumleri_id_seq"
+        },
+        {
+          "tablo": "personel_prim_donem",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_prim_donem_id_seq"
+        },
+        {
+          "tablo": "personel_prim_donemleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_prim_donemleri_id_seq"
+        },
+        {
+          "tablo": "personel_prim_pay",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_prim_pay_id_seq"
+        },
+        {
+          "tablo": "personel_prim_paylari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_prim_paylari_id_seq"
+        },
+        {
+          "tablo": "personel_prim_politikalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_prim_politikalari_id_seq"
+        },
+        {
+          "tablo": "personel_puantaj",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_puantaj_id_seq"
+        },
+        {
+          "tablo": "personel_sgk_baglantilari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_sgk_baglantilari_id_seq"
+        },
+        {
+          "tablo": "personel_sgk_islemleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "personel_sgk_islemleri_id_seq"
+        },
+        {
+          "tablo": "personel_ucretleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "personel_ucretleri_id_seq"
+        },
+        {
+          "tablo": "pos_taksit_komisyonlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 24,
+          "sequence": "pos_taksit_komisyonlari_id_seq"
+        },
+        {
+          "tablo": "pos_valor_kayitlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 10,
+          "sequence": "pos_valor_kayitlari_id_seq"
+        },
+        {
+          "tablo": "product_match_rules",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 5,
+          "sequence": "product_match_rules_id_seq"
+        },
+        {
+          "tablo": "proje_belge_baglantilari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "proje_belge_baglantilari_id_seq"
+        },
+        {
+          "tablo": "proje_cariler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "proje_cariler_id_seq"
+        },
+        {
+          "tablo": "projeler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "projeler_id_seq"
+        },
+        {
+          "tablo": "sabit_gider_baglantilari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sabit_gider_baglantilari_id_seq"
+        },
+        {
+          "tablo": "sabit_gider_donemleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sabit_gider_donemleri_id_seq"
+        },
+        {
+          "tablo": "sabit_gider_planlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sabit_gider_planlari_id_seq"
+        },
+        {
+          "tablo": "sabit_gider_tutar_degisiklikleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sabit_gider_tutar_degisiklikleri_id_seq"
+        },
+        {
+          "tablo": "satin_alma_talep_ekleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satin_alma_talep_ekleri_id_seq"
+        },
+        {
+          "tablo": "satin_alma_talep_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satin_alma_talep_gecmisi_id_seq"
+        },
+        {
+          "tablo": "satin_alma_talep_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satin_alma_talep_satirlari_id_seq"
+        },
+        {
+          "tablo": "satin_alma_talep_siparis_baglari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satin_alma_talep_siparis_baglari_id_seq"
+        },
+        {
+          "tablo": "satin_alma_talepleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satin_alma_talepleri_id_seq"
+        },
+        {
+          "tablo": "satis_fatura_makbuz_baglari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 16,
+          "sequence": "satis_fatura_makbuz_baglari_id_seq"
+        },
+        {
+          "tablo": "satis_fatura_sevkiyatlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satis_fatura_sevkiyatlari_id_seq"
+        },
+        {
+          "tablo": "satis_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 9771,
+          "sequence": "satis_faturalari_id_seq"
+        },
+        {
+          "tablo": "satis_faturasi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 21411,
+          "sequence": "satis_faturasi_satirlari_id_seq"
+        },
+        {
+          "tablo": "satis_faturasi_tahsilatlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 11,
+          "sequence": "satis_faturasi_tahsilatlari_id_seq"
+        },
+        {
+          "tablo": "satis_fiyat_listeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 10,
+          "sequence": "satis_fiyat_listeleri_id_seq"
+        },
+        {
+          "tablo": "satis_iade_faturalari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 276,
+          "sequence": "satis_iade_faturalari_id_seq"
+        },
+        {
+          "tablo": "satis_iade_faturasi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 383,
+          "sequence": "satis_iade_faturasi_satirlari_id_seq"
+        },
+        {
+          "tablo": "satis_irsaliyeleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 10,
+          "sequence": "satis_irsaliyeleri_id_seq"
+        },
+        {
+          "tablo": "satis_irsaliyesi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 24,
+          "sequence": "satis_irsaliyesi_satirlari_id_seq"
+        },
+        {
+          "tablo": "satis_siparisi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 795,
+          "sequence": "satis_siparisi_satirlari_id_seq"
+        },
+        {
+          "tablo": "satis_siparisi_tahsilatlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "satis_siparisi_tahsilatlari_id_seq"
+        },
+        {
+          "tablo": "satis_siparisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 228,
+          "sequence": "satis_siparisleri_id_seq"
+        },
+        {
+          "tablo": "satis_teklifi_masraflar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "satis_teklifi_masraflar_id_seq"
+        },
+        {
+          "tablo": "satis_teklifi_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 17,
+          "sequence": "satis_teklifi_satirlari_id_seq"
+        },
+        {
+          "tablo": "satis_teklifleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 7,
+          "sequence": "satis_teklifleri_id_seq"
+        },
+        {
+          "tablo": "service_issues",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 52,
+          "sequence": "service_issues_id_seq"
+        },
+        {
+          "tablo": "service_repairs",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 11,
+          "sequence": "service_repairs_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_adaylari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "sorulan_urun_adaylari_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_ekleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sorulan_urun_ekleri_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_gorusmeler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sorulan_urun_gorusmeler_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_olculeri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sorulan_urun_olculeri_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_talepleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "sorulan_urun_talepleri_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_tarih_log",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sorulan_urun_tarih_log_id_seq"
+        },
+        {
+          "tablo": "sorulan_urun_tekrarlar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "sorulan_urun_tekrarlar_id_seq"
+        },
+        {
+          "tablo": "stok_barkodlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 24,
+          "sequence": "stok_barkodlari_id_seq"
+        },
+        {
+          "tablo": "stok_birim_kisa_kodlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_birim_kisa_kodlari_id_seq"
+        },
+        {
+          "tablo": "stok_birimleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 4,
+          "sequence": "stok_birimleri_id_seq"
+        },
+        {
+          "tablo": "stok_etiket_is_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_etiket_is_satirlari_id_seq"
+        },
+        {
+          "tablo": "stok_etiket_isleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_etiket_isleri_id_seq"
+        },
+        {
+          "tablo": "stok_fiyat_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 8599,
+          "sequence": "stok_fiyat_gecmisi_id_seq"
+        },
+        {
+          "tablo": "stok_fiyatlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 10578,
+          "sequence": "stok_fiyatlari_id_seq"
+        },
+        {
+          "tablo": "stok_fon_oranlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_fon_oranlari_id_seq"
+        },
+        {
+          "tablo": "stok_grup_toplu_islem_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 21,
+          "sequence": "stok_grup_toplu_islem_satirlari_id_seq"
+        },
+        {
+          "tablo": "stok_grup_toplu_islemler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "stok_grup_toplu_islemler_id_seq"
+        },
+        {
+          "tablo": "stok_gruplari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 56,
+          "sequence": "stok_gruplari_id_seq"
+        },
+        {
+          "tablo": "stok_hareketleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 31929,
+          "sequence": "stok_hareketleri_id_seq"
+        },
+        {
+          "tablo": "stok_ihtiyac_gecmisi",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1596,
+          "sequence": "stok_ihtiyac_gecmisi_id_seq"
+        },
+        {
+          "tablo": "stok_ihtiyac_siparis_baglari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_ihtiyac_siparis_baglari_id_seq"
+        },
+        {
+          "tablo": "stok_ihtiyaclari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1593,
+          "sequence": "stok_ihtiyaclari_id_seq"
+        },
+        {
+          "tablo": "stok_kartlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 3034,
+          "sequence": "stok_kartlari_id_seq"
+        },
+        {
+          "tablo": "stok_lot_barkod_sayac",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_lot_barkod_sayac_id_seq"
+        },
+        {
+          "tablo": "stok_lot_barkodlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_lot_barkodlari_id_seq"
+        },
+        {
+          "tablo": "stok_lotlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 9705,
+          "sequence": "stok_lotlari_id_seq"
+        },
+        {
+          "tablo": "stok_paket_bilesenleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 2,
+          "sequence": "stok_paket_bilesenleri_id_seq"
+        },
+        {
+          "tablo": "stok_paket_uretimleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "stok_paket_uretimleri_id_seq"
+        },
+        {
+          "tablo": "stok_resimleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_resimleri_id_seq"
+        },
+        {
+          "tablo": "stok_sayim_fisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_sayim_fisleri_id_seq"
+        },
+        {
+          "tablo": "stok_sayim_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_sayim_satirlari_id_seq"
+        },
+        {
+          "tablo": "stok_secenekleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 150,
+          "sequence": "stok_secenekleri_id_seq"
+        },
+        {
+          "tablo": "stok_standart_maliyetleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_standart_maliyetleri_id_seq"
+        },
+        {
+          "tablo": "stok_uyari_ayarlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "stok_uyari_ayarlari_id_seq"
+        },
+        {
+          "tablo": "stok_uyari_bekleyenler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "stok_uyari_bekleyenler_id_seq"
+        },
+        {
+          "tablo": "subeler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "subeler_id_seq"
+        },
+        {
+          "tablo": "tedarikci_fiyatlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "tedarikci_fiyatlari_id_seq"
+        },
+        {
+          "tablo": "tedarikci_teklif_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "tedarikci_teklif_satirlari_id_seq"
+        },
+        {
+          "tablo": "tedarikci_teklifleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 1,
+          "sequence": "tedarikci_teklifleri_id_seq"
+        },
+        {
+          "tablo": "uretim_emirleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_emirleri_id_seq"
+        },
+        {
+          "tablo": "uretim_emri_plan_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_emri_plan_satirlari_id_seq"
+        },
+        {
+          "tablo": "uretim_mamul_girisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_mamul_girisleri_id_seq"
+        },
+        {
+          "tablo": "uretim_recete_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_recete_satirlari_id_seq"
+        },
+        {
+          "tablo": "uretim_receteler",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_receteler_id_seq"
+        },
+        {
+          "tablo": "uretim_rezervasyonlar",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_rezervasyonlar_id_seq"
+        },
+        {
+          "tablo": "uretim_sarf_fisleri",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_sarf_fisleri_id_seq"
+        },
+        {
+          "tablo": "uretim_sarf_satirlari",
+          "default": null,
+          "durum": "duzeltildi",
+          "max_id": 0,
+          "sequence": "uretim_sarf_satirlari_id_seq"
+        }
+      ],
+      "duzeltilen": [
+        "acik_kalem_gecis_kayitlari",
+        "aktivite_sefer_duraklar",
+        "aktivite_seferler",
+        "aktivite_tekillik",
+        "aktivite_turleri",
+        "aktiviteler",
+        "alis_faturalari",
+        "alis_faturasi_satirlari",
+        "alis_iade_faturalari",
+        "alis_iade_faturasi_satirlari",
+        "alis_iade_kaynak_dagilimlari",
+        "alis_irsaliyeleri",
+        "alis_irsaliyesi_satirlari",
+        "alis_masraf_dagitimlari",
+        "alis_masraflari",
+        "alis_siparisi_odemeleri",
+        "alis_siparisi_satirlari",
+        "alis_siparisleri",
+        "bank_account_match_rules",
+        "banka_kartlari",
+        "banka_kredi_islem_gunlugu",
+        "banka_kredi_odemeleri",
+        "banka_kredi_plan_versiyonlari",
+        "banka_kredi_taksitleri",
+        "banka_kredileri",
+        "butce_bilanco_hedefleri",
+        "butce_eslesmeler",
+        "butce_planlari",
+        "butce_satirlari",
+        "cari_fotograflari",
+        "cari_islemleri",
+        "cari_kapatmalar",
+        "cari_kartlar",
+        "cari_risk_degisiklikleri",
+        "cari_risk_olaylari",
+        "cari_satis_hareketleri",
+        "cari_usd_karsiliklari",
+        "cari_virman_makbuzlari",
+        "cari_yetkili_departmanlari",
+        "cari_yetkili_gorevleri",
+        "cari_yetkililer",
+        "cek_senet_evraklari",
+        "cek_senet_hareketleri",
+        "deleted_record_logs",
+        "demirbas_stok_gruplari",
+        "depo_transfer_fisi_satirlari",
+        "depo_transfer_fisleri",
+        "depolar",
+        "devir_denetim",
+        "devir_eslesmeler",
+        "devir_isleri",
+        "donemler",
+        "doviz_kurlari",
+        "faiz_oran_tanimlari",
+        "faiz_urun_kurallari",
+        "finans_evrak_kimlikleri",
+        "finans_hareketleri",
+        "finans_hesaplari",
+        "firmalar",
+        "fon_belge_ek_bedelleri",
+        "fon_belge_oranlari",
+        "fon_hareketleri",
+        "fon_oran_gecmisi",
+        "fon_para_hareketleri",
+        "fon_transferleri",
+        "fonlar",
+        "gider_alt_gruplari",
+        "gider_ana_gruplari",
+        "gider_butce_satirlari",
+        "gider_dagitim_anahtarlari",
+        "gider_dagitim_paylari",
+        "gider_fisleri",
+        "gider_kart_duzeltmeleri",
+        "gider_kart_iadeleri",
+        "gider_kart_odemeleri",
+        "gunluk_faiz_kayitlari",
+        "hizli_satis_bekleyen_satirlari",
+        "hizli_satis_bekleyenler",
+        "hizli_satis_gruplari",
+        "hizli_satis_hizli_urunler",
+        "hizmet_faturalari",
+        "hizmet_faturasi_satirlari",
+        "hizmet_hareketleri",
+        "hizmet_kartlari",
+        "hizmet_kaynak_engelleri",
+        "import_batches",
+        "import_changes",
+        "import_mappings",
+        "import_rows",
+        "invoice_import_audit",
+        "invoice_import_drafts",
+        "invoice_import_files",
+        "invoice_import_lines",
+        "invoice_scan_messages",
+        "kart_alt_turleri",
+        "kart_ana_turleri",
+        "kart_bakiye_onarim_gunlugu",
+        "kasa_makbuz_satirlari",
+        "kasa_makbuzlari",
+        "kk_cekimleri",
+        "konsinye_hareketler",
+        "konsinye_teslim_satirlari",
+        "konsinye_teslimler",
+        "kredi_karti_ekstre_odeme_taksitleri",
+        "kredi_karti_ekstre_odemeleri",
+        "kredi_karti_ekstreleri",
+        "kredi_karti_odeme_taksitleri",
+        "kredi_karti_odemeleri",
+        "kredi_karti_tanimlari",
+        "masraf_dagitim_gecmisi",
+        "masraf_dagitim_kaynak_satirlari",
+        "masraf_dagitim_satirlari",
+        "masraf_dagitimlari",
+        "muhasebe_belge_durumlari",
+        "muhasebe_finans_ayarlari",
+        "muhasebe_fis_satirlari",
+        "muhasebe_fisleri",
+        "muhasebe_hesap_eslemeleri",
+        "muhasebe_hesap_plani",
+        "muhasebe_islem_gecmisi",
+        "muhasebe_kur_farki_kayitlari",
+        "muhasebe_muhasebelestirme_ayarlari",
+        "musteri_gruplari",
+        "odeme_sozleri",
+        "odeme_sozu_baglantilari",
+        "odeme_sozu_faturalari",
+        "odeme_sozu_gecmisi",
+        "party_match_rules",
+        "personel_belge_kategorileri",
+        "personel_belge_surumleri",
+        "personel_belge_turleri",
+        "personel_belgeleri",
+        "personel_calisma_donemleri",
+        "personel_degerlendirmeleri",
+        "personel_erisim_loglari",
+        "personel_fatura_h_donuk",
+        "personel_fotograflari",
+        "personel_gecmis",
+        "personel_gelisim_planlari",
+        "personel_gorev_atamalari",
+        "personel_gorevler",
+        "personel_hakedisleri",
+        "personel_hesap_hareketleri",
+        "personel_is_gecmis",
+        "personel_is_kayitlari",
+        "personel_izin_hakedis",
+        "personel_izinleri",
+        "personel_kariyer_kararlari",
+        "personel_kartlari",
+        "personel_katki_olaylari",
+        "personel_katkilar",
+        "personel_mevzuat_parametreleri",
+        "personel_olcut_surumleri",
+        "personel_prim_donem",
+        "personel_prim_donemleri",
+        "personel_prim_pay",
+        "personel_prim_paylari",
+        "personel_prim_politikalari",
+        "personel_puantaj",
+        "personel_sgk_baglantilari",
+        "personel_sgk_islemleri",
+        "personel_ucretleri",
+        "pos_taksit_komisyonlari",
+        "pos_valor_kayitlari",
+        "product_match_rules",
+        "proje_belge_baglantilari",
+        "proje_cariler",
+        "projeler",
+        "sabit_gider_baglantilari",
+        "sabit_gider_donemleri",
+        "sabit_gider_planlari",
+        "sabit_gider_tutar_degisiklikleri",
+        "satin_alma_talep_ekleri",
+        "satin_alma_talep_gecmisi",
+        "satin_alma_talep_satirlari",
+        "satin_alma_talep_siparis_baglari",
+        "satin_alma_talepleri",
+        "satis_fatura_makbuz_baglari",
+        "satis_fatura_sevkiyatlari",
+        "satis_faturalari",
+        "satis_faturasi_satirlari",
+        "satis_faturasi_tahsilatlari",
+        "satis_fiyat_listeleri",
+        "satis_iade_faturalari",
+        "satis_iade_faturasi_satirlari",
+        "satis_irsaliyeleri",
+        "satis_irsaliyesi_satirlari",
+        "satis_siparisi_satirlari",
+        "satis_siparisi_tahsilatlari",
+        "satis_siparisleri",
+        "satis_teklifi_masraflar",
+        "satis_teklifi_satirlari",
+        "satis_teklifleri",
+        "service_issues",
+        "service_repairs",
+        "sorulan_urun_adaylari",
+        "sorulan_urun_ekleri",
+        "sorulan_urun_gorusmeler",
+        "sorulan_urun_olculeri",
+        "sorulan_urun_talepleri",
+        "sorulan_urun_tarih_log",
+        "sorulan_urun_tekrarlar",
+        "stok_barkodlari",
+        "stok_birim_kisa_kodlari",
+        "stok_birimleri",
+        "stok_etiket_is_satirlari",
+        "stok_etiket_isleri",
+        "stok_fiyat_gecmisi",
+        "stok_fiyatlari",
+        "stok_fon_oranlari",
+        "stok_grup_toplu_islem_satirlari",
+        "stok_grup_toplu_islemler",
+        "stok_gruplari",
+        "stok_hareketleri",
+        "stok_ihtiyac_gecmisi",
+        "stok_ihtiyac_siparis_baglari",
+        "stok_ihtiyaclari",
+        "stok_kartlari",
+        "stok_lot_barkod_sayac",
+        "stok_lot_barkodlari",
+        "stok_lotlari",
+        "stok_paket_bilesenleri",
+        "stok_paket_uretimleri",
+        "stok_resimleri",
+        "stok_sayim_fisleri",
+        "stok_sayim_satirlari",
+        "stok_secenekleri",
+        "stok_standart_maliyetleri",
+        "stok_uyari_ayarlari",
+        "stok_uyari_bekleyenler",
+        "subeler",
+        "tedarikci_fiyatlari",
+        "tedarikci_teklif_satirlari",
+        "tedarikci_teklifleri",
+        "uretim_emirleri",
+        "uretim_emri_plan_satirlari",
+        "uretim_mamul_girisleri",
+        "uretim_recete_satirlari",
+        "uretim_receteler",
+        "uretim_rezervasyonlar",
+        "uretim_sarf_fisleri",
+        "uretim_sarf_satirlari"
+      ],
+      "zaten_ok": [],
+      "hatalar": []
+    },
+    {
+      "db": "cin_sistem_deneme",
+      "tablolar": [
+        {
+          "tablo": "app_settings",
+          "default": "nextval('app_settings_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "audit_logs",
+          "default": "nextval('audit_logs_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "companies",
+          "default": "nextval('companies_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "login_logs",
+          "default": "nextval('login_logs_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "permissions",
+          "default": "nextval('permissions_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "role_permissions",
+          "default": "nextval('role_permissions_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "roles",
+          "default": "nextval('roles_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "schema_migrations",
+          "default": "nextval('schema_migrations_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "user_companies",
+          "default": "nextval('user_companies_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "user_permissions",
+          "default": "nextval('user_permissions_id_seq'::regclass)",
+          "durum": "ok"
+        },
+        {
+          "tablo": "users",
+          "default": "nextval('users_id_seq'::regclass)",
+          "durum": "ok"
+        }
+      ],
+      "duzeltilen": [],
+      "zaten_ok": [
+        "app_settings",
+        "audit_logs",
+        "companies",
+        "login_logs",
+        "permissions",
+        "role_permissions",
+        "roles",
+        "schema_migrations",
+        "user_companies",
+        "user_permissions",
+        "users"
+      ],
+      "hatalar": []
+    }
+  ]
+}

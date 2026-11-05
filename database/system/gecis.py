@@ -199,8 +199,10 @@ def gecis_calistir(
     3) Ray firmasının db_path'inin muhasebe.db olduğunu doğrula
     4) Flag yaz
     Operasyon verisine INSERT/UPDATE/DELETE yapmaz.
+
+    Yerel ağ (PostgreSQL) kipinde veya db_path 'pg:...' ise çalışmaz;
+    aksi halde SQLite yolu pg: hedefini ezerdi.
     """
-    muhasebe_db_path = Path(muhasebe_db_path).resolve()
     sonuc: dict[str, Any] = {
         "yedek_alindi": False,
         "yedek_yolu": None,
@@ -216,9 +218,30 @@ def gecis_calistir(
             "Ray Mobilya firması system.db içinde yok. Önce sistem bootstrap çalışmalı."
         )
 
+    db_path_ham = str(firma.db_path or "").strip()
+    if db_path_ham.lower().startswith("pg:"):
+        sonuc["zaten_tamam"] = True
+        sonuc["mesajlar"].append(
+            f"PostgreSQL firma yolu korundu ({db_path_ham}); SQLite AŞAMA6 geçişi atlandı."
+        )
+        return sonuc
+
+    try:
+        from database.baglanti_modu import ayari_yukle
+
+        if ayari_yukle().ag_mi:
+            sonuc["zaten_tamam"] = True
+            sonuc["mesajlar"].append(
+                "Yerel ağ (PostgreSQL) kipinde AŞAMA6 SQLite geçişi atlandı."
+            )
+            return sonuc
+    except Exception:
+        pass
+
+    muhasebe_db_path = Path(muhasebe_db_path).resolve()
     beklenen = str(muhasebe_db_path)
     if Path(firma.db_path).resolve() != muhasebe_db_path:
-        # Yol kaymışsa güvenli güncelle (içerik taşınmaz)
+        # Yol kaymışsa güvenli güncelle (içerik taşınmaz) — yalnız SQLite dosya yolları
         sonuc["mesajlar"].append(
             f"Firma DB yolu güncellendi: {firma.db_path} → {beklenen}"
         )

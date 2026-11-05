@@ -1,0 +1,42 @@
+{
+  "zaman": "2026-11-05T13:39:37",
+  "aktarim_yedek": {
+    "yol": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeAktarim\\Ray_Aktarim_2026-11-04_194017\\veri_yedek\\muhasebe.db",
+    "var": true,
+    "mtime": "2026-11-04T19:40:17",
+    "boyut": 29552640,
+    "satis_max_tarih": "2026-10-21",
+    "alis_max_tarih": "2026-10-17",
+    "stok_hareket_max": "2026-10-21",
+    "finans_max": "2026-10-21",
+    "satis_sayim": 9771,
+    "stok_hareket_sayim": 31909
+  },
+  "gunluk_adaylar": [
+    {
+      "yol": "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\data\\muhasebe.db",
+      "var": true,
+      "mtime": "2026-10-28T16:30:14",
+      "boyut": 15466496,
+      "satis_max_tarih": "2026-09-11",
+      "alis_max_tarih": "2026-09-11",
+      "stok_hareket_max": "2026-09-11",
+      "finans_max": "2026-09-11",
+      "satis_sayim": 9707,
+      "stok_hareket_sayim": 31836
+    },
+    {
+      "yol": "C:\\Users\\cigde\\AppData\\Local\\MuhasebeProgrami\\data\\muhasebe.db",
+      "var": true,
+      "mtime": "2026-11-03T10:07:23",
+      "boyut": 29552640,
+      "satis_max_tarih": "2026-10-21",
+      "alis_max_tarih": "2026-10-17",
+      "stok_hareket_max": "2026-10-21",
+      "finans_max": "2026-10-21",
+      "satis_sayim": 9771,
+      "stok_hareket_sayim": 31909
+    }
+  ],
+  "not": "Canlı geçişte 04.11 yedeğini esas alma; güncel günlük SQLite ile yeni dump+aktarım gerekir."
+}

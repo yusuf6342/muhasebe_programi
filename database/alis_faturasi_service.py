@@ -495,7 +495,8 @@ class AlisFaturasiService:
                 fatura.row_version = mevcut_v + 1
             else:
                 fatura = AlisFaturasi(
-                    fatura_no=(veriler.get("fatura_no") or "").strip() or AlisFaturasiService.fatura_no(),
+                    fatura_no=(veriler.get("fatura_no") or "").strip()
+                    or AlisFaturasiService.fatura_no_ayir(session),
                     row_version=1,
                 )
                 session.add(fatura)
@@ -1190,19 +1191,28 @@ class AlisFaturasiService:
         return f"{onek}-{(tarih or date.today()):%Y%m%d}"
 
     @staticmethod
-    def fatura_no():
-        """ARAY000001 formatında artan alış fatura numarası."""
+    def fatura_no_ayir(session) -> str:
+        """Aynı transaction içinde artan alış fatura no (PG: advisory lock)."""
+        from sqlalchemy import text
+
         onek = "ARAY"
-        with get_session() as session:
-            # Sabit uzunluklu ARAY###### — max(string) = max(sıra); tüm satırları çekme
-            son = session.scalar(
-                select(func.max(AlisFaturasi.fatura_no)).where(
-                    AlisFaturasi.fatura_no.like(f"{onek}%")
-                )
+        bind = session.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext('cin_alis_fatura_no'))"))
+        son = session.scalar(
+            select(func.max(AlisFaturasi.fatura_no)).where(
+                AlisFaturasi.fatura_no.like(f"{onek}%")
             )
-            max_sira = 0
-            if son:
-                kuyruk = str(son)[len(onek) :]
-                if kuyruk.isdigit():
-                    max_sira = int(kuyruk)
-            return f"{onek}{max_sira + 1:06d}"
+        )
+        max_sira = 0
+        if son:
+            kuyruk = str(son)[len(onek) :]
+            if kuyruk.isdigit():
+                max_sira = int(kuyruk)
+        return f"{onek}{max_sira + 1:06d}"
+
+    @staticmethod
+    def fatura_no():
+        """ARAY000001 formatında sonraki alış fatura numarası (önizleme / UI)."""
+        with get_session() as session:
+            return AlisFaturasiService.fatura_no_ayir(session)

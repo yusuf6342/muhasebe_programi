@@ -1,0 +1,143 @@
+{
+  "zaman": "2026-11-05T13:14:54",
+  "kaynak": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeAktarim\\Ray_Aktarim_2026-11-04_194017\\veri_yedek",
+  "hedef": "192.168.1.114:cin_sistem_deneme/cin_firma_deneme",
+  "sistem_db_path": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeAktarim\\Ray_Aktarim_2026-11-04_194017\\veri_yedek\\system.db",
+  "firma_db_path": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeAktarim\\Ray_Aktarim_2026-11-04_194017\\veri_yedek\\muhasebe.db",
+  "sistem_tablo_sayisi": {
+    "kaynak": 11,
+    "hedef": 11
+  },
+  "firma_tablo_sayisi": {
+    "kaynak": 249,
+    "hedef": 249
+  },
+  "sistem_tablo_fark": [],
+  "firma_tablo_fark": [],
+  "firma_eslesen": "249/249",
+  "dokuz_sayim": {
+    "cari_kartlar": {
+      "beklenen": 1098,
+      "sqlite": 1098,
+      "pg": 1098,
+      "ok": true
+    },
+    "stok_kartlari": {
+      "beklenen": 3031,
+      "sqlite": 3031,
+      "pg": 3031,
+      "ok": true
+    },
+    "satis_faturalari": {
+      "beklenen": 9771,
+      "sqlite": 9771,
+      "pg": 9771,
+      "ok": true
+    },
+    "alis_faturalari": {
+      "beklenen": 1080,
+      "sqlite": 1080,
+      "pg": 1080,
+      "ok": true
+    },
+    "stok_hareketleri": {
+      "beklenen": 31909,
+      "sqlite": 31909,
+      "pg": 31909,
+      "ok": true
+    },
+    "finans_hareketleri": {
+      "beklenen": 9819,
+      "sqlite": 9819,
+      "pg": 9819,
+      "ok": true
+    },
+    "finans_hesaplari": {
+      "beklenen": 169,
+      "sqlite": 169,
+      "pg": 169,
+      "ok": true
+    },
+    "satis_siparisleri": {
+      "beklenen": 228,
+      "sqlite": 228,
+      "pg": 228,
+      "ok": true
+    },
+    "satis_irsaliyeleri": {
+      "beklenen": 10,
+      "sqlite": 10,
+      "pg": 10,
+      "ok": true
+    }
+  },
+  "dokuz_sayim_ok": true,
+  "mali_kaynak": {
+    "stok_hareket_abs_miktar": 3415102.216333,
+    "finans_hareket_tutar_toplam": 63756863.54,
+    "finans_hesap_acilis_toplam": 33808.1,
+    "satis_tl_genel_toplam": 15233654.9,
+    "satis_tl_kdv": 26980.48,
+    "alis_tl_genel_toplam": 126318.17,
+    "alis_tl_kdv": 18653.03
+  },
+  "mali_hedef": {
+    "stok_hareket_abs_miktar": 3415102.2163,
+    "finans_hareket_tutar_toplam": 63756863.54,
+    "finans_hesap_acilis_toplam": 33808.1,
+    "satis_tl_genel_toplam": 15233654.9,
+    "satis_tl_kdv": 26980.48,
+    "alis_tl_genel_toplam": 126318.17,
+    "alis_tl_kdv": 18653.03
+  },
+  "mali_fark": [],
+  "mali_ok": true,
+  "ornekler": {
+    "sqlite_tr_cari": {
+      "id": 148,
+      "unvan": "Ateşler Aksesuar"
+    },
+    "sqlite_kusurat_hareket": {
+      "id": 157,
+      "miktar": 2.5
+    },
+    "sqlite_null_telefon_cari_id": 1,
+    "pg_tr_cari": {
+      "id": 148,
+      "unvan": "Ateşler Aksesuar"
+    },
+    "tr_eslesme": true,
+    "pg_kusurat_hareket": {
+      "id": 157,
+      "miktar": 2.5
+    },
+    "pg_null_telefon": null,
+    "null_korundu": true
+  },
+  "sequence": {
+    "satis_faturalari": {
+      "max_id": 9771,
+      "sequence": null,
+      "last_value": null,
+      "ok": true
+    },
+    "cari_kartlar": {
+      "max_id": 1100,
+      "sequence": null,
+      "last_value": null,
+      "ok": true
+    },
+    "stok_kartlari": {
+      "max_id": 3034,
+      "sequence": null,
+      "last_value": null,
+      "ok": true
+    },
+    "stok_hareketleri": {
+      "max_id": 31929,
+      "sequence": null,
+      "last_value": null,
+      "ok": true
+    }
+  }
+}

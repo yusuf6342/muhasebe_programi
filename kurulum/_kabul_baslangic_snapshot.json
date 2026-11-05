@@ -1,0 +1,92 @@
+{
+  "makine": "DESKTOP-FL08BVD",
+  "ip_local": "192.168.1.133",
+  "pg_user": "cin_app",
+  "inet_server": "192.168.1.114",
+  "inet_client": "192.168.1.133",
+  "server_version": "17.11",
+  "cin_dbs": [
+    "cin_firma_deneme",
+    "cin_sistem_deneme"
+  ],
+  "firma_tables": 249,
+  "dokuz_sayim": {
+    "cari_kartlar": {
+      "n": 1098,
+      "expected": 1098,
+      "ok": true
+    },
+    "stok_kartlari": {
+      "n": 3031,
+      "expected": 3031,
+      "ok": true
+    },
+    "satis_faturalari": {
+      "n": 9771,
+      "expected": 9771,
+      "ok": true
+    },
+    "alis_faturalari": {
+      "n": 1080,
+      "expected": 1080,
+      "ok": true
+    },
+    "stok_hareketleri": {
+      "n": 31909,
+      "expected": 31909,
+      "ok": true
+    },
+    "finans_hareketleri": {
+      "n": 9819,
+      "expected": 9819,
+      "ok": true
+    },
+    "finans_hesaplari": {
+      "n": 169,
+      "expected": 169,
+      "ok": true
+    },
+    "satis_siparisleri": {
+      "n": 228,
+      "expected": 228,
+      "ok": true
+    },
+    "satis_irsaliyeleri": {
+      "n": 10,
+      "expected": 10,
+      "ok": true
+    }
+  },
+  "dokuz_sayim_ok": true,
+  "sistem_tables": 11,
+  "companies": [
+    {
+      "id": 1,
+      "firma_kodu": "RAY001",
+      "unvan": "Ray Mobilya Aksesuarları",
+      "db_path": "pg:cin_firma_deneme",
+      "aktif": true
+    },
+    {
+      "id": 2,
+      "firma_kodu": "TESTA7",
+      "unvan": "Test Firma Aşama7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "id": 3,
+      "firma_kodu": "TESTA7_000000",
+      "unvan": "Test Firma Aşama7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "id": 4,
+      "firma_kodu": "001",
+      "unvan": "DENEME AKTARIM",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    }
+  ]
+}

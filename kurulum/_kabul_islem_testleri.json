@@ -1,0 +1,162 @@
+{
+  "zaman": "2026-11-05T13:26:53",
+  "makine": "DESKTOP-FL08BVD",
+  "hedef": "192.168.1.114/cin_sistem_deneme+cin_firma_deneme",
+  "etiket": "KABULTEST-20261105",
+  "senaryolar": [
+    {
+      "ad": "firma_hedef_ve_kilit",
+      "beklenen": "RAY001 aktif pg:cin_firma_deneme; diğerleri kilitli",
+      "gerceklesen": [
+        {
+          "firma_kodu": "RAY001",
+          "db_path": "pg:cin_firma_deneme",
+          "aktif": true
+        },
+        {
+          "firma_kodu": "TESTA7",
+          "db_path": "pg:__kapsam_disi_aktarilmadi__",
+          "aktif": false
+        },
+        {
+          "firma_kodu": "TESTA7_000000",
+          "db_path": "pg:__kapsam_disi_aktarilmadi__",
+          "aktif": false
+        },
+        {
+          "firma_kodu": "001",
+          "db_path": "pg:__kapsam_disi_aktarilmadi__",
+          "aktif": false
+        }
+      ],
+      "durum": "GECTI"
+    },
+    {
+      "ad": "sequence_satis_faturalari",
+      "max_id": 9771,
+      "last_value": 9774,
+      "durum": "GECTI"
+    },
+    {
+      "ad": "eszamanli_fatura_no_advisory_lock",
+      "paralel_adaylar_rollback": [
+        "RAY-00028",
+        "RAY-00028",
+        "RAY-00028",
+        "RAY-00028"
+      ],
+      "sirali_unique": [
+        "RAY-00001",
+        "RAY-00002",
+        "RAY-00003"
+      ],
+      "sirali_benzersiz": true,
+      "id_default_sample": 6,
+      "durum": "GECTI"
+    },
+    {
+      "ad": "optimistic_lock_row_version",
+      "fatura_id": 9755,
+      "fatura_no": "RAY-00010",
+      "ilk_update_rowcount": 1,
+      "ikinci_ayni_versiyon_rowcount": 0,
+      "beklenen": "ikinci 0 (sessiz ezme yok)",
+      "durum": "GECTI"
+    },
+    {
+      "ad": "cift_onay_ornek_sayim",
+      "fatura": {
+        "id": 9771,
+        "fatura_no": "RAY-00027"
+      },
+      "stok_hareket_sayisi": 1,
+      "not": "Servis katmanı ikinci onayda ValueError('zaten onaylanmış') beklenir; EXE/UI ile doğrulanacak",
+      "durum": "GECTI"
+    }
+  ],
+  "companies": [
+    {
+      "firma_kodu": "RAY001",
+      "db_path": "pg:cin_firma_deneme",
+      "aktif": true
+    },
+    {
+      "firma_kodu": "TESTA7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "firma_kodu": "TESTA7_000000",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "firma_kodu": "001",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "kullanici": "admin",
+      "aktif": true
+    },
+    {
+      "id": 2,
+      "kullanici": "test_pasif_user",
+      "aktif": false
+    },
+    {
+      "id": 3,
+      "kullanici": "test_satis_user",
+      "aktif": true
+    },
+    {
+      "id": 4,
+      "kullanici": "test_gor_user",
+      "aktif": true
+    },
+    {
+      "id": 5,
+      "kullanici": "MEHMET",
+      "aktif": true
+    },
+    {
+      "id": 6,
+      "kullanici": "YUSUF",
+      "aktif": true
+    },
+    {
+      "id": 7,
+      "kullanici": "MELİH",
+      "aktif": true
+    },
+    {
+      "id": 8,
+      "kullanici": "FUAT",
+      "aktif": true
+    }
+  ],
+  "users_columns": [
+    "id",
+    "kullanici_kodu",
+    "ad_soyad",
+    "kullanici_adi",
+    "parola_hash",
+    "role_id",
+    "aktif",
+    "varsayilan_firma_id",
+    "sifre_degistirmeli",
+    "hizli_pin_hash",
+    "olusturma_tarihi",
+    "son_giris_tarihi"
+  ],
+  "baslangic_sayim": {
+    "cari_kartlar": 1098,
+    "stok_kartlari": 3031,
+    "satis_faturalari": 9771,
+    "stok_hareketleri": 31909,
+    "finans_hareketleri": 9819
+  }
+}
