@@ -1,0 +1,25 @@
+{
+  "zaman": "2026-11-05T14:57:19",
+  "makine": "DESKTOP-FL08BVD",
+  "profil": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105",
+  "baglanti_ayari": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105\\program\\baglanti_ayari.json",
+  "ayar": {
+    "kipi": "yerel_ag_postgres",
+    "schema_surum": 1,
+    "postgres": {
+      "host": "192.168.1.114",
+      "port": 5432,
+      "sistem_db": "cin_sistem_kabul_20261105",
+      "kullanici": "cin_app",
+      "sslmode": "verify-full",
+      "ortam": "DENEME",
+      "firma_db": "cin_firma_kabul_20261105",
+      "terminal_kimligi": "KABUL-20261105-DESKTOP-FL08BVD"
+    }
+  },
+  "exe_programda": true,
+  "dist_sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+  "kisayol": "C:\\Users\\cigde\\OneDrive\\Masaüstü\\Cin Muhasebe - Ag Deneme - 05.11.2026.lnk",
+  "kisayol_ok": true,
+  "not": "Baglantı pg_hba kabul DB izinlerinden sonra çalışır"
+}

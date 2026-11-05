@@ -1,0 +1,40 @@
+{
+  "zaman": "2026-11-05T14:57:00",
+  "makine": "DESKTOP-FL08BVD",
+  "kullanici_bildirim": {
+    "ana_makine_kopya_restore": true,
+    "exit_code": 0,
+    "kabul": ["cin_sistem_kabul_20261105", "cin_firma_kabul_20261105"],
+    "restore": ["cin_sistem_restore_20261105", "cin_firma_restore_20261105"]
+  },
+  "gunluk_baglanti_degistirildi": false,
+  "dnm_baslatildi": false,
+  "canli_gecise_hazir": false,
+  "engel": {
+    "kod": "pg_hba",
+    "mesaj": "no pg_hba.conf entry for host 192.168.1.133 database cin_sistem_kabul_20261105"
+  },
+  "exe_terminal_sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+  "profil_terminal": {
+    "yol": "%LOCALAPPDATA%\\CinMuhasebeKabulDeneme_20261105\\program\\baglanti_ayari.json",
+    "sistem_db": "cin_sistem_kabul_20261105",
+    "firma_db": "cin_firma_kabul_20261105",
+    "sslmode": "verify-full",
+    "yazildi": true
+  },
+  "senaryolar": [
+    {"ad": "kabul_db_olusum_bildirim", "durum": "GECTI"},
+    {"ad": "terminal_kabul_baglanti", "durum": "KALDI", "neden": "pg_hba"},
+    {"ad": "mutabakat_kabul_restore", "durum": "DENENMEDI"},
+    {"ad": "deneme_profil_kabul", "durum": "GECTI"},
+    {"ad": "verify_full_deneme", "durum": "GECTI"},
+    {"ad": "verify_full_kabul_lan", "durum": "KALDI"},
+    {"ad": "iki_pc_ui", "durum": "DENENMEDI"}
+  ],
+  "siradaki_adim": {
+    "bilgisayar": "DESKTOP-CGSE5GK",
+    "komut": ".\\kurulum\\sunucu\\06_pg_hba_kabul_db_izin.ps1",
+    "opsiyonel": ".\\kurulum\\sunucu\\07_kabul_mutabakat_yerel.ps1",
+    "exe_sha_komut": "Get-FileHash dist\\CinMuhasebe\\CinMuhasebe.exe -Algorithm SHA256"
+  }
+}
