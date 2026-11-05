@@ -1,0 +1,55 @@
+{
+  "zaman": "2026-11-05T14:11:00",
+  "makine": "DESKTOP-FL08BVD",
+  "rol": "terminal",
+  "pg_host": "192.168.1.114",
+  "pg_hostname": "DESKTOP-CGSE5GK",
+  "onceki_rapor": "kurulum/GECIS_KABUL_TESTLERI_2026-11-05.md",
+  "dnm_dokunulmadi": true,
+  "gunluk_baglanti_degistirildi": false,
+  "canli_gecise_hazir": false,
+  "canli_gecis_uygulandi": false,
+  "ana_makine_kopya_tamam": false,
+  "ayri_hedefe_restore_tamam": false,
+  "engel": {
+    "cin_app_createdb": false,
+    "super_password_env": false,
+    "bu_oturum_ana_makine_degil": true
+  },
+  "mevcut_dbs": ["cin_sistem_deneme", "cin_firma_deneme"],
+  "hedef_kabul": {
+    "sistem": "cin_sistem_kabul_20261105",
+    "firma": "cin_firma_kabul_20261105"
+  },
+  "hedef_restore": {
+    "sistem": "cin_sistem_restore_20261105",
+    "firma": "cin_firma_restore_20261105"
+  },
+  "paket": {
+    "yol": "%LOCALAPPDATA%\\CinMuhasebeAktarim\\AnaMakine_Kabul_Paket_2026-11-05",
+    "sistem_sha256": "99c70fe00c9d2ed46d6244a74b0c90d6d2f88ed3ce2961cf1ef7670b43f360e7",
+    "firma_sha256": "07e6e5fc02040d8e2bc8f5c45edbc55251ad7ab6e07230a5cda93f2619e49af4",
+    "sha_eslesme": true
+  },
+  "exe": {
+    "yol": "dist/CinMuhasebe/CinMuhasebe.exe",
+    "sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+    "boyut": 24376959,
+    "rebuild": false
+  },
+  "senaryolar": [
+    {"ad": "ortam_dogrulama", "durum": "GECTI", "kanit": "kurulum/_kabul_devam_durum.json"},
+    {"ad": "dump_sha_dogrulama", "durum": "GECTI"},
+    {"ad": "script_guvenlik_denetimi", "durum": "GECTI", "dosyalar": ["03", "04", "05"]},
+    {"ad": "izolasyon_kopya", "durum": "DENENMEDI"},
+    {"ad": "ayri_hedefe_restore", "durum": "DENENMEDI"},
+    {"ad": "iki_pc_exe_ui", "durum": "DENENMEDI"}
+  ],
+  "siradaki_tek_adim": {
+    "bilgisayar": "DESKTOP-CGSE5GK",
+    "komut": ".\\kurulum\\sunucu\\05_ana_makine_kabul_calistir.ps1 -DumpKlasor \"<paket>\\yedek\"",
+    "repo": "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi",
+    "parola": "postgres superuser — güvenli yerel istem / MUHASEBE_PG_SUPER_PASSWORD; sohbete yazma",
+    "beklenen": "kabul + restore DB çiftleri ve SONUC_*.txt"
+  }
+}

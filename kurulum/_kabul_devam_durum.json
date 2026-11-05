@@ -1,0 +1,56 @@
+{
+  "zaman": "2026-11-05T14:10:16",
+  "makine": "DESKTOP-FL08BVD",
+  "super_env": false,
+  "dump_klasor": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeTest\\yedekler_pg\\pg_kume_kabul_2026-11-05_131615",
+  "dump_var": true,
+  "dump_sha": {
+    "cin_sistem_deneme.dump": {
+      "var": true,
+      "boyut": 60535,
+      "sha256": "99c70fe00c9d2ed46d6244a74b0c90d6d2f88ed3ce2961cf1ef7670b43f360e7",
+      "eslesme": true,
+      "beklenen": "99c70fe00c9d2ed46d6244a74b0c90d6d2f88ed3ce2961cf1ef7670b43f360e7"
+    },
+    "cin_firma_deneme.dump": {
+      "var": true,
+      "boyut": 3414510,
+      "sha256": "07e6e5fc02040d8e2bc8f5c45edbc55251ad7ab6e07230a5cda93f2619e49af4",
+      "eslesme": true,
+      "beklenen": "07e6e5fc02040d8e2bc8f5c45edbc55251ad7ab6e07230a5cda93f2619e49af4"
+    }
+  },
+  "cin_dbs": [
+    "cin_firma_deneme",
+    "cin_sistem_deneme"
+  ],
+  "companies": [
+    {
+      "id": 1,
+      "firma_kodu": "RAY001",
+      "db_path": "pg:cin_firma_deneme",
+      "aktif": true
+    },
+    {
+      "id": 2,
+      "firma_kodu": "TESTA7",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "id": 3,
+      "firma_kodu": "TESTA7_000000",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    },
+    {
+      "id": 4,
+      "firma_kodu": "001",
+      "db_path": "pg:__kapsam_disi_aktarilmadi__",
+      "aktif": false
+    }
+  ],
+  "cin_app_createdb": false,
+  "kabul_dbs_hazir": false,
+  "restore_dbs_hazir": false
+}

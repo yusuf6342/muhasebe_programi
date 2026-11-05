@@ -21,6 +21,20 @@ $psql = Join-Path $psqlBin "psql.exe"
 $restore = Join-Path $psqlBin "pg_restore.exe"
 if (-not (Test-Path $psql)) { throw "psql yok" }
 
+# Gunluk / deneme / kabul yazma hedeflerine restore yok; --create kullanilmaz
+$Korunan = @(
+    "cin_sistem", "cin_firma_ray", "postgres",
+    "cin_sistem_deneme", "cin_firma_deneme",
+    "cin_sistem_kabul_20261105", "cin_firma_kabul_20261105"
+)
+foreach ($ad in @($DstSistem, $DstFirma)) {
+    if ($ad -notmatch '^[A-Za-z_][A-Za-z0-9_]{0,62}$') { throw "Gecersiz DB adi: $ad" }
+}
+if ($DstSistem -in $Korunan -or $DstFirma -in $Korunan) {
+    throw "Restore hedefi korunan ada carpti: $DstSistem / $DstFirma"
+}
+if ($DstSistem -eq $DstFirma) { throw "Sistem ve firma restore hedefi ayni olamaz" }
+
 $env:PGPASSWORD = $env:MUHASEBE_PG_SUPER_PASSWORD
 if (-not $env:PGPASSWORD) {
     $secure = Read-Host "PostgreSQL superuser ($SuperUser) parolasi" -AsSecureString
@@ -32,6 +46,7 @@ function Ensure-EmptyDb([string]$name) {
     $var = & $psql -h $PgHost -p $Port -U $SuperUser -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$name'"
     if ($var -match "1") { throw "Hedef zaten var, uzerine yazilmaz: $name" }
     & $psql -h $PgHost -p $Port -U $SuperUser -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name OWNER $AppUser;"
+    if ($LASTEXITCODE -ne 0) { throw "CREATE DATABASE basarisiz: $name" }
 }
 
 Ensure-EmptyDb $DstSistem

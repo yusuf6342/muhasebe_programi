@@ -18,6 +18,23 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== Kabul izolasyon kopyasi ===" -ForegroundColor Cyan
 Write-Host "Makine: $env:COMPUTERNAME"
 
+# Gunluk / canli / kaynak deneme adlarina yazma
+$Korunan = @(
+    "cin_sistem", "cin_firma_ray", "postgres",
+    "cin_sistem_deneme", "cin_firma_deneme",
+    "cin_sistem_restore_20261105", "cin_firma_restore_20261105"
+)
+foreach ($ad in @($SrcSistem, $SrcFirma, $DstSistem, $DstFirma)) {
+    if ($ad -notmatch '^[A-Za-z_][A-Za-z0-9_]{0,62}$') { throw "Gecersiz DB adi: $ad" }
+}
+if ($DstSistem -in $Korunan -or $DstFirma -in $Korunan) {
+    throw "Hedef korunan ada carpti: $DstSistem / $DstFirma"
+}
+if ($DstSistem -eq $SrcSistem -or $DstFirma -eq $SrcFirma) {
+    throw "Hedef kaynakla ayni olamaz"
+}
+if ($DstSistem -eq $DstFirma) { throw "Sistem ve firma hedefi ayni olamaz" }
+
 function Find-Psql {
     foreach ($a in @(
         "C:\Program Files\PostgreSQL\17\bin\psql.exe",
