@@ -1,0 +1,27 @@
+# D2 Ana Makine Hazırlığı — Erteleme Yok
+
+Kullanıcı kararı (2026-11-07): Devir 2 için gerekli ana makine PostgreSQL işlemleri
+sona bırakılmaz. Önceki “ana makine / gerçek D2 kurulumu son aşama” ertelemesi
+bu kapsamda geçersizdir.
+
+## Öne alınacaklar
+
+- Gerçek sunucu bağlantısı, mevcut DB listesi ve yetki doğrulama (varsayma yok)
+- Manifest hedefleri: `cin_sistem_dnm_d2_20260901` / `cin_firma_dnm_d2_20260901`
+- Gerekirse boş D2 DB oluşturma + şema + adlandırılmış D2 profil
+- Yedek ve ayrı `*_dnm_d2_restore_test` geri yükleme — gerçek kanıt
+- Terminal ↔ ana makine D2 bağlantı testi; günlük/kabul profilini koru
+
+## Hâlâ yasak / sonraya
+
+- D1 kapanışı, FIFO/LOT ve kaynak kabulü bitmeden D2’ye gerçek açılış veya hareket yazımı
+- K05/K06 sonuçlarını kanıtsız başarılı işaretleme
+- `cin_app` için genel CREATEDB veya SUPERUSER
+- Parolayı sohbet veya loga yazma
+- EXE / dağıtım (önceki sırada kalır)
+
+## Dar yönetim
+
+- `kurulum/sunucu/11_pg_dnm_d2_bos_hedef.ps1`
+- `kurulum/sunucu/12_pg_dnm_d2_hedef_yedek_restore.ps1`
+- `tools.dnm_d2.pg_d2_hedef_hazirla` / `pg_ana_makine_dogrula`

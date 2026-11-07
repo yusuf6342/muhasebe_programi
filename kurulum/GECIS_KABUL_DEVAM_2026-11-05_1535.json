@@ -1,0 +1,112 @@
+{
+  "zaman": "2026-11-05T15:35:00",
+  "makine": "DESKTOP-FL08BVD",
+  "pg_host": "192.168.1.114",
+  "pg_sunucu": "DESKTOP-CGSE5GK",
+  "ortam": "DENEME",
+  "gunluk_baglanti_degistirildi": false,
+  "dnm_aktarim_baslatildi": false,
+  "db_olusturma_hba_yeniden": false,
+  "exe_sha256_terminal_dist": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+  "exe_sha256_terminal_deneme_profil": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+  "exe_sha256_ana_makine": null,
+  "testler": [
+    {
+      "ad": "verify_full_4db",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_verify_full_4db.json",
+      "ozet": "4 DB TLSv1.3, hepsi_ok=true"
+    },
+    {
+      "ad": "mutabakat_kabul",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_cift_mutabakat.json",
+      "ozet": "251/251, mali_fark=[], dokuz_ok, RAY001->pg:cin_firma_kabul_20261105"
+    },
+    {
+      "ad": "mutabakat_restore",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_cift_mutabakat.json",
+      "ozet": "mali_fark=[], dokuz_ok; firma_fark=2 yalnız dump sonrası kabul_* test tabloları; ortak satır farkı 0"
+    },
+    {
+      "ad": "restore_yanlis_155_fark_aciklamasi",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_restore_sema_fark.json",
+      "ozet": "Önceki 155 hedef=-1: eksik test tablosu sonrası aborted txn; SAVEPOINT düzeltmesi sonrası gerçek fark=2 test tablosu"
+    },
+    {
+      "ad": "kaynak_yedek_sonrasi_degisim",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_restore_sema_fark.json",
+      "ozet": "Deneme/kabul 251 tablo; restore 249; eksikler kabul_kopma_test + kabul_no_lock_test (script yazımları). İş verisi satır eşleşmesi tam."
+    },
+    {
+      "ad": "exe_sha_terminal_dist_vs_profil",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_exe_giris_smoke.json"
+    },
+    {
+      "ad": "exe_sha_ana_makine_cift_dogrulama",
+      "durum": "DENENMEDI",
+      "neden": "\\\\DESKTOP-CGSE5GK\\C$ ve \\\\192.168.1.114\\C$ erişim engellendi"
+    },
+    {
+      "ad": "deneme_profil_api_giris_smoke",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_exe_giris_smoke.json",
+      "ozet": "verify-full kabul DB; RAY001; admin+users; cari 1098 stok 3031"
+    },
+    {
+      "ad": "exe_gui_oturum_giris",
+      "durum": "DENENMEDI",
+      "neden": "Süreç açıldı (boş pencere başlığı); yeni acil_asama_log oturumu yazılmadı; interaktif giriş tamamlanamadı"
+    },
+    {
+      "ad": "fatura_sequence_lock_optimistic",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json"
+    },
+    {
+      "ad": "cari",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json"
+    },
+    {
+      "ad": "stok",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json"
+    },
+    {
+      "ad": "tahsilat",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json",
+      "ozet": "satis_faturasi_tahsilatlari okuma"
+    },
+    {
+      "ad": "barkod",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json"
+    },
+    {
+      "ad": "eszamanli_fatura_no",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_islem_testleri.json"
+    },
+    {
+      "ad": "baglanti_kopma_mukerrer",
+      "durum": "GECTI",
+      "kanit": "kurulum/_kabul_baglanti_kopma.json"
+    },
+    {
+      "ad": "iki_pc_eszamanli_ui",
+      "durum": "DENENMEDI",
+      "neden": "CGSE5GK masaüstü/EXE bu oturumda erişilemedi; terminal GUI oturumu tamamlanmadı"
+    },
+    {
+      "ad": "ui_fatura_cari_stok_tahsilat_barkod",
+      "durum": "DENENMEDI",
+      "neden": "EXE GUI giriş tamamlanmadı; API/SQL katmanı GEÇTİ"
+    }
+  ]
+}

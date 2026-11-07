@@ -1,0 +1,92 @@
+{
+  "zaman": "2026-11-06T13:09:32",
+  "makine": "DESKTOP-FL08BVD",
+  "cari_kod": "M00700",
+  "belgeler": {
+    "SAF04886": {
+      "ok": true,
+      "fatura_id": 9631,
+      "satir_sayisi": 5,
+      "ornek": [
+        {
+          "kod_barkod": "2608111125537",
+          "urun_adi": "RAYMENT 35X45 TELESKOPİK RAY",
+          "miktar": "31",
+          "birim": "Adet",
+          "fiyat": "105,00 TL",
+          "tutar": "3.255,00 TL"
+        },
+        {
+          "kod_barkod": "2607201216056",
+          "urun_adi": "Minnes Teleskopik Ray 43x45",
+          "miktar": "13",
+          "birim": "Adet",
+          "fiyat": "175,00 TL",
+          "tutar": "2.275,00 TL"
+        },
+        {
+          "kod_barkod": "2608131309368",
+          "urun_adi": "BÜYÜK DÜZ DÜĞME KROM FDS",
+          "miktar": "50",
+          "birim": "Adet",
+          "fiyat": "27,50 TL",
+          "tutar": "1.375,00 TL"
+        },
+        {
+          "kod_barkod": "2606171653281",
+          "urun_adi": "PASS KOLİ BANDI 45X100 ŞEFFAF",
+          "miktar": "2",
+          "birim": "Adet",
+          "fiyat": "50,00 TL",
+          "tutar": "100,00 TL"
+        },
+        {
+          "kod_barkod": "8697831202660",
+          "urun_adi": "Selectron 3,5x18 Sunta Vidası",
+          "miktar": "1000",
+          "birim": "Adet",
+          "fiyat": "0,30 TL",
+          "tutar": "295,00 TL"
+        }
+      ],
+      "sutunlar": [
+        "Kod/Barkod",
+        "Ürün Adı",
+        "Miktar",
+        "Birim",
+        "Fiyat",
+        "Tutar"
+      ]
+    },
+    "SAF04881": {
+      "ok": true,
+      "fatura_id": 9636,
+      "satir_sayisi": 1,
+      "ornek": [
+        {
+          "kod_barkod": "2608131309368",
+          "urun_adi": "BÜYÜK DÜZ DÜĞME KROM FDS",
+          "miktar": "1",
+          "birim": "Adet",
+          "fiyat": "35,00 TL",
+          "tutar": "35,00 TL"
+        }
+      ],
+      "sutunlar": [
+        "Kod/Barkod",
+        "Ürün Adı",
+        "Miktar",
+        "Birim",
+        "Fiyat",
+        "Tutar"
+      ]
+    }
+  },
+  "sonuc": "GECTI",
+  "cari": {
+    "id": 87,
+    "unvan": "ABERRA MOBİLYA (GÖKHAN BAYGIN)",
+    "kod": "M00700"
+  },
+  "ui_not": "Ürün alanları sütunlara yazılır; Açıklama'ya yığılmaz (tests/test_cari_hareket_urun_sutun.py)."
+}

@@ -1,0 +1,27 @@
+{
+  "zaman": "2026-11-05T15:29:21",
+  "makine": "DESKTOP-FL08BVD",
+  "adet": {
+    "deneme": 251,
+    "kabul": 251,
+    "restore": 249
+  },
+  "restore_eksik_tablo_adet": 2,
+  "restore_eksik_ornek": [
+    "kabul_kopma_test",
+    "kabul_no_lock_test"
+  ],
+  "restore_fazla_tablo": [],
+  "kabul_restore_eksik": [
+    "kabul_kopma_test",
+    "kabul_no_lock_test"
+  ],
+  "kabul_restore_eksik_adet": 2,
+  "ortak_satir_fark_adet": 0,
+  "ortak_satir_fark_ornek": [],
+  "test_tablolari_dump_sonrasi": [
+    "kabul_kopma_test",
+    "kabul_no_lock_test"
+  ],
+  "yorum": "Restore dump anındaki şema/veri; deneme sonra değiştiyse eksik tablo veya satır farkı beklenir. Mali dokuzlu eşleşse bile şema eksikliği restore kabulü için KALDI sayılır."
+}

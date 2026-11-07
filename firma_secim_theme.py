@@ -123,7 +123,44 @@ def aktif_donem_oku(db_path: str | None) -> str | None:
     """Firma DB'sinden aktif/varsayılan dönem adı — salt okunur, oturumu bozmaz."""
     if not db_path:
         return None
-    yol = Path(db_path)
+    ham = str(db_path).strip()
+    # PostgreSQL (pg:…) — SQLite dosya kontrolü uygulanmaz
+    if ham.lower().startswith("pg:") or ham.lower().startswith("postgresql"):
+        try:
+            from sqlalchemy import text
+
+            from database.baglanti_modu import ayari_yukle
+            from database.company_database import _pg_db_adi_coz
+            from database.engine_factory import firma_engine_olustur
+
+            ayar = ayari_yukle()
+            if not ayar.ag_mi:
+                return None
+            ad = _pg_db_adi_coz(ham, None)
+            if not ad:
+                return None
+            eng = firma_engine_olustur(ayar, sqlite_path=None, firma_db=ad)
+            try:
+                with eng.connect() as c:
+                    row = c.execute(
+                        text(
+                            "SELECT donem_adi FROM donemler "
+                            "WHERE COALESCE(aktif, false) = true "
+                            "   OR COALESCE(varsayilan, false) = true "
+                            "ORDER BY COALESCE(aktif, false) DESC, "
+                            "COALESCE(varsayilan, false) DESC "
+                            "LIMIT 1"
+                        )
+                    ).first()
+                    if row and row[0]:
+                        return str(row[0])
+            finally:
+                eng.dispose()
+        except Exception:
+            return None
+        return None
+
+    yol = Path(ham)
     if not yol.is_file():
         return None
     try:

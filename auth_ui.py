@@ -12,7 +12,12 @@ from tkinter import messagebox, ttk
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from database.database import firma_db_ac, firma_db_yolu_coz, get_system_session
+from database.database import (
+    firma_db_ac,
+    firma_db_yolu_coz,
+    get_system_session,
+    pg_firma_tanimi_mi,
+)
 from database.session_manager import oturum
 from database.system.auth_service import AuthService
 from database.system.models import AppSetting, Company, User
@@ -58,7 +63,11 @@ class FirmaOzet:
 
 
 def firma_ozet(f: Company, *, donem_yukle: bool = True) -> FirmaOzet:
-    db_yolu = str(firma_db_yolu_coz(f.db_path) or f.db_path)
+    # pg:… tanımlayıcısını yerel dosya yoluna çevirme
+    if pg_firma_tanimi_mi(f.db_path):
+        db_yolu = str(f.db_path).strip()
+    else:
+        db_yolu = str(firma_db_yolu_coz(f.db_path) or f.db_path)
     donem = aktif_donem_oku(db_yolu) if donem_yukle else None
     return FirmaOzet(
         id=f.id,
@@ -142,36 +151,49 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
             if firma.id not in yetkili:
                 raise PermissionError("Bu firmaya erişim yetkiniz yok.")
 
-    yol = firma_db_yolu_coz(firma.db_path) or Path(firma.db_path)
-    if not yol.is_file():
-        raise FileNotFoundError(f"Firma veritabanı bulunamadı:\n{yol}")
+    ham = str(getattr(firma, "db_path", "") or "").strip()
+    if pg_firma_tanimi_mi(ham):
+        hedef: str | Path = ham
+    else:
+        yol = firma_db_yolu_coz(ham) or Path(ham)
+        if not yol.is_file():
+            raise FileNotFoundError(f"Firma veritabanı bulunamadı:\n{yol}")
+        hedef = yol
 
     from database.acil_asama_log import asama
 
-    asama(f"firma_oturumu_ac basla id={firma.id}")
-    firma_db_ac(firma.id, yol)
+    asama(f"firma_oturumu_ac basla id={firma.id} db={hedef}")
+    firma_db_ac(firma.id, hedef)
     asama("firma_db_ac bitti")
     oturum.set_company(
         company_id=firma.id,
         firma_kodu=firma.firma_kodu,
         firma_unvan=firma.unvan,
         firma_uid=firma.firma_uid,
-        db_path=str(yol.resolve()),
+        db_path=str(hedef) if pg_firma_tanimi_mi(hedef) else str(Path(hedef).resolve()),
     )
+    from database.baglanti_modu import ayari_yukle
+
+    def _pg_sema_hata(adim: str, hata: BaseException) -> None:
+        """PostgreSQL/LAN'da şema hatasını gizleme — firma açılışı geçersiz kalmasın."""
+        if ayari_yukle().ag_mi:
+            raise
+        print(f"{adim} şema uyarısı:", hata)
+
     try:
         from database.deleted_record_service import AuditDeleteService
 
         AuditDeleteService.schema_hazirla()
-    except Exception:
-        pass
+    except Exception as hata:
+        _pg_sema_hata("AuditDelete", hata)
     try:
         from database.kredi_karti_ekstre_service import KrediKartiEkstreService
 
         asama("KrediKartiEkstreService.schema_hazirla")
         KrediKartiEkstreService.schema_hazirla()
         asama("ekstre schema bitti")
-    except Exception:
-        pass
+    except Exception as hata:
+        _pg_sema_hata("KrediKartiEkstre", hata)
     from database.muhasebelestirme_service import MuhasebelestirmeService
 
     # Yedek alınamazsa/geçiş yarıda kalırsa firma açılmaz; hata kullanıcıya gösterilir, seçim yinelenebilir
@@ -193,13 +215,13 @@ def firma_oturumu_ac(firma: Company | FirmaOzet) -> None:
         # Şirket DB'si (firma_db_ac sonrası aktif motor) — splash'taki muhasebe.db geçişi yetmez
         alis_siparis_schemasini_guncelle()
     except Exception as hata:  # noqa: BLE001
-        print("Alış siparişi şema uyarısı:", hata)
+        _pg_sema_hata("Alış siparişi", hata)
     try:
         from database.fon_service import FonService
 
         FonService.schema_hazirla()
-    except Exception as hata:  # noqa: BLE001 — Fon Yönetimi açılışında yedekli geçiş yeniden denenir
-        print("Fon şema uyarısı:", hata)
+    except Exception as hata:  # noqa: BLE001
+        _pg_sema_hata("Fon", hata)
     with get_system_session() as session:
         _ayar_yaz(session, "son_firma_id", str(firma.id))
         AuthService.audit(

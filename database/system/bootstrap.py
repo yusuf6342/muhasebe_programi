@@ -421,7 +421,14 @@ def _ray_firmasi_olustur(
     (test kurulumu); mevcut kayıt asla yeniden adlandırılmaz."""
     firma = session.scalar(select(Company).where(Company.firma_kodu == RAY_KOD))
     if firma is not None:
-        # Yol güncel mi?
+        # Yol güncel mi? PG (pg:...) veya LAN yollarını yerel boş SQLite ile ezme.
+        mevcut = str(firma.db_path or "")
+        if mevcut.startswith("pg:") or mevcut.startswith("postgresql"):
+            return firma
+        from database.baglanti_modu import ayari_yukle
+
+        if ayari_yukle().ag_mi:
+            return firma
         beklenen = str(muhasebe_db_path.resolve())
         if firma.db_path != beklenen and muhasebe_db_path.exists():
             firma.db_path = beklenen

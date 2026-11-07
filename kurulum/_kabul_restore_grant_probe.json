@@ -1,0 +1,35 @@
+{
+  "ornek": [
+    {
+      "t": "kart_ana_turleri",
+      "ok": true,
+      "n": 12
+    },
+    {
+      "t": "kasa_makbuzlari",
+      "ok": true,
+      "n": 883
+    },
+    {
+      "t": "satis_faturalari",
+      "ok": true,
+      "n": 9771
+    },
+    {
+      "t": "kabul_kopma_test",
+      "ok": false,
+      "err": "(psycopg.errors.UndefinedTable) relation \"kabul_kopma_test\" does not exist"
+    }
+  ],
+  "no_select": [],
+  "tablo_adet": 249,
+  "tahsil_tabs": [
+    "satis_faturasi_tahsilatlari",
+    "satis_siparisi_tahsilatlari"
+  ],
+  "cari_cols": [],
+  "stok_cols": [
+    "barkod",
+    "aciklama"
+  ]
+}

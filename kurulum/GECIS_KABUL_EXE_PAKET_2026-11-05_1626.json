@@ -1,0 +1,23 @@
+{
+  "zaman": "2026-11-05T16:30:00",
+  "makine": "DESKTOP-FL08BVD",
+  "gunluk_kisayol_degistirildi": false,
+  "dnm_baslatildi": false,
+  "paket_zip": "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\CinMuhasebe_AG_DENEME_20261105_20261105_1626.zip",
+  "boyut_mb": 124.7,
+  "exe_sha256": "E76DDA517073B80807357A06E87C1A177B61B1E91339F30EBDB6500A126D2896",
+  "hedef": {
+    "firma": "RAY001",
+    "sistem_db": "cin_sistem_kabul_20261105",
+    "firma_db": "cin_firma_kabul_20261105",
+    "host": "192.168.1.114",
+    "sslmode": "verify-full"
+  },
+  "api_sql": "GECIS_KABUL_DEVAM_2026-11-05_1535 + _kabul_*.json (korundu)",
+  "ekran": {
+    "giris_ekrani": "GECTI",
+    "ui_moduller": "DENENMEDI",
+    "ana_makine_sha": "DENENMEDI",
+    "iki_pc": "DENENMEDI"
+  }
+}

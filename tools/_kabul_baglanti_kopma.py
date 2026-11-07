@@ -16,13 +16,14 @@ from database.baglanti_modu import postgres_parola_al  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 
 HOST = "192.168.1.114"
-FR = "cin_firma_deneme"
+FR = "cin_firma_kabul_20261105"
 ETIKET = "KABULTEST-KOPMA-20261105"
+SSLMODE = "verify-full"
 
 
 def eng(statement_timeout_ms: int | None = None):
     pwd = quote_plus(postgres_parola_al())
-    url = f"postgresql+psycopg://cin_app:{pwd}@{HOST}:5432/{FR}?sslmode=require"
+    url = f"postgresql+psycopg://cin_app:{pwd}@{HOST}:5432/{FR}?sslmode={SSLMODE}"
     args = {"connect_timeout": 8}
     if statement_timeout_ms:
         args["options"] = f"-c statement_timeout={statement_timeout_ms}"

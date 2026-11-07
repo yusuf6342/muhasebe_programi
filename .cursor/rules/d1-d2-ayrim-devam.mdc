@@ -1,0 +1,33 @@
+# D1 / D2 Ayrım ve Devir 1 Devamı
+
+Kullanıcı kararı (2026-11-07): **Devir 2 sonrasında Devir 1 çalışmasına devam edilecek.**
+
+## Koru
+
+- D1 kod (`tools/dnm_d1`), kaynak, eşleme, kanıt, sürümler: `kurulum/dnm_d1_20260831`
+- D1 DB adları: `cin_sistem_dnm_d1_20260831` / `cin_firma_dnm_d1_20260831`
+- Tamamlanan D1 kontrolleri (stok 3252, kasa, …) — yeniden toplama / bozma yok
+- Ortak kod değişikliklerinde tamamlanan D1 kontrollerini koru
+
+## Yasak
+
+- D1 veritabanını temizleme
+- D1’i D2’ye dönüştürme
+- D2 dump’ını D1 üzerine restore
+- D1 ve D2 çalışma köklerini karıştırma
+
+## Ayrı tut
+
+- D2: `kurulum/dnm_d2_20260901` + `cin_*_dnm_d2_20260901` (+ restore_test)
+- D2 işlemlerinden önce D1 yedek/devam noktası: `DEVIR1_DEVAM_NOTU`
+
+## Öncelik
+
+1. D2 açılışı için zorunlu D1 işleri (Cari22 Detay, FIFO/LOT, K05/K06 kanıtı)
+2. Diğer D1 işleri kayıtlı listede kalır → D2 sonrası kaldığı yerden
+3. Sonradan bulunan D1 kaydı kapanışı etkilerse → D2 açılış etkisini **kontrollü sürüm değişikliği** olarak raporla (sessiz düzeltme yok)
+
+## Referans
+
+- `kurulum/dnm_d1_20260831/DEVIR1_DEVAM_NOTU.json`
+- `kurulum/dnm_d2_20260901/D1_DEVAM_REFERANS.json`

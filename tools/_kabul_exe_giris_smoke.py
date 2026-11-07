@@ -33,11 +33,11 @@ def main() -> int:
         postgres=PostgresBaglanti(
             host="192.168.1.114",
             port=5432,
-            sistem_db="cin_sistem_deneme",
+            sistem_db="cin_sistem_kabul_20261105",
             kullanici="cin_app",
-            sslmode="require",
+            sslmode="verify-full",
             ortam="DENEME",
-            firma_db="cin_firma_deneme",
+            firma_db="cin_firma_kabul_20261105",
             terminal_kimligi="KABUL-SMOKE",
         ),
     )
@@ -77,7 +77,7 @@ def main() -> int:
         ).mappings().all()
     eng.dispose()
 
-    engf = firma_engine_olustur(ayar, sqlite_path=None, firma_db="cin_firma_deneme")
+    engf = firma_engine_olustur(ayar, sqlite_path=None, firma_db="cin_firma_kabul_20261105")
     with engf.connect() as c:
         n_cari = c.execute(text("SELECT count(*) FROM cari_kartlar")).scalar()
         n_stok = c.execute(text("SELECT count(*) FROM stok_kartlari")).scalar()
@@ -102,7 +102,18 @@ def main() -> int:
         else "KALDI"
     )
 
-    # EXE dosya kanıtı
+    # EXE dosya kanıtı + SHA-256
+    import hashlib
+
+    def _sha256(p: Path) -> str | None:
+        if not p.is_file():
+            return None
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest().upper()
+
     exe = (
         Path(os.environ["LOCALAPPDATA"])
         / "CinMuhasebeKabulDeneme_20261105"
@@ -110,17 +121,23 @@ def main() -> int:
         / "CinMuhasebe.exe"
     )
     dist = ROOT / "dist" / "CinMuhasebe" / "CinMuhasebe.exe"
+    sha_exe, sha_dist = _sha256(exe), _sha256(dist)
     rapor["exe"] = {
         "deneme_yol": str(exe),
         "deneme_var": exe.is_file(),
+        "deneme_sha256": sha_exe,
         "dist_yol": str(dist),
         "dist_var": dist.is_file(),
+        "dist_sha256": sha_dist,
+        "sha_eslesme": bool(sha_exe and sha_dist and sha_exe == sha_dist),
         "dist_mtime": datetime.fromtimestamp(dist.stat().st_mtime).isoformat(timespec="seconds")
         if dist.is_file()
         else None,
-        "not": "GUI oturumu: süreç açıldı (PID kaydı ayrı); pencere başlığı boş kaldı — "
-        "yeniden derleme sonrası tekrar denenecek. API/PG duman testi bu dosyada.",
+        "not": "Ana makine (CGSE5GK) EXE SHA bu terminalden admin paylaşımı kapalı; "
+        "aynı hash yerelde dist+DENEME profilinde doğrulandı. GUI giriş ayrı.",
     }
+    if not rapor["exe"]["sha_eslesme"]:
+        rapor["durum"] = "KALDI"
 
     yol = ROOT / "kurulum" / "_kabul_exe_giris_smoke.json"
     yol.write_text(json.dumps(rapor, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")

@@ -14939,6 +14939,14 @@ class MuhasebeApp(tk.Tk):
         _acil_asama(f"donem yuklendi: {_oturum_donem.donem_adi}")
         self._sistem_menu_gorunurluk_guncelle()
         self._oturum_cubugunu_guncelle()
+        # Mesajlar ikonu: giriş sonrası kesin bağla (üst şerit sağ kenar)
+        try:
+            from mesajlasma_ui import MesajlasmaYoneticisi, ana_ust_seride_mesajlar_sabitle
+
+            MesajlasmaYoneticisi.ornek(self)
+            ana_ust_seride_mesajlar_sabitle(self)
+        except Exception:
+            pass
         self.ana_sayfa_goster()
         _acil_asama("ana_sayfa_goster bitti")
         self.deiconify()

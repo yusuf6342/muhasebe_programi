@@ -212,3 +212,65 @@ class AuditLog(SystemBase):
     yeni_deger: Mapped[str | None] = mapped_column(Text, nullable=True)
     bilgisayar: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tarih: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+# —— Firma içi kullanıcı mesajlaşması (system DB; DENEME/GERÇEK ayrımı ortam alanında) ——
+
+
+class MesajKonusma(SystemBase):
+    __tablename__ = "mesaj_konusmalar"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False, index=True)
+    ortam: Mapped[str] = mapped_column(String(20), nullable=False, default="DENEME", index=True)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    son_mesaj_tarihi: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    son_mesaj_ozet: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    uyeler: Mapped[list["MesajKonusmaUye"]] = relationship(
+        back_populates="konusma", cascade="all, delete-orphan"
+    )
+    mesajlar: Mapped[list["Mesaj"]] = relationship(
+        back_populates="konusma", cascade="all, delete-orphan"
+    )
+
+
+class MesajKonusmaUye(SystemBase):
+    __tablename__ = "mesaj_konusma_uyeleri"
+    __table_args__ = (UniqueConstraint("konusma_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    konusma_id: Mapped[int] = mapped_column(
+        ForeignKey("mesaj_konusmalar.id"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    katilma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    # Okundu: bu üyede görülen son mesaj id (yalnız konuşma açıkken güncellenir)
+    son_okunan_mesaj_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    konusma: Mapped["MesajKonusma"] = relationship(back_populates="uyeler")
+
+
+class Mesaj(SystemBase):
+    __tablename__ = "mesajlar"
+    __table_args__ = (UniqueConstraint("konusma_id", "client_msg_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    konusma_id: Mapped[int] = mapped_column(
+        ForeignKey("mesaj_konusmalar.id"), nullable=False, index=True
+    )
+    gonderen_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    icerik: Mapped[str] = mapped_column(Text, nullable=False)
+    # İstemci UUID — çift tık / yeniden denemede mükerrer kayıt engeli
+    client_msg_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    olusturma_tarihi: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False, index=True
+    )
+
+    konusma: Mapped["MesajKonusma"] = relationship(back_populates="mesajlar")

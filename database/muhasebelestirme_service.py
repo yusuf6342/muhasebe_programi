@@ -147,26 +147,24 @@ class MuhasebelestirmeService:
                       MuhasebeIslemGecmisi, MuhasebelestirmeAyari, MuhasebeBelgeDurumu, FinansEvrakKimligi,
                       MuhasebeFinansAyari, KurFarkiKaydi):
             model.__table__.create(bind=baglanti, checkfirst=True)
-        mevcut_idx = {r[1] for r in baglanti.execute(text("PRAGMA index_list('muhasebe_belge_durumlari')"))}
+        # SQLAlchemy checkfirst — SQLite PRAGMA / PG information_schema ayrımı yapmaz
         for idx in MuhasebeBelgeDurumu.__table__.indexes:
-            if idx.name not in mevcut_idx:
-                idx.create(bind=baglanti)
+            idx.create(bind=baglanti, checkfirst=True)
         MuhasebelestirmeService._fis_kaynak_indeksi(session)
 
     @staticmethod
     def _fis_kaynak_indeksi(session) -> None:
         """Eski DB'lerde muhasebe_fisleri kaynak benzersizliği yoksa ekler (mükerrer yoksa)."""
+        from database.dialect_utils import benzersiz_kolon_indeksi_var_mi
+
         baglanti = session.connection()
-        for idx in baglanti.execute(text("PRAGMA index_list('muhasebe_fisleri')")).fetchall():
-            if not idx[2]:  # unique değil
-                continue
-            kolonlar = [r[2] for r in baglanti.execute(text(f"PRAGMA index_info('{idx[1]}')")).fetchall()]
-            if kolonlar == ["firma_id", "kaynak_turu", "kaynak_id"]:
-                return
+        kolonlar = ["firma_id", "kaynak_turu", "kaynak_id"]
+        if benzersiz_kolon_indeksi_var_mi(baglanti, "muhasebe_fisleri", kolonlar):
+            return
         mukerrer = baglanti.execute(
             text(
                 "SELECT COUNT(*) FROM (SELECT 1 FROM muhasebe_fisleri WHERE kaynak_turu IS NOT NULL "
-                "GROUP BY firma_id, kaynak_turu, kaynak_id HAVING COUNT(*) > 1)"
+                "GROUP BY firma_id, kaynak_turu, kaynak_id HAVING COUNT(*) > 1) AS m"
             )
         ).scalar()
         if mukerrer:
@@ -195,7 +193,13 @@ class MuhasebelestirmeService:
 
     @staticmethod
     def _session_db_yolu(session) -> Path | None:
-        yol = session.get_bind().url.database
+        """SQLite dosya yolu; PostgreSQL'de None (DB adı dosya değildir)."""
+        from database.dialect_utils import postgres_mi
+
+        bind = session.get_bind()
+        if postgres_mi(bind):
+            return None
+        yol = bind.url.database
         return Path(yol) if yol and yol != ":memory:" else None
 
     @staticmethod
@@ -212,13 +216,20 @@ class MuhasebelestirmeService:
 
         Genel muhasebe kullanılmış mevcut bir veritabanında ilk geçiş ancak bu süreçte alınmış
         doğrulanmış yedek varken (``schema_hazirla`` / açılış geçişi) çalışır.
+        PostgreSQL'de SQLite dosya yedeği aranmaz.
         """
+        from database.dialect_utils import postgres_mi
+
         anahtar = MuhasebelestirmeService._motor_anahtari(session)
         if anahtar not in MuhasebelestirmeService._hazir_motorlar:
             MuhasebelestirmeService._tablolar_hazirla(session)
         firma_id = MuhasebeService.yerel_firma_id(session)
         if MuhasebelestirmeService._genel_ayar(session, firma_id) is None:
-            if not yeni_firma and MuhasebelestirmeService._gecis_veri_yazar(session, firma_id):
+            if (
+                not yeni_firma
+                and MuhasebelestirmeService._gecis_veri_yazar(session, firma_id)
+                and not postgres_mi(session.get_bind())
+            ):
                 from database.gecis_guvenligi import GecisYedekHatasi, yedek_onayi
 
                 db_yolu = MuhasebelestirmeService._session_db_yolu(session)
@@ -234,13 +245,14 @@ class MuhasebelestirmeService:
     def schema_hazirla(*, yeni_firma: bool = False) -> Path | None:
         """Uygulama açılışı / firma seçimi: tablolar, eski DB indeksleri ve ilk geçiş.
 
-        Mevcut veritabanında geçiş gerekiyorsa önce doğrulanmış SQLite yedeği alınır; yedek
+        Mevcut SQLite veritabanında geçiş gerekiyorsa önce doğrulanmış yedek alınır; yedek
         alınamazsa ``GecisYedekHatasi`` (geçiş başlamaz), geçiş yarıda kalırsa veritabanı yedekten
-        geri yüklenir (``GecisHatasi``). Dönüş: alınan yedeğin yolu (yoksa None).
+        geri yüklenir (``GecisHatasi``). PostgreSQL / LAN kipinde SQLite yedek yolu kullanılmaz.
+        Dönüş: alınan yedeğin yolu (yoksa None).
         """
+        from database.baglanti_modu import ayari_yukle
+        from database.dialect_utils import postgres_mi
         from database.gecis_guvenligi import guvenli_gecis, yedek_onayi
-
-        db_yolu = MuhasebelestirmeService._db_yolu()
 
         def calistir() -> None:
             with get_session() as session:
@@ -249,6 +261,14 @@ class MuhasebelestirmeService:
                 )
                 MuhasebelestirmeService.hazirla(session, yeni_firma=yeni_firma)
 
+        with get_session() as session:
+            pg = postgres_mi(session.get_bind())
+
+        if pg or ayari_yukle().ag_mi:
+            calistir()
+            return None
+
+        db_yolu = MuhasebelestirmeService._db_yolu()
         gerekli = not yeni_firma and MuhasebelestirmeService.gecis_gerekli_mi()
         if gerekli and yedek_onayi(db_yolu) is not None:
             # Daha geniş bir açılış geçişinin (main.baslatma_adimlari) içindeyiz: yedek ve geri dönüş orada
@@ -271,12 +291,11 @@ class MuhasebelestirmeService:
 
     @staticmethod
     def gecis_gerekli_mi() -> bool:
+        from database.dialect_utils import tablo_var_mi
+
         with get_session() as session:
             baglanti = session.connection()
-            var = baglanti.execute(
-                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='muhasebe_muhasebelestirme_ayarlari'")
-            ).first()
-            if var is None:
+            if not tablo_var_mi(baglanti, "muhasebe_muhasebelestirme_ayarlari"):
                 return True
             firma_id = MuhasebeService.yerel_firma_id(session)
             return MuhasebelestirmeService._genel_ayar(session, firma_id) is None

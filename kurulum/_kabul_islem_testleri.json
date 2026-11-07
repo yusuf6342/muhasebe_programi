@@ -1,16 +1,16 @@
 {
-  "zaman": "2026-11-05T13:26:53",
+  "zaman": "2026-11-05T15:32:31",
   "makine": "DESKTOP-FL08BVD",
-  "hedef": "192.168.1.114/cin_sistem_deneme+cin_firma_deneme",
+  "hedef": "192.168.1.114/cin_sistem_kabul_20261105+cin_firma_kabul_20261105",
   "etiket": "KABULTEST-20261105",
   "senaryolar": [
     {
       "ad": "firma_hedef_ve_kilit",
-      "beklenen": "RAY001 aktif pg:cin_firma_deneme; diğerleri kilitli",
+      "beklenen": "RAY001 aktif pg:cin_firma_kabul_20261105; diğerleri kilitli",
       "gerceklesen": [
         {
           "firma_kodu": "RAY001",
-          "db_path": "pg:cin_firma_deneme",
+          "db_path": "pg:cin_firma_kabul_20261105",
           "aktif": true
         },
         {
@@ -51,7 +51,7 @@
         "RAY-00003"
       ],
       "sirali_benzersiz": true,
-      "id_default_sample": 6,
+      "id_default_sample": 14,
       "durum": "GECTI"
     },
     {
@@ -72,12 +72,59 @@
       "stok_hareket_sayisi": 1,
       "not": "Servis katmanı ikinci onayda ValueError('zaten onaylanmış') beklenir; EXE/UI ile doğrulanacak",
       "durum": "GECTI"
+    },
+    {
+      "ad": "cari_okuma",
+      "ornek": {
+        "id": 1,
+        "cari_kodu": "12001",
+        "unvan": "HASAN HÜSEYİN"
+      },
+      "durum": "GECTI"
+    },
+    {
+      "ad": "stok_okuma",
+      "ornek": {
+        "id": 2,
+        "stok_kodu": "8690000000012",
+        "stok_adi": "ray 35x500 frenli",
+        "barkod": "8690000000012"
+      },
+      "durum": "GECTI"
+    },
+    {
+      "ad": "barkod_okuma",
+      "kolon": "barkod",
+      "ornek": {
+        "id": 2,
+        "stok_kodu": "8690000000012",
+        "barkod": "8690000000012"
+      },
+      "durum": "GECTI"
+    },
+    {
+      "ad": "tahsilat_okuma",
+      "ornek": {
+        "tablo": "banka_kredi_odemeleri",
+        "id": 5,
+        "transaction_id": "2229c63aeb5540b6af65481219a3cb90",
+        "kredi_id": 2,
+        "taksit_id": 48,
+        "odeme_turu": "TAKSIT",
+        "odeme_tarihi": "2026-10-20"
+      },
+      "durum": "GECTI"
+    },
+    {
+      "ad": "cari_stok_yazma_geri_al",
+      "durum": "GECTI",
+      "hata": null
     }
   ],
   "companies": [
     {
       "firma_kodu": "RAY001",
-      "db_path": "pg:cin_firma_deneme",
+      "db_path": "pg:cin_firma_kabul_20261105",
       "aktif": true
     },
     {

@@ -195,21 +195,38 @@ def main() -> int:
         and rapor["kabul_vs_deneme"]["dokuz_ok"]
         and rapor["ray_esleme_ok"]
     )
-    # Restore dump, deneme üzerine sonradan yazma olmuşsa satır farkı olabilir — raporla
+    # Restore: mali fark varsa başarısız; yalnız dump-sonrası test tabloları farkı kabul edilir
+    rf = rapor["restore_vs_deneme"]
+    restore_farklar = list(rf.get("firma_fark") or [])
+    yalniz_test_farki = all(
+        s.startswith("kabul_") and "hedef=-1" in s for s in restore_farklar
+    ) if restore_farklar else True
+    restore_mali_ok = not rf.get("mali_fark")
     restore_ok = (
-        rapor["restore_vs_deneme"]["dokuz_ok"]
-        or rapor["restore_vs_deneme"]["firma_fark_adet"] == 0
-    ) and (
-        rapor["ray_esleme"]["restore"]
+        restore_mali_ok
+        and rf.get("dokuz_ok")
+        and rf.get("sistem_fark_adet", 0) == 0
+        and (
+            rf.get("firma_fark_adet", 0) == 0
+            or yalniz_test_farki
+        )
+        and rapor["ray_esleme"]["restore"]
         and rapor["ray_esleme"]["restore"].get("db_path") == f"pg:{RESTORE_FR}"
     )
     rapor["kabul_mutabakat_ok"] = kabul_ok
+    rapor["restore_mutabakat_ok"] = restore_ok
     rapor["restore_mutabakat_ozet"] = {
-        "firma_fark_adet": rapor["restore_vs_deneme"]["firma_fark_adet"],
-        "sistem_fark_adet": rapor["restore_vs_deneme"]["sistem_fark_adet"],
-        "mali_fark": rapor["restore_vs_deneme"]["mali_fark"],
-        "dokuz_ok": rapor["restore_vs_deneme"]["dokuz_ok"],
-        "not": "Dump 13:16 anı; deneme sonradan değiştiyse satır farkı beklenir",
+        "firma_fark_adet": rf["firma_fark_adet"],
+        "sistem_fark_adet": rf["sistem_fark_adet"],
+        "mali_fark": rf["mali_fark"],
+        "dokuz_ok": rf["dokuz_ok"],
+        "yalniz_test_tablosu_farki": yalniz_test_farki,
+        "restore_ok": restore_ok,
+        "not": (
+            "Dump sonrası deneme'ye eklenen kabul_* test tabloları restore'da yok; "
+            "iş verisi/mali özet eşleşiyorsa restore başarılı sayılır. "
+            "Mali fark varsa exit 0 olsa bile restore_ok=false."
+        ),
     }
 
     yol = ROOT / "kurulum" / "_kabul_cift_mutabakat.json"
@@ -220,8 +237,9 @@ def main() -> int:
                 "kabul_ok": kabul_ok,
                 "kabul_firma_eslesen": rapor["kabul_vs_deneme"]["firma_eslesen"],
                 "kabul_mali_fark": rapor["kabul_vs_deneme"]["mali_fark"],
-                "restore_firma_fark": rapor["restore_vs_deneme"]["firma_fark_adet"],
-                "restore_mali_fark": rapor["restore_vs_deneme"]["mali_fark"],
+                "restore_ok": restore_ok,
+                "restore_firma_fark": rf["firma_fark_adet"],
+                "restore_mali_fark": rf["mali_fark"],
                 "ray_esleme_ok": rapor["ray_esleme_ok"],
                 "ray": rapor["ray_esleme"],
             },
@@ -231,7 +249,12 @@ def main() -> int:
         )
     )
     print("YAZILDI:", yol)
-    return 0 if kabul_ok and rapor["ray_esleme_ok"] else 3
+    # Kabul zorunlu; restore mali/iş farkı varsa 3
+    if not kabul_ok or not rapor["ray_esleme_ok"]:
+        return 3
+    if not restore_ok:
+        return 4
+    return 0
 
 
 if __name__ == "__main__":

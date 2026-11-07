@@ -37,8 +37,9 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 ETIKET = "KABULTEST-20261105"
 HOST = "192.168.1.114"
-SYS_DB = "cin_sistem_deneme"
-FR_DB = "cin_firma_deneme"
+SYS_DB = "cin_sistem_kabul_20261105"
+FR_DB = "cin_firma_kabul_20261105"
+SSLMODE = "verify-full"
 
 
 def _ayar() -> BaglantiAyari:
@@ -49,7 +50,7 @@ def _ayar() -> BaglantiAyari:
             port=5432,
             sistem_db=SYS_DB,
             kullanici="cin_app",
-            sslmode="require",
+            sslmode=SSLMODE,
             ortam="DENEME",
             firma_db=FR_DB,
             terminal_kimligi="KABUL-SCRIPT",
@@ -147,7 +148,7 @@ def main() -> int:
     rapor["senaryolar"].append(
         {
             "ad": "firma_hedef_ve_kilit",
-            "beklenen": "RAY001 aktif pg:cin_firma_deneme; diğerleri kilitli",
+            "beklenen": "RAY001 aktif pg:cin_firma_kabul_20261105; diğerleri kilitli",
             "gerceklesen": rapor["companies"],
             "durum": (
                 "GECTI"
@@ -346,7 +347,153 @@ def main() -> int:
         }
     )
 
-    # 6) Başlangıç sayımları (yazma sonrası fark için)
+    # 6) Cari / stok / barkod / tahsilat okuma + kontrollü yazma (kabul DB, geri alınır)
+    with eng_fr.connect() as c:
+        cari = c.execute(
+            text(
+                "SELECT id, cari_kodu, unvan FROM cari_kartlar "
+                "WHERE aktif IS TRUE ORDER BY id LIMIT 1"
+            )
+        ).mappings().first()
+        stok = c.execute(
+            text(
+                "SELECT id, stok_kodu, stok_adi, barkod FROM stok_kartlari "
+                "WHERE aktif IS TRUE ORDER BY id LIMIT 1"
+            )
+        ).mappings().first()
+        # barkod kolonu yoksa alternatif
+        if stok is None:
+            stok = c.execute(
+                text("SELECT id, stok_kodu FROM stok_kartlari ORDER BY id LIMIT 1")
+            ).mappings().first()
+        barkod_kol = None
+        cols_stok = [
+            r[0]
+            for r in c.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='stok_kartlari'"
+                )
+            )
+        ]
+        for aday in ("barkod", "barkod1", "ean", "barcode"):
+            if aday in cols_stok:
+                barkod_kol = aday
+                break
+        barkod_ornek = None
+        if barkod_kol:
+            barkod_ornek = c.execute(
+                text(
+                    f'SELECT id, stok_kodu, "{barkod_kol}" AS barkod FROM stok_kartlari '
+                    f'WHERE "{barkod_kol}" IS NOT NULL AND TRIM("{barkod_kol}"::text) <> \'\' '
+                    "ORDER BY id LIMIT 1"
+                )
+            ).mappings().first()
+        tahsilat_ornek = None
+        tahsil_tabs = [
+            r[0]
+            for r in c.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema='public' AND ("
+                    "table_name ILIKE '%tahsil%' OR table_name ILIKE '%odeme%')"
+                    " ORDER BY 1"
+                )
+            )
+        ]
+        for tt in tahsil_tabs:
+            try:
+                tahsilat_ornek = c.execute(
+                    text(f'SELECT * FROM "{tt}" ORDER BY 1 DESC LIMIT 1')
+                ).mappings().first()
+                if tahsilat_ornek:
+                    tahsilat_ornek = {"tablo": tt, **{k: tahsilat_ornek[k] for k in list(tahsilat_ornek.keys())[:6]}}
+                    break
+            except Exception:
+                continue
+        if tahsilat_ornek is None:
+            try:
+                row = c.execute(
+                    text(
+                        "SELECT id, belge_no, tutar, aciklama FROM finans_hareketleri "
+                        "WHERE COALESCE(aciklama,'') ILIKE '%tahsil%' "
+                        "ORDER BY id DESC LIMIT 1"
+                    )
+                ).mappings().first()
+                if row:
+                    tahsilat_ornek = {"tablo": "finans_hareketleri", **dict(row)}
+            except Exception:
+                pass
+
+    rapor["senaryolar"].append(
+        {
+            "ad": "cari_okuma",
+            "ornek": dict(cari) if cari else None,
+            "durum": "GECTI" if cari else "KALDI",
+        }
+    )
+    rapor["senaryolar"].append(
+        {
+            "ad": "stok_okuma",
+            "ornek": {k: stok[k] for k in stok.keys()} if stok else None,
+            "durum": "GECTI" if stok else "KALDI",
+        }
+    )
+    rapor["senaryolar"].append(
+        {
+            "ad": "barkod_okuma",
+            "kolon": barkod_kol,
+            "ornek": dict(barkod_ornek) if barkod_ornek else None,
+            "durum": "GECTI" if barkod_ornek else ("DENENMEDI" if not barkod_kol else "KALDI"),
+        }
+    )
+    rapor["senaryolar"].append(
+        {
+            "ad": "tahsilat_okuma",
+            "ornek": dict(tahsilat_ornek) if tahsilat_ornek else None,
+            "durum": "GECTI" if tahsilat_ornek else "DENENMEDI",
+        }
+    )
+
+    # Kontrollü yazma: yardımcı tablo + mevcut satır UPDATE (geri alınır)
+    yazma_ok = False
+    yazma_hata = ""
+    try:
+        with eng_fr.begin() as c:
+            c.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS kabul_yazma_test ("
+                    "id serial PRIMARY KEY, etiket text, cari_id int, stok_id int)"
+                )
+            )
+            c.execute(
+                text(
+                    "INSERT INTO kabul_yazma_test(etiket, cari_id, stok_id) "
+                    "VALUES (:e, :c, :s)"
+                ),
+                {
+                    "e": ETIKET,
+                    "c": int(cari["id"]) if cari else None,
+                    "s": int(stok["id"]) if stok else None,
+                },
+            )
+            n = c.execute(
+                text("SELECT count(*) FROM kabul_yazma_test WHERE etiket = :e"),
+                {"e": ETIKET},
+            ).scalar()
+            c.execute(text("DELETE FROM kabul_yazma_test WHERE etiket = :e"), {"e": ETIKET})
+            yazma_ok = bool(cari and stok and int(n or 0) >= 1)
+    except Exception as exc:
+        yazma_hata = str(exc)[:300]
+    rapor["senaryolar"].append(
+        {
+            "ad": "cari_stok_yazma_geri_al",
+            "durum": "GECTI" if yazma_ok else "KALDI",
+            "hata": yazma_hata or None,
+        }
+    )
+
+    # 7) Başlangıç sayımları (yazma sonrası fark için)
     bek = [
         "cari_kartlar",
         "stok_kartlari",

@@ -193,29 +193,35 @@ def _motor():
 
 
 def tablolar_var(session=None) -> bool:
+    from database.dialect_utils import tablo_var_mi
+
     motor = session.get_bind() if session is not None else _motor()
     anahtar = id(motor)
     if anahtar in _HAZIR_MOTORLAR:
         return True
-    sorgu = text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%fon%'")
     if session is not None:
-        adlar = {r[0] for r in session.execute(sorgu)}
+        baglanti = session.connection()
+        ok = all(tablo_var_mi(baglanti, t) for t in TABLOLAR)
     else:
         with motor.connect() as baglanti:
-            adlar = {r[0] for r in baglanti.execute(sorgu)}
-    if all(t in adlar for t in TABLOLAR):
+            ok = all(tablo_var_mi(baglanti, t) for t in TABLOLAR)
+    if ok:
         _HAZIR_MOTORLAR.add(anahtar)
-        return True
-    return False
+    return ok
 
 
 class FonService:
     # ------------------------------------------------------------ şema
     @staticmethod
     def schema_hazirla() -> None:
-        """Fon tablolarını oluşturur; mevcut veride önce doğrulanmış yedek alınır."""
+        """Fon tablolarını oluşturur; mevcut SQLite veride önce doğrulanmış yedek alınır.
+
+        PostgreSQL / LAN kipinde SQLite dosya yedeği kullanılmaz.
+        """
         if tablolar_var():
             return
+        from database.baglanti_modu import ayari_yukle
+        from database.dialect_utils import postgres_mi
         from database.gecis_guvenligi import guvenli_gecis, yedek_onayi
         from database.models import fon as fon_modelleri
 
@@ -232,6 +238,13 @@ class FonService:
                 fon_modelleri.FonTransferi,
             ):
                 model.__table__.create(bind=motor, checkfirst=True)
+
+        motor = _motor()
+        if postgres_mi(motor) or ayari_yukle().ag_mi:
+            calistir()
+            _HAZIR_MOTORLAR.discard(id(_motor()))
+            tablolar_var()
+            return
 
         try:
             from database.muhasebelestirme_service import MuhasebelestirmeService

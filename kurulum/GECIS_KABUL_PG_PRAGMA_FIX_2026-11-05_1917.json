@@ -1,0 +1,27 @@
+{
+    "zaman":  "2026-11-05T19:17:22.4303343+03:00",
+    "gui":  {
+                "db_durum":  "DB: Bagli",
+                "not":  "PRAGMA hatasi yok; ana ekran metrikleri yuklendi",
+                "ana_panel":  "ANA PANEL acildi",
+                "firma":  "RAY001 Ray Mobilya Aksesuarlari",
+                "donem":  "2026",
+                "exe_paketli":  true,
+                "giris":  "admin (hatirlanan sifre alani dolu)",
+                "sonuc":  "GECTI"
+            },
+    "exe_sha256":  "AD0AD180D241B9B5FA3FA8FD06B7EDCC894F8ED888D9FA77AA3BE5FAC94A8CDE",
+    "deneme_profil_sha256":  "AD0AD180D241B9B5FA3FA8FD06B7EDCC894F8ED888D9FA77AA3BE5FAC94A8CDE",
+    "sha_eslesme":  true,
+    "kisayol":  "C:\\Users\\cigde\\OneDrive\\Masaüstü\\CİN MUHASEBE — ANA MAKİNE — DENEME.lnk",
+    "kisayol_hedef":  "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105\\CinMuhasebe_AG_DENEME.bat",
+    "paket_ana":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\CinMuhasebe_AG_DENEME_20261105_20261105_1912.zip",
+    "paket_ana_mb":  124.7,
+    "paket_nb7":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\CinMuhasebe_AG_DENEME_NB7SBPA_20261105_1913.zip",
+    "paket_nb7_mb":  124.7,
+    "zincir_baslik":  "firma_oturumu_ac PG zinciri GECTI (cari=1098)",
+    "kalan":  [
+                  "Lenovo yeni paket kurulumu/UI bu oturumda DENENMEDI (parola sorunu cozulmus bildirildi)"
+              ]
+}
+

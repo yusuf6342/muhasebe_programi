@@ -1,5 +1,5 @@
 {
-  "zaman": "2026-11-05T13:26:59",
+  "zaman": "2026-11-05T15:29:32",
   "makine": "DESKTOP-FL08BVD",
   "senaryolar": [
     {
@@ -12,7 +12,7 @@
       "ad": "mukerrer_belge_no_unique",
       "adet": 1,
       "ikinci_red": true,
-      "hata_ozet": "(psycopg.errors.UniqueViolation) duplicate key value violates unique constraint \"kabul_kopma_test_belge_no_key\"\nDETAIL:  Key (belge_no)=(UQ-1793874420) already exists.\n[SQL: INSERT INTO kabul_kopma_te",
+      "hata_ozet": "(psycopg.errors.UniqueViolation) duplicate key value violates unique constraint \"kabul_kopma_test_belge_no_key\"\nDETAIL:  Key (belge_no)=(UQ-1793881773) already exists.\n[SQL: INSERT INTO kabul_kopma_te",
       "durum": "GECTI",
       "not": "satis_faturalari.fatura_no UNIQUE aynı korumayı sağlar"
     },

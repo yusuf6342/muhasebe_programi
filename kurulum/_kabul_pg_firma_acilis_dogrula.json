@@ -1,0 +1,49 @@
+{
+  "zaman": "2026-11-05T18:38:12",
+  "makine": "DESKTOP-FL08BVD",
+  "parola_var": true,
+  "parola_uzunluk": 10,
+  "ca": "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt",
+  "sslmode": "verify-full",
+  "sistem": {
+    "db": "cin_sistem_kabul_20261105",
+    "ok": true,
+    "server_version": "17.11",
+    "current_user": "cin_app",
+    "current_database": "cin_sistem_kabul_20261105",
+    "inet_server": "192.168.1.114",
+    "ssl": "on",
+    "ray001": {
+      "firma_kodu": "RAY001",
+      "db_path": "pg:cin_firma_kabul_20261105",
+      "aktif": true
+    }
+  },
+  "firma": {
+    "db": "cin_firma_kabul_20261105",
+    "ok": true,
+    "server_version": "17.11",
+    "current_user": "cin_app",
+    "current_database": "cin_firma_kabul_20261105",
+    "inet_server": "192.168.1.114",
+    "ssl": "on",
+    "cari": 1098,
+    "stok": 3031
+  },
+  "lenovo_not": "Lenovo 192.168.1.106 parola reddi: ortak cin_app parolası değiştirilmeden önce (1) HBA hostssl 106/32, (2) aynı Credential Manager hedefi CinMuhasebe/postgres_app, (3) verify-full + root.crt, (4) kullanıcı adı cin_app. Bu terminalde parola_uzunluk ve verify-full kimlik aşağıda.",
+  "firma_db_ac_ray001": {
+    "ok": false,
+    "hata": "(psycopg.errors.ConnectionTimeout) connection timeout expired"
+  },
+  "lenovo_duzeltme": {
+    "ortak_parola_degistir": false,
+    "oneriler": [
+      "Ana makinede 08_pg_hba_terminal_106_izin.ps1 (192.168.1.106/32 hostssl)",
+      "Lenovo'da cmdkey /generic:CinMuhasebe /user:postgres_app (keyring ile aynı hedef)",
+      "%APPDATA%\\postgresql\\root.crt + baglanti sslmode=verify-full",
+      "baglanti_ayari kullanici=cin_app (başka kullanıcı adı değil)",
+      "Bu terminalde parola_uzunluk>0 ve sistem/firma ok=true ise sunucu parolası doğru; Lenovo tarafı istemci/HBA/SSL"
+    ],
+    "bu_terminal_parola_calisiyor": true
+  }
+}

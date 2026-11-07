@@ -1,0 +1,51 @@
+CİN MUHASEBE — PostgreSQL DENEME AKTARIM YÖNERGESİ
+Tarih: 05.11.2026
+Terminal (Cursor): DESKTOP-FL08BVD — Ana makine: DESKTOP-CGSE5GK
+
+ÖNKOŞUL
+- Kaynak (terminalde doğrulanmış yedek, canlı değil):
+  %LOCALAPPDATA%\CinMuhasebeAktarim\Ray_Aktarim_2026-11-04_194017\veri_yedek
+  RAY001 / 2026 — 9 sayım talimatla aynı olmalı.
+- Ana makine PostgreSQL: cin_sistem_deneme + cin_firma_deneme BOŞ olmalı
+  (doluysa aktarım yazmaz / silmez).
+- cin_app parolası: MUHASEBE_PG_PASSWORD veya Windows Credential
+  (CinMuhasebe / postgres_app). Sohbete yazmayın.
+- Ana makine LAN IP'yi her seferinde doğrulayın:
+  Resolve-DnsName DESKTOP-CGSE5GK
+  (05.11.2026 kontrol: 192.168.1.114 — DHCP değişebilir)
+- Terminalden --hedef-host 127.0.0.1 YASAK.
+
+1) ÖN KONTROL (dry-run)
+  cd C:\Users\cigde\OneDrive\Belgeler\GitHub\muhasebe_programi
+  set MUHASEBE_PG_PASSWORD=...
+  .venv\Scripts\python.exe tools\_sqlite_to_postgres_gecis.py --dry-run ^
+    --kaynak "%LOCALAPPDATA%\CinMuhasebeAktarim\Ray_Aktarim_2026-11-04_194017\veri_yedek" ^
+    --hedef-host 192.168.1.114 --firma-kodu RAY001 ^
+    --sistem-db cin_sistem_deneme --firma-db cin_firma_deneme --sslmode prefer
+
+  Beklenen: aktarim_uygunlugu=true, çıkış 0.
+  Bağlantı yok / hedef dolu / sayım uyumsuz → çıkış ≠0; aktarılabilir saymayın.
+  Rapor: kurulum\GECIS_RAPORU.json
+
+2) AKTARIM
+  Aynı komut, --dry-run yerine --uygula.
+  Mutabakat (satır + mali) OK değilse başarılı saymayın.
+  companies: yalnız RAY001 → pg:cin_firma_deneme; diğer firmalar kilitlenir
+  (aktif=false, db_path=pg:__kapsam_disi_aktarilmadi__).
+
+3) ANA MAKİNEDE UYGULAMA KİPİ
+  DENEME program: C:\CinMuhasebe\DENEME_2026-11-04_194017\program\CinMuhasebe.exe
+  Bağlantı Ayarları → Yerel ağ | Host 127.0.0.1 | sistem/firma deneme | DENEME
+  PostgreSQL kaydı başarısızsa sessiz SQLite'a düşmez.
+  GERÇEK masaüstü kısayoluna dokunmayın.
+
+4) TERMİNALDE AYNI DENEME
+  Host: ana makine güncel LAN IP (ör. 192.168.1.114)
+  Aynı cin_app / deneme DB / RAY001.
+  Giriş, liste yenileme, eşzamanlı kayıt, barkod adet, kopma-yeniden deneme
+  (mükerrer yok) ayrı kabul testidir — yalnız TCP yetmez.
+
+5) YEDEK / GERİ DÖNÜŞ
+  PG: kurulum\sunucu\02_pg_yedek_al.ps1 (veya pg_dump)
+  SQLite DENEME alanı ve Ray_Aktarim paketi geri dönüş olarak kalsın.
+  Yönetici (postgres) ile cin_app parolasını karıştırmayın.

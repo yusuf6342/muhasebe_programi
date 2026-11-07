@@ -1,0 +1,26 @@
+{
+  "zaman": "2026-11-06T13:20:00+03:00",
+  "ozellik": "Firma içi kullanıcı mesajlaşması",
+  "sonuc": "GECTI",
+  "birim_test": "tests/test_mesajlasma.py — 5 passed",
+  "pg_deneme": {
+    "sistem_db": "cin_sistem_kabul_20261105",
+    "schema": "2",
+    "tablolar": ["mesaj_konusmalar", "mesaj_konusma_uyeleri", "mesajlar"],
+    "kullanicilar": ["admin", "test_satis_user"],
+    "gonderildi": true,
+    "okunmamis_rozet": true,
+    "okundu_konusma_acilinca": true,
+    "mukerrer_client_msg_id": true
+  },
+  "ui": {
+    "ana_panel_ust_serit": true,
+    "aktif_kullanici_cubugu_fatura_siparis": true,
+    "cari_kart_ust_serit": true,
+    "focus_guvenli_toast": true
+  },
+  "yapilamayan": [
+    "İki ayrı fiziksel bilgisayarda eşzamanlı GUI oturumu bu ortamda açılmadı (servis + PG ortak DB doğrulandı)",
+    "EXE/paket bu turda üretilmedi"
+  ]
+}

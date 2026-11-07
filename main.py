@@ -146,26 +146,41 @@ def baslatma_adimlari(progress) -> None:
         )
 
     progress(20, "Veritabanı güncellemesi denetleniyor...")
+    from database.baglanti_modu import ayari_yukle
     from database.gecis_guvenligi import guvenli_gecis, sema_eksikleri
     from database.muhasebelestirme_service import MuhasebelestirmeService
 
     db_yolu = MuhasebelestirmeService._db_yolu()
     asama("sema_eksikleri denetimi")
     eksikler = sema_eksikleri(db.engine, Base.metadata)
-    gerekli = bool(eksikler) or MuhasebelestirmeService.gecis_gerekli_mi()
-    asama(f"gecis gerekli={gerekli} eksik={len(eksikler)} ornek={eksikler[:5]}")
-    if gerekli:
-        print("Açılış geçişi gerekli:", ", ".join(eksikler[:10]) or "muhasebeleştirme ayarları")
-        progress(22, "Güncelleme öncesi veritabanı yedeği alınıyor...")
-        asama("guvenli_gecis yedek+sema basliyor")
-    _, yedek = guvenli_gecis(
-        db_yolu,
-        lambda: _sema_adimlari(progress),
-        gerekli=gerekli,
-        etiket="acilis_gecisi",
-        baglantilari_kapat=MuhasebelestirmeService._baglantilari_kapat,
+    ag_mi = ayari_yukle().ag_mi
+    # gecis_gerekli_mi sqlite_master kullanır — PG'de patlar
+    gerekli = bool(eksikler) or (
+        False if ag_mi else MuhasebelestirmeService.gecis_gerekli_mi()
     )
-    asama("guvenli_gecis bitti")
+    asama(f"gecis gerekli={gerekli} eksik={len(eksikler)} ornek={eksikler[:5]}")
+    yedek = None
+    if ag_mi:
+        # PG/LAN: SQLite dosya yedeği geçersiz (pg: yolunu ezmez / asılı kalmaz)
+        if gerekli:
+            print("Açılış geçişi (PG, yedeksiz şema):", ", ".join(eksikler[:10]) or "ayar")
+            progress(22, "PostgreSQL şema güncellemesi...")
+            asama("guvenli_gecis PG sema (sqlite yedek atlandi)")
+            _sema_adimlari(progress)
+        asama("guvenli_gecis bitti")
+    else:
+        if gerekli:
+            print("Açılış geçişi gerekli:", ", ".join(eksikler[:10]) or "muhasebeleştirme ayarları")
+            progress(22, "Güncelleme öncesi veritabanı yedeği alınıyor...")
+            asama("guvenli_gecis yedek+sema basliyor")
+        _, yedek = guvenli_gecis(
+            db_yolu,
+            lambda: _sema_adimlari(progress),
+            gerekli=gerekli,
+            etiket="acilis_gecisi",
+            baglantilari_kapat=MuhasebelestirmeService._baglantilari_kapat,
+        )
+        asama("guvenli_gecis bitti")
     if yedek:
         print("Açılış geçişi öncesi doğrulanmış yedek:", yedek.yol)
 

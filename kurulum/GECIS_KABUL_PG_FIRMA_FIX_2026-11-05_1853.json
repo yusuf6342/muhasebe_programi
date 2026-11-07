@@ -1,0 +1,41 @@
+{
+    "zaman":  "2026-11-05T18:54:48.1562472+03:00",
+    "makine":  "DESKTOP-FL08BVD",
+    "exe_sha256":  "FC122CDE917E4E2CD2A377D8D4224E3B83BE5BD62AE59D27F5D43ECD2404D6D2",
+    "exe_path":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\dist\\CinMuhasebe\\CinMuhasebe.exe",
+    "deneme_profil_sha":  "FC122CDE917E4E2CD2A377D8D4224E3B83BE5BD62AE59D27F5D43ECD2404D6D2",
+    "kisayol_ana_makine_deneme":  "C:\\Users\\cigde\\OneDrive\\Masaüstü\\CİN MUHASEBE — ANA MAKİNE — DENEME.lnk",
+    "kisayol_hedef_bat":  "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105\\CinMuhasebe_AG_DENEME.bat",
+    "paket_ana":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\CinMuhasebe_AG_DENEME_20261105_20261105_1851.zip",
+    "paket_ana_mb":  124.7,
+    "paket_nb7":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\CinMuhasebe_AG_DENEME_NB7SBPA_20261105_1853.zip",
+    "paket_nb7_mb":  124.7,
+    "hba_zip":  "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\paket\\ANA_MAKINE_HBA_192_168_1_106_20261105_1637.zip",
+    "baglanti_test":  {
+                          "sslmode":  "verify-full",
+                          "firma_db_ac_eslesme":  true,
+                          "parola_uzunluk":  10,
+                          "ray001_db_path":  "pg:cin_firma_kabul_20261105",
+                          "sistem_ok":  true,
+                          "firma_ok":  true,
+                          "host":  "192.168.1.114",
+                          "cari":  1098,
+                          "user":  "cin_app"
+                      },
+    "lenovo":  {
+                   "giris_ui":  "DENENMEDI",
+                   "ortak_parola_degistir":  false,
+                   "gerekli":  [
+                                   "CGSE5GK: 08_pg_hba_terminal_106_izin.ps1 (192.168.1.106/32 hostssl)",
+                                   "NB7SBPA: yeni ZIP + 02_TERMINAL_NB7SBPA_KUR.ps1 -ParolaSor ile CinMuhasebe/postgres_app yeniden kaydet",
+                                   "root.crt + verify-full; baglanti kullanici=cin_app"
+                               ],
+                   "teshis":  "Bu terminalde ayni cin_app + 10 karakter parola verify-full ile OK; sunucu parolasi dogru. Lenovo parola_red istemci/HBA/Credential."
+               },
+    "kalan":  [
+                  "Lenovo giris + RAY001 UI: DENENMEDI",
+                  "CGSE5GK HBA 106 uygulanmasi bu oturumda dogrulanamadi (pg_hba_file_rules yetkisi yok)",
+                  "DNM baslatilmadi; gunluk baglanti degistirilmedi"
+              ]
+}
+

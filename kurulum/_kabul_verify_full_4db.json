@@ -1,0 +1,56 @@
+{
+  "zaman": "2026-11-05T15:49:40",
+  "makine": "DESKTOP-FL08BVD",
+  "host": "192.168.1.114",
+  "sonuclar": [
+    {
+      "db": "cin_sistem_kabul_20261105",
+      "sslmode": "verify-full",
+      "ca": "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt",
+      "ok": true,
+      "pg_stat_ssl": {
+        "ssl": true,
+        "version": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384"
+      },
+      "current_database": "cin_sistem_kabul_20261105"
+    },
+    {
+      "db": "cin_firma_kabul_20261105",
+      "sslmode": "verify-full",
+      "ca": "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt",
+      "ok": true,
+      "pg_stat_ssl": {
+        "ssl": true,
+        "version": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384"
+      },
+      "current_database": "cin_firma_kabul_20261105"
+    },
+    {
+      "db": "cin_sistem_restore_20261105",
+      "sslmode": "verify-full",
+      "ca": "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt",
+      "ok": true,
+      "pg_stat_ssl": {
+        "ssl": true,
+        "version": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384"
+      },
+      "current_database": "cin_sistem_restore_20261105"
+    },
+    {
+      "db": "cin_firma_restore_20261105",
+      "sslmode": "verify-full",
+      "ca": "C:\\Users\\cigde\\AppData\\Roaming\\postgresql\\root.crt",
+      "ok": true,
+      "pg_stat_ssl": {
+        "ssl": true,
+        "version": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384"
+      },
+      "current_database": "cin_firma_restore_20261105"
+    }
+  ],
+  "hepsi_ok": true
+}

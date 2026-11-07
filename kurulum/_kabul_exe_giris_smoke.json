@@ -1,10 +1,10 @@
 {
-  "zaman": "2026-11-05T13:39:38",
+  "zaman": "2026-11-05T15:29:22",
   "makine": "DESKTOP-FL08BVD",
   "baglanti": {
     "ok": true,
     "kipi": "yerel_ag_postgres",
-    "ozet": "192.168.1.114:5432 / sistem=cin_sistem_deneme / firma=cin_firma_deneme / ortam=DENEME",
+    "ozet": "192.168.1.114:5432 / sistem=cin_sistem_kabul_20261105 / firma=cin_firma_kabul_20261105 / ortam=DENEME",
     "server_version": "17.11",
     "ortam": "DENEME"
   },
@@ -12,7 +12,7 @@
     {
       "firma_kodu": "RAY001",
       "unvan": "Ray Mobilya Aksesuarları",
-      "db_path": "pg:cin_firma_deneme",
+      "db_path": "pg:cin_firma_kabul_20261105",
       "aktif": true
     },
     {
@@ -68,9 +68,12 @@
   "exe": {
     "deneme_yol": "C:\\Users\\cigde\\AppData\\Local\\CinMuhasebeKabulDeneme_20261105\\program\\CinMuhasebe.exe",
     "deneme_var": true,
+    "deneme_sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
     "dist_yol": "C:\\Users\\cigde\\OneDrive\\Belgeler\\GitHub\\muhasebe_programi\\dist\\CinMuhasebe\\CinMuhasebe.exe",
     "dist_var": true,
+    "dist_sha256": "0BD255BA888BF68F0AE1EF502AD562AE3DE4C0FBFEEE19453EF37308CB64C27C",
+    "sha_eslesme": true,
     "dist_mtime": "2026-11-05T13:38:40",
-    "not": "GUI oturumu: süreç açıldı (PID kaydı ayrı); pencere başlığı boş kaldı — yeniden derleme sonrası tekrar denenecek. API/PG duman testi bu dosyada."
+    "not": "Ana makine (CGSE5GK) EXE SHA bu terminalden admin paylaşımı kapalı; aynı hash yerelde dist+DENEME profilinde doğrulandı. GUI giriş ayrı."
   }
 }

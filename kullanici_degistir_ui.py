@@ -337,8 +337,25 @@ def aktif_kullanici_cubugu(
         cursor="hand2",
     )
     btn.pack(side="left")
+    # Çalışma pencerelerinde ortak Mesajlar düğmesi (fatura / sipariş / hızlı satış)
+    msg_refs = None
+    try:
+        from mesajlasma_ui import MesajlasmaYoneticisi, mesajlar_dugmesi_ekle
+
+        root = parent.winfo_toplevel()
+        MesajlasmaYoneticisi.ornek(root)
+        msg_refs = mesajlar_dugmesi_ekle(cerceve, bg=bg, koyu=koyu, root=root)
+        msg_refs["cerceve"].pack(side="left", padx=(8, 0))
+    except Exception:
+        msg_refs = None
     oturum.on_user_changed(_yenile)
-    return {"cerceve": cerceve, "ad_label": ad_lbl, "yenile": _yenile, "ac": _ac}
+    return {
+        "cerceve": cerceve,
+        "ad_label": ad_lbl,
+        "yenile": _yenile,
+        "ac": _ac,
+        "mesajlar": msg_refs,
+    }
 
 
 class EkranKilidi:

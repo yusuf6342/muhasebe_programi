@@ -581,6 +581,17 @@ class AnaPanelKabuk:
             font=FONT_ALT,
         ).pack(anchor="w")
 
+        # Mesajlar: side=right İLK pack → en sağda sabit; dar pencerede kaybolmaz
+        try:
+            from mesajlasma_ui import ana_ust_seride_mesajlar_sabitle
+
+            ana_ust_seride_mesajlar_sabitle(app)
+        except Exception:
+            import logging
+
+            logging.getLogger("mesajlasma").exception("Ana panel Mesajlar düğmesi")
+            app._mesajlar_dugmesi = None
+
         sag_h = tk.Frame(app.oturum_cubugu, bg=BEYAZ)
         sag_h.pack(side="right", padx=12, pady=8)
 

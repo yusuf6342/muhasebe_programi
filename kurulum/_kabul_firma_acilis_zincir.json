@@ -1,0 +1,50 @@
+{
+  "zaman": "2026-11-05T19:06:26",
+  "makine": "DESKTOP-FL08BVD",
+  "adimlar": [
+    {
+      "ad": "sistem_altyapi",
+      "ok": true
+    },
+    {
+      "ad": "oturum",
+      "ok": true,
+      "user_id": 1
+    },
+    {
+      "ad": "firma_ozet",
+      "ok": true,
+      "db_path": "pg:cin_firma_kabul_20261105",
+      "donem": "2026"
+    },
+    {
+      "ad": "firma_oturumu_ac",
+      "ok": true
+    },
+    {
+      "ad": "engine_dogrula",
+      "ok": true,
+      "dialect": "postgresql",
+      "current_database": "cin_firma_kabul_20261105",
+      "beklenen": "cin_firma_kabul_20261105",
+      "eslesme": true,
+      "cari": 1098
+    }
+  ],
+  "ray": {
+    "id": 1,
+    "db_path": "pg:cin_firma_kabul_20261105",
+    "aktif": true,
+    "pg": true
+  },
+  "admin_id": 1,
+  "acilis": {
+    "ok": true,
+    "dialect": "postgresql",
+    "current_database": "cin_firma_kabul_20261105",
+    "beklenen": "cin_firma_kabul_20261105",
+    "eslesme": true,
+    "cari": 1098
+  },
+  "durum": "GECTI"
+}

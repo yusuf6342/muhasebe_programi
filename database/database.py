@@ -152,13 +152,24 @@ COMPANIES_DIR.mkdir(parents=True, exist_ok=True)
 _konum_dosyasi_yaz(DB_PATH)
 
 
+def pg_firma_tanimi_mi(kayitli_yol: str | Path | None) -> bool:
+    """PostgreSQL firma tanımlayıcısı mı? (pg:cin_firma_… — dosya yolu değil)."""
+    ham = str(kayitli_yol or "").strip().lower()
+    return ham.startswith("pg:") or ham.startswith("postgresql")
+
+
 def firma_db_yolu_coz(kayitli_yol: str | Path | None) -> Path | None:
     """system.db'deki mutlak firma DB yolunu güncel veri klasörüne göre çözer.
 
     Aynı dosya adı güncel klasörde varsa o kullanılır: başka PC'den ya da başka
     veri klasöründen taşınan system.db, eski konumdaki (ör. geliştirme) DB'ye
-    yazmasın. Yoksa kayıtlı yol döner; hiçbir dosya oluşturulmaz."""
+    yazmasın. Yoksa kayıtlı yol döner; hiçbir dosya oluşturulmaz.
+
+    ``pg:…`` tanımlayıcılarında None döner (yerel dosyaya eşleme yok).
+    """
     if not kayitli_yol:
+        return None
+    if pg_firma_tanimi_mi(kayitli_yol):
         return None
     yol = Path(kayitli_yol)
     for aday in (COMPANIES_DIR / yol.name, DB_DIR / yol.name):
@@ -191,6 +202,13 @@ def veri_konumu_ozeti() -> str:
 
 def baslangic_veri_uyarisi() -> str | None:
     """Veri klasöründe gerçek veri yoksa, boş DB oluşturulmadan önce gösterilecek metin."""
+    try:
+        from database.baglanti_modu import ayari_yukle
+
+        if ayari_yukle().ag_mi:
+            return None  # Yerel ağ/PG: veri sunucuda; boş yerel klasör uyarısı yok
+    except Exception:
+        pass
     if MUHASEBE_DB_ONCEDEN_VAR:
         return None
     if TEST_KURULUMU and not SYSTEM_DB_ONCEDEN_VAR:
@@ -276,6 +294,8 @@ def firma_arama_indekslerini_hazirla() -> None:
     """Cari/stok arama indeksleri — IF NOT EXISTS, tekrar güvenli."""
     if engine is None:
         return
+    from database.dialect_utils import postgres_mi
+
     sql_list = (
         "CREATE INDEX IF NOT EXISTS ix_cari_kartlar_unvan ON cari_kartlar(unvan)",
         "CREATE INDEX IF NOT EXISTS ix_cari_kartlar_aktif ON cari_kartlar(aktif)",
@@ -285,13 +305,17 @@ def firma_arama_indekslerini_hazirla() -> None:
             for sql in sql_list:
                 conn.execute(text(sql))
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("firma_arama_indeksleri")
+        if postgres_mi(engine):
+            raise
     try:
         from database.cari_usd_karsilik_service import tablo_hazirla
 
         tablo_hazirla(engine)
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("cari_usd_karsilik tablo_hazirla")
+        if postgres_mi(engine):
+            raise
 
 
 def firma_db_ac(company_id: int, db_path: str | Path) -> None:
@@ -299,7 +323,51 @@ def firma_db_ac(company_id: int, db_path: str | Path) -> None:
 
     Aynı dosya zaten açıksa engine nesnesini korur (import edenlerin
     `from database.database import engine` referansı bozulmasın).
+
+    PostgreSQL: ``pg:cin_firma_…`` tanımlayıcısı Path'e çevrilmez.
     """
+    from database.baglanti_modu import ayari_yukle
+
+    ham = str(db_path or "").strip()
+    if pg_firma_tanimi_mi(ham) or (
+        ayari_yukle().ag_mi and not ham.lower().endswith(".db") and "\\" not in ham and "/" not in ham
+    ):
+        # LAN/PG: company_db.open pg: veya düz DB adını çözer
+        yeni = company_db.open(company_id, ham)
+        _aktif_engine_bagla(yeni)
+        firma_arama_indekslerini_hazirla()
+        try:
+            finans_hesap_schemasini_guncelle(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("finans_hesap schema (firma_db_ac pg)")
+        try:
+            from database.satis_fiyat_listesi_service import SatisFiyatListesiService
+
+            SatisFiyatListesiService._hazir_engine_id = None
+            SatisFiyatListesiService.ensure_schema(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("satis_fiyat_listesi schema (firma_db_ac pg)")
+        try:
+            from database.konsinye_service import KonsinyeService
+
+            KonsinyeService._schema_hazir_engine_id = None
+            KonsinyeService.ensure_schema()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("konsinye schema (firma_db_ac pg)")
+        try:
+            alis_siparis_schemasini_guncelle(engine)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("alis_siparis schema (firma_db_ac pg)")
+        return
+
     yol = Path(db_path).resolve()
     mevcut_yol: Path | None = None
     try:
@@ -485,8 +553,13 @@ def sistem_altyapisini_baslat() -> dict:
     )
 
     company_id = sonuc["company_id"]
-    company_path = firma_db_yolu_coz(sonuc["company_db"]) or Path(sonuc["company_db"])
-    sonuc["company_db"] = str(company_path)
+    ham_db = str(sonuc.get("company_db") or "")
+    if pg_firma_tanimi_mi(ham_db):
+        company_path: str | Path = ham_db
+        sonuc["company_db"] = ham_db
+    else:
+        company_path = firma_db_yolu_coz(ham_db) or Path(ham_db)
+        sonuc["company_db"] = str(company_path)
     if company_id is not None:
         firma_db_ac(int(company_id), company_path)
         from database.system.models import Company
@@ -499,10 +572,11 @@ def sistem_altyapisini_baslat() -> dict:
                     firma_kodu=firma.firma_kodu,
                     firma_unvan=firma.unvan,
                     firma_uid=firma.firma_uid,
-                    db_path=str(company_path),
+                    db_path=str(firma.db_path or company_path),
                 )
 
-    _konum_dosyasi_yaz(Path(sonuc["company_db"]))
+    if not pg_firma_tanimi_mi(sonuc["company_db"]):
+        _konum_dosyasi_yaz(Path(sonuc["company_db"]))
     return sonuc
 
 
@@ -1115,12 +1189,14 @@ def cari_kart_schemasini_guncelle() -> None:
                     'WHERE "kod" IS NULL OR trim("kod") = \'\''
                 )
             )
+            # PG boolean ≠ integer; SQLite True→1. IS TRUE her iki diyalektte güvenli.
             connection.execute(
                 text(
-                    'UPDATE "depolar" SET "varsayilan" = 1 '
+                    'UPDATE "depolar" SET "varsayilan" = :v '
                     'WHERE upper("ad") = \'ANA DEPO\' AND NOT EXISTS ('
-                    'SELECT 1 FROM "depolar" d2 WHERE d2."varsayilan" = 1)'
-                )
+                    'SELECT 1 FROM "depolar" d2 WHERE d2."varsayilan" IS TRUE)'
+                ),
+                {"v": True},
             )
 
     for alis_tablo in ("alis_siparisleri", "alis_irsaliyeleri", "alis_faturalari"):

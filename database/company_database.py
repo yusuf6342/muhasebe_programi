@@ -56,14 +56,14 @@ class CompanyDatabase:
         self._engine: Engine | None = None
         self._session_factory: sessionmaker | None = None
         self._company_id: int | None = None
-        self._db_path: Path | None = None
+        self._db_path: Path | str | None = None
 
     @property
     def engine(self) -> Engine | None:
         return self._engine
 
     @property
-    def db_path(self) -> Path | None:
+    def db_path(self) -> Path | str | None:
         return self._db_path
 
     @property
@@ -77,11 +77,11 @@ class CompanyDatabase:
     def open(self, company_id: int, db_path: str | Path) -> Engine:
         ayar = ayari_yukle()
         if ayar.ag_mi:
-            etiket = str(db_path)
+            etiket = str(db_path).strip()
             if self._engine is not None and str(self._db_path) == etiket and self._company_id == company_id:
                 return self._engine
             self.close()
-            self._engine = _engine_olustur(Path("."), firma_db=_pg_db_adi_coz(db_path, None))
+            self._engine = _engine_olustur(Path("."), firma_db=_pg_db_adi_coz(etiket, None))
             self._session_factory = sessionmaker(
                 bind=self._engine,
                 autoflush=False,
@@ -89,7 +89,8 @@ class CompanyDatabase:
                 expire_on_commit=False,
             )
             self._company_id = company_id
-            self._db_path = Path(etiket)  # etiket; dosya değil
+            # pg:… dosya yolu değil; Path'e çevirmeden etiket olarak sakla
+            self._db_path = etiket  # type: ignore[assignment]
             return self._engine
 
         yol = Path(db_path).resolve()
