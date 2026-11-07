@@ -962,6 +962,10 @@ def cari_kart_schemasini_guncelle() -> None:
         "muhasebe_alis_kodu": "VARCHAR(50)",
         "muhasebe_kdv_satis_kodu": "VARCHAR(50)",
         "muhasebe_kdv_alis_kodu": "VARCHAR(50)",
+        # Nullable; eski satırlar boş kalır (DEFAULT yok → backfill yok)
+        "olusturma_tarihi": "TIMESTAMP",
+        "kart_acilis_tarihi": "TIMESTAMP",
+        "kart_acilis_dayanak": "VARCHAR(20)",
     }
     eksikler = {
         alan: tip for alan, tip in eklenecekler.items() if alan not in mevcut_sutunlar
@@ -1056,6 +1060,10 @@ def cari_kart_schemasini_guncelle() -> None:
             "ana_grup_id": "INTEGER",
             "tali_grup_id": "INTEGER",
             "alt_grup_id": "INTEGER",
+            # Nullable; eski satırlar boş kalır (DEFAULT yok → backfill yok)
+            "olusturma_tarihi": "TIMESTAMP",
+            "kart_acilis_tarihi": "TIMESTAMP",
+            "kart_acilis_dayanak": "VARCHAR(20)",
         }
         with engine.begin() as connection:
             for alan, tip in stok_eklenecekler.items():

@@ -30,6 +30,7 @@ build/
 backup/
 yedek/
 _guvenli_yedek_*/
+kurulum/_yedek_yerel/
 invoice_imports/
 # Örnek çıktılar (müşteri adı içerebilir)
 ornek_ciktilar/

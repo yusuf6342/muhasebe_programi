@@ -123,8 +123,25 @@ def schema_hazirla(motor=None) -> None:
             },
         )
 
+    def _v4(e) -> None:
+        # Kart açılış (oluşturulma) — nullable; eski kayıtları doldurma
+        eksik_kolonlari_ekle(e, "cari_kartlar", {"olusturma_tarihi": "TIMESTAMP"})
+
+    def _v5(e) -> None:
+        # İş açılışı + dayanak (Devir planı); sistem olusturma ayrı
+        eksik_kolonlari_ekle(
+            e,
+            "cari_kartlar",
+            {
+                "kart_acilis_tarihi": "TIMESTAMP",
+                "kart_acilis_dayanak": "VARCHAR(20)",
+            },
+        )
+
     if inspect(motor).has_table("cari_kartlar"):
         surum_uygula(motor, "cari_kart", 1, _v1)
         surum_uygula(motor, "cari_kart", 2, _v2)
         surum_uygula(motor, "cari_kart", 3, _v3)
+        surum_uygula(motor, "cari_kart", 4, _v4)
+        surum_uygula(motor, "cari_kart", 5, _v5)
     _HAZIR_MOTORLAR.add(motor)

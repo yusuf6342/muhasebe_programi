@@ -145,16 +145,27 @@ class Yazici:
     # -- cari
     def cariler(self):
         from database.cari_service import CariService
+        from database.kart_acilis import DAYANAK_DEVIR
         from database.models.cari import Cari
 
-        sutunlar = set(Cari.__table__.columns.keys()) - {"id"}
+        sutunlar = set(Cari.__table__.columns.keys()) - {
+            "id",
+            "olusturma_tarihi",
+            "kart_acilis_tarihi",
+            "kart_acilis_dayanak",
+        }
         for c in self.plan.cariler:
             if self.zaten("cari", c["evo_id"]):
                 continue
             try:
                 veriler = {k: v for k, v in c["veriler"].items() if k in sutunlar}
                 veriler["aktif"] = bool(c.get("aktif", True))
-                cari = CariService.ekle(veriler)
+                # Kart Açılış = plan/devír tarihi; sistem oluşturulma ayrı (olusturma_tarihi)
+                cari = CariService.ekle(
+                    veriler,
+                    plan_acilis=self.devir,
+                    kart_acilis_dayanak=DAYANAK_DEVIR,
+                )
             except Exception as hata:  # satır hatası: aktarım sürer, rapora yazılır
                 self.kayit("cari", c["evo_id"], "hata", f"{type(hata).__name__}: {hata}")
                 continue
@@ -177,6 +188,7 @@ class Yazici:
         from sqlalchemy import select
 
         from database.database import get_session
+        from database.kart_acilis import DAYANAK_DEVIR
         from database.models.stok import StokFiyati, StokKarti
         from database.stok_service import StokService
         from entegrasyon.stok_import import kaydet_veya_guncelle
@@ -191,7 +203,11 @@ class Yazici:
                 with get_session() as s:
                     if s.scalar(select(StokKarti.id).where(StokKarti.stok_kodu == kod)):
                         raise ValueError(f"Stok kodu {kod} hedefte zaten var; Evo kartı eşleşmesi belirsiz")
-                kaydet_veya_guncelle(veriler)
+                kaydet_veya_guncelle(
+                    veriler,
+                    plan_acilis=self.devir,
+                    kart_acilis_dayanak=DAYANAK_DEVIR,
+                )
                 ek = {"stok_kodu": kod}
                 with get_session() as s:
                     stok = s.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))

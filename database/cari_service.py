@@ -1762,15 +1762,34 @@ class CariService:
             ]
 
     @staticmethod
-    def ekle(veriler: dict[str, object]) -> Cari:
+    def ekle(
+        veriler: dict[str, object],
+        *,
+        devir_is_id: int | None = None,
+        plan_acilis=None,
+        kart_acilis_dayanak: str | None = None,
+    ) -> Cari:
         yazma_zorunlu("cari_duzenleme", "yeni_kayit")
         from database import cari_risk_service
+        from database.kart_acilis import (
+            DAYANAK_DEVIR,
+            devir_yeni_kart_tarihleri,
+            kart_acilis_koru,
+            kart_acilis_uygula,
+            yeni_kart_tarihleri,
+        )
 
-        veriler = dict(veriler)
+        veriler = kart_acilis_koru(dict(veriler))
         cari_turu = str(veriler.get("cari_turu") or "Müşteri")
         veriler["cari_turu"] = cari_turu
         risk_alanlari = {a: veriler.pop(a) for a in list(veriler) if a in cari_risk_service.KART_ALANLARI}
         cari_risk_service.kart_alanlarini_dogrula(dict(risk_alanlari))
+        if kart_acilis_dayanak == DAYANAK_DEVIR or devir_is_id is not None or plan_acilis is not None:
+            tarihler = devir_yeni_kart_tarihleri(
+                devir_is_id=devir_is_id, plan_acilis=plan_acilis
+            )
+        else:
+            tarihler = yeni_kart_tarihleri()
         son_hata: Exception | None = None
         for _ in range(25):
             if not (str(veriler.get("cari_kodu") or "").strip()):
@@ -1778,6 +1797,7 @@ class CariService:
             try:
                 with get_session() as session:
                     cari = Cari(**veriler)
+                    kart_acilis_uygula(cari, tarihler)
                     session.add(cari)
                     session.flush()
                     cari_risk_service.kart_degisikligini_uygula(
@@ -1794,8 +1814,9 @@ class CariService:
     def guncelle(cari_id: int, veriler: dict[str, object]) -> Cari:
         yazma_zorunlu("cari_duzenleme")
         from database import cari_risk_service
+        from database.kart_acilis import kart_acilis_koru
 
-        veriler = dict(veriler)
+        veriler = kart_acilis_koru(dict(veriler))
         with get_session() as session:
             cari = session.get(Cari, cari_id)
             if cari is None:

@@ -3067,12 +3067,36 @@ class StokService:
         resimler=None,
         kdv_durumlari=None,
         fiyat_hesaplamalari=None,
+        *,
+        devir_is_id: int | None = None,
+        plan_acilis=None,
+        kart_acilis_dayanak: str | None = None,
+        kaynak_stok_id=None,
     ):
         """kdv_durumlari: {fiyat_adi: "HARIC"|"DAHIL"|None}; verilmeyen fiyatın mevcut KDV anlamı korunur.
 
         fiyat_hesaplamalari: {fiyat_adi: {"hesaplama_modu": "MANUEL"|"LISTE", "satis_iskonto": ...}}
+
+        Devir: plan_acilis / devir_is_id ile Kart Açılış = plan açılışı; dayanak «Devir».
+        D2 49 pasif stok (kaynak_stok_id): kart oluşturma/güncelleme engellenir.
         """
         yazma_zorunlu("stok_duzenleme", "yeni_kayit")
+        from database.kart_acilis import (
+            DAYANAK_DEVIR,
+            d2_stok_kart_yazimi_engelli,
+            devir_yeni_kart_tarihleri,
+            kart_acilis_koru,
+            kart_acilis_uygula,
+            yeni_kart_tarihleri,
+        )
+
+        veriler = kart_acilis_koru(dict(veriler or {}))
+        kaynak_sid = kaynak_stok_id if kaynak_stok_id is not None else veriler.pop("kaynak_stok_id", None)
+        if d2_stok_kart_yazimi_engelli(kaynak_sid):
+            raise ValueError(
+                f"Kaynak stok {kaynak_sid} D2 kapsam dışı 49 pasif listesinde; "
+                "kart oluşturulmaz/güncellenmez."
+            )
         with get_session() as session:
             stok_id = veriler.get("stok_id")
             yeni_kod = (veriler.get("stok_kodu") or "").strip()
@@ -3104,12 +3128,19 @@ class StokService:
                 )
 
             if not stok:
+                if kart_acilis_dayanak == DAYANAK_DEVIR or devir_is_id is not None or plan_acilis is not None:
+                    tarihler = devir_yeni_kart_tarihleri(
+                        devir_is_id=devir_is_id, plan_acilis=plan_acilis
+                    )
+                else:
+                    tarihler = yeni_kart_tarihleri()
                 stok = StokKarti(
                     stok_kodu=yeni_kod,
                     stok_adi=veriler["stok_adi"].strip(),
                     birim=veriler.get("birim") or "Adet",
                     kart_turu=veriler.get("kart_turu") or "Ticari Mal",
                 )
+                kart_acilis_uygula(stok, tarihler)
                 session.add(stok)
                 session.flush()
 

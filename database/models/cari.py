@@ -95,6 +95,12 @@ class Cari(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deletion_log_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sistem oluşturulma anı (TR); eski kayıtlar NULL; düzenlemede değişmez
+    olusturma_tarihi: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Kart Açılış Tarihi (iş); Devir'de plan açılışı, normalde olusturma ile aynı
+    kart_acilis_tarihi: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # «Devir» | None — fiili aktarım günü değil
+    kart_acilis_dayanak: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     satis_hareketleri: Mapped[list["SatisHareketi"]] = relationship(
         "SatisHareketi",

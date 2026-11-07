@@ -2857,6 +2857,23 @@ class StokKartiDialog(tk.Toplevel):
         )
         self.alanlar["raf_omru"] = raf_omru_w
 
+        from database.kart_acilis import kart_acilis_gosterim
+
+        _sol_etiket(panel_kimlik, "Kart Açılış Tarihi", 6)
+        g = kart_acilis_gosterim(self.stok)
+        acilis_metin = g["etiket"]
+        if g.get("sistem") and g.get("dayanak") == "Devir":
+            acilis_metin = f"{acilis_metin}  ·  Sistem: {g['sistem']}"
+        self._kart_acilis_lbl = tk.Label(
+            panel_kimlik,
+            text=acilis_metin if acilis_metin else "—",
+            bg=BEYAZ,
+            fg=sktema.IKINCIL,
+            font=sktema.font(9, root=self),
+            anchor="w",
+        )
+        self._kart_acilis_lbl.grid(row=6, column=1, columnspan=2, sticky="ew", padx=(0, 2), pady=SATIR_PADY)
+
         # Özellikler: Marka/Model, Renk/Raf — etiket solda
         for r, (e1, a1, e2, a2) in enumerate((
             ("Marka", "marka", "Model", "model"),
@@ -6306,6 +6323,19 @@ class StokKartiDialog(tk.Toplevel):
                 )
             )
 
+    def _kart_acilis_guncelle(self):
+        """Salt okunur Kart Açılış Tarihi (TR); Devir dayanağı; eski/boş —."""
+        from database.kart_acilis import kart_acilis_gosterim
+
+        lbl = getattr(self, "_kart_acilis_lbl", None)
+        if lbl is None:
+            return
+        g = kart_acilis_gosterim(self.stok)
+        metin = g["etiket"]
+        if g.get("sistem") and g.get("dayanak") == "Devir":
+            metin = f"{metin}  ·  Sistem: {g['sistem']}"
+        lbl.configure(text=metin if metin else "—")
+
     def _ozeti_yenile(self):
         """Senkron özet (kayıt sonrası / test). Açılışta _ozeti_yenile_arka kullanılır."""
         if not self.stok:
@@ -6950,6 +6980,7 @@ class StokKartiDialog(tk.Toplevel):
         yeni_mi = self.stok is None
         self.stok = self.result
         self.title("Stok Kartını Düzenle")
+        self._kart_acilis_guncelle()
         self._ozeti_yenile()
         self._depo_tablosu_yenile()
         self._barkod_birim_tablolari_yenile()
