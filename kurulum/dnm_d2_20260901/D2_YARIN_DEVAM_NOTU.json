@@ -1,75 +1,50 @@
 {
-  "format": "d2-yarin-devam-notu-v2",
-  "zaman": "2026-11-07T17:57:00+03:00",
+  "format": "d2-yarin-devam-notu-v3",
+  "zaman": "2026-11-07T18:16:00+03:00",
   "bugun": "2026-11-07",
-  "mod": "HAZIRLIK_ONIZLEME_KART_ACILIS_TAMAM",
+  "dal": "feature/yerel-ag-postgresql",
   "mali_yazim": false,
   "k05": false,
   "k06": false,
   "exe": false,
-  "evo_kullanima_devam": true,
   "d1_koruma": true,
   "d2_sonrasi_d1_devam": true,
-  "d1_devam_notu": "kurulum/dnm_d1_20260831/DEVIR1_DEVAM_NOTU",
-  "kaynak_okuma_zamani": "2026-11-07T17:39:12+03:00",
-  "onizleme": "D2_AKTARIM_ONIZLEME.json",
-  "onizleme_ozet": "D2_AKTARIM_ONIZLEME_OZET.json",
-  "tamamlanan": [
-    "terminal_hba_d2_salt_okuma",
-    "cari22_fifo_kullanici_kararlari",
-    "d2_aktarim_onizleme_sayisal",
-    "kart_acilis_tarihi_kod_test_evo_baglanti",
-    "cari_kart_sema_v4_v5_kolonlar"
+  "git_gonderilen": [
+    {
+      "commit": "ed39dad",
+      "ozet": "Kart Acilis Tarihi cari/stok + Devir plan + testler"
+    },
+    {
+      "commit": "1c19a90",
+      "ozet": "PG/LAN kabul yolu, mesajlasma, tools/dnm_d1+dnm_d2, sunucu scriptleri"
+    }
   ],
-  "acik_eksikler": [
-    "tum_cari_acilis_toplami_hesaplanamadi",
-    "d2_donem_belge_adedi_kesim_sonrasi",
-    "banka_3108_kapanis_HESAPLANAMADI",
-    "hedef_firma_is_kaydi_0_mali_yazim_yok",
-    "ana_makine_hedef_db_kart_acilis_kolon_dogrulama_yarin"
+  "git_eklenmedi": [
+    "kurulum/dnm_d1_20260831 kaynak-kanit",
+    "kurulum/dnm_d2_20260901 mali onizleme/döküm JSON (not hariç commit'te)",
+    "baglanti_ayari.json",
+    "parola/.env/paket zip/Banka_Guncelleme_Yedek/_yedek_yerel"
+  ],
+  "yerel_yedekler": [
+    "kurulum/_yedek_yerel/d1_d2_20261107_175657",
+    "kurulum/_yedek_yerel/wip_gunsonu_20261107_181541"
+  ],
+  "wip_yerel": [
+    "entegrasyon/evobulut_client.py (patch yedekte)",
+    "entegrasyon/dnm_d1 untracked"
   ],
   "kullanici_kararlari": {
     "cari22_21_sifir": true,
     "stok_49_pasif_haric": true,
     "sifir_maliyet_teyit": true,
-    "cakisma_10753_oncelik": "HARIC_49",
-    "sifir_teyit_14": 14,
-    "sifir_aktarim_kapsam_13": 13
+    "cakisma_10753_oncelik": "HARIC_49"
   },
-  "kart_acilis": {
-    "normal": "ilk_basarili_kayit",
-    "devir": "plan_acilis_tarihi_dayanak_Devir",
-    "d2_plan_acilis": "2026-09-01T00:00:00+03:00",
-    "eski_backfill": false,
-    "pasif_49_engelli": true,
-    "test": "tests/test_kart_acilis_tarihi.py",
-    "sema": ["olusturma_tarihi", "kart_acilis_tarihi", "kart_acilis_dayanak"],
-    "ana_makine": "uygulama_acilisi_ALTER; eski_satir_doldurma_yok"
-  },
-  "ozet_sayilar": {
-    "stok_aktar": 3203,
-    "stok_haric": 49,
-    "sifir_aktarim": 13,
-    "cari21_0": 21,
-    "cari1980": "1085",
-    "kasa_toplam": "4759.56",
-    "belge_49_bagli": 11,
-    "hedef_firma_dolu_tablo": 0
-  },
-  "yarin_kesim_sonrasi": [
-    "EvoBulut kayit ara; kesim ani not et",
-    "Kaynak verileri yeniden al",
-    "Onizlemeyi yenile (d2_aktarim_onizleme_hesapla)",
-    "Kart acilis kolonlarini hedef DB'de dogrula",
-    "Kullanici dogrulama",
-    "K05/mali yazim ayri izin olmadan yok",
-    "D2 sonrasi D1 DEVIR1_DEVAM_NOTU"
-  ],
-  "yarin_komutlar": [
-    ".\\.venv\\Scripts\\python.exe -m tools.dnm_d2.d2_aktarim_onizleme_hesapla",
-    "Get-Content .\\kurulum\\dnm_d2_20260901\\D2_AKTARIM_ONIZLEME_OZET.json -Encoding UTF8",
-    ".\\.venv\\Scripts\\python.exe -m tools.dnm_d2.pg_d2_terminal_salt_okuma",
-    ".\\.venv\\Scripts\\python.exe -m pytest tests/test_kart_acilis_tarihi.py -q"
+  "yarin_kalan": [
+    "kesim_sonrasi_kaynak_yenile_onizleme",
+    "hesaplanamayan_alanlar",
+    "ana_makine_kart_acilis_kolon_dogrula",
+    "mali_yazim_k05_exe_kapali",
+    "d2_sonrasi_d1_devam"
   ],
   "md": "D2_YARIN_DEVAM_NOTU.md"
 }
