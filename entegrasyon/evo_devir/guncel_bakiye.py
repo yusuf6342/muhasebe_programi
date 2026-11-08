@@ -23,11 +23,18 @@ from entegrasyon.evobulut_client import EvobulutClient, _ana_listesi, load_crede
 DOVIZ_ALAN = {"TL": "tl", "USD": "dolar", "EUR": "euro"}
 
 
-def _toplam_blogu(veri: dict, anahtar: str) -> dict:
+def _toplam_blogu(veri, anahtar: str) -> dict:
+    """Evo bazen ``veri`` dict, bazen liste döner; GRP_TOP/ExData da liste olabilir."""
+    if isinstance(veri, list):
+        veri = veri[0] if veri and isinstance(veri[0], dict) else {}
+    if not isinstance(veri, dict):
+        return {}
     blok = veri.get(anahtar)
     if isinstance(blok, list):
         blok = blok[0] if blok else {}
-    return {k: str(v) for k, v in (blok or {}).items()}
+    if not isinstance(blok, dict):
+        return {}
+    return {k: str(v) for k, v in blok.items()}
 
 
 def cek(devir: str, cikti_klasoru: Path) -> Path:

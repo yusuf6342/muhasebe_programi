@@ -207,6 +207,7 @@ class Yazici:
                     veriler,
                     plan_acilis=self.devir,
                     kart_acilis_dayanak=DAYANAK_DEVIR,
+                    kaynak_stok_id=st["evo_id"],
                 )
                 ek = {"stok_kodu": kod}
                 with get_session() as s:
