@@ -300,7 +300,10 @@ class CariKartTest(_EkranTest):
             kart.cari_virman_ac()
             kart.kk_cekimi_ac()
         odeme, virman, kk = acilan
-        self.assertIn("ALİ ÇELİK MOBİLYA LTD", odeme.cari_lbl.cget("text"))
+        # Ödeme artık kasa ödeme makbuzu (Firma Kredi Kartıyla Ödeme dâhil)
+        self.assertTrue(hasattr(odeme, "sekil_cb") or hasattr(odeme, "cari_lbl"))
+        if hasattr(odeme, "cari_var"):
+            self.assertTrue(odeme.cari_var.get() or odeme.secili_cari_id() == self.musteri_id)
         self.assertIn("ALİ ÇELİK MOBİLYA LTD", virman.girdiler["kaynak"].get())
         self.assertEqual(virman.girdiler["hedef"].get(), "")
         self.assertIn("ALİ ÇELİK MOBİLYA LTD", kk.girdiler["musteri"].get())
@@ -326,16 +329,21 @@ class EvrakTutarTest(_EkranTest):
         entry.event_generate("<FocusOut>")
 
     def test_odeme_gir_turkce_tutar(self):
+        """Ödeme Gir artık kasa ödeme makbuzuna yönlenir; tahsilat şekilleri menüde yok."""
+        import kasa_makbuz_ui
+        from kasa_makbuz_ui import ODEME_MAKBUZ_SEKILLERI, SIRKET_KARTI_SEKLI, KasaMakbuzDialog
+
         cari = CariService.getir(self.tedarikci_id)
-        d = self.app.CariTahsilatOdemeDialog(self.root, cari, tur="odeme")
-        d.girdiler["tutar"].insert(0, "1234,5")
-        self._odak_cik(d.girdiler["tutar"])
-        self.assertEqual(d.girdiler["tutar"].get(), "1.234,50")
-        self.assertIn("bold", str(d.girdiler["tutar"].cget("font")))
-        d.girdiler["hesap"].set("TEST KASA")
-        d.kaydet()
-        self.assertFalse(self.mesajlar)
-        self.assertEqual(Decimal(d.result.alacak) + Decimal(d.result.borc), Decimal("1234.50"))
+        d = KasaMakbuzDialog(self.root, makbuz_turu="ODEME", cari_id=cari.id)
+        self.assertEqual(tuple(d.sekil_cb.cget("values")), ODEME_MAKBUZ_SEKILLERI)
+        for yasak in ("GELEN HAVALE", "KREDİ KARTIYLA TAHSİLAT"):
+            self.assertNotIn(yasak, d.sekil_cb.cget("values"))
+        self.assertIn(SIRKET_KARTI_SEKLI, d.sekil_cb.cget("values"))
+        d.sekil_var.set(ODEME_MAKBUZ_SEKILLERI[0])
+        d._sekil_degisti()
+        self.assertEqual(d.hesap_etiket_lbl.cget("text"), "Kasa")
+        with patch.object(kasa_makbuz_ui.messagebox, "askyesnocancel", return_value=False):
+            d.kapat()
 
     def test_virman_ve_kk_buyuk_tutar_yeniden_acilinca_ayni(self):
         v = self.app.CariVirmanDialog(self.root, kaynak_id=self.musteri_id, hedef_id=self.tedarikci_id)

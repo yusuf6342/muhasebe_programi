@@ -34,6 +34,18 @@ from entegrasyon.stok_import import kaydet_veya_guncelle
 
 BELGE_ONEK = "EVB-AF-"
 DETAY_BEKLE_SN = 1.05  # ~60 istek/dk EvoBulut limiti
+# Evo liste a_sbelge_seri_no: henüz gönderilmemiş / anlamsız ortak etiket — tekil belge no olamaz
+_SERI_PLACEHOLDER = frozenset(
+    {
+        "",
+        "0",
+        "-",
+        "GÖNDERİLMEDİ",
+        "GONDERILMEDI",
+        "GÖNDERILMEDI",
+        "GONDERİLMEDİ",
+    }
+)
 
 
 @dataclass
@@ -75,8 +87,14 @@ def _tarih(deger: Any) -> date | None:
 
 
 def fatura_no_icin(liste_satir: dict, ana: dict) -> str:
+    """Tekil belge no: anlamlı seri; aksi halde AF{kod} veya EVB-AF-{a_id}.
+
+    'GÖNDERİLMEDİ' ve benzeri ortak etiketler birçok a_id'de aynı geldiği için
+    fatura_var_mi ile yanlış atlamaya yol açar — EVB-AF-{a_id} kullanılır.
+    Çok kısa (<=2) seri (ör. 'mc') de çakışmaya açık; a_id önekine düşülür.
+    """
     seri = _temiz(ana.get("a_sbelge_seri_no") or liste_satir.get("G.a_sbelge_seri_no"))
-    if seri:
+    if seri and seri.casefold() not in {x.casefold() for x in _SERI_PLACEHOLDER} and len(seri) > 2:
         return seri[:50]
     kod = _temiz(ana.get("a_kod") or liste_satir.get("G.a_kod"))
     if kod and kod not in {"0", ""}:
@@ -141,11 +159,44 @@ def _stok_var_mi(kod: str) -> bool:
         )
 
 
+def _stok_kodu_stok_id_ile(stok_id: str) -> str:
+    """Evo a_stok_id → stok kartı a_kod (satırda a_kod boş geldiğinde)."""
+    sid = _temiz(stok_id)
+    if not sid:
+        return ""
+    try:
+        from entegrasyon.evobulut_client import EvobulutClient, load_credentials
+
+        client = EvobulutClient(load_credentials())
+        client.login()
+        det = client.stok_detay(sid)
+        ana = det.get("Ana") or {}
+        if isinstance(ana, list) and ana:
+            ana = ana[0]
+        if isinstance(ana, dict):
+            return _temiz(ana.get("a_kod") or ana.get("R.a_kod"))
+    except Exception:
+        return ""
+    return ""
+
+
 def _stok_garanti(line: dict[str, Any], sonuc: AlisFaturaImportSonuc) -> str:
     """Stok kodunu döner; yoksa minimal kart oluşturur."""
     kod = _temiz(line.get("a_kod") or line.get("a_kod1"))
     if not kod:
-        raise ValueError("Satırda stok kodu yok")
+        kod = _stok_kodu_stok_id_ile(str(line.get("a_stok_id") or ""))
+    if not kod:
+        # D2 kart aktarımı boş Evo kodlarını EVO-{a_stok_id} ile yazdı
+        sid = _temiz(line.get("a_stok_id"))
+        if sid and _stok_var_mi(f"EVO-{sid}"):
+            kod = f"EVO-{sid}"
+        elif sid:
+            kod = f"EVB-ST-{sid}"
+    if not kod:
+        raise ValueError(
+            f"Satırda stok kodu yok (a_stok_id={line.get('a_stok_id')!r} "
+            f"adi={_temiz(line.get('a_stok_adi'))!r})"
+        )
     if _stok_var_mi(kod):
         return kod
     ad = _temiz(line.get("a_stok_adi")) or kod
@@ -196,7 +247,10 @@ def _satir_verisi(line: dict[str, Any], sonuc: AlisFaturaImportSonuc) -> dict[st
     elif birim_fiyat is None:
         birim_fiyat = Decimal("0")
 
-    kdv = _decimal(line.get("a_kdv"), Decimal("20")) or Decimal("20")
+    # a_kdv=0 geçerli; `or 20` sıfırı yutuyordu
+    kdv = _decimal(line.get("a_kdv"))
+    if kdv is None:
+        kdv = Decimal("20")
     birim = _temiz(line.get("a_brm_adi")) or "Adet"
     ad = _temiz(line.get("a_stok_adi")) or kod
 

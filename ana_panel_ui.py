@@ -77,17 +77,25 @@ MENU_ALT_OGELERI: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
     # SATIS_PENCERELERI ayrı pencere (Toplevel) açar, ekran değiştirmez.
     "satislar": (
         ("Satış Faturaları", "hizli_fatura_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
+        ("Satış İade Faturaları", "satis_iade_faturalari_goster",
+         ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
         ("Alınan Siparişler", "satis_siparisi_yeni_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
         ("Teklifler", "teklifler_hub_ac", ("satis_goruntuleme", "goruntuleme", "satis_duzenleme", "yeni_kayit")),
         ("Sorulan Ürünler", "sorulan_urunler", ("satis_goruntuleme", "goruntuleme")),
-        ("Müşteri Kartları", "musteri_karti_ac", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
+        ("Müşteri Kartları", "cariler_goster", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
                                                   "goruntuleme")),
+        ("Yeni Müşteri Kartı", "musteri_karti_ac", ("cari_duzenleme", "cari_goruntuleme", "satis_goruntuleme",
+                                                  "goruntuleme")),
+        ("Genel Cari Kartlar", "genel_cariler_goster", ("cari_duzenleme", "cari_goruntuleme", "goruntuleme")),
+        ("Diğer Cari Listesi", "diger_cariler_goster", ("cari_duzenleme", "cari_goruntuleme", "goruntuleme")),
     ),
     "satin_alma": (
         ("Alış Faturası", "alis_faturasi_yeni", ("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")),
         ("Alış Siparişi", "alis_siparisi_yeni", ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
         ("Satın Alma Talepleri", "satin_alma_talebi_yeni",
          ("alis_talep_duzenleme", "alis_talep_goruntuleme", "alis_talep_onay", "alis_duzenleme")),
+        ("Tedarikçi Kartları", "tedarikci_kartlari_goster", ("cari_duzenleme", "cari_goruntuleme", "alis_goruntuleme",
+                                                       "goruntuleme")),
         ("Sorulan Ürünler", "sorulan_urunler", ("satis_goruntuleme", "alis_goruntuleme", "goruntuleme")),
     ),
     "aktivite": (
@@ -327,9 +335,27 @@ class SolMenuGrup(SolMenuDugme):
 
     def _on_click(self, _e=None):
         acilacak = not self.acik
+        if acilacak:
+            # Accordion: diğer açık grupları kapat (layout sade, tıklama daha hızlı)
+            try:
+                for sibling in self.master.winfo_children():
+                    if (
+                        isinstance(sibling, SolMenuGrup)
+                        and sibling is not self
+                        and sibling.acik
+                    ):
+                        sibling.ac_kapat(False)
+            except tk.TclError:
+                pass
         self.ac_kapat(acilacak)
+        # Alt menüyü hemen boya; hub/sayfa yükünü sonraki tike bırak (UI donmasın)
         if acilacak and self._komut:
-            self._komut()
+            komut = self._komut
+            try:
+                self.update_idletasks()
+                self.after(1, komut)
+            except tk.TclError:
+                komut()
         return "break"
 
     def _ok_guncelle(self) -> None:
@@ -519,37 +545,82 @@ def son_islemleri_topla(limit: int = 25) -> list[dict[str, str]]:
     return satirlar
 
 
-def son_yedek_metni() -> str:
+# Durum çubuğu: ağ/disk taraması menü tıklamasını kilitlemesin
+_YEDEK_ONBELLEK: tuple[float, str] | None = None
+_YEDEK_TTL_SN = 300.0
+_DB_BAGLI_ONBELLEK: tuple[float, bool] | None = None
+_DB_BAGLI_TTL_SN = 45.0
+
+
+def son_yedek_metni(*, zorla: bool = False) -> str:
+    """Son yedek zamanı — sığ klasör taraması + TTL önbellek (eski rglob donmasını önler)."""
+    global _YEDEK_ONBELLEK
+    simdi = time.monotonic()
+    if (
+        not zorla
+        and _YEDEK_ONBELLEK is not None
+        and simdi - _YEDEK_ONBELLEK[0] < _YEDEK_TTL_SN
+    ):
+        return _YEDEK_ONBELLEK[1]
+    metin = "—"
     try:
         from pathlib import Path
         import os
 
-        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MuhasebeProgrami"
-        adaylar = list(base.rglob("*.db.bak")) + list(base.rglob("*yedek*.db"))
-        if not adaylar:
-            # Geçiş / servis yedek klasörleri
-            for p in base.rglob("*"):
-                if p.is_file() and "yedek" in p.name.lower():
-                    adaylar.append(p)
-        if not adaylar:
-            return "—"
-        son = max(adaylar, key=lambda p: p.stat().st_mtime)
-        ts = datetime.fromtimestamp(son.stat().st_mtime)
-        return ts.strftime("%d.%m.%Y %H:%M")
+        local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        kokler = (
+            local / "MuhasebeProgrami",
+            local / "CinMuhasebe",
+            local / "CinMuhasebeTest",
+        )
+        adaylar: list[Path] = []
+        for base in kokler:
+            if not base.is_dir():
+                continue
+            # Tam ağaç taraması yok — kök + bir alt seviye yeterli
+            for desen in ("*.db.bak", "*yedek*.db", "*Yedek*.db"):
+                adaylar.extend(base.glob(desen))
+            try:
+                alts = [p for p in base.iterdir() if p.is_dir()]
+            except OSError:
+                alts = []
+            for alt in alts[:40]:
+                for desen in ("*.db.bak", "*yedek*.db", "*Yedek*.db"):
+                    try:
+                        adaylar.extend(alt.glob(desen))
+                    except OSError:
+                        pass
+        if adaylar:
+            son = max(adaylar, key=lambda p: p.stat().st_mtime)
+            metin = datetime.fromtimestamp(son.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
     except Exception:
-        return "—"
+        metin = "—"
+    _YEDEK_ONBELLEK = (simdi, metin)
+    return metin
 
 
-def db_bagli_mi() -> bool:
+def db_bagli_mi(*, zorla: bool = False) -> bool:
+    """SELECT 1 — TTL önbellek; menü/sayfa açılışında her seferinde ağ beklenmesin."""
+    global _DB_BAGLI_ONBELLEK
+    simdi = time.monotonic()
+    if (
+        not zorla
+        and _DB_BAGLI_ONBELLEK is not None
+        and simdi - _DB_BAGLI_ONBELLEK[0] < _DB_BAGLI_TTL_SN
+    ):
+        return _DB_BAGLI_ONBELLEK[1]
+    bagli = False
     try:
         from database.database import get_session
         from sqlalchemy import text
 
         with get_session() as session:
             session.execute(text("SELECT 1"))
-        return True
+        bagli = True
     except Exception:
-        return False
+        bagli = False
+    _DB_BAGLI_ONBELLEK = (simdi, bagli)
+    return bagli
 
 
 class AnaPanelKabuk:
@@ -899,12 +970,18 @@ class AnaPanelKabuk:
             self._saat_after = None
 
     def durum_guncelle(self) -> None:
+        """Durum çubuğu — senkron ağ/disk yok; ölçüm arka planda."""
         app = self.app
         try:
             from database.session_manager import oturum
             from branding import APP_VERSION
 
-            bagli = db_bagli_mi()
+            # Soğuk önbellekte iyimser göster; gerçek değer arka planda gelir
+            if _DB_BAGLI_ONBELLEK is not None:
+                bagli = _DB_BAGLI_ONBELLEK[1]
+            else:
+                bagli = bool(oturum.firma_secili)
+            yedek = _YEDEK_ONBELLEK[1] if _YEDEK_ONBELLEK is not None else "…"
             app.status_db_label.configure(
                 text=("DB: Bağlı" if bagli else "DB: Yok"),
                 fg=BASARI if bagli else UYARI,
@@ -914,9 +991,55 @@ class AnaPanelKabuk:
             donem = oturum.donem_adi or "—"
             app.status_donem_label.configure(text=f"Dönem: {donem}")
             app.status_surum_label.configure(text=f"v{APP_VERSION}")
-            app.status_yedek_label.configure(text=f"Yedek: {son_yedek_metni()}")
+            app.status_yedek_label.configure(text=f"Yedek: {yedek}")
         except Exception:
             pass
+        try:
+            simdi = time.monotonic()
+            db_bayat = (
+                _DB_BAGLI_ONBELLEK is None
+                or simdi - _DB_BAGLI_ONBELLEK[0] >= _DB_BAGLI_TTL_SN * 0.8
+            )
+            yedek_bayat = (
+                _YEDEK_ONBELLEK is None
+                or simdi - _YEDEK_ONBELLEK[0] >= _YEDEK_TTL_SN * 0.8
+            )
+            if not (db_bayat or yedek_bayat):
+                return
+            if getattr(app, "_durum_yenile_bekliyor", False):
+                return
+            app._durum_yenile_bekliyor = True
+            from ui_bg import arka_planda
+
+            def _olc():
+                return (
+                    db_bagli_mi(zorla=True) if db_bayat else db_bagli_mi(),
+                    son_yedek_metni(zorla=True) if yedek_bayat else son_yedek_metni(),
+                )
+
+            def _yaz(sonuc):
+                app._durum_yenile_bekliyor = False
+                try:
+                    if not app.winfo_exists():
+                        return
+                    bagli, yedek = sonuc
+                    app.status_db_label.configure(
+                        text=("DB: Bağlı" if bagli else "DB: Yok"),
+                        fg=BASARI if bagli else UYARI,
+                    )
+                    app.status_yedek_label.configure(text=f"Yedek: {yedek}")
+                except Exception:
+                    pass
+
+            def _hata(_e):
+                app._durum_yenile_bekliyor = False
+
+            arka_planda(app, _olc, on_ok=_yaz, on_err=_hata)
+        except Exception:
+            try:
+                app._durum_yenile_bekliyor = False
+            except Exception:
+                pass
 
     def tema_yenile(self) -> None:
         """ui_tema.uygula sonrası menü renklerini yenile (yeniden oluşturmaz)."""

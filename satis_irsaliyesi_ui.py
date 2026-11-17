@@ -697,9 +697,9 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
             from database.cari_service import CariService
 
             musteriler = sorted(
-                CariService.aktif_musteriler(),
+                CariService.aktif_evrak_carileri(),
                 key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold()),
-            )[:80]
+            )
             try:
                 bakiyeler = CariService.musteri_bakiyeleri_toplu([c.id for c in musteriler])
             except Exception:

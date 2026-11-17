@@ -1,0 +1,21 @@
+---
+description: PDF, yazdırma ve yazıcı ayarlarını ekran değişikliklerinden koru
+alwaysApply: true
+---
+
+# PDF / Yazıcı / Baskı Önizleme Koruması
+
+Kullanıcı açıkça PDF veya yazdırma değişikliği istemedikçe mevcut PDF, yazdırma, baskı önizleme düzenini ve yazıcı ayarlarını değiştirme.
+
+## Zorunlu
+
+- Yeni sütunlar, satır renkleri, genişlikler ve ekran yerleşimleri **yalnızca uygulama ekranına** uygulansın.
+- Özellikle bilgilendirme sütunları (ör. Stok Durumu) ve Kısmi/Yok satır renkleri PDF’ye veya yazıcı çıktısına kendiliğinden eklenmesin.
+- Evrak/rapor çıktı şablonlarını koru: sütunlar, sıra, genişlik, yazı tipi, logo/başlık/altbilgi, toplam alanları, sayfa bölünmesi.
+- Ekran tablosu ile çıktı aynı bileşeni paylaşıyorsa ekran değişikliklerinin çıktıya taşınmasını önle; çıktı için ayrı görünüm/veri modeli kullan (`siparis_form_view`, `invoice_print/*` vb.).
+- Seçili/varsayılan yazıcı, kâğıt, yön, kenar boşluğu, ölçek, tepsi, kopya ve kullanıcıya özel yazdırma tercihlerini koru; Windows yazıcı ayarlarını değiştirme.
+- Güncelleme, kurulum, ilk açılış veya veritabanı geçişi mevcut şablonları / kullanıcı ayarlarını sıfırlamasın.
+
+## Doğrulama
+
+Aynı test evrakı ve veriyle önce/sonra PDF veya baskı önizlemesini karşılaştır. Çıktıdaki evrak verileri doğru ve güncel kalmalı; koruma eski veri basmak demek değildir.

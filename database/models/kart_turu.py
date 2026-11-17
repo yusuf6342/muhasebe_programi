@@ -32,7 +32,7 @@ class KartAnaTuru(Base):
     kod: Mapped[str] = mapped_column(String(40), nullable=False)
     ad: Mapped[str] = mapped_column(String(100), nullable=False)
     aciklama: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Cari: MUSTERI | TEDARIKCI | PERSONEL | MUSTERI_TEDARIKCI
+    # Cari: MUSTERI | TEDARIKCI | PERSONEL | RESMI_KURUMLAR | DUZENLEYICI
     muhasebe_rol: Mapped[str | None] = mapped_column(String(40), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sira: Mapped[int] = mapped_column(Integer, default=100, nullable=False)

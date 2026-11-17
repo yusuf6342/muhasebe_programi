@@ -138,17 +138,71 @@ class CariAcikKalemlerDialog(tk.Toplevel):
             return
         if not sorunlar:
             messagebox.showinfo(
-                "Tutarlılık", "Tüm kalemlerde kapatma payları + kalan = evrak tutarı.", parent=self
+                "Tutarlılık",
+                "Bakiye ile açık kalemler uyumlu; kapatma payları + kalan = evrak tutarı.",
+                parent=self,
             )
             return
-        satirlar = "\n".join(
-            f"{s['belge_no']}: pay {_para(s['aktif_pay'])} + kalan {_para(s['kalan'])} "
-            f"≠ tutar {_para(s['esas'])}"
-            for s in sorunlar[:30]
+        satirlar = []
+        onarilabilir = False
+        for s in sorunlar[:40]:
+            tur = s.get("tur") or "KALEM_PAY"
+            bel = s.get("belge_no") or "—"
+            tutar = _para(s.get("fark") or s.get("kalan") or 0)
+            if tur == "KALEM_PAY":
+                satirlar.append(
+                    f"{bel}: pay {_para(s['aktif_pay'])} + kalan {_para(s['kalan'])} "
+                    f"≠ tutar {_para(s['esas'])}"
+                )
+            elif tur == "TAHSIS_EKSIK":
+                onarilabilir = True
+                satirlar.append(
+                    f"{bel}: mahsup edilmemiş {_para(s.get('kalan') or 0)} "
+                    f"— {s.get('aciklama') or tur}"
+                )
+            elif tur == "KALEMSIZ_BORC":
+                onarilabilir = True
+                satirlar.append(
+                    f"{bel}: açık kalemsiz {_para(s.get('kalan') or 0)} "
+                    f"— {s.get('aciklama') or tur}"
+                )
+            else:
+                satirlar.append(f"{bel}: {s.get('aciklama') or tur} ({tutar})")
+        metin = (
+            f"{len(sorunlar)} tutarsızlık (belge + tutar):\n\n" + "\n".join(satirlar)
         )
-        messagebox.showwarning(
+        if onarilabilir:
+            if messagebox.askyesno(
+                "Tutarlılık Kontrolü",
+                metin
+                + "\n\nEksik mahsup / kalemsiz borç belgelerini açık kaleme bağlamak ister misiniz?",
+                parent=self,
+            ):
+                self._tahsis_onar()
+            return
+        messagebox.showwarning("Tutarlılık Kontrolü", metin, parent=self)
+
+    def _tahsis_onar(self):
+        from database.acik_kalem_service import AcikKalemService
+        from database.database import get_session
+
+        try:
+            with get_session() as session:
+                sonuc = AcikKalemService.eksik_tahsisleri_onar(
+                    session, self.cari_id, dry_run=False
+                )
+                session.commit()
+        except Exception as hata:
+            messagebox.showerror("Tutarlılık", str(hata), parent=self)
+            return
+        sonra = sonuc.get("sonra") or {}
+        adet = len(sonuc.get("uygulanan") or [])
+        messagebox.showinfo(
             "Tutarlılık",
-            f"{len(sorunlar)} kalemde tutarsızlık var (otomatik düzeltilmedi, tanı günlüğüne yazıldı):\n\n"
-            f"{satirlar}",
+            f"{adet} belge işlendi.\n"
+            f"Önce fark: {_para(sonuc.get('once', {}).get('fark') or 0)}\n"
+            f"Sonra fark: {_para(sonra.get('fark') or 0)}"
+            + ("\nUyumlu." if sonra.get("uyumlu") else "\nKalan fark için belge listesine bakın."),
             parent=self,
         )
+        self.yenile()

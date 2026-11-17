@@ -154,8 +154,23 @@ class Yazici:
             "kart_acilis_tarihi",
             "kart_acilis_dayanak",
         }
+        from database.cari_silme_service import (
+            KAYNAK_EVO,
+            cari_kaynak_engelli_mi,
+            eslestirme_gerekli_mesaji,
+        )
+
         for c in self.plan.cariler:
             if self.zaten("cari", c["evo_id"]):
+                continue
+            evo_cid = str(c.get("evo_id") or "").strip()
+            if evo_cid and cari_kaynak_engelli_mi(KAYNAK_EVO, evo_cid):
+                self.kayit(
+                    "cari",
+                    evo_cid,
+                    "atlandi",
+                    eslestirme_gerekli_mesaji(evo_cid, (c.get("veriler") or {}).get("unvan")),
+                )
                 continue
             try:
                 veriler = {k: v for k, v in c["veriler"].items() if k in sutunlar}

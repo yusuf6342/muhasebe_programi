@@ -601,6 +601,18 @@ def kasa_makbuz_schemasini_guncelle(hedef_engine) -> None:
                     )
     if not insp.has_table("kasa_makbuzlari"):
         return
+    makbuz_sutunlar = {s["name"] for s in insp.get_columns("kasa_makbuzlari")}
+    if "istek_anahtari" not in makbuz_sutunlar:
+        with hedef_engine.begin() as connection:
+            connection.execute(
+                text('ALTER TABLE "kasa_makbuzlari" ADD COLUMN "istek_anahtari" VARCHAR(80)')
+            )
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_kasa_makbuz_istek "
+                    'ON "kasa_makbuzlari" ("istek_anahtari")'
+                )
+            )
     with hedef_engine.begin() as connection:
         from database.dialect_utils import postgres_mi, sqlite_mi
 
@@ -839,6 +851,15 @@ def finans_hesap_schemasini_guncelle(hedef_engine=None) -> None:
                 )
             )
 
+    try:
+        from database.kart_silme import schema_hazirla as _kart_silme_sema
+
+        _kart_silme_sema(eng)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("banka kaynak engel şeması")
+
     pos_sozlesme_schemasini_guncelle(eng)
 
 
@@ -850,14 +871,18 @@ def pos_sozlesme_schemasini_guncelle(hedef_engine=None) -> None:
     banka_tablo = "banka_kartlari"
     if inspect(eng).has_table(banka_tablo):
         banka_sutunlar = {s["name"] for s in inspect(eng).get_columns(banka_tablo)}
+        # PG: BOOLEAN DEFAULT FALSE/TRUE; SQLite da kabul eder
         banka_eklenecekler = {
             "pos_hedef_hesap_turu": "VARCHAR(20) DEFAULT 'MEVDUAT'",
-            "pos_valor_is_gunu": "BOOLEAN DEFAULT 1",
-            "pos_otomatik_mahsup": "BOOLEAN DEFAULT 0",
+            "pos_aktarim_hesap_id": "INTEGER",
+            "pos_valor_is_gunu": "BOOLEAN DEFAULT TRUE",
+            "pos_otomatik_mahsup": "BOOLEAN DEFAULT FALSE",
+            "pos_aktarim_yontemi": "VARCHAR(20) DEFAULT 'MANUEL'",
+            "pos_otomatik_baslangic": "DATE",
         }
-        with eng.begin() as connection:
-            for alan, tip in banka_eklenecekler.items():
-                if alan not in banka_sutunlar:
+        for alan, tip in banka_eklenecekler.items():
+            if alan not in banka_sutunlar:
+                with eng.begin() as connection:
                     connection.execute(text(f'ALTER TABLE "{banka_tablo}" ADD COLUMN "{alan}" {tip}'))
 
     valor_tablo = "pos_valor_kayitlari"
@@ -868,10 +893,24 @@ def pos_sozlesme_schemasini_guncelle(hedef_engine=None) -> None:
         "hedef_hesap_id": "INTEGER",
         "gercek_yatis_tarihi": "DATE",
         "gercek_yatis_tutari": "NUMERIC(18, 2)",
+        "aktarim_belge_no": "VARCHAR(120)",
+        "valor_gun": "INTEGER",
+        "diger_kesinti": "NUMERIC(18, 2) DEFAULT 0",
+        "aktarim_yontemi": "VARCHAR(20)",
+        "otomatik_aktarim_engel": "BOOLEAN DEFAULT FALSE",
+        "banka_teyidi": "BOOLEAN DEFAULT FALSE",
+        "banka_teyidi_tarihi": "DATE",
+        "banka_teyidi_notu": "VARCHAR(500)",
+        "banka_teyidi_kullanici": "VARCHAR(120)",
+        "kapanis_turu": "VARCHAR(40)",
+        "kapanis_dayanak": "VARCHAR(500)",
+        "kapanis_zaman": "TIMESTAMP",
+        "kapanis_kullanici": "VARCHAR(120)",
+        "eslesen_banka_hareket_idler": "VARCHAR(250)",
     }
-    with eng.begin() as connection:
-        for alan, tip in valor_eklenecekler.items():
-            if alan not in valor_sutunlar:
+    for alan, tip in valor_eklenecekler.items():
+        if alan not in valor_sutunlar:
+            with eng.begin() as connection:
                 connection.execute(text(f'ALTER TABLE "{valor_tablo}" ADD COLUMN "{alan}" {tip}'))
     valor_sutunlar = {s["name"] for s in inspect(eng).get_columns(valor_tablo)}
     if "hedef_hesap_id" in valor_sutunlar:
@@ -882,6 +921,11 @@ def pos_sozlesme_schemasini_guncelle(hedef_engine=None) -> None:
                     'WHERE "hedef_hesap_id" IS NULL'
                 )
             )
+    # Değişiklik geçmişi tablosu
+    if not inspect(eng).has_table("pos_valor_degisiklikleri"):
+        from database.models.finans import PosValorDegisiklik
+
+        PosValorDegisiklik.__table__.create(bind=eng, checkfirst=True)
 
 
 def alis_siparis_schemasini_guncelle(hedef_engine=None) -> None:
@@ -1058,6 +1102,12 @@ def cari_kart_schemasini_guncelle() -> None:
     from database.cari_kart_sema import schema_hazirla as cari_kart_schema_hazirla
 
     cari_kart_schema_hazirla(engine)
+    try:
+        from database.cari_silme_service import schema_hazirla as cari_silme_schema_hazirla
+
+        cari_silme_schema_hazirla(engine)
+    except Exception:
+        logging.getLogger(__name__).exception("cari_kaynak_engelleri schema")
 
     try:
         from database.personel_sema import schema_hazirla as personel_schema_hazirla
@@ -1252,7 +1302,7 @@ def cari_kart_schemasini_guncelle() -> None:
                     text(f'ALTER TABLE "{barkod_tablo}" ADD COLUMN "fiyat_adi" VARCHAR(100)')
                 )
 
-    for fatura_tablo in ("alis_faturalari", "satis_faturalari"):
+    for fatura_tablo in ("alis_faturalari", "satis_faturalari", "satis_iade_faturalari"):
         if inspect(engine).has_table(fatura_tablo):
             sutunlar = {sutun["name"] for sutun in inspect(engine).get_columns(fatura_tablo)}
             if "islem_saati" not in sutunlar:
@@ -1413,13 +1463,16 @@ def cari_kart_schemasini_guncelle() -> None:
             "banka_karti_komisyon_orani": "NUMERIC(8, 4) DEFAULT 0 NOT NULL",
             "pos_valor_gun": "INTEGER DEFAULT 1 NOT NULL",
             "pos_hedef_hesap_turu": "VARCHAR(20) DEFAULT 'MEVDUAT'",
-            "pos_valor_is_gunu": "BOOLEAN DEFAULT 1",
-            "pos_otomatik_mahsup": "BOOLEAN DEFAULT 0",
+            "pos_aktarim_hesap_id": "INTEGER",
+            "pos_valor_is_gunu": "BOOLEAN DEFAULT TRUE",
+            "pos_otomatik_mahsup": "BOOLEAN DEFAULT FALSE",
+            "pos_aktarim_yontemi": "VARCHAR(20) DEFAULT 'MANUEL'",
+            "pos_otomatik_baslangic": "DATE",
             "kmh_limiti": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
         }
-        with engine.begin() as connection:
-            for alan, tip in banka_eklenecekler.items():
-                if alan not in banka_sutunlar:
+        for alan, tip in banka_eklenecekler.items():
+            if alan not in banka_sutunlar:
+                with engine.begin() as connection:
                     connection.execute(text(f'ALTER TABLE "{banka_tablo}" ADD COLUMN "{alan}" {tip}'))
 
     valor_tablo = "pos_valor_kayitlari"
@@ -1430,13 +1483,31 @@ def cari_kart_schemasini_guncelle() -> None:
             "hedef_hesap_id": "INTEGER",
             "gercek_yatis_tarihi": "DATE",
             "gercek_yatis_tutari": "NUMERIC(18, 2)",
+            "aktarim_belge_no": "VARCHAR(120)",
+            "valor_gun": "INTEGER",
+            "diger_kesinti": "NUMERIC(18, 2) DEFAULT 0",
+            "aktarim_yontemi": "VARCHAR(20)",
+            "otomatik_aktarim_engel": "BOOLEAN DEFAULT FALSE",
+            "banka_teyidi": "BOOLEAN DEFAULT FALSE",
+            "banka_teyidi_tarihi": "DATE",
+            "banka_teyidi_notu": "VARCHAR(500)",
+            "banka_teyidi_kullanici": "VARCHAR(120)",
+            "kapanis_turu": "VARCHAR(40)",
+            "kapanis_dayanak": "VARCHAR(500)",
+            "kapanis_zaman": "TIMESTAMP",
+            "kapanis_kullanici": "VARCHAR(120)",
+            "eslesen_banka_hareket_idler": "VARCHAR(250)",
         }
-        with engine.begin() as connection:
-            for alan, tip in valor_eklenecekler.items():
-                if alan not in valor_sutunlar:
+        for alan, tip in valor_eklenecekler.items():
+            if alan not in valor_sutunlar:
+                with engine.begin() as connection:
                     connection.execute(
                         text(f'ALTER TABLE "{valor_tablo}" ADD COLUMN "{alan}" {tip}')
                     )
+        if not inspect(engine).has_table("pos_valor_degisiklikleri"):
+            from database.models.finans import PosValorDegisiklik
+
+            PosValorDegisiklik.__table__.create(bind=engine, checkfirst=True)
         valor_sutunlar = {s["name"] for s in inspect(engine).get_columns(valor_tablo)}
         if "hedef_hesap_id" in valor_sutunlar:
             with engine.begin() as connection:
@@ -1636,6 +1707,20 @@ def cari_kart_schemasini_guncelle() -> None:
         OdemeSozuService.schema_hazirla(engine)
     except Exception:
         pass
+    try:
+        from database.haftalik_odeme_service import HaftalikOdemeService
+
+        HaftalikOdemeService.schema_hazirla(engine)
+    except Exception:
+        pass
+    try:
+        from database.nakit_avans_service import schema_hazirla as nakit_avans_schema_hazirla
+
+        nakit_avans_schema_hazirla(engine)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("nakit_avans schema")
     try:
         from database.kart_turu_service import KartTuruService
 
@@ -1853,6 +1938,7 @@ def doviz_schema_guncelle() -> None:
 
     _ekle("hizmet_faturalari", fatura_doviz)
     _ekle("hizmet_faturasi_satirlari", satir_doviz)
+    _ekle("hizmet_faturasi_satirlari", {"aciklama": "VARCHAR(500)"})
     _ekle("satis_iade_faturalari", fatura_doviz)
     _ekle("alis_iade_faturalari", {k: v for k, v in fatura_doviz.items() if k != "borc_esasi"})
     _ekle(
@@ -1932,117 +2018,25 @@ def perakende_cari_hazirla() -> None:
 
 
 def tedarikci_odeme_polarity_duzelt() -> None:
-    """Tedarikçi Ödeme satırlarını alacak olarak düzelt; fazla ödemeyi FZO kredisine yaz.
+    """Tedarikçi Ödeme satırlarını BORÇ polaritesine çeker (Evo BNC ile uyumlu).
 
-    Eski kod tedarikçi ödemesini borc yazıyordu (müşteri mantığı). Defter bakiyesi
-    şişiyordu. Güvenli ve tekrar çalıştırılabilir.
+    Yanlış native yol ödemeyi alacak yazıyordu; bakiyeyi şişiriyordu.
+    Idempotent: borc>0 ve alacak=0 olan doğru satırlara dokunmaz.
+    FZO uydurmaz; yalnız kesin polarite düzeltmesi yapar.
+    Tahsilat satırlarına dokunmaz (tedarikçi kartındaki gerçek tahsilatlar korunur).
     """
-    from datetime import date
-    from decimal import Decimal
-
-    prefix_skip = (
-        "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-",
-        "IPT-", "FZO-", "TMK-", "OMK-", "GDF-",
-    )
-
-    def _d(x) -> Decimal:
-        return Decimal(str(x or 0))
-
-    def _defter_bakiye(conn, cari_id: int) -> Decimal:
-        islemler = conn.execute(
-            text(
-                "SELECT tarih, islem_turu, belge_no, borc, alacak "
-                "FROM cari_islemleri WHERE cari_id = :cid"
-            ),
-            {"cid": cari_id},
-        ).mappings().all()
-        islem_belgeleri = {r["belge_no"] for r in islemler}
-        hareketler = conn.execute(
-            text(
-                "SELECT satis_tarihi, belge_no, satis_tutari "
-                "FROM cari_satis_hareketleri WHERE cari_id = :cid"
-            ),
-            {"cid": cari_id},
-        ).mappings().all()
-        kayitlar: list[tuple] = []
-        for h in hareketler:
-            bn = h["belge_no"] or ""
-            if bn in islem_belgeleri or bn.startswith(prefix_skip):
-                continue
-            kayitlar.append((h["satis_tarihi"], bn, "SH", _d(h["satis_tutari"]), Decimal("0")))
-        for i in islemler:
-            kayitlar.append(
-                (i["tarih"], i["belge_no"], i["islem_turu"], _d(i["borc"]), _d(i["alacak"]))
-            )
-        kayitlar.sort(key=lambda x: (x[0] or "", x[1] or "", x[2] or ""))
-        calisan = Decimal("0")
-        for _, _, _, borc, alacak in kayitlar:
-            calisan += borc - alacak
-        return calisan
-
     with engine.begin() as conn:
-        # 1) Yanlış polariteli tedarikçi ödemeleri: borc → alacak
         conn.execute(
             text(
                 """
                 UPDATE cari_islemleri
-                SET alacak = borc, borc = 0
+                SET borc = alacak, alacak = 0
                 WHERE islem_turu = 'Ödeme'
-                  AND borc > 0
-                  AND alacak = 0
+                  AND alacak > 0
+                  AND COALESCE(borc, 0) = 0
                   AND cari_id IN (
                       SELECT id FROM cari_kartlar WHERE cari_turu = 'Tedarikçi'
                   )
                 """
             )
         )
-
-        tedarikciler = conn.execute(
-            text("SELECT id FROM cari_kartlar WHERE cari_turu = 'Tedarikçi'")
-        ).scalars().all()
-
-        bugun = date.today().isoformat()
-        for cari_id in tedarikciler:
-            fzo_no = f"FZO-{cari_id}"
-            satirlar = conn.execute(
-                text(
-                    "SELECT id, belge_no, kalan_acik_tutar "
-                    "FROM cari_satis_hareketleri WHERE cari_id = :cid"
-                ),
-                {"cid": cari_id},
-            ).mappings().all()
-            mevcut_fzo = next((s for s in satirlar if s["belge_no"] == fzo_no), None)
-            net_acik = sum(
-                (_d(s["kalan_acik_tutar"]) for s in satirlar if s["belge_no"] != fzo_no),
-                Decimal("0"),
-            )
-            bakiye = _defter_bakiye(conn, cari_id)
-            fark = (net_acik - bakiye).quantize(Decimal("0.01"))
-            if fark > Decimal("0.00"):
-                if mevcut_fzo is None:
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO cari_satis_hareketleri
-                            (cari_id, satis_tarihi, belge_no, satis_tutari, kalan_acik_tutar)
-                            VALUES (:cid, :tarih, :belge, 0, :kalan)
-                            """
-                        ),
-                        {"cid": cari_id, "tarih": bugun, "belge": fzo_no, "kalan": float(-fark)},
-                    )
-                else:
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE cari_satis_hareketleri
-                            SET satis_tutari = 0, kalan_acik_tutar = :kalan
-                            WHERE id = :id
-                            """
-                        ),
-                        {"id": mevcut_fzo["id"], "kalan": float(-fark)},
-                    )
-            elif mevcut_fzo is not None:
-                conn.execute(
-                    text("DELETE FROM cari_satis_hareketleri WHERE id = :id"),
-                    {"id": mevcut_fzo["id"]},
-                )

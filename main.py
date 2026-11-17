@@ -344,7 +344,10 @@ def main():
     if "--gunluk-faiz" in sys.argv:
         from database.gunluk_faiz_service import GunlukFaizService
 
-        baslatma_adimlari()
+        def _cli_progress(pct, msg):
+            print(f"[{pct:.0f}%] {msg}", flush=True)
+
+        baslatma_adimlari(_cli_progress)
         sonuc = GunlukFaizService.otomatik_acilis_calistir(sessiz=False)
         print("Günlük faiz:", sonuc, flush=True)
         sys.exit(0 if sonuc.get("yapildi") or sonuc.get("adet", 0) >= 0 else 1)
@@ -458,6 +461,12 @@ def main():
             from database.gunluk_faiz_service import GunlukFaizService
 
             GunlukFaizService.otomatik_acilis_calistir(sessiz=True)
+        except Exception:
+            pass
+        try:
+            from database.nakit_avans_service import NakitAvansService
+
+            NakitAvansService.vadesi_gelenleri_isle()
         except Exception:
             pass
 

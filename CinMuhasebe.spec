@@ -24,6 +24,9 @@ datas = []
 if BRANDING.is_dir():
     # CinLogo.png dahil tüm branding dosyaları pakete girer
     datas.append((str(BRANDING), "assets/branding"))
+BANK_LOGOS = ROOT / "assets" / "bank_logos"
+if BANK_LOGOS.is_dir():
+    datas.append((str(BANK_LOGOS), "assets/bank_logos"))
 
 a = Analysis(
     ["main.py"],
@@ -34,6 +37,8 @@ a = Analysis(
         "auth_ui",
         "firma_secim_theme",
         "branding",
+        "bank_logo",
+        "nakit_avans_ui",
         "sistem_ui",
         "silinen_kayitlar_ui",
         "servis_sistem_ui",
@@ -183,6 +188,9 @@ a = Analysis(
         "database.irsaliye_customer_view",
         "database.satis_irsaliyesi_service",
         "cari_kart_ui",
+        "haftalik_odeme_ui",
+        "database.haftalik_odeme_service",
+        "database.models.haftalik_odeme",
         "personel_ui",
         "personel_kart_ui",
         "personel_performans_ui",

@@ -9,10 +9,13 @@ from __future__ import annotations
 import re
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 BIRIM_VARSAYILAN = ("Adet", "Kg", "Metre", "Koli", "Paket", "Torba", "Boy", "Top", "Litre")
+
+# Son kullanılan EAN-13 öneki (sağ tık / otomatik üretim; 869 zorunlu değil)
+_SON_EAN_ONEK = "869"
 
 
 def metin_turu(metin: str) -> str:
@@ -52,10 +55,31 @@ def _secenekler(tur: str, varsayilan: tuple[str, ...] = ()) -> list[str]:
     return liste
 
 
-def _otomatik_kod() -> str:
+def _ean_onek_bul(metin: str | None = None) -> str:
+    """Mevcut alandaki koddan veya son kullanılan önekten 1–7 haneli önek çıkarır."""
+    global _SON_EAN_ONEK
+    from database.stok_service import EAN13_ONEK
+
+    m = (metin or "").strip()
+    if m.isdigit() and 1 <= len(m) <= 7:
+        return m
+    if len(m) == 13 and m.isdigit():
+        # GS1 ülke/şirket bloğu genelde 3 hane; alan doluysa aynı seriyi sürdür
+        return m[:3]
+    onek = (_SON_EAN_ONEK or EAN13_ONEK or "869").strip()
+    if onek.isdigit() and 1 <= len(onek) <= 7:
+        return onek
+    return EAN13_ONEK
+
+
+def _otomatik_kod(onek: str | None = None, *, haric: list[str] | None = None) -> str:
+    global _SON_EAN_ONEK
     from database.stok_service import StokService
 
-    return StokService.ean13_olustur()
+    kullanilan = _ean_onek_bul(onek) if onek is not None else _ean_onek_bul()
+    kod = StokService.ean13_olustur(onek=kullanilan, haric_barkodlar=haric)
+    _SON_EAN_ONEK = kullanilan
+    return kod
 
 
 def kisa_stok_olustur(veri: dict[str, Any], *, kaynak: str = "Satın Alma – Kısa Yeni Ürün"):
@@ -146,17 +170,19 @@ class KisaUrunPaneli(tk.Toplevel):
         self.hata_lbl.grid(row=5, column=0, columnspan=4, sticky="w")
 
         self.ad.insert(0, dolu["stok_adi"])
+        self._barkod_otomatik = False
         if dolu["stok_kodu"]:
             self.kod.insert(0, dolu["stok_kodu"])
             self._oto_kod = False
         else:
             try:
-                self.kod.insert(0, _otomatik_kod())
-                self._oto_kod = True
-                self.kod_bilgi.configure(text="Stok kodu otomatik üretildi; değiştirebilirsiniz.")
+                self._yeni_kod_yaz(sessiz=True)
             except Exception:
                 self._oto_kod = False
-        self.barkod.insert(0, dolu["barkod"])
+        if dolu["barkod"]:
+            self.barkod.delete(0, "end")
+            self.barkod.insert(0, dolu["barkod"])
+            self._barkod_otomatik = False
         self.birim.set("Adet")
         self.kdv.set(kdv_vars)
 
@@ -171,6 +197,13 @@ class KisaUrunPaneli(tk.Toplevel):
         ttk.Button(alt, text="Vazgeç", command=self.vazgec).pack(side="right", padx=6)
         if ayrintili is not None:
             ttk.Button(alt, text="Ayrıntılı Stok Kartı", command=self._ayrintili_ac).pack(side="left")
+
+        self._kod_menu = tk.Menu(self, tearoff=0)
+        self._kod_menu.add_command(label="Yeni kod oluştur (EAN-13)", command=self._yeni_kod_olustur)
+        self._kod_menu.add_command(label="Önek ile yeni kod…", command=self._onek_ile_yeni_kod)
+        for seq in ("<Button-3>", "<Control-Button-1>"):
+            self.kod.bind(seq, self._kod_sag_tik)
+            self.barkod.bind(seq, self._kod_sag_tik)
 
         self.bind("<Return>", lambda _e: self.kaydet())
         self.bind("<Escape>", lambda _e: self.vazgec())
@@ -200,6 +233,65 @@ class KisaUrunPaneli(tk.Toplevel):
         except tk.TclError:
             pass
 
+    def _kod_sag_tik(self, event):
+        try:
+            self._kod_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._kod_menu.grab_release()
+        return "break"
+
+    def _yeni_kod_olustur(self) -> None:
+        try:
+            self._yeni_kod_yaz(onek=_ean_onek_bul(self.kod.get()))
+        except ValueError as hata:
+            self.hata_lbl.configure(text=str(hata))
+
+    def _onek_ile_yeni_kod(self) -> None:
+        mevcut = _ean_onek_bul(self.kod.get())
+        onek = simpledialog.askstring(
+            "EAN-13 öneki",
+            "Başlangıç numarası (1–7 hane; örn. 869, 868, 123):\n"
+            "İlla 869 ile başlaması gerekmez.",
+            parent=self,
+            initialvalue=mevcut,
+        )
+        if onek is None:
+            return
+        onek = onek.strip()
+        if not onek.isdigit() or not (1 <= len(onek) <= 7):
+            self.hata_lbl.configure(text="Önek 1–7 haneli sayı olmalıdır.")
+            return
+        try:
+            self._yeni_kod_yaz(onek=onek)
+        except ValueError as hata:
+            self.hata_lbl.configure(text=str(hata))
+
+    def _yeni_kod_yaz(self, onek: str | None = None, *, sessiz: bool = False) -> str:
+        """EAN-13 üretir; stok kodu ve barkoda yazar."""
+        haric = []
+        mevcut_kod = self.kod.get().strip()
+        mevcut_bar = self.barkod.get().strip()
+        if mevcut_kod:
+            haric.append(mevcut_kod)
+        if mevcut_bar:
+            haric.append(mevcut_bar)
+        kod = _otomatik_kod(onek, haric=haric or None)
+        self.kod.delete(0, "end")
+        self.kod.insert(0, kod)
+        self._oto_kod = True
+        # Elle yazılmış barkodu ezme; boşsa veya önceki otomatik kod ise senkronla
+        if not mevcut_bar or self._barkod_otomatik or mevcut_bar == mevcut_kod:
+            self.barkod.delete(0, "end")
+            self.barkod.insert(0, kod)
+            self._barkod_otomatik = True
+        self.kod_bilgi.configure(
+            text="EAN-13 üretildi (sağ tık: yeni kod / önek). Barkoda da yazıldı."
+            if not sessiz
+            else "Stok kodu otomatik üretildi; değiştirebilirsiniz. Sağ tık: yeni kod."
+        )
+        self.hata_lbl.configure(text="")
+        return kod
+
     # ─── doğrulama
     def _veri(self) -> dict[str, Any]:
         from database.stok_kodu_barkod_service import normalize_stock_code_as_text
@@ -212,7 +304,11 @@ class KisaUrunPaneli(tk.Toplevel):
         if (barkod and ad == barkod) or metin_turu(ad) == "barkod":
             raise ValueError("Barkod ürün adı olarak kaydedilemez; ürün adını yazın.")
         if not kod:
-            kod = _otomatik_kod()
+            kod = _otomatik_kod(haric=[barkod] if barkod else None)
+            if not barkod:
+                barkod = kod
+        elif not barkod:
+            barkod = kod
         try:
             kdv = Decimal((self.kdv.get() or "20").replace("%", "").replace(",", ".").strip())
         except InvalidOperation:
@@ -269,7 +365,19 @@ class KisaUrunPaneli(tk.Toplevel):
                 return
             if kontrol["kod_cakisma"] is not None:
                 if self._oto_kod and veri["stok_kodu"] == self.kod.get().strip():
-                    veri["stok_kodu"] = _otomatik_kod()
+                    yeni = _otomatik_kod(
+                        _ean_onek_bul(veri["stok_kodu"]),
+                        haric=[veri["stok_kodu"], veri.get("barkod") or ""],
+                    )
+                    veri["stok_kodu"] = yeni
+                    if self._barkod_otomatik or not (veri.get("barkod") or "").strip():
+                        veri["barkod"] = yeni
+                    self.kod.delete(0, "end")
+                    self.kod.insert(0, yeni)
+                    if self._barkod_otomatik or not self.barkod.get().strip():
+                        self.barkod.delete(0, "end")
+                        self.barkod.insert(0, yeni)
+                        self._barkod_otomatik = True
                 elif self._mevcut_sec(kontrol["kod_cakisma"], "Bu stok kodu başka bir kartta kayıtlı:"):
                     self.result = self._tam_kart(kontrol["kod_cakisma"])
                     self.destroy()

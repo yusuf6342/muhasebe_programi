@@ -2484,10 +2484,19 @@ class AlisFaturasiDialog(tk.Toplevel):
             return
         iptal = bool(self.fatura and self.fatura.durum == "İPTAL")
         onayli = self._alis_onayli()
+        onay_btn = getattr(self, "onayla_btn", None)
+        if onay_btn is not None:
+            try:
+                if onayli and not iptal:
+                    # DB'de onaylı: yeşil «Onaylı» — yeniden tıklama ikinci hareket üretmesin
+                    onay_btn.configure(text="Onaylı", rol="onayli", state="disabled")
+                else:
+                    onay_btn.configure(text="Onayla", rol="onayla", state="disabled" if iptal else "normal")
+            except tk.TclError:
+                pass
         for dugme, kapali in (
             (getattr(self, "kaydet_btn", None), iptal or onayli),
             (getattr(self, "iptal_btn", None), iptal),
-            (getattr(self, "onayla_btn", None), iptal or onayli),
         ):
             if dugme is not None:
                 dugme.configure(state="disabled" if kapali else "normal")
@@ -2747,6 +2756,7 @@ class AlisFaturasiDialog(tk.Toplevel):
             messagebox.showerror("Onay kaldırılamadı", str(hata), parent=self)
             return False
         self._faturayi_doldur()
+        self._toolbar_guncelle()
         return True
 
     def kapat_istegi(self):
@@ -2848,12 +2858,12 @@ class AlisFaturasiDialog(tk.Toplevel):
         self._tedarikci_arama = CariAramaAlani(
             self,
             self.tedarikci_ad,
-            cari_turu="Tedarikçi",
+            cari_turu="EVRAK",
             on_secim=self._tedarikci_aramadan_sec,
             on_temizle=self._tedarikci_secimi_temizle,
             secili_ad=self._secili_tedarikci_adi,
             on_yeni=self.yeni_tedarikci_ekle,
-            kayit_adi="Tedarikçi",
+            kayit_adi="Cari",
         )
         ttk.Label(p_ted, text="Tedarikçi Kodu", style="AlisUst.TLabel").grid(
             row=1, column=0, padx=(0, 6), pady=py, sticky="w"
@@ -3229,12 +3239,17 @@ class AlisFaturasiDialog(tk.Toplevel):
         yeni = getattr(dialog, "result", None)
         if yeni is None or not getattr(yeni, "id", None):
             return None
-        tur = (getattr(yeni, "cari_turu", "") or "").casefold()
-        if not tur.startswith("tedarik"):
-            messagebox.showwarning("Yeni Tedarikçi", "Kaydedilen kart bir tedarikçi kartı değil.", parent=self)
+        from database.cari_service import CariService
+
+        if not CariService.evrak_cari_mi(getattr(yeni, "cari_turu", None)):
+            messagebox.showwarning(
+                "Yeni Cari",
+                "Kaydedilen kart belge carisi değil (stok/ürün kartı seçilemez).",
+                parent=self,
+            )
             return None
         if not getattr(yeni, "aktif", True):
-            messagebox.showwarning("Yeni Tedarikçi", "Kaydedilen tedarikçi kartı pasif; seçilmedi.", parent=self)
+            messagebox.showwarning("Yeni Cari", "Kaydedilen cari kartı pasif; seçilmedi.", parent=self)
             return None
         self._tedarikci_sec(yeni)
         self._tedarikci_degisti()

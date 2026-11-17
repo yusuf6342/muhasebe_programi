@@ -102,13 +102,14 @@ class BankAccountMatchingService:
         evo_banka_id: str | None = None,
         iban: str | None = None,
         banka_adi: str | None = None,
-        alt_hesap_turu: str = "MEVDUAT",
+        alt_hesap_turu: str | None = "MEVDUAT",
     ) -> dict[str, Any]:
-        """Hareket aktarımı için hedef finans hesabı."""
+        """Hareket aktarımı için hedef finans hesabı (ürün hesabı / çatı alt türü)."""
         kural = BankAccountMatchingService.kural_bul(evo_banka_id, iban=iban)
         if kural:
+            hedef_tur = kural.alt_hesap_turu or alt_hesap_turu or "MEVDUAT"
             hesap_id = kural.finans_hesap_id or BankAccountMatchingService.mevduat_hesap_id(
-                kural.banka_karti_id, kural.alt_hesap_turu or alt_hesap_turu
+                kural.banka_karti_id, hedef_tur
             )
             if hesap_id:
                 return {

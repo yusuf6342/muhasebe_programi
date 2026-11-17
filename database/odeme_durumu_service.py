@@ -2,7 +2,8 @@
 
 Kaynaklar:
 - Banka kredi taksitleri (BankaKrediService)
-- Kredi kartı ekstre borçları (KrediKartiEkstreService — kesim/son ödeme gününe göre)
+- Kredi kartı ekstre borçları (KrediKartiEkstreService — ay yerleşimi ve gecikme: son ödeme tarihi;
+  son ödeme boşsa satır rapor dışı)
 - Verilen (ödenecek) çek / senet (CekSenetService)
 
 Aynı borç ikinci kez üretilmez; KK satırları ekstre anahtarı (kart + kesim tarihi) ile tekildir.
@@ -221,8 +222,9 @@ class OdemeDurumuService:
             odenen = _d(e.get("odenen") or 0)
             if not odenenleri_dahil and kalan <= 0:
                 continue
-            vade = e.get("due_date") or e.get("son_odeme_tarihi")
-            if not vade:
+            # Yalnız doğrulanmış son ödeme; kesim/dönem yedek vade değil
+            vade = e.get("son_odeme_tarihi")
+            if vade is None:
                 continue
             satirlar.append({
                 "obligation_key": e.get("obligation_key")
@@ -233,7 +235,7 @@ class OdemeDurumuService:
                 "kredi_id": None,
                 "kredi_karti_id": e.get("kredi_karti_id"),
                 "due_date": vade,
-                "payment_month": e.get("payment_month") or (vade.year, vade.month),
+                "payment_month": (vade.year, vade.month),
                 "aciklama": e.get("aciklama") or "",
                 "kaynak_etiket": e.get("kaynak_etiket") or "Kredi Kartı Ekstresi",
                 "banka_adi": e.get("banka_adi") or "",
@@ -255,6 +257,7 @@ class OdemeDurumuService:
                 "ekstre_durum": e.get("ekstre_durum"),
                 "kesin": e.get("kesin", True),
                 "kesim_tarihi": e.get("kesim_tarihi"),
+                "son_odeme_tarihi": vade,
                 "donem_baslangic": e.get("donem_baslangic"),
                 "donem_bitis": e.get("donem_bitis"),
                 "detay_satirlari": e.get("detay_satirlari") or [],

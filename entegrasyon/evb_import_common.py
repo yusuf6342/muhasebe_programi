@@ -97,12 +97,59 @@ def _cari_kodu(liste_satir: dict, ana: dict) -> str:
     )
 
 
+def _cari_unvan_sec(adaylar: list[Cari]) -> Cari | None:
+    """Aynı unvanlı birden fazla kartta Evo kimlikli / asıl kodu tercih et.
+
+    Öncelik: aktif → ozel_notlar'da «Evo cari id» → EVO-/MERGED- olmayan kod → kod sıralı.
+    Böylece PEŞİN PERAKENDE gibi bölünmüş kartlarda fatura/tahsilat farklı id'lere düşmez.
+    """
+    if not adaylar:
+        return None
+    if len(adaylar) == 1:
+        return adaylar[0]
+    aktif = [c for c in adaylar if getattr(c, "aktif", True)]
+    havuz = aktif or adaylar
+    evo_izli = [
+        c
+        for c in havuz
+        if "Evo cari id" in (c.ozel_notlar or "")
+        and not (c.cari_kodu or "").upper().startswith("MERGED-")
+    ]
+    if len(evo_izli) == 1:
+        return evo_izli[0]
+    if evo_izli:
+        return sorted(evo_izli, key=lambda c: (c.cari_kodu or ""))[0]
+    asil = [
+        c
+        for c in havuz
+        if not (c.cari_kodu or "").upper().startswith(("EVO-", "MERGED-"))
+    ]
+    if len(asil) == 1:
+        return asil[0]
+    if asil:
+        return sorted(asil, key=lambda c: (c.cari_kodu or ""))[0]
+    return sorted(havuz, key=lambda c: (c.cari_kodu or ""))[0]
+
+
 def cari_bul_veya_hata(liste_satir: dict, ana: dict) -> Cari:
     kod = _cari_kodu(liste_satir, ana)
     if kod:
         cari = CariService.kod_ile_getir(kod)
         if cari:
             return cari
+    # Evo cari id → ozel_notlar izi
+    evo_cid = _temiz(ana.get("a_cari_id") or liste_satir.get("G.a_cari_id") or liste_satir.get("a_cari_id"))
+    if evo_cid:
+        with get_session() as session:
+            iz = f"Evo cari id {evo_cid}"
+            aday = [
+                c
+                for c in session.scalars(select(Cari)).all()
+                if iz in (c.ozel_notlar or "")
+            ]
+            sec = _cari_unvan_sec(aday)
+            if sec:
+                return sec
     unvan = _temiz(
         ana.get("CARI_ADI")
         or ana.get("cari_adi")
@@ -115,14 +162,16 @@ def cari_bul_veya_hata(liste_satir: dict, ana: dict) -> Cari:
     if unvan:
         with get_session() as session:
             adaylar = list(session.scalars(select(Cari).where(Cari.unvan == unvan)).all())
-            if len(adaylar) == 1:
-                return adaylar[0]
+            sec = _cari_unvan_sec(adaylar)
+            if sec:
+                return sec
             hepsi = list(session.scalars(select(Cari)).all())
             eslesen = [
                 c for c in hepsi if (c.unvan or "").casefold().strip() == unvan.casefold()
             ]
-            if len(eslesen) == 1:
-                return eslesen[0]
+            sec = _cari_unvan_sec(eslesen)
+            if sec:
+                return sec
     raise ValueError(f"Cari bulunamadı kod={kod!r} unvan={unvan!r}")
 
 
@@ -137,7 +186,15 @@ def _stok_var_mi(kod: str) -> bool:
 def stok_garanti(line: dict[str, Any], sonuc: ImportSonuc) -> str:
     kod = _temiz(line.get("a_kod") or line.get("a_kod1") or line.get("stok_kodu"))
     if not kod:
-        raise ValueError("Satırda stok kodu yok")
+        # Evo satırında barkodsuz kart: a_stok_id → Cin'de EVO-{id} (açılış/aktarım kuralı)
+        sid = _temiz(line.get("a_stok_id"))
+        if sid:
+            evo_kod = f"EVO-{sid}"
+            if _stok_var_mi(evo_kod):
+                return evo_kod
+            kod = evo_kod
+        else:
+            raise ValueError("Satırda stok kodu yok")
     if _stok_var_mi(kod):
         return kod
     ad = _temiz(line.get("a_stok_adi") or line.get("stok_adi")) or kod
@@ -187,7 +244,10 @@ def satir_verisi_fatura(line: dict[str, Any], sonuc: ImportSonuc) -> dict[str, A
     elif birim_fiyat is None:
         birim_fiyat = Decimal("0")
 
-    kdv = _decimal(line.get("a_kdv"), Decimal("20")) or Decimal("20")
+    # a_kdv=0 geçerli (KDV'siz); `or 20` sıfırı yutuyordu
+    kdv = _decimal(line.get("a_kdv"))
+    if kdv is None:
+        kdv = Decimal("20")
     birim = _temiz(line.get("a_brm_adi") or line.get("brm_adi")) or "Adet"
     ad = _temiz(line.get("a_stok_adi") or line.get("stok_adi")) or kod
 

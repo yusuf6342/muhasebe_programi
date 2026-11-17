@@ -272,6 +272,89 @@ class BankaKrediOdemeTest(unittest.TestCase):
         }
         self.assertEqual(bks.BankaKrediService.taksit_toplam(veri), Decimal("12150.00"))
 
+    def test_mevcut_hareketten_odeme_bagla_ikinci_cikis_yok(self):
+        """Aktarılmış mevduat çıkışı + kredi anapara girişi takside bağlanır; yeni hareket yok."""
+        with self.Session() as s:
+            t = s.get(BankaKrediTaksit, self.taksit_id)
+            t.masraf = Decimal("0")
+            t.faiz = Decimal("2000.00")
+            t.anapara = Decimal("10000.00")
+            s.add(
+                FinansHareketi(
+                    hesap_id=self.mev_id,
+                    tarih=date.today(),
+                    hareket_turu="BANKA ÇIKIŞ",
+                    belge_no="EVB-BN-90001",
+                    tutar=Decimal("10000.00"),
+                    aciklama="anapara virman kaynak",
+                )
+            )
+            s.add(
+                FinansHareketi(
+                    hesap_id=self.kred_id,
+                    tarih=date.today(),
+                    hareket_turu="BANKA GİRİŞ",
+                    belge_no="EVB-BN-90002",
+                    tutar=Decimal("10000.00"),
+                    aciklama="anapara virman hedef",
+                )
+            )
+            s.commit()
+            kaynak_id = s.scalars(
+                select(FinansHareketi).where(FinansHareketi.belge_no == "EVB-BN-90001")
+            ).one().id
+            ana_id = s.scalars(
+                select(FinansHareketi).where(FinansHareketi.belge_no == "EVB-BN-90002")
+            ).one().id
+            once_mev = s.scalars(
+                select(FinansHareketi).where(FinansHareketi.hesap_id == self.mev_id)
+            ).all()
+            once_kred = s.scalars(
+                select(FinansHareketi).where(FinansHareketi.hesap_id == self.kred_id)
+            ).all()
+            n_mev, n_kred = len(once_mev), len(once_kred)
+
+        sonuc = bks.BankaKrediService.mevcut_hareketten_odeme_bagla(
+            self.taksit_id,
+            banka_hareket_id=kaynak_id,
+            anapara_hareket_id=ana_id,
+            bilesenler={"anapara": Decimal("10000.00")},
+            banka_hesap_id=self.mev_id,
+            transaction_id="EVO-KR-ANA-90002-T1",
+            odeme_belge_no="KTO-BAG-90002",
+        )
+        self.assertEqual(Decimal(str(sonuc["toplam"])), Decimal("10000.00"))
+        self.assertEqual(sonuc["taksit_durum"], "KISMEN_ODENDI")
+
+        with self.Session() as s:
+            self.assertEqual(
+                len(list(s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == self.mev_id)))),
+                n_mev,
+            )
+            self.assertEqual(
+                len(list(s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == self.kred_id)))),
+                n_kred,
+            )
+            t = s.get(BankaKrediTaksit, self.taksit_id)
+            self.assertEqual(Decimal(str(t.odenen_anapara)), Decimal("10000.00"))
+            self.assertEqual(Decimal(str(t.odenen_tutar)), Decimal("10000.00"))
+            self.assertEqual(t.durum, "KISMEN_ODENDI")
+            # idempotent
+            tekrar = bks.BankaKrediService.mevcut_hareketten_odeme_bagla(
+                self.taksit_id,
+                banka_hareket_id=kaynak_id,
+                anapara_hareket_id=ana_id,
+                bilesenler={"anapara": Decimal("10000.00")},
+                banka_hesap_id=self.mev_id,
+                transaction_id="EVO-KR-ANA-90002-T1",
+                odeme_belge_no="KTO-BAG-90002",
+            )
+            self.assertEqual(tekrar["id"], sonuc["id"])
+            self.assertEqual(
+                len(list(s.scalars(select(BankaKrediOdeme).where(BankaKrediOdeme.taksit_id == self.taksit_id)))),
+                1,
+            )
+
     def test_baska_bankanin_mevduatindan_odeme_secenegi(self):
         """Kredi kendi kartında mevduatı olmayan (devir) bankada: seçilen başka mevduattan ödenir."""
         with self.Session() as s:

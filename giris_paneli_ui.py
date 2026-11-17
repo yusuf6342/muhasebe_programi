@@ -7,9 +7,14 @@ ayrıntı listesi aynı hesap sonucunu kullanır. Eski giriş ekranı ``ana_pane
 from __future__ import annotations
 
 import csv
+import json
+import os
+import re
 import tkinter as tk
+from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ana_panel_tema import (
@@ -33,25 +38,36 @@ from ana_panel_tema import (
     sayi_tr,
 )
 from database import giris_ozet_service as go
+from database.session_manager import oturum
 
 DAR_ESIK = 1180
 MIN_GENISLIK = 720
-YOKLAMA_MS = 15000
+# ≤5 sn hedefi: 2 sn yoklama + arka plan özet hesabı; mükerrer zamanlayıcı yok (tek after zinciri).
+YOKLAMA_MS = 2000
 SATIR_ACIK = "#F7F9FB"
 SATIR_TOPLAM = "#FFF6D6"
 FONT_KART_DEGER = ("Segoe UI", 15, "bold")
 FONT_BOLUM = ("Segoe UI", 11, "bold")
 
+# Kritik sütunlar ilk görünümde sığar (tür, no, tarih, işlem saati, cari, tutar, kapanan, açık);
+# vade/yöntem/açıklama ikincil.
 AYRINTI_KOLONLARI = (
-    ("kaynak", "Kaynak", 150, "w"),
-    ("belge_no", "Belge / hesap", 150, "w"),
-    ("tarih", "Tarih", 82, "w"),
-    ("vade", "Vade", 82, "w"),
-    ("cari", "Cari / banka", 190, "w"),
-    ("yontem", "Yöntem", 110, "w"),
-    ("aciklama", "Açıklama", 230, "w"),
-    ("tutar", "Tutar", 110, "e"),
+    ("kaynak", "Belge türü", 110, "w", True),
+    ("belge_no", "Belge / hesap", 118, "w", True),
+    ("tarih", "Tarih", 82, "w", True),
+    ("islem_saati", "İşlem Saati", 78, "w", True),
+    ("cari", "Cari / banka", 148, "w", True),
+    ("tutar", "Tutar", 100, "e", True),
+    ("kapanan_tutar", "Kapanan Tutar", 100, "e", True),
+    ("acik_kalan_tutar", "Açık Kalan Tutar", 110, "e", True),
+    ("vade", "Vade", 78, "w", True),
+    ("yontem", "Yöntem", 88, "w", True),
+    ("aciklama", "Açıklama", 140, "w", True),
 )
+AYRINTI_ZORUNLU = frozenset({"kaynak", "belge_no", "tutar"})
+AYRINTI_META = {k: (baslik, gen, hiza, gorunur) for k, baslik, gen, hiza, gorunur in AYRINTI_KOLONLARI}
+AYRINTI_TUTAR_IX = next(i for i, k in enumerate(AYRINTI_KOLONLARI) if k[0] == "tutar")
+AYRINTI_BELGE_IX = next(i for i, k in enumerate(AYRINTI_KOLONLARI) if k[0] == "belge_no")
 
 
 def _tl(v) -> str:
@@ -68,6 +84,14 @@ def _tarih_tr(t) -> str:
     return t.strftime("%d.%m.%Y") if isinstance(t, date) else ""
 
 
+def _islem_saati_goster(saat) -> str:
+    """Boş / geçersiz kaynakta em dash; tahmini saat yazılmaz."""
+    if saat is None:
+        return "—"
+    metin = str(saat).strip()
+    return metin if metin else "—"
+
+
 def tarih_oku(metin: str) -> date:
     metin = (metin or "").strip()
     for bicim in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
@@ -80,6 +104,103 @@ def tarih_oku(metin: str) -> date:
 
 def _toplam(kalemler) -> Decimal:
     return sum((Decimal(str(k["tutar"])) for k in kalemler), Decimal("0"))
+
+
+def _toplam_alan(kalemler, alan: str) -> Decimal:
+    """None olmayan alanları topla (iade satırlarında kapanan/açık boş olabilir)."""
+    top = Decimal("0")
+    for k in kalemler:
+        v = k.get(alan)
+        if v is None or v == "":
+            continue
+        top += Decimal(str(v))
+    return top
+
+
+def _ayrinti_tablo_anahtari(baslik: str) -> str:
+    metin = (baslik or "ayrinti").casefold()
+    metin = (metin.replace("—", " ").replace("-", " ").replace("ı", "i").replace("ş", "s")
+             .replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c"))
+    temiz = re.sub(r"[^a-z0-9]+", "_", metin).strip("_")
+    return (temiz or "ayrinti")[:80]
+
+
+def ayrinti_varsayilan_ayarlari() -> dict:
+    sira = [k for k, *_ in AYRINTI_KOLONLARI]
+    kolonlar = {
+        anahtar: {"baslik": baslik, "genislik": genislik, "gorunur": gorunur}
+        for anahtar, baslik, genislik, _hiza, gorunur in AYRINTI_KOLONLARI
+    }
+    return {"sira": sira, "kolonlar": kolonlar}
+
+
+def _ayrinti_ayar_kimlik() -> tuple[str, str]:
+    firma = str(oturum.company_id or oturum.firma_kodu or "0")
+    kullanici = str(oturum.user_id or oturum.kullanici_adi or "0")
+    return firma, kullanici
+
+
+def ayrinti_ayar_dosyasi(tablo_anahtari: str) -> Path:
+    firma, kullanici = _ayrinti_ayar_kimlik()
+    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MuhasebeProgrami" / "ayarlar"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"giris_ayrinti_kolon_{tablo_anahtari}_{firma}_{kullanici}.json"
+
+
+def ayrinti_ayarlari_yukle(tablo_anahtari: str) -> dict:
+    varsayilan = ayrinti_varsayilan_ayarlari()
+    yol = ayrinti_ayar_dosyasi(tablo_anahtari)
+    if not yol.exists():
+        return deepcopy(varsayilan)
+    try:
+        kayit = json.loads(yol.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return deepcopy(varsayilan)
+    bilinen = {k for k, *_ in AYRINTI_KOLONLARI}
+    sira = [k for k in (kayit.get("sira") or []) if k in bilinen]
+    for k, *_ in AYRINTI_KOLONLARI:
+        if k not in sira:
+            sira.append(k)
+    kolonlar = {}
+    gelen = kayit.get("kolonlar") or {}
+    for anahtar, baslik, genislik, _hiza, gorunur in AYRINTI_KOLONLARI:
+        cfg = gelen.get(anahtar) or {}
+        try:
+            w = int(cfg.get("genislik", genislik))
+        except (TypeError, ValueError):
+            w = genislik
+        g = bool(cfg.get("gorunur", gorunur))
+        if anahtar in AYRINTI_ZORUNLU:
+            g = True
+        kolonlar[anahtar] = {
+            "baslik": baslik,
+            "genislik": max(40, min(w, 600)),
+            "gorunur": g,
+        }
+    return {"sira": sira, "kolonlar": kolonlar}
+
+
+def ayrinti_ayarlari_kaydet(tablo_anahtari: str, ayarlar: dict) -> None:
+    bilinen = {k for k, *_ in AYRINTI_KOLONLARI}
+    sira = [k for k in (ayarlar.get("sira") or []) if k in bilinen]
+    for k, *_ in AYRINTI_KOLONLARI:
+        if k not in sira:
+            sira.append(k)
+    temiz = {}
+    for anahtar, _baslik, genislik, _hiza, gorunur in AYRINTI_KOLONLARI:
+        cfg = (ayarlar.get("kolonlar") or {}).get(anahtar) or {}
+        g = bool(cfg.get("gorunur", gorunur))
+        if anahtar in AYRINTI_ZORUNLU:
+            g = True
+        try:
+            w = int(cfg.get("genislik", genislik))
+        except (TypeError, ValueError):
+            w = genislik
+        temiz[anahtar] = {"genislik": max(40, min(w, 600)), "gorunur": g}
+    ayrinti_ayar_dosyasi(tablo_anahtari).write_text(
+        json.dumps({"sira": sira, "kolonlar": temiz}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 TABLO_STILI = "Giris.Treeview"
@@ -105,40 +226,72 @@ def _buton(parent, metin, komut, *, vurgu=False, **kw):
 
 # ----------------------------------------------------------------------------- ayrıntı listesi
 class AyrintiPenceresi(tk.Toplevel):
-    """Kalem listesi; alt toplam ekrandaki rakamla aynı kapsamdır. CSV dışa aktarma."""
+    """Kalem listesi; alt toplam ekrandaki rakamla aynı kapsamdır. CSV dışa aktarma.
 
-    def __init__(self, parent, baslik: str, kalemler: list[dict], *, aciklama: str = ""):
+    Net satış satırlarında belge numarasına tıklayınca gerçek evrak (kimlikle) açılır.
+    grab_set kullanılmaz — evrak düzenlemesi engellenmez.
+    Kolon düzeni kullanıcı+tablo anahtarına göre kalıcı saklanır.
+    """
+
+    def __init__(
+        self,
+        parent,
+        baslik: str,
+        kalemler: list[dict],
+        *,
+        aciklama: str = "",
+        panel=None,
+    ):
         super().__init__(parent)
         self.title(baslik)
         self.configure(bg=ACIK_BG)
-        self.geometry("1080x520")
-        self.minsize(640, 320)
-        self.transient(parent.winfo_toplevel())
+        self.minsize(860, 360)
+        self.resizable(True, True)
+        # grab_set yok: evrak diyaloğu ayrıntı arkasında kilitlenmesin
+        try:
+            self.transient(parent.winfo_toplevel())
+        except tk.TclError:
+            pass
         self._baslik = baslik
-        self._kalemler = kalemler
+        self._tablo_anahtari = _ayrinti_tablo_anahtari(baslik)
+        self._ayar = ayrinti_ayarlari_yukle(self._tablo_anahtari)
+        self._kalemler = list(kalemler)
+        self._panel = panel
+        self._iid_kalem: dict[str, dict] = {}
+        self._belge_aciliyor = False
+        self._belge_tik_after = None
+        self._ozet_lbl = None
+        self._tutar_yon = None  # None | "desc" | "asc"
+        self._kolon_menu = None
+
+        self._geometri_ayarla()
 
         ust = tk.Frame(self, bg=LACIVERT)
         ust.pack(fill="x")
         tk.Label(ust, text=baslik, bg=LACIVERT, fg=BEYAZ, font=FONT_BOLUM).pack(side="left", padx=14, pady=8)
         tk.Frame(self, bg=SARI, height=3).pack(fill="x")
         if aciklama:
-            tk.Label(self, text=aciklama, bg=ACIK_BG, fg=PASIF, font=FONT_KUCUK, justify="left",
-                     wraplength=1000).pack(anchor="w", padx=14, pady=(6, 0))
+            self._aciklama_lbl = tk.Label(
+                self, text=aciklama, bg=ACIK_BG, fg=PASIF, font=FONT_KUCUK, justify="left", wraplength=900
+            )
+            self._aciklama_lbl.pack(anchor="w", padx=14, pady=(6, 0))
+        else:
+            self._aciklama_lbl = None
 
         alt = tk.Frame(self, bg=ACIK_BG)
         alt.pack(side="bottom", fill="x", padx=12, pady=(0, 10))
-        tk.Label(alt, text=f"{sayi_tr(len(kalemler))} kayıt · Toplam {para_tr(_toplam(kalemler))}",
-                 bg=ACIK_BG, fg=LACIVERT, font=FONT_UI_BOLD).pack(side="left")
+        self._ozet_lbl = tk.Label(alt, text="", bg=ACIK_BG, fg=LACIVERT, font=FONT_UI_BOLD)
+        self._ozet_lbl.pack(side="left")
         _buton(alt, "Kapat", self.destroy).pack(side="right", padx=(6, 0))
         _buton(alt, "CSV olarak kaydet", self.csv_kaydet, vurgu=True).pack(side="right")
+        _buton(alt, "Kolon Ayarları", self._kolon_ayarlari_ac).pack(side="right", padx=(0, 6))
 
         orta = tk.Frame(self, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
         orta.pack(fill="both", expand=True, padx=12, pady=8)
-        self.tablo = ttk.Treeview(orta, columns=[k[0] for k in AYRINTI_KOLONLARI], show="headings",
-                                  style=tablo_stili(self))
-        for kod, ad, gen, hiza in AYRINTI_KOLONLARI:
-            self.tablo.heading(kod, text=ad, anchor=hiza)
-            self.tablo.column(kod, width=gen, anchor=hiza, stretch=kod in ("aciklama", "cari"))
+        self.tablo = ttk.Treeview(
+            orta, columns=[k[0] for k in AYRINTI_KOLONLARI], show="headings", style=tablo_stili(self)
+        )
+        self._kolonlari_uygula()
         dsb = ttk.Scrollbar(orta, orient="vertical", command=self.tablo.yview)
         ysb = ttk.Scrollbar(orta, orient="horizontal", command=self.tablo.xview)
         self.tablo.configure(yscrollcommand=dsb.set, xscrollcommand=ysb.set)
@@ -149,40 +302,685 @@ class AyrintiPenceresi(tk.Toplevel):
         orta.columnconfigure(0, weight=1)
         self.tablo.tag_configure("cift", background=SATIR_ACIK)
         self.tablo.tag_configure("tahmini", foreground=PASIF)
-        for i, k in enumerate(self._satirlar()):
-            etiket = ["cift"] if i % 2 else []
-            if kalemler[i].get("tahmini"):
-                etiket.append("tahmini")
-            self.tablo.insert("", "end", values=k, tags=tuple(etiket))
+        self._sirala_ve_doldur()
+        self._ozet_guncelle()
+
+        self.tablo.bind("<Button-1>", self._belge_no_tik, add="+")
+        self.tablo.bind("<Button-3>", self._baslik_sag_tik, add="+")
+        self.tablo.bind("<ButtonRelease-1>", self._genislik_kaydet, add="+")
+        self.tablo.bind("<Double-1>", self._belge_cift_tik)
+        self.tablo.bind("<Return>", self._belge_enter)
+        self.tablo.bind("<KP_Enter>", self._belge_enter)
         self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Configure>", self._pencere_sar, add="+")
+        self.protocol("WM_DELETE_WINDOW", self._kapat)
+
+    def _geometri_ayarla(self) -> None:
+        """İlk açılışta kritik sütunlar (tür, no, tarih, saat, cari, tutar) sığsın."""
+        try:
+            self.update_idletasks()
+            sw = int(self.winfo_screenwidth() or 1280)
+            sh = int(self.winfo_screenheight() or 800)
+        except tk.TclError:
+            sw, sh = 1280, 800
+        # Kritik 6 sütun ≈ 110+118+82+78+148+100 + kenarlık ≈ 720; ikinciller için pay
+        gen = max(900, min(1220, int(sw * 0.85)))
+        yuk = max(420, min(640, int(sh * 0.62)))
+        self.geometry(f"{gen}x{yuk}")
+        try:
+            self.lift()
+        except tk.TclError:
+            pass
+
+    def _pencere_sar(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        if self._aciklama_lbl is None:
+            return
+        try:
+            gen = max(400, int(self.winfo_width()) - 40)
+            self._aciklama_lbl.configure(wraplength=gen)
+        except tk.TclError:
+            pass
+
+    def _gorunen_sira(self) -> list[str]:
+        kolonlar = self._ayar.get("kolonlar") or {}
+        sira = []
+        for kod in self._ayar.get("sira") or [k[0] for k in AYRINTI_KOLONLARI]:
+            cfg = kolonlar.get(kod) or {}
+            if kod in AYRINTI_ZORUNLU or bool(cfg.get("gorunur", True)):
+                sira.append(kod)
+        if not sira:
+            sira = [k for k, *_ in AYRINTI_KOLONLARI if k in AYRINTI_ZORUNLU]
+        return sira
+
+    def _tutar_baslik_metni(self) -> str:
+        if self._tutar_yon == "desc":
+            return "Tutar ▼"
+        if self._tutar_yon == "asc":
+            return "Tutar ▲"
+        return "Tutar"
+
+    def _kolonlari_uygula(self) -> None:
+        kolonlar = self._ayar.setdefault("kolonlar", {})
+        for kod, baslik, genislik, hiza, gorunur in AYRINTI_KOLONLARI:
+            cfg = kolonlar.setdefault(kod, {"baslik": baslik, "genislik": genislik, "gorunur": gorunur})
+            try:
+                w = int(cfg.get("genislik", genislik))
+            except (TypeError, ValueError):
+                w = genislik
+            stretch = kod in ("cari", "aciklama")
+            min_w = 90 if kod == "tutar" else (64 if kod in ("tarih", "islem_saati") else 56)
+            metin = self._tutar_baslik_metni() if kod == "tutar" else baslik
+            komut = self._tutar_sirala if kod == "tutar" else ""
+            self.tablo.heading(kod, text=metin, anchor=hiza, command=komut)
+            self.tablo.column(kod, width=max(40, min(w, 600)), minwidth=min_w, anchor=hiza, stretch=stretch)
+        self.tablo["displaycolumns"] = self._gorunen_sira()
+
+    def _satir_sozluk(self, k: dict) -> dict:
+        aciklama = k.get("aciklama") or ""
+        if k.get("tahmini") and "tahmini" not in aciklama:
+            aciklama = (aciklama + " · tahmini").strip(" ·")
+        vade = _tarih_tr(k.get("vade")) or ("Vadesiz" if "vade" in k and k.get("satir") else "")
+        kapanan = k.get("kapanan_tutar")
+        acik = k.get("acik_kalan_tutar")
+        return {
+            "kaynak": k.get("kaynak", ""),
+            "belge_no": k.get("belge_no", ""),
+            "tarih": _tarih_tr(k.get("tarih")),
+            "islem_saati": _islem_saati_goster(k.get("islem_saati")),
+            "cari": k.get("cari", ""),
+            "tutar": para_tr(k.get("tutar")),
+            "kapanan_tutar": para_tr(kapanan) if kapanan is not None else "—",
+            "acik_kalan_tutar": para_tr(acik) if acik is not None else "—",
+            "vade": vade,
+            "yontem": k.get("yontem", ""),
+            "aciklama": aciklama,
+        }
+
+    def _satir_degerleri(self, k: dict) -> tuple:
+        soz = self._satir_sozluk(k)
+        return tuple(soz.get(kod, "") for kod, *_ in AYRINTI_KOLONLARI)
+
+    def _csv_sira(self) -> list[str]:
+        bilinen = {k for k, *_ in AYRINTI_KOLONLARI}
+        sira = [k for k in (self._ayar.get("sira") or []) if k in bilinen]
+        for k, *_ in AYRINTI_KOLONLARI:
+            if k not in sira:
+                sira.append(k)
+        return sira
 
     def _satirlar(self) -> list[tuple]:
-        out = []
-        for k in self._kalemler:
-            aciklama = k.get("aciklama") or ""
-            if k.get("tahmini") and "tahmini" not in aciklama:
-                aciklama = (aciklama + " · tahmini").strip(" ·")
-            out.append((k.get("kaynak", ""), k.get("belge_no", ""), _tarih_tr(k.get("tarih")),
-                        _tarih_tr(k.get("vade")) or ("Vadesiz" if "vade" in k and k.get("satir") else ""),
-                        k.get("cari", ""), k.get("yontem", ""), aciklama, para_tr(k.get("tutar"))))
-        return out
+        sira = self._csv_sira()
+        return [tuple(self._satir_sozluk(k).get(c, "") for c in sira) for k in self._kalemler]
+
+    def _sirala_ve_doldur(self) -> None:
+        if self._tutar_yon == "desc":
+            self._kalemler.sort(key=lambda k: Decimal(str(k.get("tutar") or 0)), reverse=True)
+        elif self._tutar_yon == "asc":
+            self._kalemler.sort(key=lambda k: Decimal(str(k.get("tutar") or 0)))
+        self._satirlari_doldur()
+        try:
+            self.tablo.heading("tutar", text=self._tutar_baslik_metni(), command=self._tutar_sirala)
+        except tk.TclError:
+            pass
+
+    def _tutar_sirala(self) -> None:
+        self._tutar_yon = "asc" if self._tutar_yon == "desc" else "desc"
+        self._sirala_ve_doldur()
+
+    def _satirlari_doldur(self) -> None:
+        self._iid_kalem.clear()
+        for iid in self.tablo.get_children():
+            self.tablo.delete(iid)
+        for i, k in enumerate(self._kalemler):
+            etiket = ["cift"] if i % 2 else []
+            if k.get("tahmini"):
+                etiket.append("tahmini")
+            iid = self.tablo.insert("", "end", values=self._satir_degerleri(k), tags=tuple(etiket))
+            self._iid_kalem[iid] = k
+
+    def _ozet_guncelle(self) -> None:
+        if self._ozet_lbl is None:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            top_kap = _toplam_alan(self._kalemler, "kapanan_tutar")
+            top_acik = _toplam_alan(self._kalemler, "acik_kalan_tutar")
+            ek = ""
+            if any(k.get("kapanan_tutar") is not None or k.get("acik_kalan_tutar") is not None
+                   for k in self._kalemler):
+                ek = (
+                    f" · Toplam Kapanan {para_tr(top_kap)} TL"
+                    f" · Toplam Açık Kalan {para_tr(top_acik)} TL"
+                )
+            self._ozet_lbl.configure(
+                text=(
+                    f"{sayi_tr(len(self._kalemler))} kayıt · "
+                    f"Toplam {para_tr(_toplam(self._kalemler))} TL{ek}"
+                )
+            )
+        except tk.TclError:
+            pass
+
+    def kalemleri_yenile(self, kalemler: list[dict] | None, *, hata: str | None = None) -> None:
+        """Evrak kaydı sonrası listeyi güncelle (pencere kapanmışsa no-op)."""
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if hata:
+            self._kalemler = []
+            self._sirala_ve_doldur()
+            if self._ozet_lbl is not None:
+                try:
+                    self._ozet_lbl.configure(text=f"Yükleme hatası — {hata}")
+                except tk.TclError:
+                    pass
+            if self._aciklama_lbl is not None:
+                try:
+                    self._aciklama_lbl.configure(text=hata, fg=UYARI)
+                except tk.TclError:
+                    pass
+            import logging
+
+            logging.getLogger("giris_paneli").error("Ayrıntı yükleme hatası (%s): %s", self._baslik, hata)
+            return
+        self._kalemler = list(kalemler or [])
+        self._sirala_ve_doldur()
+        self._ozet_guncelle()
 
     def csv_kaydet(self) -> None:
         ad = "".join(c if c.isalnum() else "_" for c in self._baslik)[:60]
-        yol = filedialog.asksaveasfilename(parent=self, defaultextension=".csv", initialfile=f"{ad}.csv",
-                                           filetypes=[("CSV", "*.csv")])
+        yol = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".csv", initialfile=f"{ad}.csv", filetypes=[("CSV", "*.csv")]
+        )
         if not yol:
             return
+        sira = self._csv_sira()
+        basliklar = {k: b for k, b, *_ in AYRINTI_KOLONLARI}
         try:
             with open(yol, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f, delimiter=";")
-                w.writerow([k[1] for k in AYRINTI_KOLONLARI])
+                w.writerow([basliklar[k] for k in sira])
                 w.writerows(self._satirlar())
-                w.writerow(["Toplam", "", "", "", "", "", "", para_tr(_toplam(self._kalemler))])
+                toplam_satir = [""] * len(sira)
+                toplam_satir[0] = "Toplam"
+                if "tutar" in sira:
+                    toplam_satir[sira.index("tutar")] = para_tr(_toplam(self._kalemler))
+                if "kapanan_tutar" in sira:
+                    toplam_satir[sira.index("kapanan_tutar")] = para_tr(
+                        _toplam_alan(self._kalemler, "kapanan_tutar")
+                    )
+                if "acik_kalan_tutar" in sira:
+                    toplam_satir[sira.index("acik_kalan_tutar")] = para_tr(
+                        _toplam_alan(self._kalemler, "acik_kalan_tutar")
+                    )
+                w.writerow(toplam_satir)
         except OSError as hata:
             messagebox.showerror("CSV", f"Dosya yazılamadı:\n{hata}", parent=self)
             return
         messagebox.showinfo("CSV", f"{len(self._kalemler)} kayıt kaydedildi.", parent=self)
+
+    def _genislik_kaydet(self, _event=None) -> None:
+        try:
+            for kod, *_ in AYRINTI_KOLONLARI:
+                self._ayar.setdefault("kolonlar", {}).setdefault(kod, {})["genislik"] = int(
+                    self.tablo.column(kod, "width")
+                )
+            ayrinti_ayarlari_kaydet(self._tablo_anahtari, self._ayar)
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _kapat(self) -> None:
+        self._genislik_kaydet()
+        self.destroy()
+
+    def _kolon_ayarlari_ac(self) -> None:
+        AyrintiKolonAyarDialog(self, self._ayar, on_uygula=self._ayar_uygula)
+
+    def _ayar_uygula(self, ayarlar: dict) -> None:
+        self._ayar = deepcopy(ayarlar)
+        ayrinti_ayarlari_kaydet(self._tablo_anahtari, self._ayar)
+        self._kolonlari_uygula()
+        self._sirala_ve_doldur()
+
+    def _varsayilana_don(self) -> None:
+        self._ayar = ayrinti_varsayilan_ayarlari()
+        ayrinti_ayarlari_kaydet(self._tablo_anahtari, self._ayar)
+        self._kolonlari_uygula()
+        self._sirala_ve_doldur()
+
+    def _baslik_sag_tik(self, event) -> None:
+        if self.tablo.identify_region(event.x, event.y) != "heading":
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Kolon Ayarları…", command=self._kolon_ayarlari_ac)
+        menu.add_command(label="Varsayılana Dön", command=self._varsayilana_don)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _gorunen_kolon_kodu(self, col: str) -> str | None:
+        """Treeview ``#n`` görünen sütun indeksini kolon anahtarına çevirir."""
+        if not col or not col.startswith("#"):
+            return None
+        try:
+            ix = int(col[1:]) - 1
+        except ValueError:
+            return None
+        gorunen = self.tablo["displaycolumns"]
+        if gorunen in ("#all", ("#all",)):
+            gorunen = self.tablo["columns"]
+        if ix < 0 or ix >= len(gorunen):
+            return None
+        return gorunen[ix]
+
+    def _secili_kalem(self) -> dict | None:
+        secim = self.tablo.selection()
+        if not secim:
+            return None
+        return self._iid_kalem.get(secim[0])
+
+    def _belge_tik_iptal(self) -> None:
+        aid = self._belge_tik_after
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+            self._belge_tik_after = None
+
+    def _belge_no_tik(self, event):
+        """Belge/hesap sütununa tek tık → evrak aç (çift tıkla çakışmasın diye kısa gecikme)."""
+        if self.tablo.identify_region(event.x, event.y) != "cell":
+            return
+        col = self.tablo.identify_column(event.x)
+        row = self.tablo.identify_row(event.y)
+        if not row or self._gorunen_kolon_kodu(col) != "belge_no":
+            return
+        self.tablo.selection_set(row)
+        self._belge_tik_iptal()
+        self._belge_tik_after = self.after(280, self._secili_belgeyi_ac)
+
+    def _belge_cift_tik(self, _event=None):
+        self._belge_tik_iptal()
+        self._secili_belgeyi_ac()
+        return "break"
+
+    def _belge_enter(self, _event=None):
+        self._secili_belgeyi_ac()
+        return "break"
+
+    def _evrak_parent(self):
+        panel = self._panel
+        if panel is not None:
+            app = getattr(panel, "app", None)
+            if app is not None:
+                return app
+        try:
+            return self.winfo_toplevel()
+        except tk.TclError:
+            return self
+
+    def _secili_belgeyi_ac(self) -> None:
+        if self._belge_aciliyor:
+            return
+        kalem = self._secili_kalem()
+        if not kalem:
+            messagebox.showinfo("Belge", "Lütfen açılacak satırı seçin.", parent=self)
+            return
+        hesap_id = kalem.get("hesap_id")
+        belge_id = kalem.get("belge_id")
+        belge_no = (kalem.get("belge_no") or "").strip()
+        if not hesap_id and not belge_id and not belge_no:
+            messagebox.showinfo("Belge", "Bu satırda açılabilir evrak yok.", parent=self)
+            return
+        self._belge_aciliyor = True
+        parent = self._evrak_parent()
+        try:
+            if hesap_id:
+                LikitHesapHareketDialog(parent, int(hesap_id), rapor_tarihi=self._rapor_tarihi())
+                self._kayit_sonrasi_yenile()
+                return
+            from belge_onizleme_ui import belge_id_ile_ac, hareket_belgeyi_ac
+
+            acildi = False
+            if belge_id:
+                acildi = belge_id_ile_ac(
+                    parent,
+                    belge_id=int(belge_id),
+                    belge_turu=kalem.get("belge_turu") or kalem.get("tur"),
+                    kaynak=kalem.get("kaynak"),
+                )
+            if not acildi and belge_no:
+                # Kimlik yoksa (diğer özet listeleri) mevcut numara eşlemesi
+                tur_metin = (kalem.get("kaynak") or "").strip()
+                if (kalem.get("tur") or "") == "satis" or tur_metin == "Satış faturası":
+                    tur_metin = "Satış"
+                elif (kalem.get("tur") or "") == "iade" or tur_metin == "Satış iadesi":
+                    tur_metin = "Satış İadesi"
+                acildi = hareket_belgeyi_ac(parent, tur_metin, belge_no)
+            if not acildi:
+                messagebox.showinfo(
+                    "Belge",
+                    f"{kalem.get('kaynak') or 'Kayıt'} / {belge_no or belge_id} için açılabilir evrak bulunamadı.",
+                    parent=self,
+                )
+                return
+            self._kayit_sonrasi_yenile()
+        except ValueError as hata:
+            messagebox.showerror("Belge açılamadı", str(hata), parent=self)
+        except tk.TclError:
+            pass
+        finally:
+            self._belge_aciliyor = False
+
+    def _rapor_tarihi(self):
+        panel = self._panel
+        if panel is not None:
+            try:
+                d, _sube = panel._parametreler()
+                return d
+            except Exception:
+                pass
+        return date.today()
+
+    def _kayit_sonrasi_yenile(self) -> None:
+        """Evrak kapandıktan sonra panel + bu listeyi güncelle; pencere yoksa hata yok."""
+        panel = self._panel
+        if panel is None:
+            return
+        try:
+            panel_var = panel.winfo_exists()
+        except tk.TclError:
+            panel_var = False
+        if not panel_var:
+            return
+        try:
+            d, sube = panel._parametreler()
+        except Exception:
+            try:
+                panel.yenile(zorla=True)
+            except Exception:
+                pass
+            return
+        try:
+            sonuc = go.ozet(d, sube, zorla=True)
+        except Exception:
+            try:
+                panel.yenile(zorla=True)
+            except Exception:
+                pass
+            return
+        try:
+            if panel.winfo_exists():
+                panel._sonuc = sonuc
+                panel._sayac = go.degisim_sayaci()
+                try:
+                    panel._imza = go.satis_degisim_imzasi()
+                except Exception:
+                    pass
+                panel.bayat_lbl.configure(text="")
+                panel._ciz(sonuc)
+        except tk.TclError:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        paket = self._kalemleri_sonuctan(sonuc)
+        if paket is None:
+            return
+        kalemler, hata = paket
+        self.kalemleri_yenile(kalemler, hata=hata)
+
+    def _kalemleri_sonuctan(self, sonuc: dict) -> tuple[list[dict], str | None] | None:
+        """Açık pencerenin kapsamına göre kalemleri yeniden seç (hesap kuralları aynı).
+
+        Dönüş: ``(kalemler, hata_mesajı)`` — hata varsa kalemler boş; kapsam dışıysa None.
+        """
+        baslik = self._baslik or ""
+        try:
+            if baslik.startswith("Net satış"):
+                bolum = sonuc.get("satis") or {}
+                if bolum.get("durum") == go.HATA:
+                    return [], bolum.get("mesaj") or "Satış özeti yüklenemedi"
+                d = sonuc["tarih"]
+                dn = go.donemler(d)
+                aralik = dn["bugun"] if "bugün" in baslik else dn["ay"]
+                return [x for x in (bolum.get("kalemler") or []) if go._icinde(x["tarih"], aralik)], None
+            if baslik.startswith("Likit varlıklar"):
+                bolum = sonuc.get("likit") or {}
+                if bolum.get("durum") == go.HATA:
+                    return [], bolum.get("mesaj") or "Likit varlıklar yüklenemedi"
+                return list(bolum.get("kalemler") or []), None
+            if "ödeme yükü" in baslik.casefold() or "odeme yuku" in baslik.casefold():
+                bolum = sonuc.get("borc") or {}
+                if bolum.get("durum") == go.HATA:
+                    return [], bolum.get("mesaj") or "Ödeme yükü yüklenemedi"
+                return go.sutun_kalemleri(bolum.get("kalemler") or [], sonuc["tarih"], "ay1"), None
+            if "tedarikçi" in baslik.casefold() or "tedarikci" in baslik.casefold():
+                bolum = sonuc.get("tedarikci_acik") or {}
+                if bolum.get("durum") == go.HATA:
+                    return [], bolum.get("mesaj") or "Tedarikçi açık borcu yüklenemedi"
+                return list(bolum.get("kalemler") or []), None
+        except Exception as hata:
+            import logging
+
+            logging.getLogger("giris_paneli").exception("Ayrıntı kalem yenileme (%s)", baslik)
+            return [], str(hata)[:120]
+        return None
+
+
+class LikitHesapHareketDialog(tk.Toplevel):
+    """Likit ayrıntı satırından kasa/mevduat hesabının hareketleri (salt okunur liste)."""
+
+    def __init__(self, parent, hesap_id: int, *, rapor_tarihi: date | None = None):
+        super().__init__(parent)
+        self.transient(parent)
+        self.geometry("760x480")
+        self.minsize(560, 320)
+        try:
+            from ui_pencere import pencere_os_krom_ac
+
+            pencere_os_krom_ac(self)
+        except Exception:
+            pass
+        from database.finans_service import FinansService
+
+        hesap = FinansService.hesap_getir(int(hesap_id))
+        if not hesap:
+            messagebox.showerror("Hesap", f"Hesap bulunamadı (id={hesap_id}).", parent=parent)
+            self.destroy()
+            return
+        pb = FinansService.hesap_pb(hesap)
+        bak = FinansService.bakiye(hesap)
+        self.title(f"{hesap.hesap_adi} — hareketler")
+        ust = tk.Frame(self, bg=LACIVERT)
+        ust.pack(fill="x")
+        tk.Label(
+            ust,
+            text=f"{hesap.hesap_adi} · bakiye {para_tr(bak)} {pb}",
+            bg=LACIVERT,
+            fg=BEYAZ,
+            font=FONT_BOLUM,
+        ).pack(side="left", padx=12, pady=8)
+        tk.Frame(self, bg=SARI, height=3).pack(fill="x")
+        if rapor_tarihi:
+            tk.Label(
+                self,
+                text=f"Rapor tarihi {_tarih_tr(rapor_tarihi)} — canlı hesap hareketleri (son 300)",
+                bg=ACIK_BG,
+                fg=PASIF,
+                font=FONT_KUCUK,
+            ).pack(anchor="w", padx=12, pady=(6, 0))
+
+        orta = tk.Frame(self, bg=BEYAZ)
+        orta.pack(fill="both", expand=True, padx=12, pady=8)
+        tablo = ttk.Treeview(
+            orta,
+            columns=("tarih", "tur", "belge", "giris", "cikis", "aciklama"),
+            show="headings",
+            style=tablo_stili(self),
+        )
+        for kod, ad, gen in (
+            ("tarih", "Tarih", 90),
+            ("tur", "Hareket", 130),
+            ("belge", "Belge", 120),
+            ("giris", "Giriş", 100),
+            ("cikis", "Çıkış", 100),
+            ("aciklama", "Açıklama", 220),
+        ):
+            tablo.heading(kod, text=ad)
+            tablo.column(kod, width=gen, anchor="e" if kod in ("giris", "cikis") else "w")
+        kaydir = ttk.Scrollbar(orta, orient="vertical", command=tablo.yview)
+        tablo.configure(yscrollcommand=kaydir.set)
+        tablo.pack(side="left", fill="both", expand=True)
+        kaydir.pack(side="right", fill="y")
+        try:
+            for har in FinansService.hareketler(hesap_id=int(hesap_id), limit=300):
+                isaret = FinansService.hareket_isareti(har.hareket_turu)
+                giris = para_tr(har.tutar) if isaret > 0 else ""
+                cikis = para_tr(har.tutar) if isaret < 0 else ""
+                tablo.insert(
+                    "",
+                    "end",
+                    values=(
+                        _tarih_tr(har.tarih),
+                        har.hareket_turu or "",
+                        har.belge_no or "",
+                        giris,
+                        cikis,
+                        (har.aciklama or "")[:80],
+                    ),
+                )
+        except Exception as hata:
+            import logging
+
+            logging.getLogger("giris_paneli").exception("Likit hesap hareketleri (id=%s)", hesap_id)
+            messagebox.showerror("Hareketler", f"Hareketler yüklenemedi:\n{hata}", parent=self)
+        alt = tk.Frame(self, bg=ACIK_BG)
+        alt.pack(fill="x", padx=12, pady=(0, 10))
+        _buton(alt, "Kapat", self.destroy).pack(side="right")
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+
+class AyrintiKolonAyarDialog(tk.Toplevel):
+    """Ayrıntı tablosu kolon göster/gizle, genişlik ve sıra."""
+
+    def __init__(self, parent, ayarlar: dict, *, on_uygula=None):
+        super().__init__(parent)
+        self.title("Kolon Ayarları")
+        self.geometry("560x480")
+        self.minsize(480, 360)
+        self.transient(parent)
+        try:
+            from ui_pencere import pencere_os_krom_ac
+
+            pencere_os_krom_ac(self)
+        except Exception:
+            pass
+        self._on_uygula = on_uygula
+        self.ayarlar = deepcopy(ayarlar or ayrinti_varsayilan_ayarlari())
+        self._vars: dict[str, tk.BooleanVar] = {}
+        self._genislik: dict[str, tk.StringVar] = {}
+        self._sira: list[str] = list(self.ayarlar.get("sira") or [])
+        for k, *_ in AYRINTI_KOLONLARI:
+            if k not in self._sira:
+                self._sira.append(k)
+
+        govde = ttk.Frame(self, padding=10)
+        govde.pack(fill="both", expand=True)
+        ttk.Label(
+            govde,
+            text="Görünürlük, genişlik (px) ve sıra — bu tabloya özel saklanır",
+            font=FONT_UI_BOLD,
+        ).pack(anchor="w", pady=(0, 6))
+
+        canvas = tk.Canvas(govde, highlightthickness=0)
+        scroll = ttk.Scrollbar(govde, orient="vertical", command=canvas.yview)
+        self._ic = ttk.Frame(canvas)
+        self._ic.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self._ic, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        self._basliklar = {k: b for k, b, *_ in AYRINTI_KOLONLARI}
+        for anahtar, _baslik, varsayilan_w, _hiza, gorunur in AYRINTI_KOLONLARI:
+            cfg = (self.ayarlar.get("kolonlar") or {}).get(anahtar) or {}
+            var = tk.BooleanVar(value=bool(cfg.get("gorunur", gorunur)))
+            if anahtar in AYRINTI_ZORUNLU:
+                var.set(True)
+            self._vars[anahtar] = var
+            self._genislik[anahtar] = tk.StringVar(value=str(cfg.get("genislik") or varsayilan_w))
+        self._satirlari_ciz()
+
+        alt = ttk.Frame(self, padding=10)
+        alt.pack(fill="x")
+        ttk.Button(alt, text="Varsayılana Dön", command=self._varsayilan).pack(side="left")
+        ttk.Button(alt, text="Uygula", command=self._uygula).pack(side="right", padx=(6, 0))
+        ttk.Button(alt, text="Kapat", command=self.destroy).pack(side="right")
+        self.grab_set()
+
+    def _satirlari_ciz(self):
+        for w in self._ic.winfo_children():
+            w.destroy()
+        for i, anahtar in enumerate(self._sira):
+            satir = ttk.Frame(self._ic)
+            satir.pack(fill="x", pady=2)
+            cb = ttk.Checkbutton(satir, text=self._basliklar[anahtar], variable=self._vars[anahtar], width=28)
+            cb.pack(side="left")
+            if anahtar in AYRINTI_ZORUNLU:
+                cb.state(["disabled"])
+            ttk.Spinbox(
+                satir, from_=40, to=600, increment=10, width=6, textvariable=self._genislik[anahtar]
+            ).pack(side="left", padx=(6, 6))
+            yukari = ttk.Button(satir, text="▲", width=3, command=lambda a=anahtar: self._tasi(a, -1))
+            yukari.pack(side="left")
+            asagi = ttk.Button(satir, text="▼", width=3, command=lambda a=anahtar: self._tasi(a, 1))
+            asagi.pack(side="left", padx=(2, 0))
+            if i == 0:
+                yukari.state(["disabled"])
+            if i == len(self._sira) - 1:
+                asagi.state(["disabled"])
+
+    def _tasi(self, anahtar: str, yon: int):
+        i = self._sira.index(anahtar)
+        j = i + yon
+        if not 0 <= j < len(self._sira):
+            return
+        self._sira[i], self._sira[j] = self._sira[j], self._sira[i]
+        self._satirlari_ciz()
+
+    def _varsayilan(self):
+        self.ayarlar = ayrinti_varsayilan_ayarlari()
+        self._sira = [k for k, *_ in AYRINTI_KOLONLARI]
+        for anahtar, _b, w, _h, g in AYRINTI_KOLONLARI:
+            self._vars[anahtar].set(True if anahtar in AYRINTI_ZORUNLU else g)
+            self._genislik[anahtar].set(str(w))
+        self._satirlari_ciz()
+
+    def _uygula(self):
+        kolonlar = self.ayarlar.setdefault("kolonlar", {})
+        varsayilan_w = {k: w for k, _b, w, *_ in AYRINTI_KOLONLARI}
+        for anahtar, var in self._vars.items():
+            cfg = kolonlar.setdefault(anahtar, {})
+            cfg["gorunur"] = True if anahtar in AYRINTI_ZORUNLU else bool(var.get())
+            try:
+                w = int(str(self._genislik[anahtar].get()).strip())
+            except (TypeError, ValueError):
+                w = int(cfg.get("genislik") or varsayilan_w[anahtar])
+            cfg["genislik"] = max(40, min(w, 600))
+        self.ayarlar["sira"] = list(self._sira)
+        if self._on_uygula:
+            self._on_uygula(self.ayarlar)
+        self.destroy()
 
 
 # ----------------------------------------------------------------------------- bölüm kutusu
@@ -278,8 +1076,12 @@ class GirisPaneli(tk.Frame):
         self._ust_bar()
         self._kaydirma()
         self._govde()
+        self._imza = None
+        self._imza_sorgusu = False
+        self._yokla_after = None
         self.after(50, lambda: self.yenile())
-        self.after(YOKLAMA_MS, self._yokla)
+        self._yokla_after = self.after(YOKLAMA_MS, self._yokla)
+        self.bind("<Destroy>", self._yokla_iptal, add="+")
 
     # --- üst bar ---
     def _ust_bar(self):
@@ -561,6 +1363,10 @@ class GirisPaneli(tk.Frame):
             return
         self._sonuc = sonuc
         self._sayac = go.degisim_sayaci()
+        try:
+            self._imza = go.satis_degisim_imzasi()
+        except Exception:  # noqa: BLE001 — imza okunamazsa bir sonraki yoklama dener
+            pass
         self.bayat_lbl.configure(text="")
         sure = sonuc.get("sureler", {}).get("toplam", 0) / 1000
         ek = " · önbellekten" if sonuc.get("onbellek") else f" · {sayi_tr(sure, 1)} sn"
@@ -578,16 +1384,49 @@ class GirisPaneli(tk.Frame):
         if sonuc["tarih"] == date.today():
             self._soz_hatirlatma()
 
+    def _yokla_iptal(self, _event=None):
+        aid = getattr(self, "_yokla_after", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:  # noqa: BLE001
+                pass
+            self._yokla_after = None
+
+    def _imza_geldi(self, imza):
+        self._imza_sorgusu = False
+        if not self.winfo_exists() or self._calisan is not None:
+            return
+        once = getattr(self, "_imza", None)
+        if once is None:
+            self._imza = imza
+            return
+        if imza != once:
+            self._imza = imza
+            self.bayat_lbl.configure(text="Güncel değil")
+            self.yenile(zorla=True)
+
     def _yokla(self):
         if not self.winfo_exists():
             return
         try:
-            if (self._sonuc is not None and self._calisan is None and self.winfo_ismapped()
-                    and go.degisim_sayaci() != self._sayac):
-                self.bayat_lbl.configure(text="Güncel değil")
-                self.yenile()
+            if self._sonuc is not None and self._calisan is None and self.winfo_ismapped():
+                if go.degisim_sayaci() != self._sayac:
+                    self.bayat_lbl.configure(text="Güncel değil")
+                    self.yenile()
+                elif not self._imza_sorgusu:
+                    self._imza_sorgusu = True
+                    from ui_bg import arka_planda
+
+                    arka_planda(
+                        self,
+                        go.satis_degisim_imzasi,
+                        on_ok=self._imza_geldi,
+                        on_err=lambda _e: setattr(self, "_imza_sorgusu", False),
+                    )
         finally:
-            self.after(YOKLAMA_MS, self._yokla)
+            if self.winfo_exists():
+                self._yokla_after = self.after(YOKLAMA_MS, self._yokla)
 
     def _soz_hatirlatma(self):
         def metin():
@@ -618,15 +1457,15 @@ class GirisPaneli(tk.Frame):
 
     # --- ayrıntı ---
     def _ac(self, baslik, kalemler, aciklama=""):
-        AyrintiPenceresi(self, baslik, list(kalemler), aciklama=aciklama)
+        AyrintiPenceresi(self, baslik, list(kalemler), aciklama=aciklama, panel=self)
 
     def _hucre(self, tutar, baslik, kalemler, *, kalin=False, aciklama="", renk=None):
         h = {"m": _tl(tutar), "kalin": kalin}
         if renk:
             h["renk"] = renk
         if tutar is not None and kalemler is not None:
-            kalemler = list(kalemler)
-            h["cmd"] = lambda: self._ac(baslik, kalemler, aciklama)
+            kopya = list(kalemler)
+            h["cmd"] = lambda k=kopya, b=baslik, a=aciklama: self._ac(b, k, a)
         return h
 
     # --- çizim ---
@@ -684,9 +1523,19 @@ class GirisPaneli(tk.Frame):
             )
             self._kart_yaz(2, "—", alt, renk=PASIF)
         else:
-            kal = v["kalemler"]
-            self._kart_yaz(2, para_tr(v["likit"]), "Kasa ve mevduat toplamı (blokaj bilgisi yok)",
-                           cmd=lambda: self._ac("Likit varlıklar — kasa ve mevduat", kal))
+            # Varsayılan argüman zorunlu: sonraki satırda `kal` borç kalemlerine yazılırsa
+            # geç bağlanan lambda boş/yanlış liste açıyordu (kart tutarı ≠ ayrıntı).
+            likit_kal = list(v.get("kalemler") or [])
+            uyari_metin = " · ".join(v.get("uyarilar") or [])
+            acik = uyari_metin or "Rapor tarihindeki kasa ve mevduat bakiyeleri (devir dahil)."
+            self._kart_yaz(
+                2,
+                para_tr(v["likit"]),
+                "Kasa ve mevduat toplamı (blokaj bilgisi yok)",
+                cmd=lambda k=likit_kal, a=acik: self._ac(
+                    "Likit varlıklar — kasa ve mevduat", k, aciklama=a
+                ),
+            )
         b = s["borc"]
         engel = self._kullanilamaz(b)
         if engel:
@@ -703,11 +1552,15 @@ class GirisPaneli(tk.Frame):
                 rozet.append("Eksik veri")
             if b["durum"] == go.TARIHSEL_YOK:
                 rozet.append("Bilinen tutarlar")
-            kal = go.sutun_kalemleri(b["kalemler"], d, "ay1")
-            self._kart_yaz(3, para_tr(t["ay1"]),
-                           f"{_tarih_tr(go.kesimler(d)['ay1'])} itibarıyla · gecikmiş {para_tr(t['gecikmis'])} · "
-                           f"vadesiz {para_tr(t['vadesiz'])}", " · ".join(rozet),
-                           cmd=lambda: self._ac("Bu ay sonu birikimli ödeme yükü", kal))
+            borc_kal = go.sutun_kalemleri(b["kalemler"], d, "ay1")
+            self._kart_yaz(
+                3,
+                para_tr(t["ay1"]),
+                f"{_tarih_tr(go.kesimler(d)['ay1'])} itibarıyla · gecikmiş {para_tr(t['gecikmis'])} · "
+                f"vadesiz {para_tr(t['vadesiz'])}",
+                " · ".join(rozet),
+                cmd=lambda k=borc_kal: self._ac("Bu ay sonu birikimli ödeme yükü", k),
+            )
 
     def _hazirla(self, kutu: _Kutu, bolum: dict) -> bool:
         kutu.temizle()
@@ -783,14 +1636,18 @@ class GirisPaneli(tk.Frame):
             satirlar.append([r["tur"]] + hucreler(listeler[r["tur"]], r["tur"], r["bugun"], "bugun")
                             + hucreler(listeler[r["tur"]], r["tur"], r["ay"], "ay"))
         tb, ta = th["toplam"]["bugun"], th["toplam"]["ay"]
-        satirlar.append(["Gerçek tahsilat toplamı"] + hucreler(th["gercek"], "Gerçek tahsilat", tb, "bugun")
-                        + hucreler(th["gercek"], "Gerçek tahsilat", ta, "ay"))
+        gercek_toplam = th.get("gercek_toplam") or (
+            list(th["gercek"]) + [x for x in th["mus_ted"]
+                                  if x.get("belge_no") not in {y.get("belge_no") for y in th["gercek"]}]
+        )
+        satirlar.append(["Gerçek tahsilat toplamı"] + hucreler(gercek_toplam, "Gerçek tahsilat", tb, "bugun")
+                        + hucreler(gercek_toplam, "Gerçek tahsilat", ta, "ay"))
         satirlar.append(["Önceki dönem", sayi_tr(tb["onceki_adet"]),
                          self._hucre(tb["onceki_tutar"], "Gerçek tahsilat — önceki ay aynı gün",
-                                     [x for x in th["gercek"] if go._icinde(x["tarih"], dn["onceki_gun"])]),
+                                     [x for x in gercek_toplam if go._icinde(x["tarih"], dn["onceki_gun"])]),
                          sayi_tr(ta["onceki_adet"]),
                          self._hucre(ta["onceki_tutar"], "Gerçek tahsilat — önceki ay aynı dönem",
-                                     [x for x in th["gercek"] if go._icinde(x["tarih"], dn["onceki_ay"])])])
+                                     [x for x in gercek_toplam if go._icinde(x["tarih"], dn["onceki_ay"])])])
         satirlar.append(["Fark", "", {"m": _tl(tb["fark"]), "renk": UYARI if tb["fark"] < 0 else None},
                          "", {"m": _tl(ta["fark"]), "renk": UYARI if ta["fark"] < 0 else None}])
         satirlar.append(["Değişim %", "", _yuzde(tb["yuzde"], tb["yuzde_mesaj"]), "",
@@ -799,8 +1656,7 @@ class GirisPaneli(tk.Frame):
                          _yuzde(ta["oran"], ta["oran_mesaj"])])
         _tablo(k.govde, ["Tür", "Bugün adet", "Bugün tutar", "Bu ay adet", "Bu ay tutar"], satirlar,
                toplam_satirlari=(len(th["turler"]),))
-        k.notlar(th["uyarilar"], ["Cari virman ve müşteriden tedarikçiye ödeme gerçek tahsilata eklenmez."]
-                 + th["notlar"])
+        k.notlar(th["uyarilar"], th["notlar"])
 
     def _sutun_basliklari(self, d):
         k = go.kesimler(d)

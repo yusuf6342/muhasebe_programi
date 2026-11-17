@@ -352,46 +352,13 @@ class AuditDeleteService:
         if bool(getattr(obj, "is_deleted", False)):
             raise SoftDeleteError("Kayıt zaten silinmiş.")
         if entity_type == ENTITY_CARI:
-            from database.models.cari import CariIslem, SatisHareketi
-            from database.models.satis_faturasi import SatisFaturasi
+            # Kesin kural: hareket / belge / birleştirme geçmişi olan cari silinemez
+            # (bugün boş görünmesi geçmişi silmez). Kaynak: cari_silme_service.
+            from database.cari_silme_service import silme_durumu
 
-            acik = session.scalar(
-                select(func.count())
-                .select_from(SatisFaturasi)
-                .where(
-                    SatisFaturasi.cari_id == obj.id,
-                    SatisFaturasi.durum.notin_(("İPTAL",)),
-                    or_(SatisFaturasi.is_deleted.is_(False), SatisFaturasi.is_deleted.is_(None)),
-                )
-            ) or 0
-            if acik:
-                raise SoftDeleteError(
-                    f"Bu carinin {acik} açık/aktif satış faturası var. Önce belgeleri iptal edin."
-                )
-            from database.models.alis_faturasi import AlisFaturasi
-            from database.models.alis_irsaliyesi import AlisIrsaliyesi
-            from database.models.alis_siparisi import AlisSiparisi
-
-            for model, pasif_durumlar, ad in (
-                (AlisFaturasi, ("İPTAL",), "alış faturası"),
-                (AlisIrsaliyesi, ("İPTAL", "FATURALANDI"), "faturalanmamış alış irsaliyesi"),
-                (AlisSiparisi, ("İPTAL", "FATURALI", "İRSALİYELİ"), "açık alış siparişi"),
-            ):
-                sorgu = select(func.count()).select_from(model).where(
-                    model.cari_id == obj.id, model.durum.notin_(pasif_durumlar)
-                )
-                if hasattr(model, "is_deleted"):
-                    sorgu = sorgu.where(or_(model.is_deleted.is_(False), model.is_deleted.is_(None)))
-                adet = session.scalar(sorgu) or 0
-                if adet:
-                    raise SoftDeleteError(
-                        f"Bu carinin {adet} aktif {ad} kaydı var. Önce belgeleri iptal edin."
-                    )
-            # Hareketli cari silinebilir (soft) ama kritik sayılır — engelleme yok
-            _ = session.scalar(select(func.count()).select_from(CariIslem).where(CariIslem.cari_id == obj.id))
-            _ = session.scalar(
-                select(func.count()).select_from(SatisHareketi).where(SatisHareketi.cari_id == obj.id)
-            )
+            durum = silme_durumu(int(obj.id), session=session, kilitle=False)
+            if not durum.silinebilir:
+                raise SoftDeleteError(durum.neden_metni or "Bu cari silinemez.")
         elif entity_type == ENTITY_STOK:
             from database.models.stok import StokLotu
 
@@ -547,6 +514,26 @@ class AuditDeleteService:
             obj.deletion_log_id = log.id
             if hasattr(obj, "aktif"):
                 obj.aktif = False
+            if entity_type == ENTITY_CARI:
+                # Sonraki Evo aktarımı boş kartı sessizce yeniden açmasın
+                from database.cari_silme_service import (
+                    KAYNAK_EVO,
+                    cari_kaynak_engel_yaz,
+                    evo_meta,
+                    schema_hazirla as cari_engel_sema,
+                )
+
+                cari_engel_sema()
+                eid, _ekod = evo_meta(obj)
+                if eid:
+                    cari_kaynak_engel_yaz(
+                        sess,
+                        kaynak_sistem=KAYNAK_EVO,
+                        kaynak_kimlik=str(eid),
+                        cari_kodu=getattr(obj, "cari_kodu", None),
+                        unvan=getattr(obj, "unvan", None),
+                        neden=reason or "Kullanıcı sildi: işlemsiz cari",
+                    )
             if (
                 entity_type == ENTITY_SATIS_FATURA
                 and not getattr(obj, "onaylandi", False)

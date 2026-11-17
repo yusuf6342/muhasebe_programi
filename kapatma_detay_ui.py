@@ -95,14 +95,17 @@ KAPATAN_KOLONLARI = (
 )
 
 KAPATILAN_KOLONLARI = (
-    ("tur", "Evrak Türü", 150, "w"),
-    ("no", "Evrak No", 120, "w"),
-    ("tarih", "Evrak Tarihi", 85, "center"),
-    ("ilk", "İlk Tutar", 105, "e"),
-    ("kapatilan", "Bu İşlemle Kapatılan", 130, "e"),
-    ("sonrasi", "İşlem Sonrası Kalan", 125, "e"),
-    ("pb", "Döviz", 50, "center"),
-    ("islem", "İşlem Türü", 110, "w"),
+    ("tur", "Evrak Türü", 120, "w"),
+    ("no", "Evrak No", 100, "w"),
+    ("tarih", "Evrak Tarihi", 75, "center"),
+    ("vade", "Esas Vade", 95, "center"),
+    ("erken", "Erken / Geç", 95, "center"),
+    ("ilk", "İlk Tutar", 90, "e"),
+    ("kapatilan", "Bu İşlemle Kapatılan", 110, "e"),
+    ("sonrasi", "İşlem Sonrası Kalan", 105, "e"),
+    ("pb", "Döviz", 45, "center"),
+    ("islem", "İşlem Türü", 90, "w"),
+    ("yontem", "Dağıtım", 95, "w"),
 )
 
 IPTAL_KOLONLARI = (
@@ -155,11 +158,14 @@ class KapatilanBorclarPaneli(ttk.LabelFrame):
                     s["evrak_turu"],
                     s["evrak_no"],
                     _tarih(s.get("evrak_tarihi")),
+                    s.get("vade_etiket") or _tarih(s.get("esas_vade")),
+                    s.get("erken_gec_etiket") or "",
                     _para(s.get("ilk_tutar")),
                     _para(s["kapatilan"]),
                     _para(s.get("sonrasi_kalan")),
                     s.get("para_birimi") or "TRY",
                     s.get("tur") or "",
+                    s.get("yontem") or "",
                 ),
             )
         parcalar = [

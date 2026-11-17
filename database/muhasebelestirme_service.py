@@ -108,6 +108,8 @@ IPTAL_OLAYLARI = {
     "kk_ekstre_odeme_iptal": "kk_ekstre_odeme",
     "cek_senet_iptal": "cek_senet",
     "banka_kredi_odeme_iptal": "banka_kredi_odeme",
+    "nakit_avans_kullandirim_iptal": "nakit_avans_kullandirim",
+    "nakit_avans_taksit_iptal": "nakit_avans_taksit",
     "kur_farki_iptal": "kur_farki",
 }
 

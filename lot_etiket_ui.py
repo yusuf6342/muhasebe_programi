@@ -39,21 +39,28 @@ def lot_etiket_html(
     yukseklik_mm: float = 40,
     lot_goster: bool = False,
 ) -> str:
-    """Varsayılan 60×40 mm: ad + fiyat + barkod + yazılı kod (stok kodu yok)."""
-    barkod_h = max(32, min(80, int(yukseklik_mm * 1.5)))
-    modul = 2 if genislik_mm >= 50 else 1
+    """Varsayılan 60×40 mm: ad + fiyat/TRY/birim + barkod (+ isteğe lot).
+
+    Sabit yerleşim (1.1.8): ad üstte (ortalı, uzun ad satır kırar); fiyat satırında
+    tutar + TRY + birim aynı punto; KDV yok; barkod altta ortalı.
+    """
+    # Çubuk yüksekliği — taranabilir; metin için dikey pay korunur
+    barkod_h = max(18, min(28, int(yukseklik_mm * 0.58)))
+    # Kullanılabilir genişlik (mm→px yaklaşık): kenar boşluğu + quiet zone SVG içinde
+    hedef_px = max(80, int((genislik_mm - 4) * 3.78))
+    # Barkod bloğu (çubuk + numara) etiket yüksekliğinin ~%34'ünü aşmasın
+    barkod_max_mm = round(max(11.0, min(14.0, yukseklik_mm * 0.34)), 1)
     kartlar = []
     for s in satirlar:
         kod = (s.get("barkod") or "").strip()
         if not kod:
             continue
         adet = max(1, int(s.get("etiket_adedi") or 1))
-        svg = code128_svg(kod, yukseklik=barkod_h, modul=modul)
+        svg = code128_svg(kod, yukseklik=barkod_h, hedef_genislik_px=hedef_px)
         ad = escape(s.get("stok_adi") or "")
         birim = escape(s.get("birim") or "Adet")
         fiyat = s.get("satis_fiyati")
         fiyat_txt = escape(_para(fiyat) if fiyat is not None else "—")
-        kdv = "KDV dahil" if s.get("kdv_dahil", True) else "KDV hariç"
         pb = escape((s.get("para_birimi") or "TRY").upper())
         lot_satir = ""
         if lot_goster and s.get("lot_no"):
@@ -62,10 +69,11 @@ def lot_etiket_html(
             kartlar.append(
                 f"""
                 <div class="etiket">
-                  <div class="ad">{ad}</div>
-                  <div class="fiyat">{fiyat_txt} {pb}</div>
-                  <div class="birim">{birim} · {kdv}</div>
-                  {lot_satir}
+                  <div class="metin">
+                    <div class="ad">{ad}</div>
+                    <div class="fiyat">{fiyat_txt} {pb} <span class="birim">{birim}</span></div>
+                    {lot_satir}
+                  </div>
                   <div class="barkod">{svg}</div>
                 </div>
                 """
@@ -81,14 +89,58 @@ body {{ font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 8px; bac
 .toolbar {{ background:#fff; padding:10px; margin-bottom:10px; border:1px solid #ccc; }}
 .etiket {{
   width:{genislik_mm}mm; height:{yukseklik_mm}mm; background:#fff;
-  border:1px dashed #999; padding:2mm; text-align:center;
+  border:1px dashed #999; padding:1.5mm 2mm;
+  text-align:center;
   page-break-after:always; overflow:hidden;
-  display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+  display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start;
+  gap:0;
 }}
-.ad {{ font-size:11pt; font-weight:700; line-height:1.15; max-height:2.4em; overflow:hidden; }}
-.fiyat {{ font-size:14pt; font-weight:700; margin-top:1mm; }}
-.birim, .lot {{ font-size:8pt; color:#444; }}
-.barkod {{ margin-top:auto; }}
+.metin {{
+  flex:1 1 auto; width:100%;
+  display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+  text-align:center;
+  gap:1.4mm;
+}}
+.ad {{
+  font-size:9pt; font-weight:700; line-height:1.22;
+  width:100%; max-width:100%;
+  text-align:center;
+  overflow-wrap:anywhere; word-break:break-word; white-space:normal;
+  /* Küçültme yok — ad doğal yüksekliğini alır; fiyat altına kayar (üst üste binmez) */
+  flex:0 0 auto;
+  margin:0; padding:0;
+}}
+.fiyat {{
+  font-size:11.5pt; font-weight:700;
+  margin:0; padding:0;
+  flex:0 0 auto; line-height:1.15;
+  text-align:center;
+  position:relative; z-index:1; background:#fff;
+}}
+.fiyat .birim {{
+  font-size:inherit; font-weight:inherit; color:inherit;
+  margin-left:0.35em;
+}}
+.lot {{
+  font-size:7.5pt; color:#444;
+  margin:0; padding:0;
+  flex:0 0 auto; line-height:1.15;
+  text-align:center;
+  position:relative; z-index:1; background:#fff;
+}}
+.barkod {{
+  flex:0 0 auto; width:100%;
+  max-height:{barkod_max_mm}mm;
+  margin-top:0.8mm;
+  display:flex; justify-content:center; align-items:flex-end;
+  overflow:hidden;
+  text-align:center;
+}}
+.barkod svg {{
+  width:100%; max-width:100%;
+  max-height:{barkod_max_mm}mm;
+  height:auto; display:block; margin:0 auto;
+}}
 @media print {{
   body {{ background:#fff; padding:0; }}
   .toolbar {{ display:none; }}

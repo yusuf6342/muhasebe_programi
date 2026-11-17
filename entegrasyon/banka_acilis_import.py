@@ -201,10 +201,12 @@ def aktar_banka_acilis_api_den(
             sonuc.hatalar.append(f"Evo banka#{bid}: eşleştirme yok, açılış atlandı ({bil['net']})")
             continue
         hesap_id = kural.finans_hesap_id or BankAccountMatchingService.mevduat_hesap_id(
-            kural.banka_karti_id, "MEVDUAT"
+            kural.banka_karti_id, (kural.alt_hesap_turu or "MEVDUAT")
         )
         if not hesap_id:
-            sonuc.hatalar.append(f"Evo banka#{bid}: MEVDUAT hesabı yok")
+            sonuc.hatalar.append(
+                f"Evo banka#{bid}: ürün hesabı yok (tür={kural.alt_hesap_turu or 'MEVDUAT'})"
+            )
             continue
         try:
             with get_session() as session:

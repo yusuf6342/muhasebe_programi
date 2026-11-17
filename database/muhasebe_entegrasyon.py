@@ -61,6 +61,8 @@ KAYNAK_POS_VALOR = "pos_valor_aktarimi"
 KAYNAK_CEK_SENET = "cek_senet_hareketi"
 KAYNAK_KREDI_KULLANDIRIM = "banka_kredi_kullandirim"
 KAYNAK_KREDI_ODEME = "banka_kredi_odeme"
+KAYNAK_NAKIT_AVANS_KULLANDIRIM = "nakit_avans_kullandirim"
+KAYNAK_NAKIT_AVANS_TAKSIT = "nakit_avans_taksit"
 KAYNAK_KUR_FARKI = "kur_farki"
 
 # Evrak türleri: muhasebeleştirme ayarı ve belge durumu bu anahtarlarla tutulur.
@@ -189,6 +191,18 @@ EVRAKLAR: dict[str, dict] = {
         "kaynaklar": (KAYNAK_KREDI_ODEME,),
         "kesinlesme": "Öde (iptal: ters kayıt). Anapara kredi hesabına, faiz/masraf gider hesaplarına",
     },
+    "nakit_avans_kullandirim": {
+        "ad": "Nakit avans kullandırımı (firma kartı → kasa/banka)",
+        "fn": "nakit_avans_kullandirim_fisi",
+        "kaynaklar": (KAYNAK_NAKIT_AVANS_KULLANDIRIM,),
+        "kesinlesme": "Kaydet. Net tutar kasa/banka; anapara nakit avans borcu; masraf/vergi gider",
+    },
+    "nakit_avans_taksit": {
+        "ad": "Nakit avans taksitinin karta yansıması",
+        "fn": "nakit_avans_taksit_fisi",
+        "kaynaklar": (KAYNAK_NAKIT_AVANS_TAKSIT,),
+        "kesinlesme": "Karta işle (iptal: ters kayıt). Anapara avans borcundan; faiz/masraf gider; kart borcu toplam",
+    },
     "kur_farki": {
         "ad": "Kur farkı (dövizli borç/alacak kapatması)",
         "fn": "kur_farki_fisi",
@@ -222,6 +236,7 @@ ONERI_HESAPLAR = (
     ("153", "Ticari Mallar", "Aktif", "ticari_mallar"),
     ("191", "İndirilecek KDV", "Aktif", "indirilecek_kdv"),
     ("300", "Banka Kredileri", "Pasif", "kredi_kisa_vadeli"),
+    ("309", "Diğer Mali Borçlar", "Pasif", "nakit_avans_borcu"),
     ("320", "Satıcılar", "Pasif", "tedarikciler"),
     ("391", "Hesaplanan KDV", "Pasif", "hesaplanan_kdv"),
     ("400", "Banka Kredileri", "Pasif", "kredi_uzun_vadeli"),
@@ -1900,6 +1915,119 @@ class MuhasebeEntegrasyonService:
                                                       session=session)
 
     @staticmethod
+    def _plan_nakit_avans_kullandirim(s, avans_id: int) -> dict | None:
+        """Borç kasa/banka (net) + masraf/vergi gider / Alacak nakit avans borcu (anapara)."""
+        from database.models.finans import FinansHesabi, NakitAvans
+
+        H = MuhasebeEntegrasyonService
+        a = s.get(NakitAvans, int(avans_id))
+        if a is None or (a.durum or "").upper() == "IPTAL":
+            return None
+        ana = decimal(a.anapara or 0)
+        net = decimal(a.net_giris or 0)
+        masraf = decimal(a.kullandirim_masraf or 0)
+        vergi = decimal(a.kullandirim_vergi or 0)
+        if ana <= 0:
+            return None
+        hedef = s.get(FinansHesabi, int(a.hedef_hesap_id))
+        nakit = H._finans_karsiligi_ayarli(hedef, s)
+        avans_borc = H._ayarli_hesap("nakit_avans_borcu", s)
+        acik = f"{a.belge_no} nakit avans"
+        satirlar = []
+        if net > 0:
+            satirlar.append(H._satir(nakit, borc=net, aciklama=acik))
+        if masraf > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("kredi_dosya_masrafi", s), borc=masraf, aciklama=f"{acik} masraf")
+            )
+        if vergi > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("kredi_bsmv_gideri", s), borc=vergi, aciklama=f"{acik} vergi")
+            )
+        satirlar.append(H._satir(avans_borc, alacak=ana, aciklama=acik))
+        return {
+            "kaynak_turu": KAYNAK_NAKIT_AVANS_KULLANDIRIM,
+            "fis_tarihi": a.islem_tarihi,
+            "fis_turu": "Mahsup Fişi",
+            "aciklama": f"Otomatik: Nakit avans kullandırım {acik}",
+            "belge_no": a.belge_no,
+            "satirlar": satirlar,
+        }
+
+    @staticmethod
+    def _plan_nakit_avans_taksit(s, taksit_id: int) -> dict | None:
+        """Borç avans borcu (anapara) + faiz/masraf/vergi gider / Alacak şirket kart borcu (toplam)."""
+        from database.models.finans import NakitAvans, NakitAvansTaksit
+
+        H = MuhasebeEntegrasyonService
+        t = s.get(NakitAvansTaksit, int(taksit_id))
+        if t is None or (t.durum or "").upper() != "KARTA_ISLENDI" or not t.aktif:
+            return None
+        a = s.get(NakitAvans, int(t.avans_id))
+        if a is None:
+            return None
+        ana = decimal(t.anapara or 0)
+        faiz = decimal(t.faiz or 0)
+        masraf = decimal(t.masraf or 0)
+        vergi = decimal(t.vergi or 0)
+        toplam = decimal(t.toplam or 0)
+        if toplam <= 0:
+            return None
+        acik = f"{a.belge_no} T{t.taksit_no}"
+        satirlar = []
+        if ana > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("nakit_avans_borcu", s), borc=ana, aciklama=f"{acik} anapara")
+            )
+        if faiz > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("kredi_faiz_gideri", s), borc=faiz, aciklama=f"{acik} faiz")
+            )
+        if masraf > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("kredi_dosya_masrafi", s), borc=masraf, aciklama=f"{acik} masraf")
+            )
+        if vergi > 0:
+            satirlar.append(
+                H._satir(H._ayarli_hesap("kredi_bsmv_gideri", s), borc=vergi, aciklama=f"{acik} vergi")
+            )
+        satirlar.append(
+            H._satir(H._ayarli_hesap("sirket_kart_borcu", s), alacak=toplam, aciklama=acik)
+        )
+        return {
+            "kaynak_turu": KAYNAK_NAKIT_AVANS_TAKSIT,
+            "fis_tarihi": t.islem_tarihi or t.yansima_tarihi,
+            "fis_turu": "Mahsup Fişi",
+            "aciklama": f"Otomatik: Nakit avans karta yansıma {acik}",
+            "belge_no": t.kk_hareket_belge_no or a.belge_no,
+            "satirlar": satirlar,
+        }
+
+    @staticmethod
+    def nakit_avans_kullandirim_fisi(avans_id: int, *, yeniden: bool = False, session=None) -> int | None:
+        return MuhasebeEntegrasyonService._planli_fis(
+            "nakit_avans_kullandirim", avans_id, yeniden=yeniden, session=session
+        )
+
+    @staticmethod
+    def nakit_avans_taksit_fisi(taksit_id: int, *, yeniden: bool = False, session=None) -> int | None:
+        return MuhasebeEntegrasyonService._planli_fis(
+            "nakit_avans_taksit", taksit_id, yeniden=yeniden, session=session
+        )
+
+    @staticmethod
+    def nakit_avans_kullandirim_iptal(avans_id: int, neden: str = "", *, session=None) -> None:
+        MuhasebeEntegrasyonService.iptal_kaynak(
+            KAYNAK_NAKIT_AVANS_KULLANDIRIM, avans_id, neden, session=session
+        )
+
+    @staticmethod
+    def nakit_avans_taksit_iptal(taksit_id: int, neden: str = "", *, session=None) -> None:
+        MuhasebeEntegrasyonService.iptal_kaynak(
+            KAYNAK_NAKIT_AVANS_TAKSIT, taksit_id, neden, session=session
+        )
+
+    @staticmethod
     def pos_tahsilat_iptal(pv_id: int, neden: str = "", *, session=None) -> None:
         MuhasebeEntegrasyonService.iptal_kaynak(KAYNAK_POS_TAHSILAT, pv_id, neden, session=session)
 
@@ -2334,6 +2462,8 @@ PLANLAR: dict[str, str] = {
     "cek_senet": "_plan_cek_senet",
     "banka_kredi_kullandirim": "_plan_banka_kredi_kullandirim",
     "banka_kredi_odeme": "_plan_banka_kredi_odeme",
+    "nakit_avans_kullandirim": "_plan_nakit_avans_kullandirim",
+    "nakit_avans_taksit": "_plan_nakit_avans_taksit",
     "kur_farki": "_plan_kur_farki",
 }
 

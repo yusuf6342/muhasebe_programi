@@ -27,6 +27,7 @@ from cari_kart_tema import (
     font,
     tk_buton,
 )
+from database import cari_kredi_notu_service as kn
 from database import cari_risk_service as crs
 from tutar_bicim import tr_tutar
 
@@ -38,6 +39,7 @@ DURUM_RENK = {
 }
 DONEM_SECENEK = ("", "Aylık", "Yıllık")
 TABLO_TURLERI = (crs.TUR_ACIK, crs.TUR_CEK, crs.TUR_SENET, crs.TUR_PORTFOY, crs.TUR_TOPLAM)
+KREDI_NOTU_SECENEK = ("", "*", "**", "***", "****", "-")
 
 
 def _tl(deger) -> str:
@@ -71,16 +73,21 @@ class RiskLimitPaneli(tk.Frame):
         self.donem_var = tk.StringVar(master=self)
         self.aciklama_var = tk.StringVar(master=self)
         self.oran_var = {b: tk.StringVar(master=self, value="100,00") for b in crs.RISK_ORANI_ALANI}
+        self.kredi_notu_var = tk.StringVar(master=self, value="")
+        self._yildiz_limit_var = {y: tk.StringVar(master=self) for y in kn.NOT_YILDIZ}
         self._baglaniyor = False
         self._vade_hatasi = ""
         self._vade_celiski = ""
         self._hucre: dict[tuple[str, str], tk.Widget] = {}
         self._genel_hucre: dict[tuple[str, str], tk.Label] = {}
         self._girisler: list[tk.Widget] = []
+        self._yildiz_acik = False
+        self._manuel_limit_onbellek = None  # yıldız öncesi saklanan / gösterilecek manuel
         self._olustur()
         for v in (*self.uygula_var.values(), *self.limit_var.values(), self.aylik_var, self.yillik_var,
-                  self.donem_var, self.aciklama_var, *self.oran_var.values()):
+                  self.donem_var, self.aciklama_var, *self.oran_var.values(), self.kredi_notu_var):
             v.trace_add("write", lambda *_a: self._degisti())
+        self.kredi_notu_var.trace_add("write", lambda *_a: self._kredi_notu_degisti())
         self.aylik_var.trace_add("write", lambda *_a: self._vade_bagla(crs.DONEM_AYLIK))
         self.yillik_var.trace_add("write", lambda *_a: self._vade_bagla(crs.DONEM_YILLIK))
 
@@ -96,6 +103,8 @@ class RiskLimitPaneli(tk.Frame):
         tk_buton(ust, "Risk Politikası…", self.politika_ac, rol="ikincil").pack(side="right")
         tk_buton(ust, "Risk Olayları", self.olaylar_ac, rol="ikincil").pack(side="right", padx=4)
         tk_buton(ust, "Yenile", self.yenile, rol="ikincil").pack(side="right")
+
+        self._kredi_notu_olustur(r)
 
         tablo = tk.Frame(self, bg=CIZGI)
         tablo.pack(fill="x", pady=(6, 2))
@@ -169,6 +178,187 @@ class RiskLimitPaneli(tk.Frame):
         self.vf_uyari.grid(row=3, column=0, columnspan=7, sticky="w")
         vf.columnconfigure(5, weight=1)
         self._girisler += [self.aylik_giris, self.yillik_giris, self.donem_cb, self.aciklama_giris]
+
+    def _kredi_notu_olustur(self, r):
+        kn_fr = tk.LabelFrame(
+            self, text=" Kredi Notu ", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", r), padx=8, pady=6
+        )
+        kn_fr.pack(fill="x", pady=(8, 2))
+        satir = tk.Frame(kn_fr, bg=BEYAZ)
+        satir.pack(fill="x")
+        tk.Label(satir, text="Kredi notu", bg=BEYAZ, font=font(10, root=r)).pack(side="left")
+        self.kredi_notu_cb = ttk.Combobox(
+            satir,
+            textvariable=self.kredi_notu_var,
+            values=KREDI_NOTU_SECENEK,
+            width=8,
+        )
+        self.kredi_notu_cb.pack(side="left", padx=(8, 8))
+        self._girisler.append(self.kredi_notu_cb)
+        self.kredi_notu_limit_lbl = tk.Label(
+            satir, text="", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", r), anchor="w"
+        )
+        self.kredi_notu_limit_lbl.pack(side="left", padx=(4, 0))
+        self.kredi_notu_durum_lbl = tk.Label(
+            kn_fr, text="", bg=BEYAZ, fg=UYARI, font=font(9, "bold", r), anchor="w"
+        )
+        self.kredi_notu_durum_lbl.pack(fill="x", pady=(4, 0))
+        self.kredi_notu_ipucu = tk.Label(
+            kn_fr,
+            text=(
+                "Yıldız veya «-» seçildiğinde açık hesap limiti otomatik yönetilir. "
+                "Elle değiştirmek için kredi notunu boşaltın (saklanan manuel limit geri gelir)."
+            ),
+            bg=BEYAZ,
+            fg=IKINCIL,
+            font=font(8, root=r),
+            anchor="w",
+            justify="left",
+            wraplength=880,
+        )
+        self.kredi_notu_ipucu.pack(fill="x", pady=(2, 0))
+
+        self._yildiz_baslik = tk.Frame(kn_fr, bg=BEYAZ)
+        self._yildiz_baslik.pack(fill="x", pady=(6, 0))
+        self._yildiz_toggle_btn = tk_buton(
+            self._yildiz_baslik,
+            "▶ Yıldız Limitleri — Firma Geneli",
+            self._yildiz_panel_toggle,
+            rol="ikincil",
+        )
+        self._yildiz_toggle_btn.pack(side="left")
+        self._yildiz_icerik = tk.Frame(kn_fr, bg=BEYAZ)
+        tk.Label(
+            self._yildiz_icerik,
+            text=(
+                "Bu ayarlar yalnız açık cariyi değil, aynı firmadaki ilgili yıldızlı carileri etkiler. "
+                "Cari kart kaydından ayrıdır — «Limit ayarlarını kaydet» kullanın."
+            ),
+            bg=BEYAZ,
+            fg=IKINCIL,
+            font=font(8, root=r),
+            wraplength=880,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(4, 4))
+        for yildiz in kn.NOT_YILDIZ:
+            satir_y = tk.Frame(self._yildiz_icerik, bg=BEYAZ)
+            satir_y.pack(fill="x", pady=1)
+            tk.Label(
+                satir_y, text=f"{yildiz} için kredi limiti", bg=BEYAZ, font=font(10, root=r), width=22, anchor="w"
+            ).pack(side="left")
+            giris = ttk.Entry(satir_y, textvariable=self._yildiz_limit_var[yildiz], width=14, justify="right")
+            giris.pack(side="left", padx=4)
+            self._girisler.append(giris)
+            tk.Label(satir_y, text="TL", bg=BEYAZ, fg=IKINCIL, font=font(9, root=r)).pack(side="left")
+        tk_buton(
+            self._yildiz_icerik,
+            "Limit ayarlarını kaydet",
+            self._yildiz_limit_kaydet,
+            rol="vurgu",
+        ).pack(anchor="w", pady=(8, 2))
+        self._yildiz_sonuc_lbl = tk.Label(
+            self._yildiz_icerik, text="", bg=BEYAZ, fg=BASARI, font=font(9, root=r), anchor="w"
+        )
+        self._yildiz_sonuc_lbl.pack(fill="x")
+        self._yildiz_limitlerini_doldur()
+
+    def _yildiz_panel_toggle(self):
+        self._yildiz_acik = not self._yildiz_acik
+        if self._yildiz_acik:
+            self._yildiz_icerik.pack(fill="x", pady=(2, 0))
+            self._yildiz_toggle_btn.configure(text="▼ Yıldız Limitleri — Firma Geneli")
+            self._yildiz_limitlerini_doldur()
+        else:
+            self._yildiz_icerik.pack_forget()
+            self._yildiz_toggle_btn.configure(text="▶ Yıldız Limitleri — Firma Geneli")
+
+    def _yildiz_limitlerini_doldur(self):
+        try:
+            limitler = kn.yildiz_limitlerini_getir()
+        except Exception:
+            limitler = dict(kn.VARSAYILAN_LIMITLER)
+        for y, var in self._yildiz_limit_var.items():
+            var.set(tr_tutar(limitler.get(y, kn.VARSAYILAN_LIMITLER[y])))
+
+    def _yildiz_limit_kaydet(self):
+        try:
+            sonuc = kn.yildiz_limitlerini_kaydet(
+                {y: var.get() for y, var in self._yildiz_limit_var.items()}
+            )
+        except (ValueError, PermissionError) as hata:
+            messagebox.showerror("Yıldız limitleri", str(hata), parent=self.winfo_toplevel())
+            return
+        n = int(sonuc.get("etkilenen_hesap") or 0)
+        self._yildiz_sonuc_lbl.configure(
+            text=f"Limit ayarları kaydedildi. Etkilenen yıldızlı hesap: {n}."
+        )
+        self._kredi_notu_degisti()
+        messagebox.showinfo(
+            "Yıldız limitleri",
+            f"Firma geneli yıldız limitleri kaydedildi.\nEtkilenen hesap: {n}",
+            parent=self.winfo_toplevel(),
+        )
+
+    def _kredi_notu_degisti(self):
+        if self._yukleniyor:
+            return
+        ham = self.kredi_notu_var.get()
+        # Combobox serbest giriş: normalize et, geçersizse uyar
+        if ham and str(ham).strip() and kn.not_normalize(ham) == kn.NOT_BOS and kn.not_bilinmeyen_mi(ham):
+            self.kredi_notu_durum_lbl.configure(
+                text=f"Geçersiz not «{ham}». Boş, *, **, ***, **** veya - girin.",
+                fg=UYARI,
+            )
+            self.kredi_notu_limit_lbl.configure(text="")
+            self._limit_girislerini_ayarla()
+            self._cerceve_guncelle(None)
+            return
+        notu = kn.not_normalize(ham)
+        if notu != (ham or "").strip() and ham:
+            # 1-4 kısayolu vb. → gösterimi düzelt
+            self._yukleniyor = True
+            try:
+                self.kredi_notu_var.set(notu)
+            finally:
+                self._yukleniyor = False
+        try:
+            limit = kn.hesaplanan_limit(notu)
+        except Exception:
+            limit = None
+        if notu == kn.NOT_BOS:
+            self.kredi_notu_limit_lbl.configure(text="Manuel limit")
+            self.kredi_notu_durum_lbl.configure(text="", fg=UYARI)
+            if self._manuel_limit_onbellek is not None:
+                self.limit_var[crs.TUR_ACIK].set(tr_tutar(self._manuel_limit_onbellek))
+        elif notu == kn.NOT_DOLANDIRICI:
+            self.kredi_notu_limit_lbl.configure(text="0,00 TL")
+            self.kredi_notu_durum_lbl.configure(
+                text="Dolandırıcı olarak işaretli", fg=UYARI
+            )
+            self.limit_var[crs.TUR_ACIK].set(tr_tutar(Decimal("0")))
+            self.uygula_var[crs.TUR_ACIK].set(True)
+        else:
+            self.kredi_notu_limit_lbl.configure(
+                text=f"{tr_tutar(limit)} TL" if limit is not None else ""
+            )
+            self.kredi_notu_durum_lbl.configure(text=kn.NOT_ETIKET.get(notu, notu), fg=LACIVERT)
+            if limit is not None:
+                self.limit_var[crs.TUR_ACIK].set(tr_tutar(limit))
+                self.uygula_var[crs.TUR_ACIK].set(True)
+        self._limit_girislerini_ayarla()
+        self._cerceve_guncelle(notu)
+
+    def _cerceve_guncelle(self, notu: str | None):
+        ust = self.winfo_toplevel()
+        renk = kn.cerceve_rengi(notu)
+        try:
+            if renk:
+                ust.configure(highlightthickness=3, highlightbackground=renk, highlightcolor=renk)
+            else:
+                ust.configure(highlightthickness=0)
+        except tk.TclError:
+            pass
 
     def _genel_risk_olustur(self, r):
         gr = tk.LabelFrame(self, text=" Genel Risk ", bg=BEYAZ, fg=LACIVERT, font=font(10, "bold", r), padx=8, pady=6)
@@ -321,6 +511,19 @@ class RiskLimitPaneli(tk.Frame):
             oranlar = crs.risk_oranlari(cari) if cari else {}
             for bilesen, var in self.oran_var.items():
                 var.set(crs.oran_metni(oranlar.get(bilesen, crs.VARSAYILAN_RISK_ORANI)))
+            ham_not = getattr(cari, "kredi_notu", None) if cari else None
+            saklanan = getattr(cari, "kredi_notu_manuel_limit", None) if cari else None
+            if saklanan is not None:
+                self._manuel_limit_onbellek = saklanan
+            elif ham_not in (None, ""):
+                self._manuel_limit_onbellek = getattr(cari, "acik_hesap_risk_limiti", None) if cari else None
+            else:
+                self._manuel_limit_onbellek = saklanan
+            if ham_not and kn.not_bilinmeyen_mi(ham_not):
+                # Eski bilinmeyen içeriği sessizce silme; combobox'ta göster
+                self.kredi_notu_var.set(str(ham_not).strip())
+            else:
+                self.kredi_notu_var.set(kn.not_normalize(ham_not))
             self._vade_hatasi = ""
             self._vade_celiski = ""
             if not crs.vade_oranlari_tutarli(aylik, yillik):
@@ -332,8 +535,11 @@ class RiskLimitPaneli(tk.Frame):
                     + "Bir alanı düzenlediğinizde diğeri ona göre güncellenir."
                 )
             self._vade_uyarisini_yaz()
+            self._yildiz_limitlerini_doldur()
         finally:
             self._yukleniyor = False
+        # Not etiket / çerçeve / açık hesap salt okunur durumu
+        self._kredi_notu_degisti()
         self._tabloyu_ciz()
 
     def degerler(self) -> dict:
@@ -348,6 +554,12 @@ class RiskLimitPaneli(tk.Frame):
         veri["vade_farki_aciklama"] = self.aciklama_var.get().strip()
         for bilesen, alan in crs.RISK_ORANI_ALANI.items():
             veri[alan] = self.oran_var[bilesen].get().strip()
+        ham_not = (self.kredi_notu_var.get() or "").strip()
+        if ham_not and kn.not_bilinmeyen_mi(ham_not):
+            raise ValueError(
+                f"Geçersiz kredi notu «{ham_not}». Boş, *, **, ***, **** veya - seçin."
+            )
+        veri["kredi_notu"] = kn.not_normalize(ham_not)
         return veri
 
     def snapshot(self) -> tuple:
@@ -379,12 +591,24 @@ class RiskLimitPaneli(tk.Frame):
                 giris.focus_set()
 
     def _limit_girislerini_ayarla(self):
+        notu = kn.not_normalize(self.kredi_notu_var.get())
+        otomatik = notu != kn.NOT_BOS and not kn.not_bilinmeyen_mi(self.kredi_notu_var.get())
         for tur in crs.LIMITLI_TURLER:
             giris = self._hucre.get((tur, "limit"))
             if giris is None:
                 continue
+            # Açık hesap: yıldız/- iken otomatik (elle kapalı)
+            if tur == crs.TUR_ACIK and otomatik:
+                giris.configure(state="disabled")
+                chk = None
+                # uygula checkbox da kilitli kalsın
+                continue
             acik = self._duzenlenebilir and bool(self.uygula_var[tur].get())
             giris.configure(state="normal" if acik else "disabled")
+        # Açık hesap «Limit Uygula» checkbox
+        for child in self.winfo_children():
+            pass
+        # Checkbox'ı _hucre üzerinden bulamayız; uygula_var yeterli — disabled entry yeterli sinyal
 
     def _degisti(self):
         if self._yukleniyor:

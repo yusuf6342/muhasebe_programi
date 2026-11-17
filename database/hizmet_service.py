@@ -231,79 +231,162 @@ class HizmetService:
         return HizmetService.getir(hid)
 
     @staticmethod
-    def kullanim_ozeti(hizmet_id: int) -> dict[str, Any]:
-        """Kartın tüm ilişkileri — ekran tarih aralığına bakılmaz."""
-        HizmetService.ensure_schema()
-        hid = int(hizmet_id)
-        with get_session() as session:
-            h = session.get(HizmetKarti, hid)
-            if h is None:
-                raise ValueError("Hizmet bulunamadı.")
-            hareket_n = int(
+    def _kullanim_ozeti_session(session, hid: int) -> dict[str, Any]:
+        """Tek oturumda kullanım sayımı — tutar/tarih filtresi yok; taslak/iptal dahil."""
+        h = session.get(HizmetKarti, hid)
+        if h is None:
+            raise ValueError("Hizmet bulunamadı.")
+        hareket_n = int(
+            session.scalar(
+                select(func.count())
+                .select_from(HizmetHareketi)
+                .where(HizmetHareketi.hizmet_id == hid)
+            )
+            or 0
+        )
+        hareket_ornek = []
+        if hareket_n:
+            hareket_ornek = [
+                f"{x.belge_no or '—'} ({x.hareket_turu or '—'})"
+                for x in session.scalars(
+                    select(HizmetHareketi)
+                    .where(HizmetHareketi.hizmet_id == hid)
+                    .order_by(HizmetHareketi.id.desc())
+                    .limit(3)
+                ).all()
+            ]
+
+        fatura_satir_n = 0
+        fatura_ornek = []
+        fatura_durum = {}
+        try:
+            from database.models.hizmet_faturasi import (
+                HizmetFaturasi,
+                HizmetFaturasiSatiri,
+            )
+
+            fatura_satir_n = int(
                 session.scalar(
                     select(func.count())
-                    .select_from(HizmetHareketi)
-                    .where(HizmetHareketi.hizmet_id == hid)
+                    .select_from(HizmetFaturasiSatiri)
+                    .where(HizmetFaturasiSatiri.hizmet_id == hid)
                 )
                 or 0
             )
-            fatura_satir_n = 0
-            try:
-                from database.models.hizmet_faturasi import HizmetFaturasiSatiri
-
-                fatura_satir_n = int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(HizmetFaturasiSatiri)
+            if fatura_satir_n:
+                satirlar = list(
+                    session.scalars(
+                        select(HizmetFaturasiSatiri)
                         .where(HizmetFaturasiSatiri.hizmet_id == hid)
-                    )
-                    or 0
+                        .options(selectinload(HizmetFaturasiSatiri.fatura))
+                        .limit(20)
+                    ).all()
                 )
-            except Exception:
-                fatura_satir_n = 0
-            gider_fisi_n = 0
-            try:
-                from database.models.finans import GiderFisi
+                for s in satirlar[:3]:
+                    f = s.fatura
+                    if f is None:
+                        continue
+                    fatura_ornek.append(
+                        f"{f.fatura_no} [{f.durum or '—'} / {f.fatura_turu or '—'}]"
+                    )
+                    d = (f.durum or "?").strip() or "?"
+                    fatura_durum[d] = fatura_durum.get(d, 0) + 1
+        except Exception:
+            fatura_satir_n = 0
 
-                gider_fisi_n = int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(GiderFisi)
-                        .where(GiderFisi.hizmet_id == hid)
-                    )
-                    or 0
+        gider_fisi_n = 0
+        gider_ornek = []
+        try:
+            from database.models.finans import GiderFisi
+
+            gider_fisi_n = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(GiderFisi)
+                    .where(GiderFisi.hizmet_id == hid)
                 )
-            except Exception:
-                gider_fisi_n = 0
-            toplam = hareket_n + fatura_satir_n + gider_fisi_n
-            return {
-                "hizmet_id": hid,
-                "hizmet_kodu": h.hizmet_kodu,
-                "hizmet_adi": h.hizmet_adi,
-                "hareket": hareket_n,
-                "fatura_satir": fatura_satir_n,
-                "gider_fisi": gider_fisi_n,
-                "toplam": toplam,
-                "silinebilir": toplam == 0,
-            }
+                or 0
+            )
+            if gider_fisi_n:
+                gider_ornek = [
+                    f"{x.belge_no} [{x.durum or '—'}]"
+                    for x in session.scalars(
+                        select(GiderFisi)
+                        .where(GiderFisi.hizmet_id == hid)
+                        .order_by(GiderFisi.id.desc())
+                        .limit(3)
+                    ).all()
+                ]
+        except Exception:
+            gider_fisi_n = 0
+
+        toplam = hareket_n + fatura_satir_n + gider_fisi_n
+        engeller: list[str] = []
+        if hareket_n:
+            ornek = (", ".join(hareket_ornek) + ("…" if hareket_n > 3 else "")) if hareket_ornek else ""
+            engeller.append(
+                f"{hareket_n} hizmet hareketi" + (f" (ör. {ornek})" if ornek else "")
+            )
+        if fatura_satir_n:
+            durum_txt = ", ".join(f"{k}:{v}" for k, v in sorted(fatura_durum.items()))
+            ornek = (", ".join(fatura_ornek) + ("…" if fatura_satir_n > 3 else "")) if fatura_ornek else ""
+            engeller.append(
+                f"{fatura_satir_n} fatura/iade satırı"
+                + (f" [{durum_txt}]" if durum_txt else "")
+                + (f" (ör. {ornek})" if ornek else "")
+                + " — sıfır tutarlı / taslak / iptal satırlar da sayılır"
+            )
+        if gider_fisi_n:
+            ornek = (", ".join(gider_ornek) + ("…" if gider_fisi_n > 3 else "")) if gider_ornek else ""
+            engeller.append(
+                f"{gider_fisi_n} gider/gelir fişi" + (f" (ör. {ornek})" if ornek else "")
+            )
+        if engeller:
+            mesaj = (
+                f"«{h.hizmet_kodu} — {h.hizmet_adi}» silinemez.\n"
+                + "\n".join(f"• {e}" for e in engeller)
+                + "\n\nGeçmiş kayıtlar korunur. Sil yerine Pasif Yap veya Hareketler kullanın."
+            )
+        else:
+            mesaj = ""
+        return {
+            "hizmet_id": hid,
+            "hizmet_kodu": h.hizmet_kodu,
+            "hizmet_adi": h.hizmet_adi,
+            "hareket": hareket_n,
+            "fatura_satir": fatura_satir_n,
+            "gider_fisi": gider_fisi_n,
+            "fatura_durum": fatura_durum,
+            "hareket_ornek": hareket_ornek,
+            "fatura_ornek": fatura_ornek,
+            "gider_ornek": gider_ornek,
+            "engeller": engeller,
+            "engel_mesaji": mesaj,
+            "toplam": toplam,
+            "silinebilir": toplam == 0,
+        }
+
+    @staticmethod
+    def kullanim_ozeti(hizmet_id: int) -> dict[str, Any]:
+        """Kartın tüm ilişkileri — ekran tarih aralığına / tutara bakılmaz."""
+        HizmetService.ensure_schema()
+        with get_session() as session:
+            return HizmetService._kullanim_ozeti_session(session, int(hizmet_id))
 
     @staticmethod
     def sil(hizmet_id: int, *, onaylandi: bool = False) -> dict[str, Any]:
         """Yalnızca hiç kullanılmamış kartı siler. Bağlı belge/hareket silinmez."""
         yazma_zorunlu()
         HizmetService.ensure_schema()
-        ozet = HizmetService.kullanim_ozeti(int(hizmet_id))
-        if not ozet["silinebilir"]:
-            raise ValueError(
-                f"«{ozet['hizmet_kodu']} — {ozet['hizmet_adi']}» silinemez: "
-                f"{ozet['hareket']} hareket, {ozet['fatura_satir']} fatura satırı, "
-                f"{ozet['gider_fisi']} gider fişi bağlı. "
-                "Geçmiş kayıtlar korunur; Sil yerine Pasif Yap veya Hareketler kullanın."
-            )
         if not onaylandi:
             raise ValueError("Silme onayı gerekli.")
+        hid = int(hizmet_id)
         with get_session() as session:
-            h = session.get(HizmetKarti, int(hizmet_id))
+            # Aynı oturumda yeniden say — eşzamanlı bağlanan hareket kaçmasın
+            ozet = HizmetService._kullanim_ozeti_session(session, hid)
+            if not ozet["silinebilir"]:
+                raise ValueError(ozet["engel_mesaji"] or "Kart kullanıldığı için silinemez.")
+            h = session.get(HizmetKarti, hid)
             if h is None:
                 raise ValueError("Hizmet bulunamadı.")
             # Kaynak engeli — sonraki aktarım sessizce yeniden açmasın
@@ -324,10 +407,9 @@ class HizmetService:
                             neden="Kullanıcı sildi",
                         )
                     )
-            # Hareket yok; orphan cascade güvenli
             session.delete(h)
             session.flush()
-        return {"silindi": True, **ozet}
+        return {"silindi": True, **{k: v for k, v in ozet.items() if k != "engel_mesaji"}}
 
     @staticmethod
     def pasif_yap(hizmet_id):

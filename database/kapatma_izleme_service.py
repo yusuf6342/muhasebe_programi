@@ -55,8 +55,25 @@ def _tur_adi(kayit: CariKapatma) -> str:
 
 def _yontem_adi(kayit: CariKapatma, kismi: bool) -> str:
     y = (kayit.yontem or "").upper()
-    ad = {"MANUEL": "Manuel", "FIFO": "FIFO"}.get(y, y.title())
+    ad = {
+        "MANUEL": "Manuel",
+        "FIFO": "FIFO",
+        "BAGLI": "Evraka bağlı",
+        "SIPARIS": "Sipariş avansı",
+    }.get(y, y.title())
     return f"{ad} (kısmi)" if kismi else ad
+
+
+def _erken_gec_alani(odeme_tarih: date | None, esas_vade: date | None) -> dict[str, Any]:
+    """Ödeme tarihi − esas vade: negatif = erken, pozitif = geç (talimat 08.11.2026)."""
+    if not isinstance(odeme_tarih, date) or not isinstance(esas_vade, date):
+        return {"erken_gec_gun": None, "erken_gec_etiket": ""}
+    gun = (odeme_tarih - esas_vade).days
+    if gun < 0:
+        return {"erken_gec_gun": gun, "erken_gec_etiket": f"{-gun} gün erken"}
+    if gun > 0:
+        return {"erken_gec_gun": gun, "erken_gec_etiket": f"{gun} gün geç"}
+    return {"erken_gec_gun": 0, "erken_gec_etiket": "vadede"}
 
 
 def _bag_tablosu_var(session) -> bool:
@@ -426,7 +443,7 @@ def _fatura_eski_paylari(session, fatura, belge_payi: dict[str, Decimal]) -> lis
                     "para_birimi": "TRY",
                     "hesap": hesap,
                     "tur": "Tahsilat",
-                    "yontem": "Bağlı makbuz",
+                    "yontem": "Evraka bağlı",
                     "kullanici": "",
                     "ac_tur": "Tahsilat Makbuzu",
                     "makbuz_id": int(makbuz.id),
@@ -508,6 +525,8 @@ def kaynak_dagitim_detayi_oturum(session, belge_no: str, cari_id: int) -> dict[s
                 (_d(x.tutar) for x in hc.get("aktif", []) if int(x.id) <= int(k.id)), Decimal("0")
             )
             sonrasi = max(_kurus(hc["esas"] - hc["eski"] - kumulatif), Decimal("0"))
+        vade_alan = _esas_vade_alani(session, k.hedef_belge_no, hc["tarih"])
+        erken = _erken_gec_alani(k.tarih, vade_alan["esas_vade"])
         satirlar.append(
             {
                 "kaynak": "KAYIT",
@@ -516,6 +535,11 @@ def kaynak_dagitim_detayi_oturum(session, belge_no: str, cari_id: int) -> dict[s
                 "evrak_turu": hc["tur"],
                 "evrak_no": k.hedef_belge_no,
                 "evrak_tarihi": hc["tarih"],
+                "esas_vade": vade_alan["esas_vade"],
+                "vade_kaynak": vade_alan["vade_kaynak"],
+                "vade_etiket": vade_alan["vade_etiket"],
+                "erken_gec_gun": erken["erken_gec_gun"],
+                "erken_gec_etiket": erken["erken_gec_etiket"],
                 "ilk_tutar": hc["esas"],
                 "kapatilan": _kurus(k.tutar),
                 "sonrasi_kalan": sonrasi,
@@ -539,6 +563,9 @@ def kaynak_dagitim_detayi_oturum(session, belge_no: str, cari_id: int) -> dict[s
             )
             eski = _kurus(_d(bag.fatura_kapanan) - kayitli)
             if eski > TOLERANS:
+                fatura_tarih = getattr(fatura, "fatura_tarihi", None) if fatura else None
+                vade_alan = _esas_vade_alani(session, bag.fatura_no, fatura_tarih)
+                erken = _erken_gec_alani(bilgi["tarih"], vade_alan["esas_vade"])
                 satirlar.insert(
                     0,
                     {
@@ -547,13 +574,18 @@ def kaynak_dagitim_detayi_oturum(session, belge_no: str, cari_id: int) -> dict[s
                         "tarih": bilgi["tarih"],
                         "evrak_turu": "Satış Faturası (bağlı)",
                         "evrak_no": bag.fatura_no,
-                        "evrak_tarihi": getattr(fatura, "fatura_tarihi", None),
+                        "evrak_tarihi": fatura_tarih,
+                        "esas_vade": vade_alan["esas_vade"],
+                        "vade_kaynak": vade_alan["vade_kaynak"],
+                        "vade_etiket": vade_alan["vade_etiket"],
+                        "erken_gec_gun": erken["erken_gec_gun"],
+                        "erken_gec_etiket": erken["erken_gec_etiket"],
                         "ilk_tutar": None,
                         "kapatilan": eski,
                         "sonrasi_kalan": None,
                         "para_birimi": "TRY",
                         "tur": "Tahsilat",
-                        "yontem": "Bağlı makbuz",
+                        "yontem": "Evraka bağlı",
                         "ac_tur": "Satış",
                     },
                 )
@@ -630,6 +662,30 @@ def _ac_tur(evrak_turu: str) -> str:
     }.get(evrak_turu or "", evrak_turu or "")
 
 
+def _esas_vade_alani(session, belge_no: str | None, belge_tarih: date | None) -> dict[str, Any]:
+    """Özgün vade varsa onu; yoksa belge tarihi esas (talimat 08.11.2026)."""
+    from database.cari_service import CariService
+
+    no = (belge_no or "").strip()
+    vade = None
+    if no:
+        harita = CariService._borc_vade_haritasi(session, [no])
+        vade = harita.get(no)
+    if isinstance(vade, date):
+        return {
+            "esas_vade": vade,
+            "vade_kaynak": "VADE",
+            "vade_etiket": vade.strftime("%d.%m.%Y"),
+        }
+    if isinstance(belge_tarih, date):
+        return {
+            "esas_vade": belge_tarih,
+            "vade_kaynak": "BELGE_TARIHI",
+            "vade_etiket": f"{belge_tarih.strftime('%d.%m.%Y')} (belge)",
+        }
+    return {"esas_vade": None, "vade_kaynak": None, "vade_etiket": ""}
+
+
 def evrak_kapatma_detayi(belge_no: str, cari_id: int | None = None) -> dict[str, Any]:
     with get_session() as session:
         return evrak_kapatma_detayi_oturum(session, belge_no, cari_id)
@@ -666,8 +722,15 @@ def fatura_odeme_ozeti(fatura_id: int, tur: str = "SATIS") -> dict[str, Any]:
 
 
 def tutarsizlik_raporu(cari_id: int | None = None) -> list[dict[str, Any]]:
-    """Tanı raporu: Σ aktif pay + kalan ≠ evrak tutarı olan açık kalemler (salt okunur)."""
-    sonuc = []
+    """Tanı raporu (salt okunur): kalem pay tutarsızlığı + bakiye/açık kalem mutabakat belgeleri.
+
+    Dönüş satırları ``tur`` ile ayrılır:
+      * ``KALEM_PAY`` — Σ aktif pay + kalan ≠ evrak tutarı
+      * ``TAHSIS_EKSIK`` — defter alacağı/ödemesi açık kaleme bağlanmamış
+      * ``KALEMSIZ_BORC`` — defter borcu karşılıksız (SH yok)
+      * ``MUTABAKAT`` — açıklanamayan kalan bakiye farkı
+    """
+    sonuc: list[dict[str, Any]] = []
     with get_session() as session:
         sorgu = select(SatisHareketi).where(SatisHareketi.satis_tutari > 0)
         if cari_id is not None:
@@ -693,10 +756,81 @@ def tutarsizlik_raporu(cari_id: int | None = None) -> list[dict[str, Any]]:
                         "aktif_pay": aktif_toplam,
                         "kalan": kalan,
                         "fark": _kurus(aktif_toplam + kalan - esas),
+                        "tur": "KALEM_PAY",
+                        "aciklama": (
+                            f"pay {_kurus(aktif_toplam)} + kalan {_kurus(kalan)} ≠ tutar {_kurus(esas)}"
+                        ),
+                    }
+                )
+
+        cari_idler: list[int]
+        if cari_id is not None:
+            cari_idler = [int(cari_id)]
+        else:
+            from database.models.cari import Cari
+
+            cari_idler = [
+                int(r)
+                for r in session.scalars(select(Cari.id).where(Cari.aktif.is_(True))).all()
+            ]
+        for cid in cari_idler:
+            detay = AcikKalemService.mutabakat_detay(session, cid)
+            if detay["uyumlu"] and not detay["belgeler"]:
+                continue
+            for b in detay["belgeler"]:
+                if b["tahsis_acik"] > TOLERANS:
+                    sonuc.append(
+                        {
+                            "cari_id": cid,
+                            "belge_no": b["belge_no"],
+                            "esas": b["kapatacak"],
+                            "aktif_pay": b["tahsisli"],
+                            "kalan": b["tahsis_acik"],
+                            "fark": b["tahsis_acik"],
+                            "tur": "TAHSIS_EKSIK",
+                            "aciklama": (
+                                f"{b['islem_turu'] or 'Hareket'}: deftere "
+                                f"{_kurus(b['kapatacak'])} yansıdı, açık kaleme "
+                                f"{_kurus(b['tahsisli'])} bağlandı; eksik {_kurus(b['tahsis_acik'])}"
+                            ),
+                        }
+                    )
+                if b["kalemsiz_borc"] > TOLERANS:
+                    sonuc.append(
+                        {
+                            "cari_id": cid,
+                            "belge_no": b["belge_no"],
+                            "esas": b["kalemsiz_borc"],
+                            "aktif_pay": Decimal("0"),
+                            "kalan": b["kalemsiz_borc"],
+                            "fark": b["kalemsiz_borc"],
+                            "tur": "KALEMSIZ_BORC",
+                            "aciklama": (
+                                f"{b['islem_turu'] or 'Hareket'}: defter borcu/alacağı "
+                                f"{_kurus(b['kalemsiz_borc'])} için açık kalem yok"
+                            ),
+                        }
+                    )
+            if abs(detay["kalan_fark"]) > TOLERANS:
+                sonuc.append(
+                    {
+                        "cari_id": cid,
+                        "belge_no": "",
+                        "esas": detay["bakiye"],
+                        "aktif_pay": detay["acik_net"],
+                        "kalan": detay["kalan_fark"],
+                        "fark": detay["kalan_fark"],
+                        "tur": "MUTABAKAT",
+                        "aciklama": (
+                            f"Bakiye {_kurus(detay['bakiye'])} − açık net "
+                            f"{_kurus(detay['acik_net'])} = fark {_kurus(detay['fark'])}; "
+                            f"belgelerle açıklanan {_kurus(detay['aciklanan_fark'])}, "
+                            f"kalan {_kurus(detay['kalan_fark'])}"
+                        ),
                     }
                 )
     for s in sonuc:
-        _tani_yaz(s["belge_no"], f"aktif pay {s['aktif_pay']} + kalan {s['kalan']} ≠ tutar {s['esas']}")
+        _tani_yaz(s.get("belge_no") or f"cari:{s.get('cari_id')}", s.get("aciklama") or s.get("tur") or "")
     return sonuc
 
 

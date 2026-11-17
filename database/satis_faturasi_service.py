@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload, joinedload
 
@@ -26,8 +26,9 @@ from database.finans_service import FinansService
 # İrsaliye → fatura: kalan = irsaliye satır miktarı − faturalanan_miktar; bağlı sipariş
 # satırının faturalanan_miktar'ı da artar. Kaynak: FATURA_KAYNAK_KURALI.
 # Evrak durumu: TASLAK (kaydedilmemiş) → (kaydet) AÇIK → İPTAL.
-# kaydet: cari borç + FATURA TAHSİLATI finans + muhasebe fişi (stok yok, onaylandi=False).
-# onayla: yalnız stok çıkışı + onaylandi=True (+ fon); onay_kaldir: yalnız stok geri.
+# kaydet: belge/satır/tahsilat kaydı (stok yok, onaylandi=False) — cari borç YAZMAZ.
+# onayla: cari borç + finans senkron + stok çıkışı + onaylandi=True (+ fon).
+# onay_kaldir: stok geri + cari/finans mali etkiyi kaldırır (yeniden onaysız = borç yok).
 # Ödenme ayrı alanda (odeme_durumu).
 # "KAPALI" yalnız eski kayıtlarda okunur; ekranda AÇIK gösterilir.
 FATURA_DURUMLARI = ("TASLAK", "AÇIK", "İPTAL")
@@ -74,11 +75,18 @@ class SatisFaturasiService:
 
     @staticmethod
     def _onay_oncesi_stok_yeterlilik(session, fatura) -> None:
-        """Onay öncesi depo stokunu ürün bazında toplu kontrol et (çıkış yok)."""
+        """Onay öncesi depo stokunu ürün bazında toplu kontrol et (çıkış yok).
+
+        Her onay denemesinde canlı DB bakiyesi okunur (önbellek yok). Tercih lot
+        yetersiz olsa bile diğer lotlardan FIFO tamamlanabildiği için toplam
+        kullanılabilir stok ölçülür — ``fatura_cikisi`` ile aynı kural.
+        """
         from sqlalchemy import func
 
         from database.models.stok import Depo, StokKarti, StokLotu
-        from fatura_satir_birim_service import temel_miktar
+        from sqlalchemy.orm import selectinload
+
+        from database.stok_service import StokService
 
         depo_adi = (fatura.depo or "").strip()
         if not depo_adi:
@@ -88,22 +96,8 @@ class SatisFaturasiService:
         if not depo:
             raise ValueError(f"Fatura onaylanamadı. {depo_adi} deposu bulunamadı.")
 
-        from sqlalchemy.orm import selectinload
-
-        from database.stok_service import StokService
-
-        kartlar: dict[str, Any] = {}
-
-        def _kart(kod: str):
-            if kod not in kartlar:
-                kartlar[kod] = session.scalar(
-                    select(StokKarti).where(StokKarti.stok_kodu == kod)
-                    .options(selectinload(StokKarti.birimler))
-                )
-            return kartlar[kod]
-
-        # urun_kodu -> {talep, ad}
-        talepler: dict[str, dict[str, Any]] = {}
+        # Önce satırlardan kod/talep topla; kartları tek sorguda çek
+        ham_satirlar: list[tuple[str, Any, Decimal]] = []
         for satir in fatura.satirlar:
             skip_stok = False
             if getattr(satir, "irsaliye_satiri_id", None):
@@ -114,15 +108,37 @@ class SatisFaturasiService:
                     skip_stok = True
             if skip_stok:
                 continue
+            if getattr(satir, "konsinye_teslim_satiri_id", None):
+                continue
             kod = (satir.urun_kodu or "").strip()
             if not kod:
                 continue
-            kart = _kart(kod)
+            ham_satirlar.append((kod, satir, Decimal(str(satir.miktar))))
+
+        if not ham_satirlar:
+            return
+
+        kodlar = sorted({k for k, _, _ in ham_satirlar})
+        kartlar: dict[str, Any] = {
+            k.stok_kodu: k
+            for k in session.scalars(
+                select(StokKarti)
+                .where(StokKarti.stok_kodu.in_(kodlar))
+                .options(selectinload(StokKarti.birimler))
+            ).all()
+        }
+
+        talepler: dict[str, dict[str, Any]] = {}
+        for kod, satir, miktar in ham_satirlar:
+            kart = kartlar.get(kod)
             carpan = (
-                StokService.birim_carpani_kesin(kart, getattr(satir, "birim", None) or kart.birim or "Adet")
-                if kart is not None else Decimal("1")
+                StokService.birim_carpani_kesin(
+                    kart, getattr(satir, "birim", None) or (kart.birim if kart else None) or "Adet"
+                )
+                if kart is not None
+                else Decimal("1")
             )
-            tm = Decimal(str(satir.miktar)) * carpan
+            tm = miktar * carpan
             if kod not in talepler:
                 talepler[kod] = {
                     "talep": Decimal("0"),
@@ -130,34 +146,41 @@ class SatisFaturasiService:
                 }
             talepler[kod]["talep"] += Decimal(str(tm))
 
-        if not talepler:
-            return
-
-        hatalar: list[str] = []
-        for kod, bil in sorted(talepler.items(), key=lambda x: x[1]["ad"].casefold()):
-            stok = _kart(kod)
-            if not stok:
-                hatalar.append(
-                    f"{bil['ad']}\n"
-                    f"Stok kartı bulunamadı ({kod})."
-                )
-                continue
-            birim = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
-            mevcut = session.scalar(
-                select(func.coalesce(func.sum(StokLotu.kalan_miktar), 0)).where(
-                    StokLotu.stok_id == stok.id,
+        stok_ids = [kartlar[k].id for k in talepler if k in kartlar]
+        mevcut_map: dict[int, Decimal] = {}
+        if stok_ids:
+            for sid, top in session.execute(
+                select(StokLotu.stok_id, func.coalesce(func.sum(StokLotu.kalan_miktar), 0))
+                .where(
+                    StokLotu.stok_id.in_(stok_ids),
                     StokLotu.depo_id == depo.id,
                     StokLotu.kalan_miktar > 0,
                 )
-            )
-            mevcut = Decimal(str(mevcut or 0))
+                .group_by(StokLotu.stok_id)
+            ).all():
+                mevcut_map[int(sid)] = Decimal(str(top or 0))
+
+        hatalar: list[str] = []
+        for kod, bil in sorted(talepler.items(), key=lambda x: x[1]["ad"].casefold()):
+            stok = kartlar.get(kod)
+            if not stok:
+                hatalar.append(
+                    f"{bil['ad']}\n"
+                    f"Kod: {kod}\n"
+                    f"Stok kartı bulunamadı."
+                )
+                continue
+            birim = (getattr(stok, "birim", None) or "Adet").strip() or "Adet"
+            mevcut = mevcut_map.get(int(stok.id), Decimal("0"))
             talep = bil["talep"]
             if mevcut < talep:
                 eksik = talep - mevcut
                 hatalar.append(
                     f"{bil['ad']}\n"
+                    f"Kod: {kod}\n"
+                    f"Depo: {depo_adi}\n"
                     f"Mevcut: {SatisFaturasiService._miktar_metin(mevcut)} {birim}\n"
-                    f"Faturadaki toplam miktar: {SatisFaturasiService._miktar_metin(talep)} {birim}\n"
+                    f"Gereken: {SatisFaturasiService._miktar_metin(talep)} {birim}\n"
                     f"Eksik: {SatisFaturasiService._miktar_metin(eksik)} {birim}"
                 )
         if hatalar:
@@ -565,17 +588,22 @@ class SatisFaturasiService:
                 th.tutar,
                 th.odeme_sekli,
                 th.hesap,
+                cari_id=fatura.cari_id,
+                sube_id=getattr(fatura, "sube_id", None),
             )
 
+        # Sipariş rezerv avansı bu faturaya bağlanır (ikinci kasa yok); serbest FIFO avans sonra.
+        AcikKalemService.siparis_avansini_faturaya_tasi(session, fatura)
         AcikKalemService.avanslari_uygula(session, fatura.cari_id)
 
     @staticmethod
     def kaydet(veriler, satir_verileri, fatura_id=None, tahsilat_verileri=None):
-        """Faturayı kaydeder: satırlar + tahsilat + cari borç + finans (aynı transaction).
+        """Faturayı onaysız/taslak kaydeder: satırlar + tahsilat satırları (aynı transaction).
 
+        Cari borç, FATURA TAHSİLATI finansı ve satış muhasebe fişi yazılmaz — bunlar
+        yalnızca onayla() ile oluşur (Evo onaysız aktarım kuralı ile aynı).
         Stok çıkışı / FIFO yapmaz; durum AÇIK, onaylandi=False. Onaylı fatura
-        düzenlenemez; önce onay_kaldir() çağrılmalıdır. Muhasebe fişi kaydet sonrası
-        cari ile eşleşir; stok onayı onayla() ile gelir.
+        düzenlenemez; önce onay_kaldir() çağrılmalıdır.
         """
         yazma_zorunlu("satis_duzenleme", "yeni_kayit")
         from database.user_audit import (
@@ -871,7 +899,20 @@ class SatisFaturasiService:
                     fatura.cari_id,
                     neden=f"Fatura no değişti {eski_fatura_no}",
                 )
-            SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
+            # Onaysız taslak: varsa eski yanlış cari borcu temizle (yeniden kaydet)
+            from database.acik_kalem_service import AcikKalemService
+
+            eski_sh = session.scalar(
+                select(SatisHareketi.id).where(SatisHareketi.belge_no == fatura.fatura_no)
+            )
+            if eski_sh is not None:
+                FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
+                AcikKalemService.belge_kalemlerini_sil(
+                    session,
+                    fatura.fatura_no,
+                    fatura.cari_id,
+                    neden=f"Onaysız kaydet — cari borç kaldırıldı {fatura.fatura_no}",
+                )
             SatisFaturasiService._durumlari_guncelle(
                 session, fatura, onceki_irsaliye_satirlari=onceki_irsaliye_satirlari
             )
@@ -884,9 +925,7 @@ class SatisFaturasiService:
             fid = int(fatura.id)
             fno = fatura.fatura_no
             eylem = "FATURA_OLUSTUR" if yeni else "FATURA_DUZENLE"
-            from database.muhasebe_entegrasyon import muhasebe_hook
-
-            muhasebe_hook("satis_faturasi_fisi", fid, yeniden=not yeni, session=session)
+            # Muhasebe fişi onayla() aşamasında (cari borç ile birlikte)
         audit_document(
             eylem,
             modul="satis_faturasi",
@@ -954,12 +993,12 @@ class SatisFaturasiService:
         return SatisFaturasiService.getir(fid)
 
     @staticmethod
-    def onayla(fatura_id):
-        """Kayıtlı faturayı onaylar: yalnız stok çıkışı + onaylandi=True + fon.
+    def onayla(fatura_id, *, eksi_izin: bool = False):
+        """Kayıtlı faturayı onaylar: cari borç + finans + stok çıkışı + onaylandi=True + fon.
 
-        Cari borç / finans tahsilatı kaydet() aşamasındadır. Eski (pre-V2) taslaklarda
-        SatisHareketi yoksa bir kez _cari_borc_ve_finans_senkron çağrılır; hareket
-        zaten varsa cari/finans yeniden yazılmaz.
+        Onaysız kaydet cari borç yazmaz; mali etki burada bir kez oluşur.
+        ``eksi_izin=True`` (Devir): stok yetersizliği engel değildir; negatif LOT yazılır
+        ve raporlanır. Hayali stok girişi oluşturulmaz.
         """
         yazma_zorunlu("satis_duzenleme")
         from database.user_audit import (
@@ -973,7 +1012,9 @@ class SatisFaturasiService:
             require_user_session()
         except OturumGerekli as exc:
             raise ValueError(str(exc)) from exc
+        eksi_satirlar: list[dict] = []
         with get_session() as session:
+            # Eşzamanlı onay: satır kilidi + onaylandi kontrolü (çift stok/cari engeli)
             fatura = session.scalar(
                 select(SatisFaturasi)
                 .where(SatisFaturasi.id == int(fatura_id))
@@ -981,6 +1022,7 @@ class SatisFaturasiService:
                     selectinload(SatisFaturasi.satirlar),
                     selectinload(SatisFaturasi.tahsilatlar),
                 )
+                .with_for_update()
             )
             if not fatura:
                 raise ValueError("Fatura bulunamadı.")
@@ -995,15 +1037,27 @@ class SatisFaturasiService:
             if tarih > date.today():
                 raise ValueError("Fatura tarihi gelecek bir tarih olamaz.")
 
-            # Legacy taslak: cari/finans kaydet'te yazılmamışsa bir kez senkron
-            hareket = session.scalar(
-                select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no)
-            )
-            if hareket is None:
-                SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
+            # Stok canlı kontrolü cari yazmadan önce (başarısızsa borç/hareket bırakılmaz)
+            if not eksi_izin:
+                SatisFaturasiService._onay_oncesi_stok_yeterlilik(session, fatura)
 
-            # Tüm satırlar için stok yeterlilik (ürün bazında toplu) — çıkıştan önce
-            SatisFaturasiService._onay_oncesi_stok_yeterlilik(session, fatura)
+            # Atomik rezervasyon: SQLite'da FOR UPDATE yok; çift onay/stok çıkışını engeller.
+            # Başarısız devamda session rollback onaylandi'yi geri alır.
+            claim = session.execute(
+                update(SatisFaturasi)
+                .where(
+                    SatisFaturasi.id == int(fatura_id),
+                    SatisFaturasi.onaylandi.is_(False),
+                )
+                .values(onaylandi=True)
+            )
+            if claim.rowcount != 1:
+                raise ValueError("Bu fatura zaten onaylanmış.")
+            fatura.onaylandi = True
+            session.flush()
+
+            # Cari borç + finans: onay anında (tekrar onayda senkron tek kaynak)
+            SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
 
             for satir in fatura.satirlar:
                 # İrsaliyeden stok çıkışı yapılmışsa fatura satırında tekrar çıkış yapma
@@ -1043,6 +1097,7 @@ class SatisFaturasiService:
                         fatura.depo,
                         stok_miktar,
                         satir.lot_no or "",
+                        eksi_izin=eksi_izin,
                     )
                 except ValueError as hata:
                     mesaj = str(hata)
@@ -1053,6 +1108,17 @@ class SatisFaturasiService:
                     raise ValueError(f"Fatura onaylanamadı.\n{mesaj}") from hata
                 satir.lot_cikisi = stok_cikisi["lot_cikisi"]
                 satir.fifo_birim_maliyeti = stok_cikisi["fifo_birim_maliyeti"]
+                if stok_cikisi.get("maliyet_belirsiz") or Decimal(str(stok_cikisi.get("eksi_miktar") or 0)) > 0:
+                    eksi_satirlar.append(
+                        {
+                            "urun_kodu": satir.urun_kodu,
+                            "eksi_miktar": str(stok_cikisi.get("eksi_miktar")),
+                            "bilinen_miktar": str(stok_cikisi.get("bilinen_miktar")),
+                            "bilinen_maliyet_toplam": str(stok_cikisi.get("bilinen_maliyet_toplam")),
+                            "maliyet_belirsiz": True,
+                            "lot_cikisi": stok_cikisi.get("lot_cikisi"),
+                        }
+                    )
 
             # Evrak durumu onayla AÇIK olur; ödenme ayrı izlenir (tahsilat_tutari / açık kalem).
             fatura.durum = "AÇIK"
@@ -1078,12 +1144,19 @@ class SatisFaturasiService:
             modul="satis_faturasi",
             kayit_id=str(fid),
             belge_no=fno,
+            yeni={"eksi_izin": eksi_izin, "eksi_satirlar": eksi_satirlar} if eksi_satirlar else None,
         )
-        return SatisFaturasiService.getir(fid)
+        fatura_son = SatisFaturasiService.getir(fid)
+        if eksi_satirlar and fatura_son is not None:
+            try:
+                setattr(fatura_son, "_eksi_satirlar", eksi_satirlar)
+            except Exception:
+                pass
+        return fatura_son
 
     @staticmethod
     def onay_kaldir(fatura_id):
-        """Onayı kaldırır: yalnız stok çıkışını geri alır; cari/finans/muhasebe bozulmaz."""
+        """Onayı kaldırır: stok + cari borç/finans mali etkisini geri alır; belge taslak kalır."""
         yazma_zorunlu("satis_duzenleme", "iptal")
         with get_session() as session:
             fatura = session.scalar(
@@ -1103,14 +1176,33 @@ class SatisFaturasiService:
 
             StokService.fatura_cikislarini_geri_al(session, fatura.fatura_no)
             neden = f"Fatura onayı kaldırıldı {fatura.fatura_no}"
+            FinansService.fatura_tahsilatini_geri_al(session, fatura.fatura_no)
+            from database.acik_kalem_service import AcikKalemService
+
+            AcikKalemService.belge_kalemlerini_sil(
+                session,
+                fatura.fatura_no,
+                fatura.cari_id,
+                neden=neden,
+            )
             fatura.onaylandi = False
             fatura.durum = "AÇIK"
+            if hasattr(fatura, "approved_at"):
+                fatura.approved_at = None
             SatisFaturasiService._durumlari_guncelle(session, fatura)
             from database.fon_service import FonService
 
             FonService.satis_onayi_geri_alindi(session, fatura, neden)
             try:
                 session.flush()
+                from database.muhasebe_entegrasyon import muhasebe_hook
+
+                muhasebe_hook(
+                    "satis_faturasi_iptal",
+                    int(fatura.id),
+                    neden,
+                    session=session,
+                )
             except IntegrityError as hata:
                 raise ValueError("Onay kaldırılamadı.") from hata
             fid = int(fatura.id)
@@ -1229,16 +1321,20 @@ class SatisFaturasiService:
             fatura.tahsilat_hesabi = ilk.hesap if ilk else None
             stamp_update(fatura)
             session.flush()
-            SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
-            try:
-                session.flush()
-            except IntegrityError as hata:
-                raise ValueError("Tahsilatlar güncellenemedi.") from hata
+            # Onaysız taslakta cari/finans yazılmaz; onaylıysa senkron
+            if getattr(fatura, "onaylandi", False):
+                SatisFaturasiService._cari_borc_ve_finans_senkron(session, fatura)
+                try:
+                    session.flush()
+                except IntegrityError as hata:
+                    raise ValueError("Tahsilatlar güncellenemedi.") from hata
+                from database.muhasebe_entegrasyon import muhasebe_hook
+
+                muhasebe_hook(
+                    "satis_faturasi_fisi", int(fatura.id), yeniden=True, session=session
+                )
             fid = int(fatura.id)
             fno = fatura.fatura_no
-            from database.muhasebe_entegrasyon import muhasebe_hook
-
-            muhasebe_hook("satis_faturasi_fisi", fid, yeniden=True, session=session)
         audit_document(
             "FATURA_TAHSILAT_GUNCELLE",
             modul="satis_faturasi",

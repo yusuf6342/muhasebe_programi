@@ -38,12 +38,14 @@ AY_SAYISI = 4
 KAYNAK_KART = "KART"
 KAYNAK_KREDI = "KREDI"
 KAYNAK_SABIT = "SABIT"
+KAYNAK_NAKIT_AVANS = "NAKIT_AVANS"
 
 TUR_KART = "Kredi Kartı"
 TUR_KREDI = "Kredi Taksiti"
+TUR_NAKIT_AVANS = "Nakit Avans"
 TUR_SABIT = "Sabit Gider"
 TUR_VERGI = "Vergi / SGK"
-TUR_SIRASI = {TUR_KART: 0, TUR_KREDI: 1, TUR_SABIT: 2, TUR_VERGI: 3}
+TUR_SIRASI = {TUR_KART: 0, TUR_NAKIT_AVANS: 0, TUR_KREDI: 1, TUR_SABIT: 2, TUR_VERGI: 3}
 
 KAYNAK_CEK_SENET = "CEKSENET"
 TUR_BORC_CEKI = "Borç Çeki"
@@ -332,6 +334,62 @@ def _cek_senet_kalemleri(s, bugun: date, eksikler: list[dict]) -> list[dict]:
     return kalemler
 
 
+def _nakit_avans_kalemleri(s, bugun: date, eksikler: list[dict]) -> list[dict]:
+    """Planlanan nakit avans taksitleri (karta yansımadan önce tahmini kart borcu)."""
+    if not _satir_var(s, "nakit_avans_taksitleri"):
+        return []
+    from database.models.finans import KrediKartiTanimi, NakitAvans, NakitAvansTaksit
+
+    kalemler: list[dict] = []
+    q = (
+        select(NakitAvansTaksit)
+        .join(NakitAvans)
+        .where(
+            NakitAvansTaksit.durum == "PLANLANDI",
+            NakitAvansTaksit.aktif.is_(True),
+            NakitAvans.durum == "ACIK",
+        )
+        .options(selectinload(NakitAvansTaksit.avans))
+    )
+    for t in s.scalars(q).all():
+        a = t.avans
+        if a is None:
+            continue
+        kalan = _q2(t.toplam)
+        if kalan <= 0:
+            continue
+        tarih = t.yansima_tarihi or t.son_odeme_tarihi
+        if tarih is None:
+            eksikler.append(
+                {
+                    "tur": TUR_NAKIT_AVANS,
+                    "ad": a.belge_no,
+                    "tutar": kalan,
+                    "neden": "Yansıma tarihi yok.",
+                }
+            )
+            continue
+        kart = s.get(KrediKartiTanimi, int(a.kredi_karti_id))
+        ad = kart.kart_adi if kart else a.belge_no
+        kalemler.append(
+            _kalem(
+                KAYNAK_NAKIT_AVANS,
+                f"{KAYNAK_NAKIT_AVANS}:{int(t.id)}",
+                tarih,
+                TUR_NAKIT_AVANS,
+                ad,
+                f"Nakit avans {a.belge_no} taksit {t.taksit_no}/{a.taksit_sayisi}",
+                kalan,
+                tahmini=True,
+                vade=t.son_odeme_tarihi or tarih,
+                gecikmis=tarih < bugun,
+                nakit_avans_taksit_id=int(t.id),
+                belge_no=a.belge_no,
+            )
+        )
+    return kalemler
+
+
 # ----------------------------------------------------------------------------- ana hesap
 def sirala(kalemler: list[dict]) -> list[dict]:
     return sorted(kalemler, key=lambda k: (k["tarih"], TUR_SIRASI.get(k["tur"], 9), k["hesap"], k["anahtar"]))
@@ -350,10 +408,12 @@ def _sema_hazirla(eksikler: list[dict]) -> None:
     from database.banka_kredi_service import BankaKrediService
     from database.cek_senet_service import CekSenetService
     from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+    from database.nakit_avans_service import schema_hazirla as nakit_avans_schema
 
     tamam = True
     for ad, fn in (("Kredi kartı", KrediKartiEkstreService.schema_hazirla),
                    ("Kredi taksitleri", BankaKrediService.schema_hazirla),
+                   ("Nakit avans", nakit_avans_schema),
                    ("Borç çek / senet", CekSenetService.schema_hazirla)):
         try:
             fn()
@@ -379,6 +439,7 @@ def hesapla(bugun: date | None = None) -> dict:
     kalemler: list[dict] = []
     with get_session() as s:
         for ad, fn in (("Kredi kartı", lambda: _kart_kalemleri(s, bugun, eksikler)),
+                       ("Nakit avans", lambda: _nakit_avans_kalemleri(s, bugun, eksikler)),
                        ("Kredi taksitleri", lambda: _kredi_kalemleri(s, bugun, eksikler)),
                        ("Sabit gider / vergi", lambda: _sabit_kalemleri(s, bugun, bas, bit, eksikler, notlar)),
                        ("Borç çek / senet", lambda: _cek_senet_kalemleri(s, bugun, eksikler))):

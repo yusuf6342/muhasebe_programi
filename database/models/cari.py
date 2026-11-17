@@ -34,6 +34,10 @@ class Cari(Base):
     tedarikci_alt_tur_id: Mapped[int | None] = mapped_column(
         ForeignKey("kart_alt_turleri.id"), nullable=True, index=True
     )
+    # Alt hesap: üst cari kartı (aynı ana tür); None = üst hesap
+    ust_cari_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cari_kartlar.id"), nullable=True, index=True
+    )
     vergi_dairesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vergi_numarasi: Mapped[str | None] = mapped_column(String(20), nullable=True)
     tc_kimlik: Mapped[str | None] = mapped_column(String(11), nullable=True)
@@ -46,6 +50,10 @@ class Cari(Base):
     satis_fiyat_listesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     alis_fiyat_listesi: Mapped[str | None] = mapped_column(String(100), nullable=True)
     acik_hesap_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    # Kredi notu: boş / * / ** / *** / **** / - (dolandırıcı); boş = manuel limit
+    kredi_notu: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Yıldız sistemine geçmeden önceki açık hesap limiti (not boşaltılınca geri gelir)
+    kredi_notu_manuel_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     cek_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     senet_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     toplam_risk_limiti: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
@@ -112,6 +120,23 @@ class Cari(Base):
         back_populates="cari",
         cascade="all, delete-orphan",
     )
+
+
+class CariTurDegisiklik(Base):
+    """Ana cari kart türü değişiklik izi (bakiye/hareket değiştirmez)."""
+
+    __tablename__ = "cari_tur_degisiklikleri"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
+    eski_ana_tur_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yeni_ana_tur_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eski_cari_turu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    yeni_cari_turu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    degisiklik_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    kullanici_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kullanici_adi: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    notu: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class CariYetkili(Base):
@@ -350,6 +375,23 @@ class CariKapatma(Base):
     iptal_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
     iptal_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
     iptal_islem_kimligi: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class CariKaynakEngel(Base):
+    """Kullanıcının sildiği boş cari kaynağı — sonraki Evo aktarımı sessizce yeniden açmasın."""
+
+    __tablename__ = "cari_kaynak_engelleri"
+    __table_args__ = (
+        UniqueConstraint("kaynak_sistem", "kaynak_kimlik", name="uq_cari_kaynak_engel"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kaynak_sistem: Mapped[str] = mapped_column(String(40), nullable=False)
+    kaynak_kimlik: Mapped[str] = mapped_column(String(80), nullable=False)
+    cari_kodu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    unvan: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    neden: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 # Cari hareket kaydedilirken USD karşılığını yazan oturum dinleyicisi

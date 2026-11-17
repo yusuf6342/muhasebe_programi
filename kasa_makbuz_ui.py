@@ -41,8 +41,17 @@ from tutar_bicim import isim_fontu, tr_tutar, tutar_alani, tutar_coz
 from ui_takvim import takvim_butonu
 
 TAHSILAT_MAKBUZ_SEKILLERI = ODEME_SEKILLERI  # NAKİT / KASA, GELEN HAVALE, KREDİ KARTIYLA TAHSİLAT
-SIRKET_KARTI_SEKLI = "ŞİRKET KREDİ KARTI"
-ODEME_MAKBUZ_SEKILLERI = ("NAKİT / KASA", "GÖNDERİLEN HAVALE", SIRKET_KARTI_SEKLI)
+# Ödeme makbuzu — tahsilat şekilleri (Gelen Havale / KK Tahsilat) burada yok
+ODEME_NAKIT_SEKLI = "NAKİT ÖDEME — KASA"
+ODEME_HAVALE_SEKLI = "BANKA HAVALESİ / EFT / FAST — GÖNDERİLEN"
+SIRKET_KARTI_SEKLI = "KREDİ KARTIYLA ÖDEME — FİRMA KARTI"
+SIRKET_KARTI_SEKIL_ESKI = frozenset({
+    "ŞİRKET KREDİ KARTI",
+    "SIRKET KREDI KARTI",
+    "Firma Kredi Kartıyla Ödeme",
+    "FIRMA KREDI KARTIYLA ODEME",
+})
+ODEME_MAKBUZ_SEKILLERI = (ODEME_NAKIT_SEKLI, ODEME_HAVALE_SEKLI, SIRKET_KARTI_SEKLI)
 
 KART_TIPLERI = {"Kredi Kartı": "KREDI_KARTI", "Banka Kartı": "BANKA_KARTI"}
 _KART_TIPI_ETIKET = {v: k for k, v in KART_TIPLERI.items()}
@@ -57,13 +66,16 @@ VIRMAN_BILGI = (
 )
 
 
-def _bakiye_yazisi(bakiye) -> tuple[str, str]:
+def _bakiye_yazisi(bakiye, *, tedarikci_modu: bool = False) -> tuple[str, str]:
+    from cari_borc_alacak_ozet import bakiye_rengi
+
     bakiye = Decimal(str(bakiye or 0))
+    renk = bakiye_rengi(bakiye, tedarikci_modu=tedarikci_modu)
     if bakiye > 0:
-        return f"{_para(bakiye)}  Borçlu", UYARI
+        return f"{_para(bakiye)}  Borçlu", renk
     if bakiye < 0:
-        return f"{_para(-bakiye)}  Alacaklı", BASARI
-    return f"{_para(0)}  (Kapalı)", IKINCIL
+        return f"{_para(-bakiye)}  Alacaklı", renk
+    return f"{_para(0)}  (Kapalı)", renk
 
 
 def _para(tutar):
@@ -90,13 +102,58 @@ def _tutar_oku(metin: str) -> Decimal:
 
 def _sekil_turu(sekil: str | None) -> str | None:
     s = (sekil or "").replace("İ", "I").replace("ı", "i").upper()
-    if "HAVALE" in s:
+    if "HAVALE" in s or "EFT" in s or "FAST" in s:
         return "HAVALE"
     if "KART" in s or "POS" in s:
         return "KART"
     if "KASA" in s or "NAKIT" in s:
         return "KASA"
     return None
+
+
+def _sekil_norm_ascii(sekil: str | None) -> str:
+    """Türkçe harfleri ASCII’ye indirger (şekil karşılaştırma)."""
+    t = (sekil or "").replace("İ", "I").replace("ı", "i").upper()
+    for a, b in (("Ö", "O"), ("Ü", "U"), ("Ş", "S"), ("Ğ", "G"), ("Ç", "C")):
+        t = t.replace(a, b)
+    return t
+
+
+def _odeme_sekil_normalize(sekil: str | None) -> str:
+    """Eski ödeme şekil adlarını güncel Ödeme Gir menü etiketlerine çevirir.
+
+    Tahsilat şekilleri (Gelen Havale, KK Tahsilat) ödeme menüsüne map edilmez.
+    """
+    ham = (sekil or "").strip()
+    if not ham:
+        return ham
+    if ham in ODEME_MAKBUZ_SEKILLERI:
+        return ham
+    # Tahsilat özel seçenekleri (müşteriden tedarikçiye KK / cari virman) firma kartına düşmesin
+    if ham in (KK_ODEME_SEKLI, CARI_VIRMAN_SEKLI):
+        return ham
+    norm = _sekil_norm_ascii(ham)
+    # Firma kartı (eski adlar)
+    eski_kk = {_sekil_norm_ascii(x) for x in SIRKET_KARTI_SEKIL_ESKI}
+    if ham in SIRKET_KARTI_SEKIL_ESKI or norm in eski_kk:
+        return SIRKET_KARTI_SEKLI
+    if ("SIRKET" in norm or "FIRMA" in norm) and "KREDI" in norm and "KART" in norm and "TAHSILAT" not in norm:
+        return SIRKET_KARTI_SEKLI
+    if "KREDI" in norm and "KART" in norm and "ODEME" in norm:
+        return SIRKET_KARTI_SEKLI
+    # Gönderilen havale / EFT / FAST (Gelen Havale map edilmez)
+    if "GELEN" in norm or "ALINAN" in norm or "TAHSILAT" in norm:
+        return ham
+    if ("GONDERILEN" in norm or "GIDEN" in norm) and ("HAVALE" in norm or "EFT" in norm or "FAST" in norm):
+        return ODEME_HAVALE_SEKLI
+    if norm in {"GONDERILEN HAVALE", "GIDEN HAVALE"}:
+        return ODEME_HAVALE_SEKLI
+    # Nakit ödeme (ödeme makbuzundaki eski «NAKİT / KASA»)
+    if norm in {"NAKIT / KASA", "NAKIT ODEME — KASA", "NAKIT ODEME - KASA", "KASA ODEME"}:
+        return ODEME_NAKIT_SEKLI
+    if "NAKIT" in norm and "ODEME" in norm:
+        return ODEME_NAKIT_SEKLI
+    return ham
 
 
 def _tema_stili_bir_kez(stil: ttk.Style, ad: str, yaz) -> None:
@@ -438,7 +495,10 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._arayuzu_kur()
 
         self.protocol("WM_DELETE_WINDOW", self.kapat)
-        self.bind("<Control-s>", lambda _e: (self.kaydet(), "break")[1])
+        # Yalnız bu makbuz penceresi — cari kartı F1/Ctrl+S'sine taşmasın
+        self.bind("<Control-s>", self._kisayol_kaydet)
+        self.bind("<Control-S>", self._kisayol_kaydet)
+        self.bind("<F1>", self._kisayol_kaydet)
         self.bind("<Control-p>", lambda _e: (self.yazdir(), "break")[1])
         self.bind("<Escape>", self._esc_kapat)
         self.bind("<MouseWheel>", self._tekerlek, add="+")
@@ -451,6 +511,8 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.transient(self._onceki_grab.winfo_toplevel())
             self.grab_set()
             self.bind("<Destroy>", self._grab_geri_ver, add="+")
+        # Cari kart bind_all(F1) varken odak bu makbuzdaysa makbuzu kaydet (unbind_all yok)
+        self.bind_all("<F1>", self._kisayol_kaydet_global, add="+")
 
         if virman_id:
             kayit = CariVirmanMakbuzService.getir(int(virman_id))
@@ -497,14 +559,28 @@ class KasaMakbuzDialog(tk.Toplevel):
             x, y, gen, yuk = calisma_alani(self)
         except Exception:
             x, y, gen, yuk = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
-        genislik = max(640, min(1240, gen - 40))
-        yukseklik = max(420, min(900, yuk - 40))
-        self.minsize(min(640, gen), min(420, yuk))
+        # Alt Kaydet çubuğu + başlık için asgari alan; tablo ortada kayar
+        genislik = max(720, min(1240, gen - 40))
+        yukseklik = max(520, min(900, yuk - 40))
+        self.minsize(min(720, max(640, gen - 80)), min(520, max(480, yuk - 80)))
         self.geometry(f"{genislik}x{yukseklik}+{x + (gen - genislik) // 2}+{y + max(0, (yuk - yukseklik) // 2)}")
         self.resizable(True, True)
         from ui_pencere import pencere_os_krom_ac
 
         pencere_os_krom_ac(self)
+
+    def kaydet_dugmesi_gorunur_mu(self) -> bool:
+        """Kaydet düğmesi pack edilmiş ve ekranda görünür mü (test / teşhis)."""
+        try:
+            if not self.btn_kaydet.winfo_ismapped():
+                return False
+            if str(self.btn_kaydet.cget("state")) == "disabled" and self.mod in ("yeni", "duzenle"):
+                # yetki yoksa mapped ama disabled — yine de «görünür»
+                pass
+            self.update_idletasks()
+            return bool(self.btn_kaydet.winfo_viewable())
+        except tk.TclError:
+            return False
 
     def _tekerlek(self, event):
         try:
@@ -535,6 +611,27 @@ class KasaMakbuzDialog(tk.Toplevel):
                 onceki.after_idle(onceki.grab_set)
         except tk.TclError:
             pass
+
+    def _kisayol_kaydet(self, _e=None):
+        self.kaydet()
+        return "break"
+
+    def _kisayol_kaydet_global(self, _e=None):
+        """bind_all(F1): odak bu makbuzdaysa makbuzu kaydet; değilse diğer bağlayıcılara bırak."""
+        try:
+            if not self.winfo_exists():
+                return
+            odak = self.focus_get()
+            w = odak
+            while w is not None:
+                if w is self:
+                    return self._kisayol_kaydet()
+                if isinstance(w, tk.Toplevel) and w is not self:
+                    return
+                w = getattr(w, "master", None)
+        except tk.TclError:
+            return
+        return
 
     def _esc_kapat(self, _e=None):
         if any(k.acik_mi() for k in self._arama_kutulari()):
@@ -588,10 +685,15 @@ class KasaMakbuzDialog(tk.Toplevel):
 
     # ─── Arayüz ─────────────────────────────────────────────────
     def _arayuzu_kur(self):
+        # grid: üst sabit · orta kaydırılır · alt düğmeler her zaman görünür (satır tablosu itmez)
         kok = self
+        kok.columnconfigure(0, weight=1)
+        kok.rowconfigure(2, weight=1)  # orta gövde
+        kok.rowconfigure(3, weight=0)  # alt çubuk
+
         # Başlık şeridi
         ust = tk.Frame(kok, bg=LACIVERT)
-        ust.pack(side="top", fill="x")
+        ust.grid(row=0, column=0, sticky="ew")
         sol = tk.Frame(ust, bg=LACIVERT)
         sol.pack(side="left", fill="both", expand=True, padx=16, pady=10)
         self.baslik_lbl = tk.Label(sol, bg=LACIVERT, fg=BEYAZ, font=font(17, "bold", self), anchor="w")
@@ -611,35 +713,18 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.durum_rozet.pack(anchor="e")
         self.no_buyuk_lbl = tk.Label(sag, bg=LACIVERT, fg=SARI, font=font(16, "bold", self))
         self.no_buyuk_lbl.pack(anchor="e", pady=(4, 0))
-        tk.Frame(kok, bg=SARI, height=3).pack(side="top", fill="x")
+        tk.Frame(kok, bg=SARI, height=3).grid(row=1, column=0, sticky="ew")
 
-        # Alt düğme çubuğu (her zaman görünür)
-        alt = tk.Frame(kok, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
-        alt.pack(side="bottom", fill="x")
-        self.mesaj_lbl = tk.Label(alt, bg=BEYAZ, fg=IKINCIL, font=font(9, root=self), anchor="w", justify="left")
-        self.mesaj_lbl.pack(side="top", padx=12, pady=(4, 0), fill="x")
-        alt.bind("<Configure>", lambda e: self.mesaj_lbl.configure(wraplength=max(200, e.width - 24)), add="+")
-        self._dugme_kutusu = tk.Frame(alt, bg=BEYAZ)
-        self._dugme_kutusu.pack(side="right", padx=8, pady=(4, 8))
-        self.btn_kaydet = tk_buton(self._dugme_kutusu, "Kaydet  (Ctrl+S)", self.kaydet, rol="kaydet")
-        self.btn_borclar = tk_buton(self._dugme_kutusu, "Kapatılacak Borçlar…", self.kapatilacak_borclari_sec,
-                                    rol="ara")
-        self.btn_duzenle = tk_buton(self._dugme_kutusu, "Düzenle", self.duzenlemeye_gec, rol="duzenle")
-        self.btn_vazgec = tk_buton(self._dugme_kutusu, "Vazgeç", self._vazgec, rol="geri")
-        self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="iptal")
-        self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF / Word", self.yazdir, rol="yazdir")
-        self.btn_yeni = tk_buton(self._dugme_kutusu, "Yeni Makbuz", self._yeni_pencere, rol="yeni")
-        self.btn_muhasebe = tk_buton(self._dugme_kutusu, "Muhasebe Fişi", self._muhasebe_fisi, rol="geri")
-        self.btn_kapat = tk_buton(self._dugme_kutusu, "Kapat", self.kapat, rol="geri")
-
-        # Kaydırılabilir gövde
+        # Kaydırılabilir gövde (satır tablosu burada; alt düğmeleri itmez)
         orta = tk.Frame(kok, bg=ACIK_BG)
-        orta.pack(side="top", fill="both", expand=True)
+        orta.grid(row=2, column=0, sticky="nsew")
+        orta.columnconfigure(0, weight=1)
+        orta.rowconfigure(0, weight=1)
         self._kanvas = tk.Canvas(orta, bg=ACIK_BG, highlightthickness=0, bd=0)
         self._dikey = ttk.Scrollbar(orta, orient="vertical", command=self._kanvas.yview)
         self._yatay = ttk.Scrollbar(orta, orient="horizontal", command=self._kanvas.xview)
         self._kanvas.configure(yscrollcommand=self._dikey.set, xscrollcommand=self._yatay.set)
-        self._kanvas.pack(side="left", fill="both", expand=True)
+        self._kanvas.grid(row=0, column=0, sticky="nsew")
         self._ic = tk.Frame(self._kanvas, bg=ACIK_BG)
         self._ic_id = self._kanvas.create_window((0, 0), window=self._ic, anchor="nw")
         self._ic.bind("<Configure>", lambda _e: self._kaydirma_guncelle())
@@ -649,6 +734,35 @@ class KasaMakbuzDialog(tk.Toplevel):
         self._satir_bolumu(self._ic)
         if self.tahsilat:
             self._virman_bolumu(self._ic)
+
+        # Alt düğme çubuğu — sabit satır; Kaydet solda (DPI / dar pencerede kesilmesin)
+        alt = tk.Frame(kok, bg=BEYAZ, highlightthickness=1, highlightbackground=CIZGI)
+        alt.grid(row=3, column=0, sticky="ew")
+        alt.columnconfigure(0, weight=1)
+        self.mesaj_lbl = tk.Label(alt, bg=BEYAZ, fg=IKINCIL, font=font(9, root=self), anchor="w", justify="left")
+        self.mesaj_lbl.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 0))
+        alt.bind("<Configure>", lambda e: self.mesaj_lbl.configure(wraplength=max(200, e.width - 24)), add="+")
+
+        dugme_satir = tk.Frame(alt, bg=BEYAZ)
+        dugme_satir.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 8))
+        dugme_satir.columnconfigure(1, weight=1)
+
+        self._dugme_sol = tk.Frame(dugme_satir, bg=BEYAZ)
+        self._dugme_sol.grid(row=0, column=0, sticky="w")
+        self._dugme_kutusu = tk.Frame(dugme_satir, bg=BEYAZ)
+        self._dugme_kutusu.grid(row=0, column=1, sticky="e")
+
+        self.btn_kaydet = tk_buton(self._dugme_sol, "Kaydet  (Ctrl+S / F1)", self.kaydet, rol="kaydet")
+        self.btn_kaydet.pack(side="left", padx=(0, 8))
+        self.btn_borclar = tk_buton(self._dugme_kutusu, "Kapatılacak Borçlar…", self.kapatilacak_borclari_sec,
+                                    rol="ara")
+        self.btn_duzenle = tk_buton(self._dugme_kutusu, "Düzenle", self.duzenlemeye_gec, rol="ikincil")
+        self.btn_vazgec = tk_buton(self._dugme_kutusu, "Vazgeç", self._vazgec, rol="ikincil")
+        self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="tehlike")
+        self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF / Word", self.yazdir, rol="ikincil")
+        self.btn_yeni = tk_buton(self._dugme_kutusu, "Yeni Makbuz", self._yeni_pencere, rol="ikincil")
+        self.btn_muhasebe = tk_buton(self._dugme_kutusu, "Muhasebe Fişi", self._muhasebe_fisi, rol="ikincil")
+        self.btn_kapat = tk_buton(self._dugme_kutusu, "Kapat", self.kapat, rol="ikincil")
 
     def _alt_baslik_metni(self) -> str:
         if self.virman:
@@ -666,15 +780,15 @@ class KasaMakbuzDialog(tk.Toplevel):
         yukseklik, genislik = self._kanvas.winfo_height(), self._kanvas.winfo_width()
         dikey = self._ic.winfo_reqheight() > yukseklik > 1
         if dikey and not self._dikey.winfo_ismapped():
-            self._dikey.pack(side="right", fill="y", before=self._kanvas)
+            self._dikey.grid(row=0, column=1, sticky="ns")
         elif not dikey and self._dikey.winfo_ismapped():
-            self._dikey.pack_forget()
+            self._dikey.grid_remove()
             self._kanvas.yview_moveto(0)
         yatay = self._ic.winfo_reqwidth() > genislik > 1
         if yatay and not self._yatay.winfo_ismapped():
-            self._yatay.pack(side="bottom", fill="x", before=self._kanvas)
+            self._yatay.grid(row=1, column=0, sticky="ew")
         elif not yatay and self._yatay.winfo_ismapped():
-            self._yatay.pack_forget()
+            self._yatay.grid_remove()
             self._kanvas.xview_moveto(0)
 
     def _panel(self, parent, baslik: str) -> tk.Frame:
@@ -814,8 +928,12 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.hesap_etiket_lbl = tk.Label(p, text="Hesap", bg=BEYAZ, fg=METIN, font=font(10, root=self), anchor="w")
         self.hesap_etiket_lbl.grid(row=0, column=2, sticky="w", padx=(0, 8), pady=5)
         self.hesap_var = tk.StringVar()
-        self.hesap_cb = ttk.Combobox(p, textvariable=self.hesap_var, state="readonly", width=28)
-        self.hesap_cb.grid(row=0, column=3, columnspan=3, sticky="ew", pady=5)
+        self.hesap_cb = ttk.Combobox(p, textvariable=self.hesap_var, state="readonly", width=36)
+        self.hesap_cb.grid(row=0, column=3, columnspan=2, sticky="ew", pady=5)
+        self.hesap_cb.bind("<KeyRelease>", self._hesap_yazildi, add="+")
+        self.btn_kart_ac = ttk.Button(p, text="Kart", width=6, command=self._secili_kart_ac, takefocus=0)
+        self.btn_kart_ac.grid(row=0, column=5, sticky="e", pady=5, padx=(6, 0))
+        self.btn_kart_ac.grid_remove()
 
         self.kart_kutu = tk.Frame(p, bg=BEYAZ)
         self.kart_kutu.grid(row=1, column=0, columnspan=6, sticky="ew")
@@ -827,13 +945,35 @@ class KasaMakbuzDialog(tk.Toplevel):
         )
         self.kart_tipi_cb.pack(side="left", padx=(0, 16))
         self.kart_tipi_cb.bind("<<ComboboxSelected>>", lambda _e: self._kart_tipi_degisti(), add="+")
+        self.cekim_turu_lbl = tk.Label(
+            self.kart_kutu, text="Çekim", bg=BEYAZ, fg=METIN, font=font(10, root=self)
+        )
+        self.cekim_turu_var = tk.StringVar(value="Tek Çekim")
+        self.cekim_turu_cb = ttk.Combobox(
+            self.kart_kutu,
+            textvariable=self.cekim_turu_var,
+            values=("Tek Çekim", "Taksitli"),
+            state="readonly",
+            width=12,
+        )
+        self.cekim_turu_cb.bind("<<ComboboxSelected>>", lambda _e: self._cekim_turu_degisti(), add="+")
         self.taksit_lbl = tk.Label(self.kart_kutu, text="Taksit", bg=BEYAZ, fg=METIN, font=font(10, root=self))
-        self.taksit_lbl.pack(side="left", padx=(0, 8))
         self.taksit_var = tk.StringVar(value="1")
         self.taksit_sb = ttk.Spinbox(self.kart_kutu, from_=1, to=12, textvariable=self.taksit_var, width=5)
-        self.taksit_sb.pack(side="left")
+        self.taksit_sb.bind("<KeyRelease>", lambda _e: self._kk_plan_onizle(), add="+")
+        self.taksit_sb.bind("<<Increment>>", lambda _e: self.after(30, self._kk_plan_onizle), add="+")
+        self.taksit_sb.bind("<<Decrement>>", lambda _e: self.after(30, self._kk_plan_onizle), add="+")
+        self.ilk_vade_lbl = tk.Label(
+            self.kart_kutu, text="İlk ödeme", bg=BEYAZ, fg=METIN, font=font(10, root=self)
+        )
+        self.ilk_vade_var = tk.StringVar(value="")
+        self.ilk_vade_entry = ttk.Entry(self.kart_kutu, textvariable=self.ilk_vade_var, width=11)
+        self.ilk_vade_entry.bind("<KeyRelease>", lambda _e: self._kk_plan_onizle(), add="+")
         self.kart_bilgi_lbl = tk.Label(self.kart_kutu, bg=BEYAZ, fg=IKINCIL, font=font(8, root=self))
         self.kart_bilgi_lbl.pack(side="left", padx=(12, 0))
+        self.kk_plan_lbl = tk.Label(
+            self.kart_kutu, text="", bg=BEYAZ, fg=LACIVERT, font=font(8, root=self), justify="left", anchor="w"
+        )
 
         self._etiket(p, "Satır tarihi", 2, 0)
         satir_tarih_kutu = tk.Frame(p, bg=BEYAZ)
@@ -1127,7 +1267,7 @@ class KasaMakbuzDialog(tk.Toplevel):
             if acik_kayit and int(cari_id) == int(kayitli_id or 0):
                 bakiye += Decimal(str(kayitli.tutar or 0))
             self._virman_once[anahtar] = bakiye
-            yazi, renk = _bakiye_yazisi(bakiye)
+            yazi, renk = _bakiye_yazisi(bakiye, tedarikci_modu=(anahtar == "tedarikci"))
             lbl.configure(text=yazi, fg=renk)
         self._virman_onizleme()
 
@@ -1147,7 +1287,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         if once_m is not None:
             parcalar.append(f"Müşteri: {_bakiye_yazisi(once_m - tutar)[0]}")
         if once_t is not None:
-            parcalar.append(f"Tedarikçi: {_bakiye_yazisi(once_t - tutar)[0]}")
+            parcalar.append(
+                f"Tedarikçi: {_bakiye_yazisi(once_t - tutar, tedarikci_modu=True)[0]}"
+            )
         self.v_sonra_lbl.configure(text="\n".join(parcalar), fg=LACIVERT)
 
     def virman_bakiye_metinleri(self) -> tuple[str, str, str]:
@@ -1162,8 +1304,10 @@ class KasaMakbuzDialog(tk.Toplevel):
         uyarilar = []
         for ad, once in (("Müşteri", self._virman_once["musteri"]), ("Tedarikçi", self._virman_once["tedarikci"])):
             if once is not None and tutar > once:
+                ted = ad == "Tedarikçi"
                 uyarilar.append(
-                    f"• {ad}: işlem öncesi {_bakiye_yazisi(once)[0]} → virman sonrası {_bakiye_yazisi(once - tutar)[0]}"
+                    f"• {ad}: işlem öncesi {_bakiye_yazisi(once, tedarikci_modu=ted)[0]} → "
+                    f"virman sonrası {_bakiye_yazisi(once - tutar, tedarikci_modu=ted)[0]}"
                 )
         if not uyarilar:
             return True
@@ -1256,7 +1400,9 @@ class KasaMakbuzDialog(tk.Toplevel):
         for cb in (self.sekil_cb, self.hesap_cb, self.kart_tipi_cb, self.sube):
             cb.configure(state="readonly" if acik else "disabled")
         self.taksit_sb.configure(state="normal" if acik else "disabled")
-        for b in (self.tarih_takvim, self.satir_takvim, self.btn_satir_duzenle, self.btn_satir_sil):
+        # tarih_takvim / satir_takvim: takvim_butonu artık ttk.Frame yer tutucu
+        # (state desteklemez); tarih entry state yeterli.
+        for b in (self.btn_satir_duzenle, self.btn_satir_sil):
             b.configure(state=durum)
         self.btn_yeni_no.configure(state="normal" if acik else "disabled")
         for b in (self.btn_satir_ekle, self.btn_satir_temizle):
@@ -1273,27 +1419,33 @@ class KasaMakbuzDialog(tk.Toplevel):
         from database.access import yetki_var
 
         yazabilir = yetki_var("finans_duzenleme")
-        for b in self._dugme_kutusu.winfo_children():
+        for b in list(self._dugme_sol.winfo_children()) + list(self._dugme_kutusu.winfo_children()):
             b.pack_forget()
-        gorunen = []
+        # Kaydet her zaman solda — satır tablosu / DPI sağdaki şeridi kesse bile görünür
+        sol_dugmeler = []
+        sag_dugmeler = []
         if self.mod == "yeni":
-            gorunen = [self.btn_kaydet, self.btn_yazdir]
+            sol_dugmeler = [self.btn_kaydet]
+            sag_dugmeler = [self.btn_yazdir]
             if not self.virman:
-                gorunen.insert(1, self.btn_borclar)
-            self.btn_kaydet.configure(text="Kaydet  (Ctrl+S)")
+                sag_dugmeler.insert(0, self.btn_borclar)
+            self.btn_kaydet.configure(text="Kaydet  (Ctrl+S / F1)")
         elif self.mod == "duzenle":
-            gorunen = [self.btn_kaydet, self.btn_vazgec, self.btn_yazdir]
+            sol_dugmeler = [self.btn_kaydet]
+            sag_dugmeler = [self.btn_vazgec, self.btn_yazdir]
             if not self.virman:
-                gorunen.insert(1, self.btn_borclar)
-            self.btn_kaydet.configure(text="Değişiklikleri Kaydet")
+                sag_dugmeler.insert(0, self.btn_borclar)
+            self.btn_kaydet.configure(text="Değişiklikleri Kaydet  (Ctrl+S / F1)")
         else:
             if not iptal and not self._kilit_nedeni and yazabilir:
-                gorunen += [self.btn_duzenle, self.btn_iptal]
-            gorunen += [self.btn_yazdir, self.btn_yeni]
+                sag_dugmeler += [self.btn_duzenle, self.btn_iptal]
+            sag_dugmeler += [self.btn_yazdir, self.btn_yeni]
             if self.makbuz_id:
-                gorunen.append(self.btn_muhasebe)
-        gorunen.append(self.btn_kapat)
-        for b in gorunen:
+                sag_dugmeler.append(self.btn_muhasebe)
+        sag_dugmeler.append(self.btn_kapat)
+        for b in sol_dugmeler:
+            b.pack(side="left", padx=(0, 6))
+        for b in sag_dugmeler:
             b.pack(side="left", padx=4)
         self.btn_kaydet.configure(state="normal" if yazabilir else "disabled")
 
@@ -1628,7 +1780,15 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.bakiye_lbl.configure(text=f"Bakiye okunamadı: {hata}", fg=UYARI)
             return
         self.bakiye_ozeti = ozet
-        renk = {"Borçlu": UYARI, "Alacaklı": BASARI}.get(ozet["yon"], IKINCIL)
+        from cari_borc_alacak_ozet import bakiye_rengi, tedarikci_ana_turu_mu
+
+        tedarikci = False
+        try:
+            tur = (self._cari_turleri.get(int(cari_id)) or "").strip()
+            tedarikci = tedarikci_ana_turu_mu(tur)
+        except Exception:  # noqa: BLE001
+            tedarikci = bool(tedarikci_mi(self._cari_turleri.get(int(cari_id))))
+        renk = bakiye_rengi(Decimal(str(ozet.get("bakiye") or 0)), tedarikci_modu=tedarikci)
         yazi = _para(ozet["tutar"]) + (f"  {ozet['yon']}" if ozet["yon"] != "Kapalı" else "  (Kapalı)")
         self.bakiye_lbl.configure(text=yazi, fg=renk)
 
@@ -1695,31 +1855,206 @@ class KasaMakbuzDialog(tk.Toplevel):
 
     # ─── Satır paneli ───────────────────────────────────────────
     def _sekil_degisti(self):
-        sekil = self.sekil_var.get()
+        sekil = _odeme_sekil_normalize(self.sekil_var.get())
+        if sekil != self.sekil_var.get():
+            self.sekil_var.set(sekil)
         if sekil == CARI_VIRMAN_SEKLI:
             self._virmana_gec()
             return
         if sekil == KK_ODEME_SEKLI:
             self._kk_odemeye_gec()
             return
+        onceki_sekil = getattr(self, "_son_sekil", None)
         self._son_sekil = sekil
         tur = _sekil_turu(sekil)
+        # Yöntem değişince uygunsuz hesap seçimini temizle; tarih/tutar/açıklama korunur
+        onceki_tur = _sekil_turu(onceki_sekil) if onceki_sekil else None
         self._hesap_secenekleri = {}
+        self._kk_tum_etiketler = []
         if not self.tahsilat and tur == "KART":
-            self.hesap_etiket_lbl.configure(text="Şirket kartı")
-            for k in FinansService.sirket_kredi_kartlari():
-                self._hesap_secenekleri[k["etiket"]] = {"kredi_karti_id": k["id"]}
+            self.hesap_etiket_lbl.configure(text="Firma Kredi Kartı")
+            self.hesap_cb.configure(state="normal")
+            include = []
+            for s in self.satirlar:
+                if s.get("kredi_karti_id"):
+                    include.append(int(s["kredi_karti_id"]))
+            for k in FinansService.sirket_kredi_kartlari(include_ids=include or None):
+                self._hesap_secenekleri[k["etiket"]] = {
+                    "kredi_karti_id": k["id"],
+                    "banka_karti_id": k.get("banka_karti_id"),
+                }
                 self._kk_etiketleri[k["id"]] = k["etiket"]
+            self._kk_tum_etiketler = list(self._hesap_secenekleri)
+            try:
+                self.btn_kart_ac.grid()
+            except tk.TclError:
+                pass
         else:
-            self.hesap_etiket_lbl.configure(text="POS hesabı" if tur == "KART" else "Hesap")
-            for h in FinansService.tahsilat_hesaplari(sekil):
+            if not self.tahsilat:
+                etiket = "Kasa" if tur == "KASA" else ("Banka Hesabı" if tur == "HAVALE" else "Hesap")
+            else:
+                etiket = "POS hesabı" if tur == "KART" else ("Kasa" if tur == "KASA" else ("Banka Hesabı" if tur == "HAVALE" else "Hesap"))
+            self.hesap_etiket_lbl.configure(text=etiket)
+            self.hesap_cb.configure(state="readonly")
+            # Ödeme: yalnızca yönteme uygun kaynak (POS/firma kartı havale/nakitte yok)
+            hesap_kaynak = (
+                FinansService.odeme_hesaplari(sekil)
+                if not self.tahsilat
+                else FinansService.tahsilat_hesaplari(sekil)
+            )
+            for h in hesap_kaynak:
                 if getattr(h, "aktif", True):
                     self._hesap_secenekleri[h.hesap_adi] = {"hesap": h.hesap_adi, "finans_hesap_id": int(h.id)}
+            try:
+                self.btn_kart_ac.grid_remove()
+            except tk.TclError:
+                pass
         degerler = tuple(self._hesap_secenekleri)
         self.hesap_cb.configure(values=degerler)
-        if self.hesap_var.get() not in self._hesap_secenekleri:
+        if onceki_tur != tur or self.hesap_var.get() not in self._hesap_secenekleri:
             self.hesap_var.set(degerler[0] if len(degerler) == 1 else "")
         self._kart_alanlarini_ayarla()
+        self._kk_plan_onizle()
+
+    def _hesap_yazildi(self, _event=None):
+        """Firma KK listesinde yazarak filtrele; seçim iptali mevcut kimliği silmez."""
+        if self.tahsilat or _sekil_turu(self.sekil_var.get()) != "KART":
+            return
+        from database.turkce_normalize import turkce_normalize
+
+        metin = turkce_normalize(self.hesap_var.get() or "")
+        tum = getattr(self, "_kk_tum_etiketler", None) or list(self._hesap_secenekleri)
+        if not metin:
+            self.hesap_cb.configure(values=tuple(tum))
+            return
+        self.hesap_cb.configure(values=tuple(e for e in tum if metin in turkce_normalize(e)))
+
+    def _secili_kart_ac(self):
+        secim = self._hesap_secenekleri.get(self.hesap_var.get()) or {}
+        kk_id = secim.get("kredi_karti_id")
+        if not kk_id:
+            messagebox.showinfo("Kart", "Önce firma kredi kartı seçin.", parent=self)
+            return
+        banka_id = secim.get("banka_karti_id")
+        try:
+            from finans_ui import KrediKartiTanimDialog
+
+            dlg = KrediKartiTanimDialog(self, banka_karti_id=banka_id, kart_id=int(kk_id))
+            self.wait_window(dlg)
+        except TypeError:
+            try:
+                from finans_ui import KrediKartiTanimDialog
+
+                dlg = KrediKartiTanimDialog(self, banka_karti_id=banka_id)
+                self.wait_window(dlg)
+            except Exception as hata:
+                messagebox.showwarning("Kart", f"Kart ekranı açılamadı:\n{hata}", parent=self)
+                return
+        except Exception as hata:
+            messagebox.showwarning("Kart", f"Kart ekranı açılamadı:\n{hata}", parent=self)
+            return
+        # Form alanları korunur; liste tazelenir
+        self._sekil_degisti()
+
+    def _cekim_turu_degisti(self):
+        if self.cekim_turu_var.get() == "Tek Çekim":
+            self.taksit_var.set("1")
+            self.taksit_sb.configure(state="disabled")
+            try:
+                self.ilk_vade_lbl.pack_forget()
+                self.ilk_vade_entry.pack_forget()
+            except tk.TclError:
+                pass
+        else:
+            self.taksit_sb.configure(state="normal" if self._duzenlenebilir() else "disabled")
+            try:
+                n = int(self.taksit_var.get() or "1")
+            except ValueError:
+                n = 1
+            if n < 2:
+                self.taksit_var.set("2")
+            self.ilk_vade_lbl.pack(side="left", padx=(12, 4))
+            self.ilk_vade_entry.pack(side="left")
+            if not (self.ilk_vade_var.get() or "").strip():
+                self._kk_ilk_vade_oner()
+        self._kk_plan_onizle()
+
+    def _kk_ilk_vade_oner(self):
+        secim = self._hesap_secenekleri.get(self.hesap_var.get()) or {}
+        kk_id = secim.get("kredi_karti_id")
+        try:
+            tarih = _tarih_oku(self.satir_tarih_var.get() or self.tarih_var.get(), "Tarih")
+        except ValueError:
+            tarih = date.today()
+        kart = None
+        if kk_id:
+            try:
+                from database.models.finans import KrediKartiTanimi
+                from database.database import get_session
+
+                with get_session() as s:
+                    kart = s.get(KrediKartiTanimi, int(kk_id))
+            except Exception:
+                kart = None
+        oner = FinansService.kk_ilk_taksit_oner(kart, tarih)
+        self.ilk_vade_var.set(oner.strftime("%d.%m.%Y"))
+
+    def _kk_plan_onizle(self, _event=None):
+        lbl = getattr(self, "kk_plan_lbl", None)
+        if lbl is None:
+            return
+        if self.tahsilat or _sekil_turu(self.sekil_var.get()) != "KART":
+            lbl.configure(text="")
+            return
+        try:
+            n = int(self.taksit_var.get() or "1")
+        except ValueError:
+            n = 1
+        if self.cekim_turu_var.get() == "Tek Çekim" or n <= 1:
+            lbl.configure(text="Tek çekim: tutar kart borcuna bir kez yazılır; taksit satırı yok.")
+            return
+        try:
+            tutar = tutar_coz(self.tutar_var.get()) if (self.tutar_var.get() or "").strip() else Decimal("0")
+        except Exception:
+            tutar = Decimal("0")
+        if tutar <= 0:
+            lbl.configure(text=f"Taksitli ({n}): tutar girince plan önizlemesi görünür.")
+            return
+        try:
+            tarih = _tarih_oku(self.satir_tarih_var.get() or self.tarih_var.get(), "Tarih")
+        except ValueError:
+            lbl.configure(text="Geçerli satır tarihi girin.")
+            return
+        ilk = None
+        if (self.ilk_vade_var.get() or "").strip():
+            try:
+                ilk = _tarih_oku(self.ilk_vade_var.get(), "İlk ödeme")
+            except ValueError:
+                lbl.configure(text="İlk ödeme tarihi GG.AA.YYYY olmalı.")
+                return
+        secim = self._hesap_secenekleri.get(self.hesap_var.get()) or {}
+        kart = None
+        if secim.get("kredi_karti_id"):
+            try:
+                from database.models.finans import KrediKartiTanimi
+                from database.database import get_session
+
+                with get_session() as s:
+                    kart = s.get(KrediKartiTanimi, int(secim["kredi_karti_id"]))
+            except Exception:
+                kart = None
+        try:
+            plan = FinansService.kk_taksit_plani(tarih, n, tutar, ilk_taksit_tarihi=ilk, kart=kart)
+        except ValueError as hata:
+            lbl.configure(text=str(hata))
+            return
+        toplam = sum((p["tutar"] for p in plan), Decimal("0"))
+        ozet = " | ".join(
+            f"{p['taksit_no']}. {p['vade_tarihi'].strftime('%d.%m.%Y')} {_para(p['tutar'])}" for p in plan[:6]
+        )
+        if len(plan) > 6:
+            ozet += " | …"
+        lbl.configure(text=f"Plan ({n} taksit, toplam {_para(toplam)}): {ozet}")
 
     def _kart_alanlarini_ayarla(self):
         tur = _sekil_turu(self.sekil_var.get())
@@ -1727,21 +2062,50 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.kart_kutu.grid_remove()
             return
         self.kart_kutu.grid()
+        # Ortak widget'ları yeniden diz
+        for w in (
+            self.kart_tipi_lbl,
+            self.kart_tipi_cb,
+            self.cekim_turu_lbl,
+            self.cekim_turu_cb,
+            self.taksit_lbl,
+            self.taksit_sb,
+            self.ilk_vade_lbl,
+            self.ilk_vade_entry,
+            self.kart_bilgi_lbl,
+            self.kk_plan_lbl,
+        ):
+            try:
+                w.pack_forget()
+            except tk.TclError:
+                pass
         if self.tahsilat:
-            self.kart_tipi_lbl.pack(side="left", padx=(0, 8), pady=5, before=self.taksit_lbl)
-            self.kart_tipi_cb.pack(side="left", padx=(0, 16), before=self.taksit_lbl)
+            self.kart_tipi_lbl.pack(side="left", padx=(0, 8), pady=5)
+            self.kart_tipi_cb.pack(side="left", padx=(0, 16))
+            self.taksit_lbl.pack(side="left", padx=(0, 8))
+            self.taksit_sb.pack(side="left")
             self.taksit_sb.configure(to=12)
             self._kart_tipi_degisti()
+            self.kart_bilgi_lbl.pack(side="left", padx=(12, 0))
             self.kart_bilgi_lbl.configure(
                 text="POS komisyonu taksit tablosundan, net tutar valör gününde KMH hesabına aktarılır."
             )
         else:
-            self.kart_tipi_lbl.pack_forget()
-            self.kart_tipi_cb.pack_forget()
-            self.taksit_sb.configure(to=24, state="normal" if self._duzenlenebilir() else "disabled")
+            self.cekim_turu_lbl.pack(side="left", padx=(0, 8), pady=5)
+            self.cekim_turu_cb.pack(side="left", padx=(0, 12))
+            self.taksit_lbl.pack(side="left", padx=(0, 8))
+            self.taksit_sb.pack(side="left")
+            self.taksit_sb.configure(to=24)
+            self.kart_bilgi_lbl.pack(side="left", padx=(12, 0))
             self.kart_bilgi_lbl.configure(
-                text="Tedarikçi borcu kapanır; tutar kart borcuna ve taksitlerle ekstreye yazılır."
+                text="Tedarikçi borcu bir kez kapanır; kart borcu bir kez oluşur. Taksitler yalnızca kart planıdır."
             )
+            self.kk_plan_lbl.pack(side="left", padx=(10, 0))
+            self._cekim_turu_degisti()
+            if not getattr(self, "_kk_plan_bagli", False):
+                self.hesap_cb.bind("<<ComboboxSelected>>", lambda _e: self._kk_plan_onizle(), add="+")
+                self.tutar_var.trace_add("write", lambda *_: self.after(40, self._kk_plan_onizle))
+                self._kk_plan_bagli = True
 
     def _kart_tipi_degisti(self):
         banka = KART_TIPLERI.get(self.kart_tipi_var.get()) == "BANKA_KARTI"
@@ -1756,17 +2120,24 @@ class KasaMakbuzDialog(tk.Toplevel):
         self.satir_tarih_var.set(self.tarih_var.get() or date.today().strftime("%d.%m.%Y"))
         self.taksit_var.set("1")
         self.kart_tipi_var.set("Kredi Kartı")
+        if getattr(self, "cekim_turu_var", None) is not None:
+            self.cekim_turu_var.set("Tek Çekim")
+        if getattr(self, "ilk_vade_var", None) is not None:
+            self.ilk_vade_var.set("")
         self.btn_satir_ekle.configure(text="Satırı Ekle  (Enter)")
+        self._kk_plan_onizle()
 
     def _satir_panelinden_oku(self) -> dict:
-        sekil = self.sekil_var.get().strip()
+        sekil = _odeme_sekil_normalize(self.sekil_var.get().strip())
+        if sekil != self.sekil_var.get():
+            self.sekil_var.set(sekil)
         if not sekil:
             raise ValueError("Ödeme yöntemini seçin.")
         secim = self._hesap_secenekleri.get(self.hesap_var.get())
         if not secim:
             tur = _sekil_turu(sekil)
             if not self.tahsilat and tur == "KART":
-                raise ValueError("Ödeme yapılacak şirket kredi kartını seçin (Finans → Kredi Kartları).")
+                raise ValueError("Ödeme yapılacak firma kredi kartını seçin (Finans → Kredi Kartları).")
             raise ValueError("POS hesabını seçin." if tur == "KART" else "Hesabı seçin.")
         tarih = _tarih_oku(self.satir_tarih_var.get(), "Satır tarihi")
         tutar = _tutar_oku(self.tutar_var.get())
@@ -1788,6 +2159,9 @@ class KasaMakbuzDialog(tk.Toplevel):
             except ValueError as hata:
                 raise ValueError("Taksit sayısı tam sayı olmalıdır.") from hata
             azami = 12 if self.tahsilat else 24
+            if not self.tahsilat and getattr(self, "cekim_turu_var", None) is not None:
+                if self.cekim_turu_var.get() == "Tek Çekim":
+                    taksit = 1
             if not 1 <= taksit <= azami:
                 raise ValueError(f"Taksit sayısı 1 ile {azami} arasında olmalıdır.")
             if self.tahsilat:
@@ -1795,6 +2169,19 @@ class KasaMakbuzDialog(tk.Toplevel):
                 if satir["kart_tipi"] == "BANKA_KARTI":
                     taksit = 1
             satir["taksit_sayisi"] = taksit
+            if not self.tahsilat and taksit > 1:
+                vade_m = (self.ilk_vade_var.get() or "").strip()
+                if vade_m:
+                    satir["ilk_taksit_tarihi"] = _tarih_oku(vade_m, "İlk ödeme")
+                # Kaydetmeden plan doğrula (toplam = işlem tutarı)
+                plan = FinansService.kk_taksit_plani(
+                    tarih,
+                    taksit,
+                    tutar,
+                    ilk_taksit_tarihi=satir.get("ilk_taksit_tarihi"),
+                )
+                if sum((p["tutar"] for p in plan), Decimal("0")) != tutar:
+                    raise ValueError("Taksit toplamı işlem tutarına eşit değil.")
         return satir
 
     def satir_ekle(self):
@@ -1824,18 +2211,28 @@ class KasaMakbuzDialog(tk.Toplevel):
             return
         idx = int(secim[0])
         s = self.satirlar[idx]
-        self.sekil_var.set(s["odeme_sekli"])
+        self.sekil_var.set(_odeme_sekil_normalize(s["odeme_sekli"]))
         self._sekil_degisti()
-        self.hesap_var.set(s.get("etiket") or s.get("hesap") or "")
+        etiket = s.get("etiket") or s.get("hesap") or ""
+        if s.get("kredi_karti_id"):
+            etiket = self._kk_etiketi(int(s["kredi_karti_id"])) or etiket
+        self.hesap_var.set(etiket)
         self.satir_tarih_var.set(_tarih_yazi(s.get("tarih")))
         self.tutar_var.set(tr_tutar(s["tutar"]))
         self.satir_aciklama_var.set(s.get("aciklama") or "")
         self.kart_tipi_var.set(_KART_TIPI_ETIKET.get(s.get("kart_tipi") or "", "Kredi Kartı"))
-        self.taksit_var.set(str(s.get("taksit_sayisi") or 1))
+        n = int(s.get("taksit_sayisi") or 1)
+        self.taksit_var.set(str(n))
+        if getattr(self, "cekim_turu_var", None) is not None:
+            self.cekim_turu_var.set("Tek Çekim" if n <= 1 else "Taksitli")
+        if getattr(self, "ilk_vade_var", None) is not None:
+            ilk = s.get("ilk_taksit_tarihi")
+            self.ilk_vade_var.set(_tarih_yazi(ilk) if ilk else "")
         self._kart_alanlarini_ayarla()
         self._duzenlenen_satir = idx
         self.btn_satir_ekle.configure(text="Satırı Güncelle  (Enter)")
         self.tutar_entry.focus_set()
+        self._kk_plan_onizle()
 
     def satir_sil(self):
         if not self._duzenlenebilir():
@@ -2080,14 +2477,42 @@ class KasaMakbuzDialog(tk.Toplevel):
         except (ValueError, PermissionError) as hata:
             messagebox.showerror(self._pencere_basligi(), str(hata), parent=self)
             return False
+        except Exception as hata:  # noqa: BLE001 — kayıt öncesi beklenmeyen hata
+            messagebox.showerror(
+                self._pencere_basligi(),
+                f"Makbuz kaydedilemedi:\n{hata}\n\nFormdaki bilgiler duruyor; aynı tahsilatı yeniden "
+                "oluşturmadan önce makbuz listesini kontrol edin.",
+                parent=self,
+            )
+            return False
         finally:
             self._kaydediliyor = False
             if self.winfo_exists():
-                self.btn_kaydet.configure(state="normal")
+                try:
+                    self.btn_kaydet.configure(state="normal")
+                except tk.TclError:
+                    pass
+
+        # Bu noktadan sonra makbuz DB'de; ekran yenileme hatası «kaydedilmedi» demez
         self.result = makbuz
         self._kapatma_plani = None
         self._kapatma_anahtari = None
-        self._makbuzu_yukle(makbuz)
+        try:
+            self._makbuzu_yukle(makbuz)
+        except Exception as hata:  # noqa: BLE001
+            messagebox.showwarning(
+                self._pencere_basligi(),
+                f"Makbuz kaydedildi ({makbuz.belge_no} / {makbuz.makbuz_no or '—'}) "
+                f"ancak ekran yenilenemedi:\n{hata}\n\n"
+                "Aynı tahsilatı tekrar kaydetmeyin; listeden açın.",
+                parent=self,
+            )
+            if callable(self._on_kayit):
+                try:
+                    self._on_kayit(makbuz)
+                except Exception:
+                    pass
+            return True
         no = makbuz.makbuz_no or makbuz.belge_no
         if self.virman:
             sonra = " · ".join(self.v_sonra_lbl.cget("text").splitlines())

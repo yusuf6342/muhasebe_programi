@@ -13,6 +13,8 @@ class SatisIadeFaturasi(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     iade_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     iade_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    # Belge işlem saati (HH:MM veya HH:MM:SS); düzenlemede kaynak verilmezse korunur
+    islem_saati: Mapped[str | None] = mapped_column(String(8), nullable=True)
     cari_id: Mapped[int] = mapped_column(ForeignKey("cari_kartlar.id"), nullable=False, index=True)
     sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     kaynak_fatura_id: Mapped[int | None] = mapped_column(ForeignKey("satis_faturalari.id"), nullable=True, index=True)
@@ -30,6 +32,13 @@ class SatisIadeFaturasi(Base):
     kur_sabitlendi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     borc_esasi: Mapped[str] = mapped_column(String(20), nullable=False, default="TL_SABIT")
     doviz_ara_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Satış faturası ile aynı: satırlardan hesaplanan kalıcı TL toplamları (KDV 0 olsa da matrah yazılır)
+    tl_matrah: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_genel_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    adres_no: Mapped[int | None] = mapped_column(nullable=True)
+    adres_tipi: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    adres_metni: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # İade edilen ek fon bedeli ve KDV'si (kaynak faturanın kayıtlı oranıyla); cari alacağa dahil
     fon_ek_bedel_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     fon_ek_bedel_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)

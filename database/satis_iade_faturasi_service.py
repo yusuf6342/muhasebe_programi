@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -5,6 +6,8 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
+
+_LOG = logging.getLogger(__name__)
 
 from database.cari_service import CariService
 from database.database import get_session
@@ -431,6 +434,15 @@ class SatisIadeFaturasiService:
             iade.kaynak_fatura_id = veriler.get("kaynak_fatura_id")
             iade.depo = veriler.get("depo") or "ANA DEPO"
             iade.aciklama = veriler.get("aciklama")
+            # İşlem saati: açıkça verilirse güncellenir; yoksa mevcut korunur / yeni kayıtta şimdi
+            if "islem_saati" in veriler:
+                gelen_saat = (veriler.get("islem_saati") or "").strip()
+                if gelen_saat:
+                    iade.islem_saati = gelen_saat
+            elif not getattr(iade, "islem_saati", None):
+                from datetime import datetime as _dt
+
+                iade.islem_saati = _dt.now().strftime("%H:%M:%S")
             iade.iade_odeme_tutari = decimal(veriler.get("iade_odeme_tutari", 0), "İade ödeme", Decimal("0"))
             iade.iade_odeme_sekli = veriler.get("iade_odeme_sekli")
             iade.iade_odeme_hesabi = veriler.get("iade_odeme_hesabi")
@@ -532,6 +544,17 @@ class SatisIadeFaturasiService:
                 ))
 
             iade.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
+            # tl_* PG'de NOT NULL; INSERT öncesi satır toplamlarından yazılmalı (KDV %0 → matrah yine tutar)
+            toplam_dict = SatisIadeFaturasiService.toplam(iade.satirlar)
+            iade.tl_matrah = (toplam_dict["ara_toplam"] - toplam_dict["iskonto"]).quantize(Decimal("0.01"))
+            iade.tl_kdv = toplam_dict["kdv"].quantize(Decimal("0.01"))
+            iade.tl_genel_toplam = toplam_dict["genel_toplam"].quantize(Decimal("0.01"))
+            if veriler.get("adres_no") is not None:
+                iade.adres_no = int(veriler["adres_no"]) if veriler.get("adres_no") not in ("", None) else None
+            if "adres_tipi" in veriler:
+                iade.adres_tipi = (veriler.get("adres_tipi") or None)
+            if "adres_metni" in veriler:
+                iade.adres_metni = (veriler.get("adres_metni") or None)
             try:
                 session.flush()
                 from database.fon_service import FonService
@@ -540,7 +563,11 @@ class SatisIadeFaturasiService:
                 FonService.iade_kaydedildi(session, iade)
                 session.flush()
             except IntegrityError as hata:
-                raise ValueError("İade faturası kaydedilemedi.") from hata
+                _LOG.exception("satis_iade kaydet IntegrityError iade_no=%s", getattr(iade, "iade_no", None))
+                raise ValueError(
+                    "İade faturası kaydedilemedi. Belge numarası çakışıyor olabilir veya "
+                    "zorunlu tutar alanları yazılamadı. Ekrandaki bilgiler korunur; tekrar deneyin."
+                ) from hata
             ek_iade = SatisIadeFaturasiService.ek_fon_bedeli_toplami(iade)
             toplam = SatisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"] + ek_iade
             if iade.iade_odeme_tutari > toplam:
@@ -560,7 +587,21 @@ class SatisIadeFaturasiService:
                 kur=kur if pb != "TRY" else Decimal("1"),
                 borc_esasi=iade.borc_esasi or "TL_SABIT",
             ))
-            CariService._alacak_uygula(session, iade.cari_id, toplam, iade.iade_no, tarih, kaynak_tur="IADE")
+            # Mahsup: ikinci cari/stok doğurmaz; açık kalem kapatma kaydı yazar.
+            # Kaynak satış faturası varsa önce ona, kalan FIFO (alış iade KAYNAK ile aynı mantık).
+            dagitim, fazla = SatisIadeFaturasiService._iade_kapatma_dagitim(
+                session, iade, toplam
+            )
+            CariService._alacak_uygula(
+                session,
+                iade.cari_id,
+                toplam,
+                iade.iade_no,
+                tarih,
+                kaynak_tur="IADE",
+                dagitim=dagitim,
+                fazla=fazla,
+            )
             if iade.iade_odeme_tutari > 0:
                 FinansService.hareket_ekle(
                     session, iade.iade_no, tarih, iade.iade_odeme_tutari,
@@ -607,6 +648,57 @@ class SatisIadeFaturasiService:
         from database.deleted_record_service import ENTITY_SATIS_IADE, safe_log_cancel
 
         safe_log_cancel(ENTITY_SATIS_IADE, iade_id, note="Satış iade faturası iptal")
+
+    @staticmethod
+    def _iade_kapatma_dagitim(session, iade, toplam) -> tuple[list[tuple[int, Decimal]] | None, str]:
+        """Kaynak satış faturası açık borçlarına öncelik; kalan FIFO.
+
+        Dönüş: (dagitim veya None, fazla modu). Yeni cari hareket üretmez.
+        """
+        from database.acik_kalem_service import AcikKalemService
+        from database.models.satis_faturasi import SatisFaturasi, SatisFaturasiSatiri
+
+        kaynak_nolari: set[str] = set()
+        if getattr(iade, "kaynak_fatura_id", None):
+            kf = session.get(SatisFaturasi, int(iade.kaynak_fatura_id))
+            if kf is not None and (kf.fatura_no or "").strip():
+                kaynak_nolari.add(kf.fatura_no.strip())
+        for satir in getattr(iade, "satirlar", None) or []:
+            kid = getattr(satir, "kaynak_fatura_satiri_id", None)
+            if not kid:
+                continue
+            ks = session.get(SatisFaturasiSatiri, int(kid))
+            if ks is None:
+                continue
+            fat = getattr(ks, "fatura", None)
+            if fat is None and getattr(ks, "fatura_id", None):
+                fat = session.get(SatisFaturasi, int(ks.fatura_id))
+            if fat is not None and (fat.fatura_no or "").strip():
+                kaynak_nolari.add(fat.fatura_no.strip())
+        if not kaynak_nolari:
+            return None, "FIFO"
+
+        kalan = Decimal(str(toplam))
+        dagitim: list[tuple[int, Decimal]] = []
+        hareketler = session.scalars(
+            select(SatisHareketi)
+            .where(
+                SatisHareketi.cari_id == int(iade.cari_id),
+                SatisHareketi.belge_no.in_(sorted(kaynak_nolari)),
+                SatisHareketi.satis_tutari > 0,
+            )
+            .order_by(SatisHareketi.satis_tarihi, SatisHareketi.id)
+        ).all()
+        for h in hareketler:
+            if kalan <= 0:
+                break
+            acik = AcikKalemService._guncel_kalan(session, h)
+            if acik <= 0:
+                continue
+            pay = min(acik, kalan)
+            dagitim.append((int(h.id), pay))
+            kalan -= pay
+        return (dagitim or None), "FIFO"
 
     @staticmethod
     def ek_fon_bedeli_toplami(iade) -> Decimal:

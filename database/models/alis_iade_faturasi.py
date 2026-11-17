@@ -31,6 +31,9 @@ class AlisIadeFaturasi(Base):
     kur_kaynagi: Mapped[str] = mapped_column(String(20), nullable=False, default="TCMB")
     kur_sabitlendi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     doviz_ara_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_matrah: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_kdv: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    tl_genel_toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     iade_nedeni: Mapped[str | None] = mapped_column(String(200), nullable=True)

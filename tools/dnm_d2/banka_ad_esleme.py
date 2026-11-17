@@ -34,6 +34,9 @@ def banka_cati(ad: str) -> str:
         return "Akbank"
     if "YAPI KREDI" in n or "YAPIKREDI" in n.replace(" ", "") or "YAPI KREDİ" in ad.upper():
         return "Yapı Kredi"
+    # RSÇ WORLD / WORD: Yapı Kredi World markası (ayrı çatı değil)
+    if "RSC WORLD" in n or "RSÇ WORLD" in ad.upper() or "RSC WORD" in n or "RSÇ WORD" in ad.upper():
+        return "Yapı Kredi"
     if "VAKIF" in n:
         return "Vakıfbank"
     if "HALKBANK" in n or "HALK BANK" in n:

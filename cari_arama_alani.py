@@ -23,17 +23,34 @@ YOKSAYILAN_TUSLAR = frozenset({
 })
 
 
-def cari_ara(metin: str, cari_turu: str, limit: int = AZAMI_SONUC) -> list[Any]:
+def cari_ara(
+    metin: str,
+    cari_turu: str | None = "EVRAK",
+    limit: int = AZAMI_SONUC,
+    *,
+    min_harf: int = MIN_HARF,
+) -> list[Any]:
     from database.search_service import SearchService, tokenize_query
 
-    if len((metin or "").strip()) < MIN_HARF or not tokenize_query(metin):
+    min_harf = max(1, int(min_harf or MIN_HARF))
+    ham = (metin or "").strip()
+    if len(ham) < min_harf or not tokenize_query(ham, min_len=min_harf):
         return []
-    sonuc = SearchService.search_customers(metin, limit=limit, cari_turu=cari_turu, sadece_aktif=True)
+    # Belge seçici: boş/None → EVRAK (tüm gerçek cari türleri)
+    tur = (cari_turu or "EVRAK").strip() or "EVRAK"
+    sonuc = SearchService.search_customers(
+        ham, limit=limit, cari_turu=tur, sadece_aktif=True, min_blok_len=min_harf
+    )
     return [x["cari"] for x in sonuc if x.get("cari") is not None]
 
 
 def _ek_bilgi(cari) -> str:
     parcalar = []
+    tur = (getattr(cari, "cari_turu", None) or "").strip()
+    if tur:
+        parcalar.append(tur)
+    if not getattr(cari, "aktif", True):
+        parcalar.append("Pasif")
     yer = " / ".join(p for p in ((getattr(cari, "il", None) or "").strip(), (getattr(cari, "ilce", None) or "").strip()) if p)
     if yer:
         parcalar.append(yer)
@@ -61,7 +78,15 @@ class CariAramaAlani:
     ILK_SONUC_SECILI = True
 
     def _sorgu(self, metin: str) -> list[Any]:
-        return cari_ara(metin, self.cari_turu)
+        kayitlar = cari_ara(metin, self.cari_turu, min_harf=self.min_harf)
+        if not self.yalniz_unvan:
+            return kayitlar
+        from database.search_service import normalize_text
+
+        hedef = normalize_text(metin)
+        if not hedef:
+            return kayitlar
+        return [c for c in kayitlar if hedef in normalize_text(getattr(c, "unvan", None) or "")]
 
     def _satir(self, kayit) -> tuple:
         return (kayit.cari_kodu or ""), (kayit.unvan or ""), _ek_bilgi(kayit)
@@ -71,23 +96,27 @@ class CariAramaAlani:
         dialog: tk.Misc,
         entry: ttk.Entry,
         *,
-        cari_turu: str,
+        cari_turu: str | None = "EVRAK",
         on_secim: Callable[[Any], None],
         on_temizle: Callable[[], None],
         secili_ad: Callable[[], str],
         on_yeni: Callable[[], None] | None = None,
-        kayit_adi: str = "Tedarikçi",
+        kayit_adi: str = "Cari",
         arka_plan: bool = True,
+        min_harf: int = MIN_HARF,
+        yalniz_unvan: bool = False,
     ):
         self.dialog = dialog
         self.entry = entry
-        self.cari_turu = cari_turu
+        self.cari_turu = (cari_turu or "EVRAK").strip() or "EVRAK"
         self.on_secim = on_secim
         self.on_temizle = on_temizle
         self.secili_ad = secili_ad
         self.on_yeni = on_yeni
         self.kayit_adi = kayit_adi
         self.arka_plan = arka_plan
+        self.min_harf = max(1, int(min_harf or MIN_HARF))
+        self.yalniz_unvan = bool(yalniz_unvan)
         self.sonuclar: list[Any] = []
         self.secili = -1
         self.popup: tk.Toplevel | None = None
@@ -97,6 +126,8 @@ class CariAramaAlani:
         self._after = None
         self._seq = 0
         self._sonuc_metin = ""
+        self._yedek_kayit: Any | None = None
+        self._yedek_metin = ""
         entry.bind("<KeyRelease>", self._tus, add="+")
         entry.bind("<Down>", self._asagi)
         entry.bind("<Up>", self._yukari)
@@ -127,7 +158,7 @@ class CariAramaAlani:
         if secili and metin != secili:
             self.on_temizle()
         self._iptal()
-        if len(metin) < MIN_HARF:
+        if len(metin) < self.min_harf:
             self._seq += 1
             self.kapat()
             return None
@@ -309,7 +340,7 @@ class CariAramaAlani:
     # ─── klavye / fare
     def _cozulmemis_metin(self) -> bool:
         metin = self.metin()
-        return len(metin) >= MIN_HARF and metin != (self.secili_ad() or "").strip()
+        return len(metin) >= self.min_harf and metin != (self.secili_ad() or "").strip()
 
     def _asagi(self, _e=None):
         if not self.acik_mi():
@@ -346,6 +377,16 @@ class CariAramaAlani:
     def _esc(self, _e=None):
         if self.acik_mi():
             self.kapat()
+            # Önceki onaylı seçimi geri getir (yazarken temizlenen kimlik dahil)
+            if self._yedek_kayit is not None:
+                self.on_secim(self._yedek_kayit)
+            elif self._yedek_metin:
+                try:
+                    self.entry.delete(0, "end")
+                    self.entry.insert(0, self._yedek_metin)
+                    self.entry.icursor("end")
+                except tk.TclError:
+                    pass
             return "break"
         return None
 
@@ -372,7 +413,9 @@ class CariAramaAlani:
         self._iptal()
         self._seq += 1
         self.kapat()
+        self._yedek_kayit = cari
         self.on_secim(cari)
+        self._yedek_metin = (self.secili_ad() or "").strip() or (getattr(cari, "unvan", None) or "")
         try:
             self.entry.focus_set()
             self.entry.icursor("end")

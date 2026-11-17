@@ -9,6 +9,7 @@ Kaynaklar (yeni hesap motoru yazılmadı):
   iade: iptal olmayan satış iade faturası, cari kaydındaki tutar (yoksa iade servis toplamı).
 * Tahsilat: müşteri cari kartındaki "Tahsilat" kayıtları + fatura içi tahsilat (FATURA TAHSİLATI) +
   cariye bağlanmamış POS tahsilatı; yöntem aynı belgenin kasa / banka / POS hareketinden.
+  Müşteriden tedarikçiye (cari virman makbuzu / KK çekimi) gerçek tahsilata bir kez dahil edilir.
 * Kasa / banka: finans hareketleri (D dahil) + açılış bakiyesi.
 * Cari bakiye: ``cari_bakiye_service`` formülü (CariIslem + çift kayıtsız SatisHareketi); cari listesiyle
   aynı. Fatura içi tahsilat / ödemenin cariye yansımayan tutarı yalnız "bilinen fark" notudur.
@@ -21,6 +22,7 @@ Kaynaklar (yeni hesap motoru yazılmadı):
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import defaultdict
@@ -35,6 +37,24 @@ from database.access import yetki_var
 from database.database import get_session
 from database.session_manager import oturum
 from database.sabit_gider_service import ay_basi, ay_ekle, ay_sonu
+
+# Evo cari tahsilat EVB-TH-{mid}; kasa/banka EVB-KS/BN-{mid} veya açıklamada "EVB kasa/banka {mid}"
+_EVO_MID_BELGE = re.compile(r"^EVB-(?:TH|KK|AH|OD|EX)-(\d+)$", re.IGNORECASE)
+_EVO_MID_FH_BELGE = re.compile(r"^EVB-(?:KS|BN)-(\d+)$", re.IGNORECASE)
+_EVO_MID_ACK = re.compile(r"EVB (?:kasa|banka) (\d+)\b", re.IGNORECASE)
+
+
+def _evo_mid_from_belge(belge: str | None) -> str | None:
+    m = _EVO_MID_BELGE.match((belge or "").strip())
+    return m.group(1) if m else None
+
+
+def _evo_mid_from_fh(belge: str | None, aciklama: str | None) -> str | None:
+    m = _EVO_MID_FH_BELGE.match((belge or "").strip())
+    if m:
+        return m.group(1)
+    m = _EVO_MID_ACK.search(aciklama or "")
+    return m.group(1) if m else None
 
 SIFIR = Decimal("0")
 KURUS = Decimal("0.01")
@@ -107,6 +127,63 @@ def _yazma_sayaci(session, _ctx) -> None:
 
 def degisim_sayaci() -> int:
     return _degisim_sayaci
+
+
+def satis_degisim_imzasi() -> tuple:
+    """Satış/iade belgelerinin süreçler arası hafif imzası (MAX/COUNT; şema değişikliği yok).
+
+    Aynı süreçteki ``degisim_sayaci`` diğer terminal yazımlarını görmez; bu imza paylaşılan
+    veritabanından okunur. GİRİŞ Satışlar kutusu ve Satış Faturaları listesi yoklamasında kullanılır.
+    """
+    from database.models.satis_faturasi import SatisFaturasi
+    from database.models.satis_iade_faturasi import SatisIadeFaturasi
+    from sqlalchemy import case
+
+    with get_session() as s:
+        sf = s.execute(
+            select(
+                func.count(SatisFaturasi.id),
+                func.coalesce(func.max(SatisFaturasi.id), 0),
+                func.coalesce(func.sum(SatisFaturasi.row_version), 0),
+                func.coalesce(
+                    func.sum(case((SatisFaturasi.onaylandi.is_(True), 1), else_=0)), 0
+                ),
+                func.coalesce(
+                    func.sum(case((SatisFaturasi.durum == "İPTAL", 1), else_=0)), 0
+                ),
+                func.coalesce(
+                    func.sum(case((SatisFaturasi.is_deleted.is_(True), 1), else_=0)), 0
+                ),
+                func.coalesce(func.sum(SatisFaturasi.tahsilat_tutari), 0),
+            )
+        ).one()
+        si = s.execute(
+            select(
+                func.count(SatisIadeFaturasi.id),
+                func.coalesce(func.max(SatisIadeFaturasi.id), 0),
+                func.coalesce(
+                    func.sum(case((SatisIadeFaturasi.durum == "İPTAL", 1), else_=0)), 0
+                ),
+                func.coalesce(func.sum(SatisIadeFaturasi.iade_odeme_tutari), 0),
+                func.coalesce(func.max(SatisIadeFaturasi.id), 0),
+            )
+        ).one()
+    return (
+        int(sf[0] or 0),
+        int(sf[1] or 0),
+        int(sf[2] or 0),
+        int(sf[3] or 0),
+        int(sf[4] or 0),
+        int(sf[5] or 0),
+        str(sf[6] or 0),
+        int(si[0] or 0),
+        int(si[1] or 0),
+        int(si[2] or 0),
+        str(si[3] or 0),
+        int(si[4] or 0),
+        oturum.company_id,
+        oturum.db_path,
+    )
 
 
 # ----------------------------------------------------------------------------- tarih ve oran
@@ -184,11 +261,34 @@ def _bolum(durum: str = HAZIR, **veri) -> dict:
     return veri
 
 
+def _islem_saati_normalize(ham) -> str | None:
+    """Belgedeki gerçek işlem saatini ``HH:mm`` / ``HH:mm:ss`` olarak döndürür; yoksa None.
+
+    Tahmini saat üretilmez; güncelleme / liste açılış zamanı kullanılmaz.
+    """
+    if ham is None:
+        return None
+    if isinstance(ham, datetime):
+        return ham.strftime("%H:%M:%S")
+    metin = str(ham).strip()
+    if not metin:
+        return None
+    for bicim in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(metin, bicim).strftime(bicim)
+        except ValueError:
+            continue
+    return None
+
+
 def _kalem(kaynak: str, tutar, *, belge_no: str = "", tarih=None, cari: str = "", vade=None, aciklama: str = "",
-           yontem: str = "", tahmini: bool = False, gercek_borc: bool = True, **ek) -> dict:
+           yontem: str = "", tahmini: bool = False, gercek_borc: bool = True, islem_saati=None, **ek) -> dict:
+    if "islem_saati" in ek:
+        islem_saati = ek.pop("islem_saati")
     return {"kaynak": kaynak, "belge_no": belge_no, "tarih": tarih, "cari": cari, "vade": vade,
             "tutar": _q2(tutar), "kalan": _q2(tutar), "aciklama": aciklama, "yontem": yontem,
-            "tahmini": tahmini, "gercek_borc": gercek_borc, **ek}
+            "tahmini": tahmini, "gercek_borc": gercek_borc,
+            "islem_saati": _islem_saati_normalize(islem_saati), **ek}
 
 
 # ----------------------------------------------------------------------------- yetki
@@ -331,12 +431,27 @@ def satis_bolumu(b: _Baglam) -> dict:
     haric = defaultdict(int)
     kalemler: list[dict] = []
 
+    # Satırları peşinen yükleme — cari/başlık tutarı olan belgelerde gerekmez.
     faturalar = b.s.scalars(
-        select(SatisFaturasi).options(selectinload(SatisFaturasi.satirlar))
-        .where(SatisFaturasi.fatura_tarihi >= bas, SatisFaturasi.fatura_tarihi <= bit)).all()
-    kayitli = {bn: _d(t) for bn, t in b.s.execute(
-        select(SatisHareketi.belge_no, SatisHareketi.satis_tutari)
-        .where(SatisHareketi.satis_tarihi >= bas, SatisHareketi.satis_tarihi <= bit)).all()}
+        select(SatisFaturasi)
+        .where(SatisFaturasi.fatura_tarihi >= bas, SatisFaturasi.fatura_tarihi <= bit)
+    ).all()
+    # Cari tutar + açık kalan (Açık Kalemler / Kapatma Detayı ile aynı kaynak: SatisHareketi)
+    kayitli: dict[str, Decimal] = {}
+    acik_map: dict[tuple[int, str], Decimal] = {}
+    for cid, bn, t, kalan in b.s.execute(
+        select(
+            SatisHareketi.cari_id,
+            SatisHareketi.belge_no,
+            SatisHareketi.satis_tutari,
+            SatisHareketi.kalan_acik_tutar,
+        ).where(SatisHareketi.satis_tarihi >= bas, SatisHareketi.satis_tarihi <= bit)
+    ).all():
+        bn_s = (bn or "").strip()
+        kayitli[bn_s] = _d(t)
+        if _d(t) > 0 and cid is not None and bn_s:
+            acik_map[(int(cid), bn_s)] = _q2(max(SIFIR, _d(kalan)))
+    satir_yuklu = False
     for f in faturalar:
         if getattr(f, "is_deleted", False):
             haric["silinmiş"] += 1
@@ -351,19 +466,74 @@ def satis_bolumu(b: _Baglam) -> dict:
             if f.sube_id is None:
                 haric["şubesi boş"] += 1
             continue
-        tutar = _d(SatisFaturasiService.net_toplam(f))
         pb = (f.para_birimi or "TRY").upper()
         aciklama = f"{pb} fatura — kayıtlı TL karşılığı (kur {_d(f.kur):f})" if pb != "TRY" else ""
-        tutar = _q2(tutar)
-        kdv = satis_faturasi_kdv(f)
-        kdv_haric = None if kdv["durum"] == KDV_EKSIK else _q2(
-            kdv["matrah"] + _d(getattr(f, "fon_ek_bedel_tutari", 0)))
-        k = kayitli.get(f.fatura_no)
-        if k is not None and abs(k - tutar) > TOLERANS:
-            uyarilar.append(f"{f.fatura_no}: hesaplanan son tutar {_tl(tutar)}, cari kaydı {_tl(k)}.")
-        kalemler.append(_kalem("Satış faturası", tutar, belge_no=f.fatura_no, tarih=f.fatura_tarihi,
-                               cari=b.cari_adi(f.cari_id), aciklama=aciklama, tur="satis", kdv_haric=kdv_haric,
-                               gercek_borc=False))
+        fatura_no = (f.fatura_no or "").strip()
+        k = kayitli.get(fatura_no)
+        tl_baslik = _q2(_d(getattr(f, "tl_genel_toplam", 0)))
+        tl_matrah = _d(getattr(f, "tl_matrah", 0))
+        tl_kdv = _d(getattr(f, "tl_kdv", 0))
+        fon = _d(getattr(f, "fon_ek_bedel_tutari", 0))
+        # Cari / başlık tutarı varsa satırları yeniden toplamaya gerek yok (ana panel CPU).
+        if k is not None:
+            tutar = _q2(k)
+            if tl_baslik > 0 and abs(k - tl_baslik) > TOLERANS:
+                uyarilar.append(
+                    f"{f.fatura_no}: başlık tutarı {_tl(tl_baslik)}, cari kaydı {_tl(k)}."
+                )
+        elif tl_baslik > 0:
+            tutar = tl_baslik
+        else:
+            if not satir_yuklu:
+                b.s.scalars(
+                    select(SatisFaturasi)
+                    .options(selectinload(SatisFaturasi.satirlar))
+                    .where(SatisFaturasi.id.in_([int(x.id) for x in faturalar]))
+                ).all()
+                satir_yuklu = True
+            tutar = _q2(SatisFaturasiService.net_toplam(f))
+        if tl_matrah > 0:
+            kdv_haric = _q2(tl_matrah + fon)
+        elif getattr(f, "tl_kdv", None) is not None and tl_baslik > 0:
+            kdv_haric = _q2(tl_baslik - tl_kdv + fon)
+        elif k is not None or tl_baslik > 0:
+            # KDV ayrımı başlıkta yok; satır taramadan KDV hariç bilinmiyor
+            kdv_haric = None
+        else:
+            if not satir_yuklu:
+                b.s.scalars(
+                    select(SatisFaturasi)
+                    .options(selectinload(SatisFaturasi.satirlar))
+                    .where(SatisFaturasi.id.in_([int(x.id) for x in faturalar]))
+                ).all()
+                satir_yuklu = True
+            kdv = satis_faturasi_kdv(f)
+            kdv_haric = None if kdv["durum"] == KDV_EKSIK else _q2(kdv["matrah"] + fon)
+        cid = int(f.cari_id) if f.cari_id is not None else None
+        if cid is not None and fatura_no and (cid, fatura_no) in acik_map:
+            acik_kalan = min(tutar, max(SIFIR, acik_map[(cid, fatura_no)]))
+        else:
+            # SH yoksa (nadir) kalan = tutar; peşin SH kalanı 0 olur
+            acik_kalan = tutar
+        kapanan = _q2(max(SIFIR, tutar - acik_kalan))
+        acik_kalan = _q2(acik_kalan)
+        kalemler.append(_kalem(
+            "Satış faturası",
+            tutar,
+            belge_no=f.fatura_no,
+            tarih=f.fatura_tarihi,
+            cari=b.cari_adi(f.cari_id),
+            aciklama=aciklama,
+            tur="satis",
+            belge_id=int(f.id),
+            belge_turu="satis",
+            cari_id=cid,
+            kdv_haric=kdv_haric,
+            gercek_borc=False,
+            islem_saati=f.islem_saati,
+            kapanan_tutar=kapanan,
+            acik_kalan_tutar=acik_kalan,
+        ))
 
     iade_kayit = {(cid, tarih, bn): _d(a) for cid, tarih, bn, a in b.s.execute(
         select(CariIslem.cari_id, CariIslem.tarih, CariIslem.belge_no, func.sum(CariIslem.alacak)).where(
@@ -397,9 +567,20 @@ def satis_bolumu(b: _Baglam) -> dict:
         kdv = belge_kdv(i, SatisIadeFaturasiService.toplam)
         kdv_haric = None if kdv["durum"] == KDV_EKSIK else _q2(
             kdv["matrah"] + _d(getattr(i, "fon_ek_bedel_tutari", 0)))
-        kalemler.append(_kalem("Satış iadesi", -_d(tutar), belge_no=i.iade_no, tarih=i.iade_tarihi,
-                               cari=b.cari_adi(i.cari_id), tur="iade",
-                               kdv_haric=None if kdv_haric is None else -kdv_haric, gercek_borc=False))
+        kalemler.append(_kalem(
+            "Satış iadesi",
+            -_d(tutar),
+            belge_no=i.iade_no,
+            tarih=i.iade_tarihi,
+            cari=b.cari_adi(i.cari_id),
+            tur="iade",
+            belge_id=int(i.id),
+            belge_turu="iade",
+            kdv_haric=None if kdv_haric is None else -kdv_haric,
+            gercek_borc=False,
+            # Önce belge islem_saati; yoksa oluşturma anı (geçmiş kayıtlarda tahmini saat yok).
+            islem_saati=getattr(i, "islem_saati", None) or getattr(i, "olusturma_tarihi", None),
+        ))
 
     def say(aralik):
         sec = [x for x in kalemler if _icinde(x["tarih"], aralik)]
@@ -458,14 +639,18 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
     tum_cari_belge = {bn for bn, *_ in islemler}
     evo = b.evo_rapor()
     hareketler = b.s.execute(
-        select(FinansHareketi.id, FinansHareketi.belge_no, FinansHareketi.hesap_id, FinansHareketi.tarih, FinansHareketi.hareket_turu,
-               FinansHareketi.tutar, FinansHareketi.sube_id)
+        select(FinansHareketi.id, FinansHareketi.belge_no, FinansHareketi.hesap_id, FinansHareketi.tarih,
+               FinansHareketi.hareket_turu, FinansHareketi.tutar, FinansHareketi.sube_id, FinansHareketi.aciklama)
         .where(FinansHareketi.tarih >= bas, FinansHareketi.tarih <= bit,
                or_(FinansHareketi.hareket_turu.in_(TAHSILAT_FH + IADE_ODEME_FH),
                    FinansHareketi.id.in_(list(evo.finans) or [-1])))).all()
     fh_by = defaultdict(list)
+    fh_mid: dict[str, list] = defaultdict(list)
     for h in hareketler:
         fh_by[h.belge_no].append(h)
+        mid = _evo_mid_from_fh(h.belge_no, h.aciklama)
+        if mid:
+            fh_mid[mid].append(h)
     makbuz_sube = {bn: sid for bn, sid in b.s.execute(
         select(KasaMakbuzu.belge_no, KasaMakbuzu.sube_id).where(KasaMakbuzu.tarih >= bas,
                                                                 KasaMakbuzu.tarih <= bit)).all()}
@@ -491,8 +676,15 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
             return False
         return int(sid) == int(b.sube_id)
 
+    def fh_bacaklari(belge: str) -> list:
+        legs = list(fh_by.get(belge) or [])
+        if legs:
+            return legs
+        mid = _evo_mid_from_belge(belge)
+        return list(fh_mid.get(mid) or []) if mid else []
+
     def bacaklardan(belge, tarih, cari_id, toplam, hesap_adi, isaret, kaynak, sube):
-        legs = fh_by.get(belge) or []
+        legs = fh_bacaklari(belge)
         legs = [h for h in legs if (
             (h.hareket_turu in TAHSILAT_FH if isaret > 0 else h.hareket_turu in IADE_ODEME_FH)
             or evo.cari_bacagi(h, cari_id, toplam, isaret))]
@@ -506,14 +698,23 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
                     KART if h.hareket_turu == "POS TAHSİLAT" else (_hesap_yontemi(hs) if hs else None))
                 satirlar.append(_kalem(kaynak, isaret * _d(h.tutar), belge_no=belge, tarih=h.tarih,
                                        cari=b.cari_adi(cari_id), yontem=yontem or BELIRSIZ,
-                                       aciklama=getattr(hs, "hesap_adi", "") or "", gercek_borc=False))
+                                       aciklama=getattr(hs, "hesap_adi", "") or "",
+                                       eksik_alan=("hesap türü" if not yontem else ""),
+                                       gercek_borc=False))
             fark = _q2(_d(toplam) - sum((_d(h.tutar) for h in legs), SIFIR))
             if toplam is not None and abs(fark) > TOLERANS:
                 uyarilar.append(f"{belge}: cari tutarı ile kasa / banka hareketleri arasında {_tl(fark)} fark.")
             return
         yontem = _hesap_adindan_yontem(b, hesap_adi)
+        if yontem:
+            eksik = ""
+            acik = hesap_adi or ""
+        elif (hesap_adi or "").strip():
+            eksik, acik = "hesap eşlemesi", hesap_adi
+        else:
+            eksik, acik = "hesap_adi ve kasa/banka hareketi", "Kasa / banka hareketi yok"
         satirlar.append(_kalem(kaynak, isaret * _d(toplam), belge_no=belge, tarih=tarih, cari=b.cari_adi(cari_id),
-                               yontem=yontem or BELIRSIZ, aciklama=hesap_adi or "Kasa / banka hareketi yok",
+                               yontem=yontem or BELIRSIZ, aciklama=acik, eksik_alan=eksik,
                                gercek_borc=False))
 
     # 1) Müşteri cari tahsilatları (makbuz, havale, POS, Evo aktarımı) ve tahsilat iadeleri
@@ -533,7 +734,7 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
     for (tip, bn), (tarih, cid, toplam, hesap_adi) in sorted(belge_top.items(), key=lambda x: (x[1][0], x[0][1])):
         sube = makbuz_sube.get(bn)
         if sube is None:
-            legs = fh_by.get(bn) or []
+            legs = fh_bacaklari(bn)
             sube = next((h.sube_id for h in legs if h.sube_id is not None), None)
         if not sube_uygun(sube):
             continue
@@ -556,16 +757,22 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
                 cid, sid = fatura_bilgi.get(bn, (None, h.sube_id))
                 if not sube_uygun(sid if sid is not None else h.sube_id):
                     continue
+                ym = (_hesap_yontemi(hs) if hs else None) or BELIRSIZ
                 satirlar.append(_kalem("Fatura tahsilatı", h.tutar, belge_no=bn, tarih=h.tarih,
-                                       cari=b.cari_adi(cid), yontem=(_hesap_yontemi(hs) if hs else None) or BELIRSIZ,
-                                       aciklama=getattr(hs, "hesap_adi", ""), gercek_borc=False))
+                                       cari=b.cari_adi(cid), yontem=ym,
+                                       aciklama=getattr(hs, "hesap_adi", "") or "",
+                                       eksik_alan=("hesap türü" if ym == BELIRSIZ else ""),
+                                       gercek_borc=False))
             elif h.hareket_turu == "SATIŞ İADE ÖDEMESİ":
                 cid, sid = iade_bilgi.get(bn, (None, h.sube_id))
                 if not sube_uygun(sid if sid is not None else h.sube_id):
                     continue
+                ym = (_hesap_yontemi(hs) if hs else None) or BELIRSIZ
                 satirlar.append(_kalem("Tahsilat iadesi", -_d(h.tutar), belge_no=bn, tarih=h.tarih,
-                                       cari=b.cari_adi(cid), yontem=(_hesap_yontemi(hs) if hs else None) or BELIRSIZ,
-                                       aciklama="Satış iadesi ödemesi", gercek_borc=False))
+                                       cari=b.cari_adi(cid), yontem=ym,
+                                       aciklama="Satış iadesi ödemesi",
+                                       eksik_alan=("hesap türü" if ym == BELIRSIZ else ""),
+                                       gercek_borc=False))
             elif h.hareket_turu == "POS TAHSİLAT" and bn not in makbuz_sube:
                 if not sube_uygun(h.sube_id):
                     continue
@@ -579,20 +786,34 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
             virmanlar.append(_kalem(VIRMAN, alacak, belge_no=bn, tarih=tarih, cari=b.cari_adi(cid), yontem=VIRMAN,
                                     gercek_borc=False))
     mus_ted = []
+    mus_ted_belge: set[str] = set()
     for m in b.s.scalars(select(CariVirmanMakbuzu).where(
             CariVirmanMakbuzu.tarih >= bas, CariVirmanMakbuzu.tarih <= bit)).all():
         if (m.durum or "").upper() == "IPTAL" or not sube_uygun(m.sube_id):
             continue
-        mus_ted.append(_kalem(MUS_TED, m.tutar, belge_no=m.makbuz_no or m.belge_no, tarih=m.tarih,
-                              cari=b.cari_adi(m.musteri_id), yontem="Cari virman makbuzu",
+        bn = (m.makbuz_no or m.belge_no or "").strip()
+        # Aynı ekonomik işlem hem makbuz hem tahsilat/ödeme belgesiyle izlenebilir — tek kez say
+        bagli = {(m.tahsilat_belge_no or "").strip(), (m.odeme_belge_no or "").strip(), bn} - {""}
+        if bagli & mus_ted_belge:
+            continue
+        mus_ted_belge |= bagli
+        mus_ted.append(_kalem(MUS_TED, m.tutar, belge_no=bn or (m.tahsilat_belge_no or ""),
+                              tarih=m.tarih, cari=b.cari_adi(m.musteri_id), yontem="Cari virman makbuzu",
                               aciklama=f"Tedarikçi: {b.cari_adi(m.tedarikci_id)}", gercek_borc=False))
     if b.sube_id is None:
-        for k in b.s.scalars(select(KkCekimi).where(KkCekimi.tarih >= bas, KkCekimi.tarih <= bit)).all():
-            if (k.durum or "") == "İPTAL":
-                continue
-            mus_ted.append(_kalem(MUS_TED, k.tutar, belge_no=k.belge_no, tarih=k.tarih,
-                                  cari=b.cari_adi(k.musteri_id), yontem="Müşteri kartıyla tedarikçiye çekim",
-                                  aciklama=f"Tedarikçi: {b.cari_adi(k.tedarikci_id)}", gercek_borc=False))
+        from sqlalchemy import inspect as sa_inspect
+
+        if sa_inspect(b.s.bind).has_table(KkCekimi.__tablename__):
+            for k in b.s.scalars(select(KkCekimi).where(KkCekimi.tarih >= bas, KkCekimi.tarih <= bit)).all():
+                if (k.durum or "") == "İPTAL":
+                    continue
+                bn = (k.belge_no or "").strip()
+                if not bn or bn in mus_ted_belge:
+                    continue
+                mus_ted_belge.add(bn)
+                mus_ted.append(_kalem(MUS_TED, k.tutar, belge_no=bn, tarih=k.tarih,
+                                      cari=b.cari_adi(k.musteri_id), yontem="Müşteri kartıyla tedarikçiye çekim",
+                                      aciklama=f"Tedarikçi: {b.cari_adi(k.tedarikci_id)}", gercek_borc=False))
 
     def say(aralik, liste, yontem=None):
         sec = [x for x in liste if _icinde(x["tarih"], aralik) and (yontem is None or x["yontem"] == yontem)]
@@ -600,6 +821,10 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
         return {"adet": len(belgeler), "tutar": _q2(sum((x["tutar"] for x in sec), SIFIR))}
 
     gercek = [x for x in satirlar if x["yontem"] in GERCEK_YONTEMLER]
+    # Müşteriden tedarikçiye gerçek tahsilattır; nakit/havale/kart satırında aynı belge varsa çift sayma
+    gercek_belgeler = {x["belge_no"] for x in gercek if x.get("belge_no")}
+    mus_ted_gercek = [x for x in mus_ted if x.get("belge_no") not in gercek_belgeler]
+    gercek_toplam_liste = gercek + mus_ted_gercek
     tur_satirlari = []
     for ad, liste, yontem in ((NAKIT, gercek, NAKIT), (HAVALE, gercek, HAVALE), (KART, gercek, KART),
                               (VIRMAN, virmanlar, None), (MUS_TED, mus_ted, None)):
@@ -607,7 +832,7 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
                               "ay": say(dn["ay"], liste, yontem)})
     toplam = {}
     for ad, simdi, onceki in (("bugun", "bugun", "onceki_gun"), ("ay", "ay", "onceki_ay")):
-        o, p = say(dn[simdi], gercek), say(dn[onceki], gercek)
+        o, p = say(dn[simdi], gercek_toplam_liste), say(dn[onceki], gercek_toplam_liste)
         yuzde, mesaj = yuzde_degisim(o["tutar"], p["tutar"])
         oran, oran_mesaj = (tahsilat_orani(o["tutar"], net_satis[ad]) if net_satis is not None
                             else (None, "Satış özeti görüntülenemiyor."))
@@ -615,8 +840,21 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
                       "yuzde": yuzde, "yuzde_mesaj": mesaj, "oran": oran, "oran_mesaj": oran_mesaj}
     belirsiz = [x for x in satirlar if x["yontem"] == BELIRSIZ and _icinde(x["tarih"], dn["ay"])]
     if belirsiz:
-        uyarilar.append(f"Yöntemi belirlenemeyen {len({x['belge_no'] for x in belirsiz})} belge "
-                        f"({_tl(sum((x['tutar'] for x in belirsiz), SIFIR))}) gerçek tahsilata katılmadı.")
+        belgeler = {}
+        for x in belirsiz:
+            bn = x["belge_no"]
+            if bn not in belgeler:
+                belgeler[bn] = {"tutar": SIFIR, "eksik": (x.get("eksik_alan") or "").strip() or "ödeme yöntemi"}
+            belgeler[bn]["tutar"] += _d(x["tutar"])
+            if not belgeler[bn]["eksik"] and x.get("eksik_alan"):
+                belgeler[bn]["eksik"] = str(x["eksik_alan"]).strip()
+        detay = "; ".join(
+            f"{bn} {_tl(v['tutar'])} (eksik: {v['eksik']})" for bn, v in sorted(belgeler.items())
+        )
+        uyarilar.append(
+            f"Yöntemi belirlenemeyen {len(belgeler)} belge "
+            f"({_tl(sum((v['tutar'] for v in belgeler.values()), SIFIR))}) gerçek tahsilata katılmadı: {detay}."
+        )
     cek_ay = [x for x in cek_alinan if _icinde(x["tarih"], dn["ay"])]
     if cek_ay:
         notlar.append(f"Alınan çek / senet ({len(cek_ay)} belge, {_tl(sum((x['tutar'] for x in cek_ay), SIFIR))}) "
@@ -627,22 +865,28 @@ def tahsilat_bolumu(b: _Baglam, net_satis: dict[str, Decimal] | None) -> dict:
     if b.sube_id is not None:
         notlar.append("Cari virman ve kartla tedarikçiye çekim kayıtlarında şube alanı olmadığından şube filtresinde "
                       "gösterilmez.")
-    notlar.append("Bir makbuz birden çok yöntemle ödenmişse her yöntem satırında görünür; Gerçek tahsilat "
-                  "adedi tekil belge sayısıdır. İç virman, kredi kullanımı, POS'tan bankaya aktarım ve tedarikçi "
-                  "iadesi dahil edilmez. Oran önceki borçlara gelen tahsilatlar nedeniyle %100'ü aşabilir.")
+    notlar.append(
+        "Müşteriden tedarikçiye (cari virman / müşteri kartıyla çekim) gerçek tahsilata dahildir; aynı belge "
+        "nakit/havale/kart satırında da varsa toplamda bir kez sayılır. Bir makbuz birden çok yöntemle "
+        "ödenmişse her yöntem satırında görünür; Gerçek tahsilat adedi tekil belge sayısıdır. "
+        "İç cari virman aktarımı, kredi kullanımı, POS'tan bankaya aktarım ve tedarikçi iadesi dahil edilmez. "
+        "Oran önceki borçlara gelen tahsilatlar nedeniyle %100'ü aşabilir."
+    )
     tum = gercek + [x for x in satirlar if x["yontem"] not in GERCEK_YONTEMLER] + cek_alinan + virmanlar + mus_ted
     durum = HAZIR if tum else BOS
     return _bolum(durum, turler=tur_satirlari, toplam=toplam, kalemler=satirlar, gercek=gercek,
-                  virmanlar=virmanlar, mus_ted=mus_ted, cek_alinan=cek_alinan,
-                  uyarilar=uyarilar, notlar=notlar)
+                  gercek_toplam=gercek_toplam_liste, virmanlar=virmanlar, mus_ted=mus_ted,
+                  cek_alinan=cek_alinan, uyarilar=uyarilar, notlar=notlar)
 
 
 # ----------------------------------------------------------------------------- cari bakiyeleri
 def cari_bakiyeleri(b: _Baglam) -> tuple[dict[int, Decimal], list[str]]:
-    """D sonu cari net bakiye (pozitif: müşteri borçlu / tedarikçiye borçluyuz).
+    """D sonu cari net bakiye (borç − alacak; türden bağımsız).
 
-    Formül cari listesiyle aynı. Fatura içi tahsilat / ödeme (FATURA TAHSİLATI, FATURA ÖDEMESİ, SATIŞ İADE
-    ÖDEMESİ) cariye ayrı satır yazmaz; tutarı yalnızca "bilinen fark" notu olarak bildirilir.
+    net > 0 → cari borçlu (bize borçlu) · net < 0 → cari alacaklı (biz borçluyuz).
+    Alış SatisHareketi tutarları negatiftir; cari listesiyle aynı formül.
+    Fatura içi tahsilat / ödeme (FATURA TAHSİLATI, FATURA ÖDEMESİ, SATIŞ İADE ÖDEMESİ) cariye ayrı satır
+    yazmaz; tutarı yalnızca "bilinen fark" notu olarak bildirilir.
     """
     from database.cari_bakiye_service import _DEFTER_ATLA_ONEK
     from database.models.alis_faturasi import AlisFaturasi
@@ -748,11 +992,18 @@ def _kart_kalemleri(b: _Baglam) -> tuple[list[dict], Decimal, list[str]]:
         kalan = g["kalan"]
         borc += kalan
         belgeler = ", ".join(sorted({d["belge_no"] for d in g["satirlar"]}))[:120]
+        son = g.get("son_odeme_tarihi")
+        # Son ödeme tanımsız ama kesim biliniyorsa kovaya kesim tarihi yazılır (vadesiz sayılmaz).
+        # Gerçek vadesiz yalnız kesim günü de belirsiz (belirsiz borç) kalemlerdir.
         if kesim is None:
             aciklama = "Ekstre dönemi belirsiz (kartın kesim günü tanımsız)"
+            vade = None
         else:
             aciklama = f"Kesim {kesim:%d.%m.%Y} ({'kesime girmedi' if kesim > b.d else 'ekstre'})"
-        kalemler.append(_kalem(TAKVIM_ADI[KK], kalan, belge_no=belgeler, vade=g["son_odeme_tarihi"], tarih=kesim,
+            if son is None:
+                aciklama += " · son ödeme günü tanımsız (kesim yedek vade)"
+            vade = son if son is not None else kesim
+        kalemler.append(_kalem(TAKVIM_ADI[KK], kalan, belge_no=belgeler, vade=vade, tarih=kesim,
                                cari=kart.kart_adi, aciklama=aciklama))
     return kalemler, _q2(borc), []
 
@@ -760,16 +1011,17 @@ def _kart_kalemleri(b: _Baglam) -> tuple[list[dict], Decimal, list[str]]:
 def tedarikci_acik_bolumu(b: _Baglam, bakiyeler: dict[int, Decimal] | None, cari_notlari: list[str]) -> dict:
     """Bugün itibarıyla borçlu olunan tedarikçi cari bakiyeleri (cari listesi formülü).
 
-    Alacaklı olunan tedarikçi (avans) başka tedarikçinin borcunu düşürmez; silinmiş cari katılmaz.
+    net < 0 → tedarikçi alacaklı (biz borçluyuz); tutar = |net|.
+    net > 0 → tedarikçi borçlu (avans / bize borçlu) toplam borca katılmaz; silinmiş cari katılmaz.
     """
     if bakiyeler is None:
         return _bolum(HATA, mesaj="; ".join(cari_notlari) or "Cari bakiyeleri hesaplanamadı.", tarih=b.d)
     kalemler = []
     for cid, bakiye in bakiyeler.items():
-        if bakiye <= 0 or cid in b.silinmis or not b.tedarikci_mi(cid):
+        if bakiye >= 0 or cid in b.silinmis or not b.tedarikci_mi(cid):
             continue
         kod, ad, _tur = b.cariler[cid]
-        kalemler.append(_kalem(TEDARIKCI_ACIK, bakiye, belge_no=kod, tarih=b.d, cari=ad, cari_id=cid,
+        kalemler.append(_kalem(TEDARIKCI_ACIK, -bakiye, belge_no=kod, tarih=b.d, cari=ad, cari_id=cid,
                                aciklama="Açık cari borç bakiyesi"))
     kalemler.sort(key=lambda x: -x["tutar"])
     notlar = ["Rapor tarihinden bağımsız, bugünün cari bakiyesidir; ödeme yüküne eklenmez. Alacaklı olunan "
@@ -942,13 +1194,56 @@ def borc_bolumu(b: _Baglam, bakiyeler: dict[int, Decimal] | None, cari_notlari: 
 
 
 # ----------------------------------------------------------------------------- varlıklar
+LIKIT_KAYNAKLAR = frozenset({"Kasa", "Banka mevduatı", "KMH"})
+
+
+def _likit_hesap_kalemi(
+    kaynak: str,
+    tutar,
+    h,
+    hid: int,
+    *,
+    yontem: str,
+    para_birimi: str = "TRY",
+    doviz_bakiye=None,
+) -> dict:
+    """Likit ayrıntı satırı: tür, hesap adı/no, banka, TL tutar; hesap_id ile hareket açılır."""
+    hesap_no = (getattr(h, "hesap_no", None) or "").strip()
+    hesap_adi = (getattr(h, "hesap_adi", None) or "").strip()
+    belge = hesap_no or hesap_adi
+    aciklama_parca = []
+    if hesap_no and hesap_adi and hesap_no != hesap_adi:
+        aciklama_parca.append(hesap_adi)
+    pb = (para_birimi or "TRY").upper()
+    if pb != "TRY" and doviz_bakiye is not None:
+        aciklama_parca.append(f"{pb} {_d(doviz_bakiye):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    elif pb != "TRY":
+        aciklama_parca.append(pb)
+    return _kalem(
+        kaynak,
+        tutar,
+        belge_no=belge,
+        cari=(getattr(h, "banka_adi", None) or "") if kaynak != "Kasa" else (hesap_adi if hesap_no else ""),
+        yontem=yontem,
+        aciklama=" · ".join(aciklama_parca),
+        gercek_borc=False,
+        hesap_id=int(hid),
+        para_birimi=pb,
+        belge_turu="finans_hesap",
+    )
+
+
 def _hesap_varliklari(b: _Baglam) -> tuple[Decimal, Decimal, list[dict], list[str]]:
     """Kasa ve mevduat toplamı, bankaya geçmemiş POS, kalemler ve uyarılar (D sonu bakiyeleri)."""
+    from database.finans_service import FinansService
+
     uyarilar = []
     kalemler = []
     hesaplar = b.hesaplar()
     kasa_banka = SIFIR
     diger = SIFIR
+    # Tek sorgu: tüm POS açık alacakları (hesap başına N+1 yok)
+    pos_by_hesap = FinansService.pos_aktif_alacak_haritalari().get("by_pos_hesap") or {}
     for hid, bakiye in b.finans_bakiyeleri().items():
         h = hesaplar[hid]
         sinif = hesap_sinifi(h)
@@ -957,10 +1252,10 @@ def _hesap_varliklari(b: _Baglam) -> tuple[Decimal, Decimal, list[dict], list[st
             if bakiye < 0:
                 uyarilar.append(f"{h.hesap_adi}: kasa bakiyesi eksi ({_tl(bakiye)}) — kayıt hatası; varlığa katılmadı.")
                 continue
+            if bakiye == 0:
+                continue
             if pb != "TRY":
                 # Farklı PB tutarları TL özetine eklenmez (Doc5: TRY/USD/EUR toplanmaz)
-                from database.finans_service import FinansService
-
                 tl_kayit = FinansService.tl_kayit_bakiyesi(h)
                 uyarilar.append(
                     f"{h.hesap_adi}: {pb} {bakiye:,.2f} (TL kayıt {tl_kayit:,.2f}); "
@@ -968,39 +1263,76 @@ def _hesap_varliklari(b: _Baglam) -> tuple[Decimal, Decimal, list[dict], list[st
                 )
                 continue
             kasa_banka += bakiye
-            kalemler.append(_kalem("Kasa", bakiye, belge_no=h.hesap_adi, yontem="Kasa", gercek_borc=False))
+            kalemler.append(_likit_hesap_kalemi(
+                "Kasa", bakiye, h, hid, yontem="Kasa", para_birimi=pb, doviz_bakiye=None,
+            ))
         elif sinif in ("BANKA", "KMH") and bakiye > 0:
             if pb != "TRY":
-                from database.finans_service import FinansService
-
                 tl_kayit = FinansService.tl_kayit_bakiyesi(h)
                 uyarilar.append(
                     f"{h.hesap_adi}: {pb} {bakiye:,.2f} (TL kayıt {tl_kayit:,.2f}); "
                     "likit TRY toplamına katılmadı."
                 )
                 continue
+            kaynak = "KMH" if sinif == "KMH" else "Banka mevduatı"
             kasa_banka += bakiye
-            kalemler.append(_kalem("Banka mevduatı", bakiye, belge_no=h.hesap_adi, cari=h.banka_adi or "",
-                                   yontem=sinif, gercek_borc=False))
-        elif sinif == "POS" and bakiye != 0:
-            if bakiye < 0:
-                uyarilar.append(f"{h.hesap_adi}: POS hesabı eksi ({_tl(bakiye)}); varlığa katılmadı.")
+            kalemler.append(_likit_hesap_kalemi(
+                kaynak, bakiye, h, hid, yontem=sinif, para_birimi=pb, doviz_bakiye=None,
+            ))
+        elif sinif == "POS":
+            # Operasyonel açık alacak (PosValor); tarihî ledger hareket toplamı değil
+            acik = _d((pos_by_hesap.get(int(hid)) or {}).get("net") or 0)
+            ledger = bakiye
+            if ledger != 0 and acik == 0:
+                uyarilar.append(
+                    f"{h.hesap_adi}: hareket bakiyesi {_tl(ledger)} (tarihî/ekstre); "
+                    "açık POS alacağı 0 — varlığa katılmadı."
+                )
+            elif abs(ledger - acik) > Decimal("0.01") and acik > 0:
+                uyarilar.append(
+                    f"{h.hesap_adi}: açık alacak {_tl(acik)}; hareket bakiyesi {_tl(ledger)} "
+                    "(fark tarihî/kapanmış kayıt — varlıkta yalnız açık alacak)."
+                )
+            if acik < 0:
+                uyarilar.append(f"{h.hesap_adi}: POS açık alacağı eksi ({_tl(acik)}); varlığa katılmadı.")
+                continue
+            if acik == 0:
                 continue
             if pb != "TRY":
                 uyarilar.append(f"{h.hesap_adi}: {pb} POS bakiyesi likit TRY toplamına katılmadı.")
                 continue
-            diger += bakiye
-            kalemler.append(_kalem("Bankaya geçmemiş POS", bakiye, belge_no=h.hesap_adi, cari=h.banka_adi or "",
-                                   yontem="Diğer varlık", gercek_borc=False))
+            diger += acik
+            kalemler.append(
+                _kalem(
+                    "Bankaya geçmemiş POS",
+                    acik,
+                    belge_no=h.hesap_adi,
+                    cari=h.banka_adi or "",
+                    yontem="Diğer varlık",
+                    gercek_borc=False,
+                )
+            )
     return _q2(kasa_banka), diger, kalemler, uyarilar
 
 
 def likit_bolumu(b: _Baglam) -> dict:
-    """Üst özetteki likit varlık kartı: yalnız kasa ve mevduat."""
+    """Üst özetteki likit varlık kartı: yalnız kasa ve mevduat (pozitif KMH dahil); POS değil."""
     kasa_banka, _pos, kalemler, uyarilar = _hesap_varliklari(b)
-    kalemler = [x for x in kalemler if x["kaynak"] in ("Kasa", "Banka mevduatı")]
-    return _bolum(HAZIR if kalemler else BOS, likit=kasa_banka, kasa_banka=kasa_banka, kalemler=kalemler,
-                  uyarilar=uyarilar, notlar=["Blokaj bilgisi kaynağı yok: likit tutar 'Kasa ve mevduat toplamı'dır."])
+    kalemler = [x for x in kalemler if x["kaynak"] in LIKIT_KAYNAKLAR]
+    # Kart tutarı ile ayrıntı satır toplamı aynı kaynaktan; sapma varsa uyarı (hesap hatası değil).
+    satir_toplam = _q2(sum((x["tutar"] for x in kalemler), SIFIR))
+    if satir_toplam != kasa_banka:
+        uyarilar.append(
+            f"Likit satır toplamı {_tl(satir_toplam)} kart tutarı {_tl(kasa_banka)} ile uyuşmuyor."
+        )
+    return _bolum(
+        HAZIR if kalemler else BOS,
+        likit=kasa_banka,
+        kasa_banka=kasa_banka,
+        kalemler=kalemler,
+        uyarilar=uyarilar,
+        notlar=["Blokaj bilgisi kaynağı yok: likit tutar 'Kasa ve mevduat toplamı'dır."],
+    )
 
 
 def varlik_bolumu(b: _Baglam, bakiyeler: dict[int, Decimal] | None, stok_izni: bool) -> dict:
@@ -1040,7 +1372,8 @@ def varlik_bolumu(b: _Baglam, bakiyeler: dict[int, Decimal] | None, stok_izni: b
         eksik.append("Müşteri alacakları")
     else:
         alacak = _q2(sum((v for c, v in bakiyeler.items() if v > 0 and b.musteri_mi(c)), SIFIR))
-        ted_avans = _q2(-sum((v for c, v in bakiyeler.items() if v < 0 and b.tedarikci_mi(c)), SIFIR))
+        # Tedarikçi avansı: net > 0 (tedarikçi bize borçlu / peşin ödeme)
+        ted_avans = _q2(sum((v for c, v in bakiyeler.items() if v > 0 and b.tedarikci_mi(c)), SIFIR))
         if ted_avans:
             diger += ted_avans
             kalemler.append(_kalem("Tedarikçi avansları", ted_avans, yontem="Diğer varlık", gercek_borc=False))

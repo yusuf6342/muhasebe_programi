@@ -1,7 +1,8 @@
 """Cari Hesaplar «Borç / Alacak Özeti» — cari kart ve evrak üst paneli aynı metin/rengi kullanır.
 
 Değerler ``CariService.kart_ozet_metrikleri`` sonucundan üretilir (yeni formül yok).
-Beş satır: Toplam Borç, Toplam Alacak, Kalan Bakiye (B)/(A), Kalan Bakiye Gün, Kapatılan Bakiye Gün.
+Beş satır: Toplam Borç, Toplam Alacak, Kalan Bakiye (B)/(A), Açık Valör Gün (T−I belge yaşı),
+Kapanan Valör Gün (P−I). Vade farkı (P−V) ayrı ölçü olarak serviste tutulur.
 """
 
 from __future__ import annotations
@@ -12,14 +13,21 @@ from typing import Any
 
 from cari_kart_tema import BASARI, BEYAZ, CIZGI, IKINCIL, LACIVERT, UYARI
 
+# Tedarikçi alacaklı (biz borçluyuz, net<0 / (A)): yeşil değil siyah — yalnız yazı rengi
+TEDARIKCI_ALACAK_RENK = "#000000"
+
 OZET_SATIRLARI = (
     "Toplam Borç",
     "Toplam Alacak",
     "Kalan Bakiye",
-    "Kalan Bakiye Gün",
-    "Kapatılan Bakiye Gün",
+    "Açık Valör Gün",
+    "Kapanan Valör Gün",
 )
-BUYUK_SATIRLAR = frozenset({"Kalan Bakiye", "Kalan Bakiye Gün"})
+# Eski başlıklar (geriye dönük eşleme)
+_ESKI_ACIK = "Kalan Bakiye Gün"
+_ESKI_KAPANAN = "Kapatılan Bakiye Gün"
+
+BUYUK_SATIRLAR = frozenset({"Kalan Bakiye", "Açık Valör Gün", _ESKI_ACIK})
 GECIKME_MS = 120
 
 
@@ -32,48 +40,48 @@ def tarih_goster(tarih) -> str:
 
 
 def bakiye_yon_metni(bakiye: Decimal, *, tedarikci_modu: bool = False) -> str:
-    """Tedarikçide pozitif bakiye bizim borcumuzdur; yön açık yazılır."""
-    if tedarikci_modu:
-        if bakiye > 0:
-            return "Alacaklı (tedarikçiye borcumuz)"
-        if bakiye < 0:
-            return "Borçlu (tedarikçiden alacağımız)"
-        return "Kapalı"
+    """net>0 Borçlu (cari bize borçlu); net<0 Alacaklı (cari bizden alacaklı). Tür bağımsız."""
+    del tedarikci_modu
     if bakiye > 0:
-        return "Borçlu"
+        return "Borçlu — cari bize borçlu"
     if bakiye < 0:
-        return "Alacaklı"
+        return "Alacaklı — cari bizden alacaklı"
     return "Kapalı"
 
 
 def bakiye_yon_eki(bakiye: Decimal, *, tedarikci_modu: bool = False) -> str:
-    """Kalan bakiye satırı için (B)/(A); sıfırda boş."""
+    """Kalan bakiye satırı için (B)/(A); sıfırda boş. Tür bağımsız."""
+    del tedarikci_modu
     if bakiye == 0:
         return ""
-    if tedarikci_modu:
-        return "(A)" if bakiye > 0 else "(B)"
     return "(B)" if bakiye > 0 else "(A)"
 
 
-def bakiye_rengi(bakiye: Decimal) -> str:
+def tedarikci_ana_turu_mu(cari_turu: str | None = None, ana_tur: str | None = None) -> bool:
+    """Gerçek ana cari türü Tedarikçi mi? Kod öneki (T/M) kullanılmaz."""
+    tur = (cari_turu or "").strip()
+    ana = (ana_tur or "").strip()
+    return tur == "Tedarikçi" or ana == "Tedarikçi"
+
+
+def bakiye_rengi(bakiye: Decimal, *, tedarikci_modu: bool = False) -> str:
+    """net>0 borçlu (kırmızı); net<0 alacaklı — müşteri yeşil, tedarikçi siyah."""
     if bakiye > 0:
         return UYARI
     if bakiye < 0:
-        return BASARI
+        return TEDARIKCI_ALACAK_RENK if tedarikci_modu else BASARI
     return IKINCIL
 
 
 def gun_goster(deger) -> str:
-    """Sayısal gün + «GÜN». Boş/None → «—»; gerçek 0 → «0 GÜN»."""
+    """Sayısal gün + «GÜN» (iki ondalık). Boş/None → «—»; gerçek 0 → «0,00 GÜN»."""
     if deger is None or deger == "":
         return "—"
     try:
         x = float(deger)
     except (TypeError, ValueError):
         return "—"
-    if abs(x - round(x)) < 1e-9:
-        return f"{int(round(x))} GÜN"
-    return f"{x:.1f}".replace(".", ",") + " GÜN"
+    return f"{x:.2f}".replace(".", ",") + " GÜN"
 
 
 def kalan_bakiye_metni(bakiye: Decimal, *, tedarikci_modu: bool = False) -> str:
@@ -88,15 +96,22 @@ def ozet_metinleri(metrik: dict[str, Any] | None, *, tedarikci_modu: bool = Fals
     if not metrik:
         return {b: ("—", LACIVERT) for b in OZET_SATIRLARI}
     bakiye = Decimal(str(metrik.get("bakiye") or 0))
-    renk = bakiye_rengi(bakiye)
-    # Kalan bakiye gün = açık kalan tutarın işlem-tarihi yaşı (vade gecikmesi değil).
-    # Valör üretilemediyse / açık kalem yoksa sahte «0 GÜN» gösterme.
+    renk = bakiye_rengi(bakiye, tedarikci_modu=tedarikci_modu)
+    # Açık valör = T − I (belge yaşı, tutar-ağırlıklı). Avans → «—».
     sebep = (metrik.get("ortalama_valor_sebep") or "").strip()
+    uyari = (metrik.get("ortalama_valor_uyari") or "").strip()
     gun_deger = metrik.get("bakiye_ortalama_valor_gun")
+    olcu = (metrik.get("olcu_acik") or metrik.get("olcu") or "").strip()
+
     if metrik.get("valor_turu") == "YOK" and metrik.get("ortalama_valor_tarihi") is None:
-        kalan_gun = gun_goster(gun_deger) if gun_deger else "—"
-    elif sebep in ("Açık hareket yok", "Tarih eksik", "Oturum yok") and not gun_deger:
-        kalan_gun = "—"
+        kalan_gun = gun_goster(gun_deger) if gun_deger is not None else "—"
+    elif sebep in ("Açık hareket yok", "Tarih eksik", "Oturum yok", "Vade eksik") and gun_deger is None:
+        kalan_gun = "— / açık kalem yok" if "açık" in sebep.casefold() or sebep == "Açık hareket yok" else "—"
+    elif gun_deger is None and "bakiye_ortalama_valor_gun" in metrik:
+        if olcu == "avans_bekleme_yasi_T_eksi_I" or "avans" in uyari.casefold():
+            kalan_gun = "— / valör yok"
+        else:
+            kalan_gun = "— / açık valör yok"
     elif "bakiye_ortalama_valor_gun" not in metrik and metrik.get("ortalama_valor_tarihi") is None:
         kalan_gun = "—"
     else:
@@ -105,32 +120,47 @@ def ozet_metinleri(metrik: dict[str, Any] | None, *, tedarikci_modu: bool = Fals
     if "odenen_ortalama_valor_gun" not in metrik:
         kapatilan_gun = "—"
     else:
-        kapatilan_gun = gun_goster(metrik.get("odenen_ortalama_valor_gun"))
+        od = metrik.get("odenen_ortalama_valor_gun")
+        kapatilan_gun = gun_goster(od) if od is not None else "— / kapanan işlem yok"
 
     return {
         "Toplam Borç": (para_goster(metrik.get("toplam_borc") or 0), LACIVERT),
         "Toplam Alacak": (para_goster(metrik.get("toplam_alacak") or 0), LACIVERT),
         "Kalan Bakiye": (kalan_bakiye_metni(bakiye, tedarikci_modu=tedarikci_modu), renk),
-        "Kalan Bakiye Gün": (kalan_gun, LACIVERT),
-        "Kapatılan Bakiye Gün": (kapatilan_gun, LACIVERT),
+        "Açık Valör Gün": (kalan_gun, LACIVERT),
+        "Kapanan Valör Gün": (kapatilan_gun, LACIVERT),
     }
 
 
-def kisa_bakiye_valor_metni(metrik: dict[str, Any] | None) -> tuple[str, str, str]:
+def kisa_bakiye_valor_metni(
+    metrik: dict[str, Any] | None, *, tedarikci_modu: bool = False
+) -> tuple[str, str, str]:
     """(bakiye metni, valör metni, bakiye rengi) — Hızlı Satış müşteri altı satırı.
 
     Kaynak ve işaret kuralı Cari Hesaplar ile aynı (``ozet_metinleri``):
     pozitif bakiye müşterinin borcu, negatif alacağı.
+    Müşteri ekranı varsayılan; tedarikçi_modu=True ise alacak siyah.
     """
     if not metrik:
         return "Bakiye bilgisi yok", "Valör bilgisi yok", IKINCIL
     bakiye = Decimal(str(metrik.get("bakiye") or 0))
-    renk = bakiye_rengi(bakiye)
+    renk = bakiye_rengi(bakiye, tedarikci_modu=tedarikci_modu)
     tutar = para_goster(abs(bakiye))
     yon = bakiye_yon_metni(bakiye, tedarikci_modu=False)
-    yon_kisa = {"Borçlu": "Borç", "Alacaklı": "Alacak", "Kapalı": "Kapalı"}.get(yon, yon)
+    if yon.startswith("Borçlu"):
+        yon_kisa = "Borç"
+    elif yon.startswith("Alacaklı"):
+        yon_kisa = "Alacak"
+    else:
+        yon_kisa = "Kapalı"
     valor_tarih = metrik.get("ortalama_valor_tarihi")
-    valor = f"Valör {tarih_goster(valor_tarih)}" if valor_tarih is not None else "Valör bilgisi yok"
+    gun = metrik.get("bakiye_ortalama_valor_gun")
+    if valor_tarih is not None:
+        valor = f"Valör {tarih_goster(valor_tarih)}"
+    elif gun is not None:
+        valor = f"Açık valör {gun_goster(gun)}"
+    else:
+        valor = "Valör bilgisi yok"
     return f"Bakiye {tutar} {yon_kisa}", valor, renk
 
 

@@ -483,11 +483,11 @@ class HizliSatisPencere(tk.Toplevel):
         self._musteri_arama = CariAramaAlani(
             self,
             self.musteri_entry,
-            cari_turu="Müşteri",
+            cari_turu="EVRAK",
             on_secim=self._musteri_aramadan_secildi,
             on_temizle=lambda: None,
             secili_ad=self._musteri_gorunen_metin,
-            kayit_adi="Müşteri",
+            kayit_adi="Cari",
         )
         self.musteri_entry.bind(
             "<FocusIn>", lambda _e: self.musteri_entry.selection_range(0, "end"), add="+"
@@ -599,6 +599,12 @@ class HizliSatisPencere(tk.Toplevel):
 
         sutunlar = SEPET_SUTUNLARI
         stil = ttk.Style(self)
+        # vista/xpnative Treeview etiket arka planını boyamaz; clam gerekir (fatura teması gibi)
+        try:
+            if "clam" in stil.theme_names() and stil.theme_use() != "clam":
+                stil.theme_use("clam")
+        except tk.TclError:
+            pass
         stil.configure(
             "HsSepet.Treeview",
             font=("Segoe UI", 12, "bold"),
@@ -611,6 +617,7 @@ class HizliSatisPencere(tk.Toplevel):
             "HsSepet.Treeview.Heading",
             font=("Segoe UI", 10, "bold"),
             foreground=KOYU_GRI,
+            background="#E5E7EB",
         )
         stil.map(
             "HsSepet.Treeview",
@@ -691,11 +698,21 @@ class HizliSatisPencere(tk.Toplevel):
         self.sepet.bind("<Configure>", self._sepet_sutun_yeniden, add="+")
         self.sepet.bind("<Motion>", self._sepet_tooltip_hareket, add="+")
         self.sepet.bind("<Leave>", self._sepet_tooltip_kapat, add="+")
+        self.sepet.bind("<<TreeviewSelect>>", self._sepet_stok_secim_renk, add="+")
+        try:
+            from database.satis_stok_renk import RENK_UYARI_BG, RENK_UYARI_FG, TAG_YETERSIZ
+
+            self.sepet.tag_configure(
+                TAG_YETERSIZ, background=RENK_UYARI_BG, foreground=RENK_UYARI_FG
+            )
+        except Exception:
+            pass
         self._sepet_basliklar = dict(basliklar)
         self._sepet_odak_sutun: str | None = None
         self._sepet_ad_tam: dict[str, str] = {}
         self._sepet_tip = None
         self.after(120, self._sepet_sutun_yeniden)
+        self.after(200, self._satis_stok_renk_poll_baslat)
 
         dugmeler = tk.Frame(sag, bg=ACIK_GRI)
         dugmeler.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
@@ -1068,14 +1085,14 @@ class HizliSatisPencere(tk.Toplevel):
             return "break"
 
         try:
-            musteriler = CariService.aktif_musteriler()
+            musteriler = CariService.aktif_evrak_carileri()
         except Exception as exc:
-            messagebox.showerror("Müşteri", f"Müşteri listesi alınamadı:\n{exc}", parent=self)
+            messagebox.showerror("Müşteri", f"Cari listesi alınamadı:\n{exc}", parent=self)
             return "break"
 
         bakiyeler: dict = {}
         try:
-            ozetler = CariService.listele(arama="", hizli=True, cari_turu="Müşteri")
+            ozetler = CariService.listele(arama="", hizli=True, cari_turu=None)
             for sat in ozetler or []:
                 cari_obj = sat.get("cari")
                 if cari_obj is not None:
@@ -1302,9 +1319,9 @@ class HizliSatisPencere(tk.Toplevel):
         kod = (stok.stok_kodu or "").strip()
         ad = stok.stok_adi or kod
         try:
-            mevcut = sum(
-                (Decimal(str(lot.kalan_miktar or 0)) for lot in (stok.lotlar or [])), Decimal("0")
-            )
+            from database.satis_stok_renk import lotlardan_satis_stok
+
+            mevcut = lotlardan_satis_stok(stok.lotlar)
         except Exception:
             mevcut = Decimal("0")
         self._sepete_ekle_kayit(
@@ -1343,7 +1360,14 @@ class HizliSatisPencere(tk.Toplevel):
                 stok_id = int(s.id)
                 ad = s.stok_adi or ad
                 birim = (s.birim or birim or "Adet").strip() or "Adet"
-                mevcut = sum((lot.kalan_miktar for lot in (s.lotlar or [])), Decimal("0"))
+                try:
+                    from database.satis_stok_renk import lotlardan_satis_stok
+
+                    mevcut = lotlardan_satis_stok(s.lotlar)
+                except Exception:
+                    mevcut = sum((lot.kalan_miktar for lot in (s.lotlar or [])), Decimal("0"))
+                    if mevcut < 0:
+                        mevcut = Decimal("0")
                 if fiyat <= 0:
                     fiyat = StokService.satis_fiyati_1(kod)
                 break
@@ -1672,13 +1696,23 @@ class HizliSatisPencere(tk.Toplevel):
         for item in self.sepet.get_children():
             self.sepet.delete(item)
         self._sepet_ad_tam = {}
+        yetersiz = self._satis_stok_yetersiz_indeksler()
+        try:
+            from database.satis_stok_renk import etiketlere_yetersiz_ekle
+        except Exception:
+            etiketlere_yetersiz_ekle = None  # type: ignore
         for i, s in enumerate(self.sepet_model.satirlar):
             tam_ad = (s.stok_adi or "").strip()
             self._sepet_ad_tam[str(i)] = tam_ad
+            if etiketlere_yetersiz_ekle is not None and yetersiz is not None:
+                etiketler = etiketlere_yetersiz_ekle((), i in yetersiz)
+            else:
+                etiketler = ()
             self.sepet.insert(
                 "",
                 "end",
                 iid=str(i),
+                tags=etiketler,
                 values=(
                     i + 1,
                     s.stok_kodu,
@@ -1698,6 +1732,7 @@ class HizliSatisPencere(tk.Toplevel):
             self.sepet.selection_set(iid)
             self.sepet.focus(iid)
             self.sepet.see(iid)
+        self._sepet_stok_secim_renk()
         toplam = self.sepet_model.toplamlar()
         self.ozet_lbl.configure(
             text=(
@@ -3301,7 +3336,146 @@ class HizliSatisPencere(tk.Toplevel):
         if fid:
             pdf_kaydet(self, fid)
 
+    def _satis_stok_yetersiz_indeksler(self) -> set[int] | None:
+        """None = sorgu hatası (renkleri bozma)."""
+        try:
+            from database.satis_stok_renk import yetersiz_satir_indeksleri
+
+            return yetersiz_satir_indeksleri(
+                list(self.sepet_model.satirlar),
+                satis_deposu_adi(),
+            )
+        except Exception:
+            return None
+
+    def _sepet_stok_secim_renk(self, _event=None) -> None:
+        """Seçili satır yetersizse seçim rengini kırmızı tona çek."""
+        try:
+            from database.satis_stok_renk import RENK_SECIM_BG, RENK_SECIM_FG, TAG_YETERSIZ
+        except Exception:
+            return
+        stil = ttk.Style(self)
+        yetersiz = False
+        try:
+            for iid in self.sepet.selection():
+                if TAG_YETERSIZ in (self.sepet.item(iid, "tags") or ()):
+                    yetersiz = True
+                    break
+        except tk.TclError:
+            return
+        if yetersiz:
+            stil.map(
+                "HsSepet.Treeview",
+                background=[("selected", RENK_SECIM_BG)],
+                foreground=[("selected", RENK_SECIM_FG)],
+            )
+        else:
+            stil.map(
+                "HsSepet.Treeview",
+                background=[("selected", SARİ)],
+                foreground=[("selected", KOYU_GRI)],
+            )
+
+    def _satis_stok_renk_poll_baslat(self) -> None:
+        self._satis_stok_renk_poll_durdur()
+        self._satis_stok_renk_poll_aktif = True
+        self._satis_stok_renk_imza = None
+        self._satis_stok_renk_nesil = int(getattr(self, "_satis_stok_renk_nesil", 0)) + 1
+        self._satis_stok_renk_poll_tick()
+
+    def _satis_stok_renk_poll_durdur(self) -> None:
+        self._satis_stok_renk_poll_aktif = False
+        aid = getattr(self, "_satis_stok_renk_after", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+        self._satis_stok_renk_after = None
+
+    def _satis_stok_renk_izlenen_kodlar(self) -> list[str]:
+        return sorted(
+            {
+                (s.stok_kodu or "").strip()
+                for s in self.sepet_model.satirlar
+                if (s.stok_kodu or "").strip()
+            }
+        )
+
+    def _satis_stok_renk_etiket_uygula(self, *, nesil: int | None = None) -> None:
+        """Yalnız satır etiketlerini güncelle; miktar/seçim/kaydırma korunur."""
+        if nesil is not None and nesil != getattr(self, "_satis_stok_renk_nesil", 0):
+            return
+        try:
+            from database.satis_stok_renk import etiketlere_yetersiz_ekle
+        except Exception:
+            return
+        yetersiz = self._satis_stok_yetersiz_indeksler()
+        if yetersiz is None:
+            return
+        try:
+            secim = self.sepet.selection()
+            odak = self.sepet.focus()
+            kaydir = self.sepet.yview()
+        except tk.TclError:
+            return
+        for iid in self.sepet.get_children():
+            try:
+                i = int(iid)
+            except (TypeError, ValueError):
+                continue
+            try:
+                self.sepet.item(
+                    iid,
+                    tags=etiketlere_yetersiz_ekle(
+                        self.sepet.item(iid, "tags") or (), i in yetersiz
+                    ),
+                )
+            except tk.TclError:
+                continue
+        try:
+            if secim:
+                self.sepet.selection_set(secim)
+            if odak:
+                self.sepet.focus(odak)
+            self.sepet.yview_moveto(kaydir[0])
+        except tk.TclError:
+            pass
+        self._sepet_stok_secim_renk()
+
+    def _satis_stok_renk_imza_yenile(self, *, zorla: bool = False) -> None:
+        kodlar = self._satis_stok_renk_izlenen_kodlar()
+        try:
+            from database.satis_stok_renk import hareket_imza_depo
+
+            imza = hareket_imza_depo(kodlar, satis_deposu_adi())
+        except Exception:
+            return
+        onceki = getattr(self, "_satis_stok_renk_imza", None)
+        self._satis_stok_renk_imza = imza
+        if zorla or onceki != imza:
+            self._satis_stok_renk_etiket_uygula(
+                nesil=getattr(self, "_satis_stok_renk_nesil", 0)
+            )
+
+    def _satis_stok_renk_poll_tick(self) -> None:
+        if not getattr(self, "_satis_stok_renk_poll_aktif", False):
+            return
+        try:
+            if not self.winfo_exists():
+                self._satis_stok_renk_poll_aktif = False
+                return
+        except tk.TclError:
+            self._satis_stok_renk_poll_aktif = False
+            return
+        self._satis_stok_renk_imza_yenile(zorla=False)
+        try:
+            self._satis_stok_renk_after = self.after(800, self._satis_stok_renk_poll_tick)
+        except tk.TclError:
+            self._satis_stok_renk_poll_aktif = False
+
     def _kapat(self) -> None:
+        self._satis_stok_renk_poll_durdur()
         try:
             parent = self.master
             if getattr(parent, "_hizli_satis_pencere", None) is self:

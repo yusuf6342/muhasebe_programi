@@ -132,6 +132,59 @@ class HizmetKartDuzenleSilTest(unittest.TestCase):
         self.svc.sil(k.id, onaylandi=True)
         self.assertIsNone(self.svc.getir(k.id))
 
+    def test_gelir_bos_kart_silinir(self):
+        k = self.svc.kaydet(
+            {
+                "hizmet_kodu": "GHZ-00099",
+                "hizmet_adi": "Geçici Gelir",
+                "hizmet_turu": "GELIR",
+            }
+        )
+        self.assertTrue(self.svc.kullanim_ozeti(k.id)["silinebilir"])
+        self.svc.sil(k.id, onaylandi=True)
+        self.assertIsNone(self.svc.getir(k.id))
+
+    def test_sifir_tutarli_gider_fisi_engeller(self):
+        """Tutar 0 / iptal fiş bile kartı 'boş' saydırmaz."""
+        from sqlalchemy import text
+
+        from database.database import get_session
+        from database.models.finans import GiderFisi
+
+        GiderFisi.__table__.create(bind=self._engine, checkfirst=True)
+        k = self.svc.kaydet(
+            {
+                "hizmet_kodu": "IGZ-00088",
+                "hizmet_adi": "Sıfır Fiş",
+                "hizmet_turu": "GIDER",
+                "gider_sinifi": "ISLETME",
+            }
+        )
+        with self._engine.begin() as conn:
+            conn.execute(text("PRAGMA foreign_keys=OFF"))
+            conn.execute(
+                text(
+                    "INSERT INTO gider_fisleri "
+                    "(belge_no, tarih, gider_turu, tutar, hizmet_id, durum) "
+                    "VALUES ('GF-SIFIR-1', :t, 'HIZMET', 0, :hid, 'IPTAL')"
+                ),
+                {"t": date.today().isoformat(), "hid": int(k.id)},
+            )
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+        # Oturumu taze oku
+        with get_session() as s:
+            n = s.scalar(
+                text("SELECT COUNT(*) FROM gider_fisleri WHERE hizmet_id=:h"),
+                {"h": int(k.id)},
+            )
+            self.assertGreaterEqual(int(n or 0), 1)
+        ozet = self.svc.kullanim_ozeti(k.id)
+        self.assertFalse(ozet["silinebilir"])
+        self.assertGreaterEqual(ozet["gider_fisi"], 1)
+        self.assertIn("fiş", (ozet.get("engel_mesaji") or "").lower())
+        with self.assertRaises(ValueError):
+            self.svc.sil(k.id, onaylandi=True)
+
     def test_hareketli_silinemez_pasif_olur(self):
         k = self.svc.kaydet(
             {
@@ -151,6 +204,7 @@ class HizmetKartDuzenleSilTest(unittest.TestCase):
         )
         ozet = self.svc.kullanim_ozeti(k.id)
         self.assertFalse(ozet["silinebilir"])
+        self.assertTrue(ozet.get("engel_mesaji"))
         with self.assertRaises(ValueError):
             self.svc.sil(k.id, onaylandi=True)
         self.svc.pasif_yap(k.id)

@@ -604,19 +604,142 @@ def servis_sistem_goster(app) -> None:
         if not oturum.has_permission("yedek_alma") and oturum.role_kod != "YONETICI":
             messagebox.showwarning("Yetki", "Yedek alma yetkiniz yok.", parent=app)
             return
-        klasor = filedialog.askdirectory(
-            parent=app,
-            title="Yedek klasörü seçin",
-            initialdir=str(BackupService.yedek_klasoru_onerisi()),
+        from database.servis_sistem.backup_service import (
+            HEDEF_BU_BILGISAYAR,
+            HEDEF_GOOGLE_DRIVE,
+            HEDEF_USB,
+            HEDEF_ETIKET,
         )
-        if not klasor:
-            return
-        try:
-            yol = BackupService.yedek_al(klasor)
-            messagebox.showinfo("Yedek", f"Yedek alındı:\n{yol}", parent=app)
-            durum_var.set(f"Yedek: {yol}")
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Yedek", str(exc), parent=app)
+
+        dlg = tk.Toplevel(app)
+        dlg.title("Yedek Al — Hedef")
+        dlg.transient(app)
+        dlg.grab_set()
+        dlg.geometry("420x320")
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(
+            frm,
+            text="Yedek hedefi seçin.\nPostgreSQL’de sistem + firma dump’ı alınır\n"
+            "(ham data klasörü kopyalanmaz).",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        hedef_var = tk.StringVar(value=HEDEF_BU_BILGISAYAR)
+        for kod in (HEDEF_BU_BILGISAYAR, HEDEF_USB, HEDEF_GOOGLE_DRIVE):
+            ttk.Radiobutton(
+                frm, text=HEDEF_ETIKET[kod], variable=hedef_var, value=kod
+            ).pack(anchor="w", pady=2)
+
+        usb_frame = ttk.Frame(frm)
+        usb_var = tk.StringVar(value="")
+        usb_list = BackupService.usb_suruculeri()
+        if usb_list:
+            usb_frame.pack(fill="x", pady=(6, 0))
+            ttk.Label(usb_frame, text="USB sürücü:").pack(anchor="w")
+            usb_var.set(usb_list[0]["yol"])
+            ttk.Combobox(
+                usb_frame,
+                textvariable=usb_var,
+                values=[f"{u['yol']}  ({u['ad']})" for u in usb_list],
+                state="readonly",
+                width=48,
+            ).pack(fill="x")
+        else:
+            ttk.Label(frm, text="(Şu an takılı USB yok)", foreground="#666").pack(
+                anchor="w", pady=(4, 0)
+            )
+
+        gd = BackupService.google_drive_klasoru_bul()
+        ttk.Label(
+            frm,
+            text=f"Google Drive: {gd}" if gd else "Google Drive klasörü bulunamadı",
+            foreground="#333" if gd else "#a60",
+        ).pack(anchor="w", pady=(8, 0))
+
+        progress_var = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=progress_var, wraplength=380).pack(
+            anchor="w", pady=(10, 0)
+        )
+        bar = ttk.Progressbar(frm, mode="determinate", maximum=100)
+        bar.pack(fill="x", pady=6)
+
+        secim = {"ok": False}
+
+        def _iptal():
+            dlg.destroy()
+
+        def _baslat():
+            tur = hedef_var.get()
+            if tur == HEDEF_USB and not usb_list:
+                messagebox.showwarning("USB", "Takılı USB bellek yok.", parent=dlg)
+                return
+            if tur == HEDEF_GOOGLE_DRIVE and gd is None:
+                messagebox.showwarning(
+                    "Google Drive",
+                    "Google Drive klasörü bulunamadı.",
+                    parent=dlg,
+                )
+                return
+            hedef_klasor = None
+            if tur == HEDEF_BU_BILGISAYAR:
+                hedef_klasor = filedialog.askdirectory(
+                    parent=dlg,
+                    title="Yedek klasörü (Bu Bilgisayar)",
+                    initialdir=str(BackupService.yedek_klasoru_onerisi()),
+                )
+                if not hedef_klasor:
+                    return
+            elif tur == HEDEF_USB:
+                ham = usb_var.get().split()[0] if usb_var.get() else usb_list[0]["yol"]
+                hedef_klasor = str(Path(ham) / "CinMuhasebe_Yedekler")
+
+            for w in btn_fr.winfo_children():
+                w.configure(state="disabled")
+
+            def _prog(msg, pct):
+                def _ui():
+                    progress_var.set(msg or "")
+                    if pct is not None:
+                        bar["value"] = max(0, min(100, float(pct)))
+
+                dlg.after(0, _ui)
+
+            def _is():
+                return BackupService.yedek_al_gelismis(
+                    tur, hedef_klasor=hedef_klasor, progress=_prog
+                )
+
+            def _ok(sonuc):
+                mesaj = (sonuc or {}).get("mesaj") or ""
+                durum_var.set(mesaj.split("\n")[0][:120])
+                if tur == HEDEF_GOOGLE_DRIVE and not (sonuc or {}).get(
+                    "bulut_yukleme_tamam"
+                ):
+                    messagebox.showwarning("Yedek — Google Drive", mesaj, parent=dlg)
+                    for w in btn_fr.winfo_children():
+                        w.configure(state="normal")
+                    return
+                if (sonuc or {}).get("ok"):
+                    messagebox.showinfo("Yedek", mesaj, parent=dlg)
+                    secim["ok"] = True
+                    dlg.destroy()
+                    return
+                messagebox.showerror("Yedek", mesaj or "Yedek alınamadı.", parent=dlg)
+                for w in btn_fr.winfo_children():
+                    w.configure(state="normal")
+
+            def _err(exc):
+                messagebox.showerror("Yedek", str(exc), parent=dlg)
+                for w in btn_fr.winfo_children():
+                    w.configure(state="normal")
+
+            arka_planda(dlg, _is, _ok, _err)
+
+        btn_fr = ttk.Frame(frm)
+        btn_fr.pack(fill="x", pady=(12, 0))
+        ttk.Button(btn_fr, text="Yedek Al", command=_baslat).pack(side="right", padx=4)
+        ttk.Button(btn_fr, text="İptal", command=_iptal).pack(side="right")
+        dlg.wait_window()
 
     def baglanti_ayarlari():
         """Yerel SQLite / yerel ağ PostgreSQL kipi (henüz LAN canlıya hazır değil)."""

@@ -24,7 +24,7 @@ from database.acik_kalem_service import AcikKalemDegisti, AcikKalemService
 from database.cari_service import CariService
 from database.database import get_session
 from database.finans_service import FinansService
-from database.models.cari import Cari, CariKapatma, SatisHareketi
+from database.models.cari import Cari, CariIslem, CariKapatma, SatisHareketi
 from tests import test_tahsilat_makbuzu as _servis_testi
 
 D = Decimal
@@ -246,15 +246,19 @@ class RaporVeMakbuzTest(AcikKalemTemel):
         self.assertTrue(_mutabakat(self.cid)["uyumlu"])
 
     def test_gecis_kuru_calisma_ve_devir_farki(self):
+        """Defterde borç var, açık kalemde yok → DEVIR_FARKI (sessiz kalan=0 artık bakiye ile uyumlu)."""
         from database.acik_kalem_gecis import gecis_kuru_calisma, gecis_uygula
 
         with get_session() as s:
-            s.execute(text("UPDATE cari_satis_hareketleri SET kalan_acik_tutar = 0 WHERE id = :i"), {"i": self.a})
+            # SH'siz CariIslem borcu: net_bakiye artar, acik_net değişmez → fark
+            s.add(CariIslem(
+                cari_id=self.cid, tarih=date(2026, 1, 5), islem_turu="Açılış",
+                belge_no="ESK-DEFTER-100", borc=D("100"), alacak=D("0"),
+            ))
         with get_session() as s:
             rapor = gecis_kuru_calisma(s)
             satir = next(c for c in rapor["cariler"] if c["cari_id"] == self.cid)
             self.assertEqual((satir["fark"], satir["oneri"]["islem"]), (D("100.00"), "DEVIR_FARKI"))
-            self.assertEqual(_kalan(self.a), D("0.00"))
             uygulanan = gecis_uygula(s, rapor)
             self.assertTrue(any(u["cari_id"] == self.cid for u in uygulanan))
         self.assertTrue(_mutabakat(self.cid)["uyumlu"])
@@ -280,14 +284,18 @@ class RaporVeMakbuzTest(AcikKalemTemel):
 
     def test_gecis_fatura_ici_tahsilat_manuel_inceleme_ve_tekrar_calistirma(self):
         from database.acik_kalem_gecis import (
-            DEVIR, MANUEL, bakiye_anlik, bakiye_karsilastir, gecis_kuru_calisma, gecis_uygula,
+            DEVIR, bakiye_anlik, bakiye_karsilastir, gecis_kuru_calisma, gecis_uygula,
         )
         from database.kapatma_izleme_service import evrak_kapatma_detayi
         from database.models.acik_kalem_gecis import AcikKalemGecisKaydi
 
         prk = self._fatura_ici_tahsilatli_cari()
         with get_session() as s:
-            s.execute(text("UPDATE cari_satis_hareketleri SET kalan_acik_tutar = 0 WHERE id = :i"), {"i": self.a})
+            # 100: defter borcu (SH yok). 30: THS- öneki bakiyeden atlanır, avans acik_net'te kalır.
+            s.add(CariIslem(
+                cari_id=self.cid, tarih=date(2026, 1, 4), islem_turu="Açılış",
+                belge_no="ESK-DEFTER-100", borc=D("100"), alacak=D("0"),
+            ))
             s.add(SatisHareketi(cari_id=self.cid, satis_tarihi=date(2026, 1, 5), belge_no="THS-ESKI",
                                 satis_tutari=D("0"), kalan_acik_tutar=D("-30")))
         with get_session() as s:
@@ -296,7 +304,9 @@ class RaporVeMakbuzTest(AcikKalemTemel):
             m = next(c for c in rapor["cariler"] if c["cari_id"] == self.cid)
             p = next(c for c in rapor["cariler"] if c["cari_id"] == prk)
             self.assertEqual((m["fark"], m["oneri"]["islem"], m["oneri"]["tutar"]), (D("130.00"), DEVIR, D("130.00")))
-            self.assertEqual((p["fark"], p["fatura_ici_tahsilat"], p["oneri"]["islem"]), (D("60.00"), D("60.00"), MANUEL))
+            # Sessiz alacak: kapanmış SH bakiyeyi dengeler; fatura-içi tahsilat raporlanır, otomatik devir yok.
+            self.assertEqual((p["fark"], p["fatura_ici_tahsilat"], p["uyumlu"]), (D("0.00"), D("60.00"), True))
+            self.assertIsNone(p["oneri"])
             self.assertEqual(p["fatura_ici_belgeler"], [("SF-FIC-1", D("60.00"))])
             uygulanan = gecis_uygula(s, rapor)
         self.assertIn(self.cid, [u["cari_id"] for u in uygulanan])
@@ -304,7 +314,7 @@ class RaporVeMakbuzTest(AcikKalemTemel):
         with get_session() as s:
             self.assertEqual(bakiye_karsilastir(once, bakiye_anlik(s))["farkli"], [])
             self.assertTrue(AcikKalemService.mutabakat(s, self.cid)["uyumlu"])
-            self.assertEqual(AcikKalemService.mutabakat(s, prk)["fark"], D("60.00"))
+            self.assertTrue(AcikKalemService.mutabakat(s, prk)["uyumlu"])
             dvf = s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no.like("DVF-%"),
                                                        SatisHareketi.cari_id == self.cid))
             self.assertEqual((D(str(dvf.satis_tutari)), D(str(dvf.kalan_acik_tutar))), (D("0"), D("130.00")))
@@ -451,6 +461,56 @@ class SecimPenceresiTest(unittest.TestCase):
         self.assertEqual(p.secili, set())
         p.vazgec()
         self.assertEqual(p.sonuc, VAZGEC)
+
+
+class EksikTahsisOnarTest(AcikKalemTemel):
+    def test_deftere_yazilan_tahsilat_fifo_onarilir(self):
+        """CI alacağı var ama CariKapatma yoksa mutabakat bozulur; onarım FIFO bağlar."""
+        with get_session() as s:
+            # Defter borcu = açık kalem (mutabakat önce uyumlu)
+            for belge, tutar, tar in (
+                ("SF-A", "100", date(2026, 1, 10)),
+                ("SF-B", "200", date(2026, 2, 10)),
+            ):
+                s.add(
+                    CariIslem(
+                        cari_id=self.cid,
+                        tarih=tar,
+                        islem_turu="Satış Faturası",
+                        belge_no=belge,
+                        borc=D(tutar),
+                        alacak=D("0"),
+                    )
+                )
+            # Tahsilat deftere yazıldı, açık kaleme bağlanmadı
+            s.add(
+                CariIslem(
+                    cari_id=self.cid,
+                    tarih=date(2026, 3, 1),
+                    islem_turu="Tahsilat",
+                    belge_no="EVB-BNC-TEST-1",
+                    borc=D("0"),
+                    alacak=D("150"),
+                    hesap_adi="TEST",
+                )
+            )
+            s.flush()
+            once = AcikKalemService.mutabakat_detay(s, self.cid)
+            self.assertFalse(once["uyumlu"])
+            self.assertEqual(once["fark"], D("-150.00"))
+            belgeler = {b["belge_no"]: b for b in once["belgeler"]}
+            self.assertEqual(belgeler["EVB-BNC-TEST-1"]["tahsis_acik"], D("150.00"))
+            sonuc = AcikKalemService.eksik_tahsisleri_onar(s, self.cid, dry_run=False)
+            self.assertEqual(len(sonuc["uygulanan"]), 1)
+            self.assertTrue(sonuc["sonra"]["uyumlu"])
+            self.assertEqual(sonuc["sonra"]["fark"], D("0.00"))
+            self.assertEqual(
+                (
+                    D(str(s.get(SatisHareketi, self.a).kalan_acik_tutar)),
+                    D(str(s.get(SatisHareketi, self.b).kalan_acik_tutar)),
+                ),
+                (D("0.00"), D("150.00")),
+            )
 
 
 if __name__ == "__main__":

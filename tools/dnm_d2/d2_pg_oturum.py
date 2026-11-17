@@ -4,7 +4,7 @@ baglanti_ayari.json D2 sistem/firma DB göstermeli.
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
 from database.baglanti_modu import ayari_yukle
@@ -79,10 +79,40 @@ def d2_pg_oturum_ac(*, firma_kodu: str = "DNM_D2") -> dict:
         firma_uid=bilgi["uid"],
         db_path=str(bilgi["yol"]),
     )
+    # D2 hedef şema: eksik kolonları ALTER (DROP/CREATE yok)
     try:
+        from database.cari_kart_sema import schema_hazirla as cari_kart_sema
+        from database.modul_sema import eksik_kolonlari_ekle
         from database.muhasebelestirme_service import MuhasebelestirmeService
 
         MuhasebelestirmeService.schema_hazirla()
+        cari_kart_sema(db.engine)
+        eksik_kolonlari_ekle(
+            db.engine,
+            "cari_kartlar",
+            {
+                "olusturma_tarihi": "TIMESTAMP",
+                "kart_acilis_tarihi": "TIMESTAMP",
+                "kart_acilis_dayanak": "VARCHAR(20)",
+            },
+        )
+        eksik_kolonlari_ekle(
+            db.engine,
+            "stok_kartlari",
+            {
+                "olusturma_tarihi": "TIMESTAMP",
+                "kart_acilis_tarihi": "TIMESTAMP",
+                "kart_acilis_dayanak": "VARCHAR(20)",
+            },
+        )
+        # Alış satır dağıtım kilidi: INSERT kolonu göndermezse DEFAULT gerekir
+        with db.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE IF EXISTS alis_faturasi_satirlari "
+                    "ALTER COLUMN dagitima_kapali SET DEFAULT FALSE"
+                )
+            )
     except Exception:
         pass
     return bilgi

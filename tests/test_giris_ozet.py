@@ -99,11 +99,12 @@ class GirisOzetTest(unittest.TestCase):
         go.onbellegi_temizle()
 
     # --- yardımcılar ---
-    def fh(self, hesap, tur, tutar, belge, tarih=GUN):
+    def fh(self, hesap, tur, tutar, belge, tarih=GUN, aciklama=None):
         from database.models.finans import FinansHareketi
 
         with get_session() as s:
-            s.add(FinansHareketi(hesap_id=hesap, tarih=tarih, hareket_turu=tur, belge_no=belge, tutar=D(str(tutar))))
+            s.add(FinansHareketi(hesap_id=hesap, tarih=tarih, hareket_turu=tur, belge_no=belge,
+                                 tutar=D(str(tutar)), aciklama=aciklama))
 
     def ci(self, cari, tur, belge, borc=0, alacak=0, tarih=GUN, hesap_adi=None):
         from database.models.cari import CariIslem
@@ -154,6 +155,69 @@ class GirisOzetTest(unittest.TestCase):
         self.assertEqual(sum((x["tutar"] for x in sat["kalemler"] if go._icinde(x["tarih"], (GUN, GUN))), D("0")),
                          b["net"])
 
+    def test_net_satis_kapanan_ve_acik_kalan(self):
+        """Tam / kısmi / açık fatura — Kapanan Tutar ve Açık Kalan Tutar (Kapatma Detayı ile uyumlu)."""
+        from sqlalchemy import select
+
+        from database.kapatma_izleme_service import fatura_odeme_ozeti
+        from database.models.cari import SatisHareketi
+
+        self.o.alis(100, 10, date(2026, 9, 1))
+        f_acik = self.fatura(GUN, [_satir(1, 1000)])   # 1.200 TL, açık
+        f_kismi = self.fatura(GUN, [_satir(1, 1000)])  # 1.200 → 750 kapanan / 450 açık (örnek oran)
+        f_ornek = self.fatura(GUN, [_satir(1, 1000)])  # SH tutarını 2.000 yapıp 750/1.250
+        f_kapali = self.fatura(GUN, [_satir(1, 1000)])  # tamamen kapanmış
+
+        with get_session() as s:
+            def _h(f):
+                return s.scalar(
+                    select(SatisHareketi).where(
+                        SatisHareketi.belge_no == f.fatura_no,
+                        SatisHareketi.cari_id == self.o.mus_id,
+                    )
+                )
+
+            h_acik = _h(f_acik)
+            h_acik.kalan_acik_tutar = h_acik.satis_tutari
+            h_kismi = _h(f_kismi)
+            h_kismi.kalan_acik_tutar = D("450.00")  # kapanan 750
+            h_ornek = _h(f_ornek)
+            h_ornek.satis_tutari = D("2000.00")
+            h_ornek.kalan_acik_tutar = D("1250.00")  # kapanan 750
+            h_kapali = _h(f_kapali)
+            h_kapali.kalan_acik_tutar = D("0.00")
+
+        sat = self.ozet()["satis"]
+        by_no = {k["belge_no"]: k for k in sat["kalemler"] if k.get("tur") == "satis"}
+
+        acik = by_no[f_acik.fatura_no]
+        self.assertEqual(acik["tutar"], D("1200.00"))
+        self.assertEqual(acik["acik_kalan_tutar"], D("1200.00"))
+        self.assertEqual(acik["kapanan_tutar"], D("0.00"))
+
+        kismi = by_no[f_kismi.fatura_no]
+        self.assertEqual(kismi["kapanan_tutar"], D("750.00"))
+        self.assertEqual(kismi["acik_kalan_tutar"], D("450.00"))
+
+        ornek = by_no[f_ornek.fatura_no]
+        self.assertEqual(ornek["tutar"], D("2000.00"))
+        self.assertEqual(ornek["kapanan_tutar"], D("750.00"))
+        self.assertEqual(ornek["acik_kalan_tutar"], D("1250.00"))
+
+        kapali = by_no[f_kapali.fatura_no]
+        self.assertEqual(kapali["kapanan_tutar"], D("1200.00"))
+        self.assertEqual(kapali["acik_kalan_tutar"], D("0.00"))
+
+        for belge_id, kalem in (
+            (f_acik.id, acik),
+            (f_kismi.id, kismi),
+            (f_ornek.id, ornek),
+            (f_kapali.id, kapali),
+        ):
+            oz = fatura_odeme_ozeti(int(belge_id))
+            self.assertEqual(D(str(oz["kalan"])), kalem["acik_kalan_tutar"], msg=kalem["belge_no"])
+            self.assertEqual(D(str(oz["kapanan"])), kalem["kapanan_tutar"], msg=kalem["belge_no"])
+
     # --- tahsilat ---
     def test_tahsilat_tekil_belge_yontem_iade_pos_ve_dogrudan_odeme(self):
         from database.models.finans import CariVirmanMakbuzu
@@ -181,11 +245,67 @@ class GirisOzetTest(unittest.TestCase):
         self.assertEqual(turler[go.HAVALE], {"adet": 1, "tutar": D("3000.00")})
         self.assertEqual(turler[go.KART], {"adet": 1, "tutar": D("1000.00")})
         self.assertEqual(turler[go.MUS_TED], {"adet": 1, "tutar": D("4000.00")})
-        self.assertEqual((t["toplam"]["bugun"]["adet"], t["toplam"]["bugun"]["tutar"]), (2, D("5500.00")))
+        # Gerçek tahsilat = nakit+havale+kart (5500) + müşteriden tedarikçiye (4000); tekil belge
+        self.assertEqual((t["toplam"]["bugun"]["adet"], t["toplam"]["bugun"]["tutar"]), (3, D("9500.00")))
+        self.assertEqual(len({x["belge_no"] for x in t["gercek_toplam"] if x["tutar"] > 0}), 3)
         self.assertEqual(t["toplam"]["bugun"]["oran_mesaj"], "Net satış sıfır; oran hesaplanmadı.")
         # Kasa 2000-700-500, mevduat 3000+700; POS likit değildir; iç virman ve doğrudan ödeme likiditeyi değiştirmez
         self.assertEqual(oz["likit"]["likit"], D("4500.00"))
         self.assertNotIn("Bankaya geçmemiş POS", {k["kaynak"] for k in oz["likit"]["kalemler"]})
+
+    def test_evo_th_mid_ile_kasa_bacagi_yontem(self):
+        """EVB-TH cari belgesi, EVB-KS veya açıklamadaki EVB kasa mid ile nakit yönteme bağlanır."""
+        m = self.o.mus_id
+        self.ci(m, "Tahsilat", "EVB-TH-12010", alacak=1800, hesap_adi="")
+        self.fh(self.h_kasa, "TAHSİLAT MAKBUZU", 1800, "TMK-2026-1010",
+                aciklama="NAKİT / KASA | EVB kasa 12010 Tahsilat")
+        self.ci(m, "Tahsilat", "EVB-TH-12041", alacak=400, hesap_adi="")
+        self.fh(self.h_kasa, "TAHSİLAT MAKBUZU", 400, "EVB-KS-12041",
+                aciklama="EVB kasa 12041 Tahsilat")
+        self.ci(m, "Tahsilat", "EVB-TH-99999", alacak=250, hesap_adi="")
+        t = self.ozet()["tahsilat"]
+        turler = {r["tur"]: r["bugun"] for r in t["turler"]}
+        self.assertEqual(turler[go.NAKIT], {"adet": 2, "tutar": D("2200.00")})
+        self.assertEqual(t["toplam"]["bugun"]["tutar"], D("2200.00"))
+        self.assertEqual(t["toplam"]["bugun"]["adet"], 2)
+        belirsiz = [x for x in t["kalemler"] if x["yontem"] == go.BELIRSIZ]
+        self.assertEqual([x["belge_no"] for x in belirsiz], ["EVB-TH-99999"])
+        self.assertTrue(any("EVB-TH-99999" in u and "eksik:" in u for u in t["uyarilar"]))
+
+    def test_kk_cekimi_gercek_tahsilat_ve_tedarikci_odeme(self):
+        """10.000 TL müşteri kartıyla tedarikçiye: gerçek tahsilat + gerçekleşen ödeme + çift sayım yok."""
+        from sqlalchemy import select
+
+        from database.haftalik_odeme_service import HaftalikOdemeService
+        from database.models.cari import CariIslem
+        from database.models.kk_cekimi import KkCekimi
+
+        with get_session() as s:
+            s.add(KkCekimi(
+                belge_no="KKC-T-1", tarih=GUN, musteri_id=self.o.mus_id, tedarikci_id=self.o.ted_id,
+                tutar=D("10000"), banka="Test", cekim_turu="TEK ÇEKİM", taksit_sayisi=1, durum="AÇIK",
+            ))
+            s.add(CariIslem(cari_id=self.o.mus_id, tarih=GUN, islem_turu="KK Çekimi", belge_no="KKC-T-1",
+                            borc=D("0"), alacak=D("10000"), karsi_cari_id=self.o.ted_id))
+            s.add(CariIslem(cari_id=self.o.ted_id, tarih=GUN, islem_turu="KK Çekimi", belge_no="KKC-T-1",
+                            borc=D("10000"), alacak=D("0"), karsi_cari_id=self.o.mus_id))
+
+        t = self.ozet()["tahsilat"]
+        turler = {r["tur"]: r["bugun"] for r in t["turler"]}
+        self.assertEqual(turler[go.MUS_TED], {"adet": 1, "tutar": D("10000.00")})
+        self.assertEqual(t["toplam"]["bugun"]["tutar"], D("10000.00"))
+        self.assertEqual(t["toplam"]["bugun"]["adet"], 1)
+        # Yenilemede çift sayım yok
+        t2 = self.ozet()["tahsilat"]
+        self.assertEqual(t2["toplam"]["bugun"]["tutar"], D("10000.00"))
+        with get_session() as s:
+            od = HaftalikOdemeService._tedarikci_odemeler(s, self.o.ted_id)
+        self.assertEqual(sum((o["tutar"] for o in od if o["belge_no"] == "KKC-T-1"), D("0")), D("10000.00"))
+        # İptal sonrası düşer
+        with get_session() as s:
+            fis = s.scalar(select(KkCekimi).where(KkCekimi.belge_no == "KKC-T-1"))
+            fis.durum = "İPTAL"
+        self.assertEqual(self.ozet()["tahsilat"]["toplam"]["bugun"]["tutar"], D("0.00"))
 
     # --- borç, ödeme takvimi, varlık ---
     def _borc_verisi(self):
@@ -233,13 +353,15 @@ class GirisOzetTest(unittest.TestCase):
             s.add(ek)
             s.flush()
             s.add(KrediKartiEkstreOdeme(ekstre_id=ek.id, belge_no="KKE-1", tarih=date(2026, 10, 8), tutar=D("400")))
+            # Tedarikçi açık kalemi: SatisHareketi negatif (alacak yönü)
             s.add(SatisHareketi(cari_id=self.o.ted_id, belge_no="DVR-1", satis_tarihi=date(2026, 1, 1),
-                                satis_tutari=D("3000"), kalan_acik_tutar=D("3000")))
+                                satis_tutari=D("-3000"), kalan_acik_tutar=D("-3000")))
             t2 = Cari(cari_kodu="T002", unvan="Avans Tedarikçi", cari_turu="Tedarikçi", aktif=True)
             s.add(t2)
             s.flush()
             self.t2 = t2.id
-        self.ci(self.t2, "Ödeme", "ODM-AV", alacak=8000, tarih=date(2026, 10, 1))
+        # Avans: tedarikçi bize borçlu → net > 0 (borç satırı)
+        self.ci(self.t2, "Ödeme", "ODM-AV", borc=8000, tarih=date(2026, 10, 1))
         self.fh(self.h_mevduat, "BANKA GİRİŞ", 38000, "BG-1", tarih=date(2026, 9, 1))
         self.fh(self.h_mevduat, "GÖNDERİLEN HAVALE", 8000, "ODM-AV", tarih=date(2026, 10, 1))
         self.fh(self.h_kmh, "BANKA ÇIKIŞ", 50000, "BC-1", tarih=date(2026, 9, 1))
@@ -302,11 +424,12 @@ class GirisOzetTest(unittest.TestCase):
                                             faiz=D("0"))]
             s.add(k)
             s.add(SatisHareketi(cari_id=self.o.ted_id, belge_no="DVR-70", satis_tarihi=date(2026, 9, 1),
-                                satis_tutari=D("70000"), kalan_acik_tutar=D("70000")))
+                                satis_tutari=D("-70000"), kalan_acik_tutar=D("-70000")))
         oz = self.ozet()
         self.assertEqual((oz["borc"]["toplam"]["ay1"], oz["tedarikci_acik"]["toplam"]),
                          (D("180000.00"), D("70000.00")))
-        self.ci(self.o.ted_id, "Ödeme", "ODM-10", alacak=10000)
+        # Tedarikçi ödemesi borcu azaltır (borç satırı → net daha az negatif)
+        self.ci(self.o.ted_id, "Ödeme", "ODM-10", borc=10000)
         go.onbellegi_temizle()
         oz = self.ozet()
         self.assertEqual((oz["borc"]["toplam"]["ay1"], oz["tedarikci_acik"]["toplam"]),
@@ -326,9 +449,9 @@ class GirisOzetTest(unittest.TestCase):
             ids = (kapali.id, silinen.id, avans.id)
             for cid, belge in ((self.o.ted_id, "A-1"), (kapali.id, "A-2"), (silinen.id, "A-3")):
                 s.add(SatisHareketi(cari_id=cid, belge_no=belge, satis_tarihi=date(2026, 9, 1),
-                                    satis_tutari=D("2500"), kalan_acik_tutar=D("2500")))
-        self.ci(ids[0], "Ödeme", "ODM-K", alacak=2500)
-        self.ci(ids[2], "Ödeme", "ODM-A", alacak=900)
+                                    satis_tutari=D("-2500"), kalan_acik_tutar=D("-2500")))
+        self.ci(ids[0], "Ödeme", "ODM-K", borc=2500)  # kapanmış: net 0
+        self.ci(ids[2], "Ödeme", "ODM-A", borc=900)   # avans: net > 0, borç toplamına katılmaz
         self.ci(self.o.mus_id, "Satış", "MS-1", borc=4000)
         ted = self.ozet()["tedarikci_acik"]
         self.assertEqual((ted["toplam"], ted["adet"]), (D("2500.00"), 1))
@@ -340,7 +463,7 @@ class GirisOzetTest(unittest.TestCase):
 
         with get_session() as s:
             s.add(SatisHareketi(cari_id=self.o.ted_id, belge_no="DVR-9", satis_tarihi=date(2026, 1, 1),
-                                satis_tutari=D("3000"), kalan_acik_tutar=D("3000")))
+                                satis_tutari=D("-3000"), kalan_acik_tutar=D("-3000")))
         OdemeSozuService.olustur({"yon": "VERILEN", "cari_id": self.o.ted_id, "soz_tarihi": GUN,
                                   "vade_tarihi": date(2026, 11, 20), "tutar": "2000", "yontem": "Nakit"},
                                  [("DVR-9", "2000")])

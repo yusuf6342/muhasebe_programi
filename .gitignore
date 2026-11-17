@@ -20,6 +20,11 @@ entegrasyon/_check_*.py
 dist/
 build/
 
+# Üretilebilir kurulum stage/ZIP açılımları (yerel paketler silinmez; commit'e girmez)
+paket/CinMuhasebe_*/
+paket/_stage/
+paket/_stage_*/
+
 # --- Veri ve yedekler (gerçek müşteri verisi; asla commit edilmez) ---
 *.db-wal
 *.db-shm

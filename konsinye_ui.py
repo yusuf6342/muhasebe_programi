@@ -636,15 +636,14 @@ class _TeslimDialog(tk.Toplevel):
         self.cari_kod.grid(row=0, column=2, sticky="w", padx=4)
         from cari_arama_alani import CariAramaAlani
 
-        tur = "Müşteri" if yon == YON_VERILEN else "Tedarikçi"
         self._cari_arama = CariAramaAlani(
             self,
             self.cari_ad,
-            cari_turu=tur,
+            cari_turu="EVRAK",
             on_secim=self._cari_sec,
             on_temizle=self._cari_temizle,
             secili_ad=lambda: self.cari_ad.get(),
-            kayit_adi=tur,
+            kayit_adi="Cari",
         )
         ttk.Label(ust, text="Tarih").grid(row=0, column=3, sticky="w", padx=4)
         tf = ttk.Frame(ust)

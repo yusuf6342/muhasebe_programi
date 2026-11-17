@@ -132,6 +132,7 @@ def test_onay_mesaj_format_toplu():
                 miktar=Decimal("2"),
                 birim="Adet",
                 irsaliye_satiri_id=None,
+                konsinye_teslim_satiri_id=None,
             ),
             SimpleNamespace(
                 urun_kodu="P1",
@@ -139,31 +140,31 @@ def test_onay_mesaj_format_toplu():
                 miktar=Decimal("1"),
                 birim="Adet",
                 irsaliye_satiri_id=None,
+                konsinye_teslim_satiri_id=None,
             ),
         ],
     )
     depo = SimpleNamespace(id=1, ad="ANA DEPO")
-    stok = SimpleNamespace(id=10, stok_kodu="P1", birim="Adet")
+    stok = SimpleNamespace(id=10, stok_kodu="P1", birim="Adet", birimler=[])
 
-    def _scalar(stmt):
-        # ilk çağrı Depo, sonra StokKarti, sonra sum
-        sql = str(stmt)
-        if "depolar" in sql.casefold() or "Depo" in type(stmt).__name__:
-            pass
-        return None
-
-    # session.scalar sırası: Depo, StokKarti, sum(kalan)
-    session.scalar = MagicMock(side_effect=[depo, stok, Decimal("1")])
+    session.scalar = MagicMock(return_value=depo)
+    session.scalars = MagicMock(
+        return_value=SimpleNamespace(all=lambda: [stok])
+    )
+    session.execute = MagicMock(
+        return_value=SimpleNamespace(all=lambda: [(10, Decimal("1"))])
+    )
 
     with patch(
-        "fatura_satir_birim_service.temel_miktar",
-        side_effect=lambda m, b, k: Decimal(str(m)),
+        "database.stok_service.StokService.birim_carpani_kesin",
+        return_value=Decimal("1"),
     ), pytest.raises(ValueError) as ctx:
         SatisFaturasiService._onay_oncesi_stok_yeterlilik(session, fatura)
 
     mesaj = str(ctx.value)
     assert "stok yetersiz" in mesaj.casefold()
     assert "2F Jumbo Ayak Beyaz 6 CM" in mesaj
+    assert "Kod: P1" in mesaj
     assert "Mevcut: 1 Adet" in mesaj
-    assert "Faturadaki toplam miktar: 3 Adet" in mesaj
+    assert "Gereken: 3 Adet" in mesaj
     assert "Eksik: 2 Adet" in mesaj

@@ -52,7 +52,8 @@ class AlisSiparisiService:
 
     @staticmethod
     def aktif_tedarikcileri() -> list[Cari]:
-        return CariService.aktif_tedarikciler()
+        # Alış belgelerinde tüm gerçek cari türleri seçilebilir (yalnız tedarikçi kısıtı yok).
+        return CariService.aktif_evrak_carileri()
 
     @staticmethod
     def listele() -> list[dict[str, Any]]:

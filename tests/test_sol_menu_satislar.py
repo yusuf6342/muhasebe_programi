@@ -39,8 +39,17 @@ class SolMenuSatislarTest(unittest.TestCase):
 
     def test_baslangicta_kapali_ve_sira(self):
         grup = self.app.menu_gruplari["satislar"]
-        self.assertEqual([d._etiket for d in grup.alt_dugmeler.values()],
-                         ["Satış Faturaları", "Alınan Siparişler", "Müşteri Kartları"])
+        etiketler = [d._etiket for d in grup.alt_dugmeler.values()]
+        self.assertGreaterEqual(etiketler.index("Satış İade Faturaları"), 0)
+        self.assertEqual(
+            etiketler.index("Satış İade Faturaları"),
+            etiketler.index("Satış Faturaları") + 1,
+        )
+        self.assertLess(
+            etiketler.index("Satış İade Faturaları"),
+            etiketler.index("Alınan Siparişler"),
+        )
+        self.assertIn("Müşteri Kartları", etiketler)
         self.assertFalse(grup.acik)
         self.assertFalse(grup.alt_cerceve.winfo_manager())
         self.assertEqual(grup.lbl_ok.cget("text"), "▸")

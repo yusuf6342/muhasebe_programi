@@ -649,7 +649,11 @@ class AlisIadeFaturasiService:
                 iade.satirlar.append(satir)
 
             iade.doviz_ara_toplam = doviz_ara.quantize(IKI) if pb != "TRY" else SIFIR
-            toplam = AlisIadeFaturasiService.toplam(iade.satirlar)["genel_toplam"]
+            toplam_dict = AlisIadeFaturasiService.toplam(iade.satirlar)
+            iade.tl_matrah = (toplam_dict["ara_toplam"] - toplam_dict["iskonto"]).quantize(IKI)
+            iade.tl_kdv = toplam_dict["kdv"].quantize(IKI)
+            iade.tl_genel_toplam = toplam_dict["genel_toplam"].quantize(IKI)
+            toplam = toplam_dict["genel_toplam"]
             if iade.iade_odeme_tutari > toplam:
                 raise ValueError("İade bedeli tahsilatı iade toplamından büyük olamaz.")
             if iade.iade_odeme_tutari > 0 and not iade.iade_odeme_hesabi:
@@ -904,12 +908,15 @@ class AlisIadeFaturasiService:
 
     @staticmethod
     def _cari_etkisi(session, iade, toplam: Decimal) -> None:
-        """Tedarikçiye borcu azaltan alacak: seçime göre FIFO / kaynak alış / kapatmasız (açık alacak)."""
+        """Tedarikçiye borcu azaltan BORÇ (Evo polaritesi; ödeme ile aynı yön).
+
+        Açık kalem kapatma: FIFO / kaynak alış / kapatmasız (fazla → avans).
+        """
         if toplam <= 0:
             return
         session.add(CariIslem(
             cari_id=iade.cari_id, tarih=iade.iade_tarihi, islem_turu="Alış İadesi", belge_no=iade.iade_no,
-            aciklama=iade.aciklama or iade.iade_nedeni or "Alış iade faturası", borc=SIFIR, alacak=toplam,
+            aciklama=iade.aciklama or iade.iade_nedeni or "Alış iade faturası", borc=toplam, alacak=SIFIR,
             hesap_adi=iade.iade_odeme_hesabi,
         ))
         mod = (iade.mahsup_modu or "FIFO").upper()
@@ -935,8 +942,9 @@ class AlisIadeFaturasiService:
                 dagitim = []
                 for h in session.scalars(select(SatisHareketi).where(
                         SatisHareketi.cari_id == iade.cari_id, SatisHareketi.belge_no.in_(sorted(kaynak_nolari)),
-                        SatisHareketi.satis_tutari > 0).order_by(SatisHareketi.satis_tarihi, SatisHareketi.id)).all():
-                    acik = AcikKalemService._guncel_kalan(session, h)
+                        SatisHareketi.satis_tutari != 0).order_by(SatisHareketi.satis_tarihi, SatisHareketi.id)).all():
+                    ham = AcikKalemService._guncel_kalan(session, h)
+                    acik = abs(ham) if ham < 0 and Decimal(str(h.satis_tutari or 0)) < 0 else ham
                     if acik <= 0 or kalan <= 0:
                         continue
                     pay = min(acik, kalan)

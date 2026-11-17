@@ -128,7 +128,8 @@ class AlisOnayServisTest(_Temel):
         f = AlisFaturasiService.kaydet(self._veriler(), [self._satir()])
         stok1, cari1 = self._sayimlar(f.fatura_no)
         self.assertEqual(len(cari1), 1)
-        self.assertEqual(cari1[0].satis_tutari, Decimal("60.00"))
+        # Tedarikçi açık kalemi SatisHareketi'nde negatif (alacak yönü / polarite).
+        self.assertEqual(cari1[0].satis_tutari, Decimal("-60.00"))
         # Tekrar kaydetme: hareketler yeniden kurulur, çoğalmaz
         f = AlisFaturasiService.kaydet(self._veriler(row_version=f.row_version), [self._satir()], f.id)
         f = AlisFaturasiService.kaydet(self._veriler(row_version=f.row_version), [self._satir()], f.id)
@@ -139,7 +140,7 @@ class AlisOnayServisTest(_Temel):
         self.assertIsNotNone(f.onay_tarihi)
         stok3, cari3 = self._sayimlar(f.fatura_no)
         self.assertEqual((stok3, len(cari3)), (stok1, 1))
-        self.assertEqual(cari3[0].satis_tutari, f.tl_genel_toplam)
+        self.assertEqual(cari3[0].satis_tutari, -abs(f.tl_genel_toplam))
         with self.assertRaisesRegex(ValueError, "zaten onaylı"):
             AlisFaturasiService.onayla(f.id)
         with self.assertRaisesRegex(ValueError, "Onaylı alış faturası değiştirilemez"):
@@ -150,7 +151,7 @@ class AlisOnayServisTest(_Temel):
         f = AlisFaturasiService.kaydet(self._veriler(row_version=f.row_version), [self._satir("3")], f.id)
         stok4, cari4 = self._sayimlar(f.fatura_no)
         self.assertEqual((stok4, len(cari4)), (stok1, 1))
-        self.assertEqual(cari4[0].satis_tutari, Decimal("18.00"))
+        self.assertEqual(cari4[0].satis_tutari, Decimal("-18.00"))
 
     def test_onay_kontrolleri(self):
         from database.alis_faturasi_service import onay_hatalari
@@ -161,7 +162,8 @@ class AlisOnayServisTest(_Temel):
             mus = s.get(Cari, self.ids["M001"])
         self.assertEqual(onay_hatalari(cari=ted, satirlar=[self._satir()], **temel), [])
         self.assertIn("Tedarikçi seçilmemiş.", onay_hatalari(cari=None, satirlar=[self._satir()], **temel))
-        self.assertTrue(any("tedarikçi kartı değil" in h for h in onay_hatalari(cari=mus, satirlar=[self._satir()], **temel)))
+        # Müşteri kartı alış belgesinde de seçilebilir (tür kısıtı yok)
+        self.assertEqual(onay_hatalari(cari=mus, satirlar=[self._satir()], **temel), [])
         h = onay_hatalari(cari=ted, satirlar=[self._satir("0", "0")], **temel)
         self.assertTrue(any("miktar" in x for x in h) and any("birim fiyat" in x for x in h))
         h = onay_hatalari(cari=ted, satirlar=[self._satir()], para_birimi="USD", kur="0", **temel)

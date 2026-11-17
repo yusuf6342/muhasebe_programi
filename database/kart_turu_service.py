@@ -46,12 +46,49 @@ _STOK_ALT_SEED = {
     "PAKET_STOK": (("SET", "Set"), ("KARMA_PAKET", "Karma Paket")),
 }
 
+# Sabit beş ana cari kart türü — kullanıcı yeni ana tür ekleyemez.
+CARI_ANA_KODLARI = (
+    "MUSTERI",
+    "TEDARIKCI",
+    "PERSONEL",
+    "RESMI_KURUMLAR",
+    "DUZENLEYICI",
+)
+# «Diğer Cari Listesi» görüntüleme grubu (6. ana tür değil)
+DIGER_CARI_ANA_KODLARI = ("PERSONEL", "RESMI_KURUMLAR", "DUZENLEYICI")
+DIGER_CARI_ANA_ADLARI = ("Personel", "Resmi Kurumlar", "Düzenleyici Hesaplar")
+ESLEME_GEREKEN_ETIKET = "Tür eşlemesi gereken kayıtlar"
+DIGER_LISTE_ANAHTARLARI = frozenset(
+    {
+        "diğer",
+        "diger",
+        "diğer cari",
+        "diger cari",
+        "diğer cari listesi",
+        "diger cari listesi",
+        "diger_cari",
+        "digerler",
+    }
+)
+ESLEME_GEREKEN_ANAHTARLARI = frozenset(
+    {
+        "esleme_gereken",
+        "eşleme_gereken",
+        "tür eşlemesi gereken kayıtlar",
+        "tur eslemesi gereken kayitlar",
+        "eşleme gereken",
+        "esleme gereken",
+    }
+)
 _CARI_ANA_SEED = (
     ("MUSTERI", "Müşteri", "MUSTERI", 10),
     ("TEDARIKCI", "Tedarikçi", "TEDARIKCI", 20),
     ("PERSONEL", "Personel", "PERSONEL", 30),
-    ("MUSTERI_TEDARIKCI", "Müşteri/Tedarikçi", "MUSTERI_TEDARIKCI", 40),
+    ("RESMI_KURUMLAR", "Resmi Kurumlar", "RESMI_KURUMLAR", 40),
+    ("DUZENLEYICI", "Düzenleyici Hesaplar", "DUZENLEYICI", 50),
 )
+# Eski / fazla ana tür kodları — kartlar taşındıktan sonra pasifleştirilir
+_CARI_ANA_IPTAL_KODLAR = ("MUSTERI_TEDARIKCI", "DIGER", "DIGER_CARI", "MUSTERI_VE_TEDARIKCI")
 
 _CARI_ALT_SEED = {
     "MUSTERI": (
@@ -64,6 +101,33 @@ _CARI_ALT_SEED = {
         ("ARA_TOPTANCI", "Ara Toptancı"),
         ("HIZMET_TEDARIKCISI", "Hizmet Tedarikçisi"),
     ),
+    "PERSONEL": (),
+    "RESMI_KURUMLAR": (),
+    "DUZENLEYICI": (),
+}
+
+# Eski cari_turu / rol metni → yeni ana tür kodu (kesin eşleşmeler)
+_CARI_ESKI_TUR_ESLEME = {
+    "müşteri": "MUSTERI",
+    "musteri": "MUSTERI",
+    "tedarikçi": "TEDARIKCI",
+    "tedarikci": "TEDARIKCI",
+    "personel": "PERSONEL",
+    "resmi kurumlar": "RESMI_KURUMLAR",
+    "resmi kurum": "RESMI_KURUMLAR",
+    "düzenleyici hesaplar": "DUZENLEYICI",
+    "duzenleyici hesaplar": "DUZENLEYICI",
+    "düzenleyici": "DUZENLEYICI",
+    "duzenleyici": "DUZENLEYICI",
+}
+# Belirsiz — otomatik sınıflandırılmaz
+_CARI_BELIRSIZ_TURLER = {
+    "müşteri/tedarikçi",
+    "musteri/tedarikci",
+    "müşteri ve tedarikçi",
+    "musteri ve tedarikci",
+    "diğer",
+    "diger",
 }
 
 _SEKTOR_SEED = (
@@ -159,6 +223,7 @@ class KartTuruService:
                 "ana_kart_turu_id": "INTEGER",
                 "musteri_alt_tur_id": "INTEGER",
                 "tedarikci_alt_tur_id": "INTEGER",
+                "ust_cari_id": "INTEGER",
             },
         )
         _kolon_ekle(
@@ -223,7 +288,15 @@ class KartTuruService:
                     eklenen["stok_alt"] += 1
 
             for kod, ad, rol, sira in _CARI_ANA_SEED:
-                if KartTuruService._ana_bul(session, KAPSAM_CARI, kod=kod, ad=ad):
+                mevcut = KartTuruService._ana_bul(session, KAPSAM_CARI, kod=kod, ad=ad)
+                if mevcut:
+                    # Mevcut beşli tanımı aktif / sistem / doğru ad-rol ile tut
+                    mevcut.ad = ad
+                    mevcut.kod = kod
+                    mevcut.muhasebe_rol = rol
+                    mevcut.sira = sira
+                    mevcut.sistem = True
+                    mevcut.aktif = True
                     continue
                 session.add(
                     KartAnaTuru(
@@ -238,6 +311,16 @@ class KartTuruService:
                 )
                 eklenen["cari_ana"] += 1
             session.flush()
+            # Fazla / eski ana tür tanımlarını pasifleştir (kartlar silinmez)
+            for eski_kod in _CARI_ANA_IPTAL_KODLAR:
+                eski = KartTuruService._ana_bul(session, KAPSAM_CARI, kod=eski_kod)
+                if eski and eski.aktif:
+                    eski.aktif = False
+            for dig in session.scalars(
+                select(KartAnaTuru).where(KartAnaTuru.kapsam == KAPSAM_CARI)
+            ).all():
+                if (dig.kod or "").upper() not in CARI_ANA_KODLARI and dig.aktif:
+                    dig.aktif = False
 
             for ana_kod, altlar in _CARI_ALT_SEED.items():
                 ana = KartTuruService._ana_bul(session, KAPSAM_CARI, kod=ana_kod)
@@ -413,25 +496,27 @@ class KartTuruService:
             kayit.aktif = bool(veri.get("aktif", True))
             kayit.sira = int(veri.get("sira") or 100)
             if kapsam == KAPSAM_CARI:
-                rol = (veri.get("muhasebe_rol") or "").strip().upper() or None
-                if not rol:
-                    # Metinden tahmin etme — açık bağla
-                    if _norm(ad) in {_norm("Müşteri")}:
-                        rol = "MUSTERI"
-                    elif _norm(ad) in {_norm("Tedarikçi")}:
-                        rol = "TEDARIKCI"
-                    elif _norm(ad) in {_norm("Personel")}:
-                        rol = "PERSONEL"
-                    elif "müşteri" in _norm(ad) and "tedarik" in _norm(ad):
-                        rol = "MUSTERI_TEDARIKCI"
-                    else:
-                        raise ValueError(
-                            "Yeni cari ana tür için muhasebe rolü seçin: "
-                            "MUSTERI, TEDARIKCI, PERSONEL veya MUSTERI_TEDARIKCI."
-                        )
-                if rol not in {"MUSTERI", "TEDARIKCI", "PERSONEL", "MUSTERI_TEDARIKCI"}:
+                # Yeni cari ana tür açılamaz — yalnız sabit beş tür
+                if not kayit_id:
+                    raise ValueError(
+                        "Cari ana kart türü sabittir (Müşteri, Tedarikçi, Personel, "
+                        "Resmi Kurumlar, Düzenleyici Hesaplar). Yeni ana tür eklenemez; "
+                        "alt tür / alt hesap kullanın."
+                    )
+                rol = (veri.get("muhasebe_rol") or "").strip().upper() or (kayit.muhasebe_rol or "")
+                kod_u = (kayit.kod or kod or "").strip().upper()
+                if kod_u not in CARI_ANA_KODLARI and rol not in CARI_ANA_KODLARI:
+                    raise ValueError(
+                        "Cari ana tür yalnız şu kodlardan biri olabilir: "
+                        + ", ".join(CARI_ANA_KODLARI)
+                    )
+                if rol and rol not in CARI_ANA_KODLARI:
                     raise ValueError("Geçersiz muhasebe rolü.")
-                kayit.muhasebe_rol = rol
+                if rol:
+                    kayit.muhasebe_rol = rol
+                # Beşli dışı kayıtlar yalnız pasifleştirilebilir
+                if kod_u not in CARI_ANA_KODLARI and bool(veri.get("aktif", True)):
+                    raise ValueError("Fazla cari ana tür yeniden aktifleştirilemez.")
             kayit.guncelleme_tarihi = datetime.now()
             session.flush()
             session.refresh(kayit)
@@ -635,15 +720,128 @@ class KartTuruService:
 
     @staticmethod
     def cari_rol_metni(ana: KartAnaTuru | None, cari_turu_eski: str | None = None) -> str:
-        if ana and ana.muhasebe_rol == "MUSTERI_TEDARIKCI":
-            return "Müşteri/Tedarikçi"
-        if ana and ana.muhasebe_rol == "TEDARIKCI":
+        """Ana tür kaydından cari_turu metni (beşli yapı)."""
+        rol = (getattr(ana, "muhasebe_rol", None) or getattr(ana, "kod", None) or "").upper()
+        ad = (getattr(ana, "ad", None) or "").strip()
+        if rol == "TEDARIKCI" or ad == "Tedarikçi":
             return "Tedarikçi"
-        if ana and ana.muhasebe_rol == "PERSONEL":
+        if rol == "PERSONEL" or ad == "Personel":
             return "Personel"
-        if ana and ana.muhasebe_rol == "MUSTERI":
+        if rol == "RESMI_KURUMLAR" or ad == "Resmi Kurumlar":
+            return "Resmi Kurumlar"
+        if rol == "DUZENLEYICI" or ad == "Düzenleyici Hesaplar":
+            return "Düzenleyici Hesaplar"
+        if rol == "MUSTERI" or ad == "Müşteri":
             return "Müşteri"
+        # Eski karma rol artık ana tür değil — eski metni koruma (belirsiz rapor)
+        if rol == "MUSTERI_TEDARIKCI":
+            return cari_turu_eski or "Müşteri/Tedarikçi"
         return cari_turu_eski or "Müşteri"
+
+    @staticmethod
+    def cari_ana_kod_esle(eski_tur: str | None, *, muhasebe_rol: str | None = None) -> str | None:
+        """Eski alan → yeni ana tür kodu. Belirsizde None."""
+        rol = (muhasebe_rol or "").strip().upper()
+        if rol in CARI_ANA_KODLARI:
+            return rol
+        if rol in _CARI_ANA_IPTAL_KODLAR or rol == "MUSTERI_TEDARIKCI":
+            return None
+        n = _norm(eski_tur)
+        if not n:
+            return None
+        if n in _CARI_BELIRSIZ_TURLER:
+            return None
+        if n in _CARI_ESKI_TUR_ESLEME:
+            return _CARI_ESKI_TUR_ESLEME[n]
+        # Kısmi eşleşme (yalnız kesin önekler)
+        if n.startswith("tedarik"):
+            return "TEDARIKCI"
+        if n.startswith("personel"):
+            return "PERSONEL"
+        if n.startswith("resmi"):
+            return "RESMI_KURUMLAR"
+        if n.startswith("düzenleyici") or n.startswith("duzenleyici"):
+            return "DUZENLEYICI"
+        if n.startswith("müşter") or n.startswith("muster"):
+            # "müşteri/tedarikçi" belirsiz listede
+            if "tedarik" in n:
+                return None
+            return "MUSTERI"
+        return None
+
+    @staticmethod
+    def evo_grup_kaynak_turu(musteri_grubu: str | None) -> str | None:
+        """«Evo: PERSONEL» → «PERSONEL»; Evo etiketi yoksa None."""
+        g = (musteri_grubu or "").strip()
+        if not g:
+            return None
+        n = _norm(g)
+        if not n.startswith("evo:"):
+            return None
+        return g.split(":", 1)[1].strip() or None
+
+    @staticmethod
+    def _tr_kucuk(metin: str | None) -> str:
+        """Türkçe İ/I güvenli küçük harf (Evo MUSTIP eşlemesiyle uyumlu)."""
+        return (metin or "").strip().replace("İ", "i").replace("I", "ı").lower()
+
+    @staticmethod
+    def evo_grup_ana_kod(musteri_grubu: str | None) -> str | None:
+        """Evo müşteri grubundan kesin ana tür kodu; bilinmeyen/boş → None (rastgele atama yok)."""
+        kaynak = KartTuruService.evo_grup_kaynak_turu(musteri_grubu)
+        if kaynak is None:
+            return None
+        # Evo haritası ile aynı sözlük (import döngüsü yok — yerel eşleme)
+        n = KartTuruService._tr_kucuk(kaynak)
+        harita = {
+            "müşteri": "MUSTERI",
+            "perakende müşteriler": "MUSTERI",
+            "tedarikçi": "TEDARIKCI",
+            "hizmet satıcılar": "TEDARIKCI",
+            "personel": "PERSONEL",
+            "resmi kurumlar": "RESMI_KURUMLAR",
+            "resmi kurum": "RESMI_KURUMLAR",
+            "düzenleyici": "DUZENLEYICI",
+            "düzenleyici hesaplar": "DUZENLEYICI",
+            "duzenleyici": "DUZENLEYICI",
+            "duzenleyici hesaplar": "DUZENLEYICI",
+        }
+        if n in harita:
+            return harita[n]
+        return KartTuruService.cari_ana_kod_esle(kaynak)
+
+    @staticmethod
+    def digger_liste_mi(cari_turu: str | None) -> bool:
+        n = _norm(cari_turu)
+        return n in DIGER_LISTE_ANAHTARLARI or (cari_turu or "").strip().upper() == "DIGER"
+
+    @staticmethod
+    def esleme_gereken_filtre_mi(cari_turu: str | None) -> bool:
+        n = _norm(cari_turu)
+        return n in ESLEME_GEREKEN_ANAHTARLARI or n == _norm(ESLEME_GEREKEN_ETIKET)
+
+    @staticmethod
+    def cari_esleme_gereken_mi(
+        *,
+        cari_turu: str | None = None,
+        ana_kod: str | None = None,
+        musteri_grubu: str | None = None,
+        ana_id: int | None = None,
+    ) -> bool:
+        """Kartın «Tür eşlemesi gereken» filtresine düşüp düşmeyeceği (yeni ana tür değil)."""
+        tur_n = _norm(cari_turu)
+        if tur_n in _CARI_BELIRSIZ_TURLER:
+            return True
+        kod = (ana_kod or "").strip().upper()
+        if kod in _CARI_ANA_IPTAL_KODLAR:
+            return True
+        if not kod and not ana_id and not KartTuruService.cari_ana_kod_esle(cari_turu):
+            return True
+        # Evo'dan gelip haritada olmayan tür → varsayılan Müşteri; elle düzeltilmeli
+        kaynak = KartTuruService.evo_grup_kaynak_turu(musteri_grubu)
+        if kaynak is not None and KartTuruService.evo_grup_ana_kod(musteri_grubu) is None:
+            return True
+        return False
 
     @staticmethod
     def gecis_calistir() -> dict[str, Any]:
@@ -655,8 +853,14 @@ class KartTuruService:
             "stok_eslesen": 0,
             "stok_atlanamayan": 0,
             "cari_eslesen": 0,
+            "cari_zaten_dogru": 0,
+            "evo_grup_duzeltme": 0,
             "perakende_tasi": 0,
             "hizmet_tedarikci": 0,
+            "belirsiz": [],
+            "kaldirilan_turler": [],
+            "tur_sayilari_once": {},
+            "tur_sayilari_sonra": {},
             "catisma": [],
             "eslesme_dokumu": [],
         }
@@ -726,7 +930,26 @@ class KartTuruService:
                     )
 
             personel_ana = KartTuruService._ana_bul(session, KAPSAM_CARI, kod="PERSONEL")
+            resmi_ana = KartTuruService._ana_bul(session, KAPSAM_CARI, kod="RESMI_KURUMLAR")
+            duzen_ana = KartTuruService._ana_bul(session, KAPSAM_CARI, kod="DUZENLEYICI")
             mt_ana = KartTuruService._ana_bul(session, KAPSAM_CARI, kod="MUSTERI_TEDARIKCI")
+            ana_by_id = {
+                a.id: a
+                for a in session.scalars(
+                    select(KartAnaTuru).where(KartAnaTuru.kapsam == KAPSAM_CARI)
+                ).all()
+            }
+            ana_by_kod = {
+                (a.kod or "").upper(): a
+                for a in ana_by_id.values()
+                if (a.kod or "").upper() in CARI_ANA_KODLARI
+            }
+
+            def _tur_etiket(ana_id, tur_metin) -> str:
+                if ana_id and ana_id in ana_by_id:
+                    return ana_by_id[ana_id].ad or (tur_metin or "?")
+                return (tur_metin or "?").strip() or "?"
+
             cari_satirlar = session.execute(
                 select(
                     Cari.id,
@@ -737,22 +960,125 @@ class KartTuruService:
                     Cari.tedarikci_alt_tur_id,
                 )
             ).all()
+            for _cid0, tur0, _g0, ana0, _m0, _t0 in cari_satirlar:
+                et = _tur_etiket(ana0, tur0)
+                rapor["tur_sayilari_once"][et] = rapor["tur_sayilari_once"].get(et, 0) + 1
+
             for cid, tur, grup, ana_id, m_alt, t_alt in cari_satirlar:
                 guncelle: dict[str, Any] = {}
-                if not ana_id:
+                mevcut_ana = ana_by_id.get(ana_id) if ana_id else None
+                mevcut_kod = (mevcut_ana.kod or "").upper() if mevcut_ana else ""
+
+                # Zaten doğru beşlideyse dokunma (tekrar çalıştırmada bozma)
+                if mevcut_kod in CARI_ANA_KODLARI:
+                    # Evo varsayılan Müşteri düşümü: kesin Evo grubu farklı ana türe işaret ediyorsa düzelt
+                    # (tam devir yeniden çalıştırılmaz; yalnız yanlış eşlenen mevcut kartlar)
+                    evo_hedef = KartTuruService.evo_grup_ana_kod(grup)
+                    if (
+                        mevcut_kod == "MUSTERI"
+                        and evo_hedef
+                        and evo_hedef != "MUSTERI"
+                        and evo_hedef in ana_by_kod
+                    ):
+                        yeni = ana_by_kod[evo_hedef]
+                        guncelle["ana_kart_turu_id"] = yeni.id
+                        guncelle["cari_turu"] = KartTuruService.cari_rol_metni(yeni, tur)
+                        rapor["evo_grup_duzeltme"] += 1
+                        rapor["cari_eslesen"] += 1
+                        rapor["eslesme_dokumu"].append(
+                            {
+                                "tur": "cari",
+                                "id": cid,
+                                "eski": tur,
+                                "eski_ana": mevcut_ana.ad if mevcut_ana else None,
+                                "ana": yeni.ad,
+                                "neden": "evo_grup_kesin_esleme",
+                                "evo_grup": (grup or "").strip(),
+                            }
+                        )
+                    else:
+                        rapor["cari_zaten_dogru"] += 1
+                        # cari_turu metnini ana türle hizala (bakiye/hareket yok)
+                        hedef_metin = KartTuruService.cari_rol_metni(mevcut_ana, tur)
+                        if (tur or "").strip() != hedef_metin:
+                            guncelle["cari_turu"] = hedef_metin
+                        # Evo grubu haritada yoksa belirsiz raporla (tür atama)
+                        if KartTuruService.cari_esleme_gereken_mi(
+                            cari_turu=tur,
+                            ana_kod=mevcut_kod,
+                            musteri_grubu=grup,
+                            ana_id=ana_id,
+                        ):
+                            rapor["belirsiz"].append(
+                                {
+                                    "id": cid,
+                                    "cari_turu": tur,
+                                    "ana_tur": mevcut_ana.ad if mevcut_ana else None,
+                                    "neden": "evo_tur_eslenemedi",
+                                    "evo_grup": (grup or "").strip() or None,
+                                }
+                            )
+                elif mevcut_kod in _CARI_ANA_IPTAL_KODLAR or (
+                    mevcut_ana and mevcut_kod not in CARI_ANA_KODLARI and mevcut_kod
+                ):
+                    # Fazla ana tür bağlı — kesin eşleme yoksa belirsiz bırak
+                    hedef_kod = KartTuruService.cari_ana_kod_esle(
+                        tur, muhasebe_rol=getattr(mevcut_ana, "muhasebe_rol", None)
+                    )
+                    if hedef_kod and hedef_kod in ana_by_kod:
+                        yeni = ana_by_kod[hedef_kod]
+                        guncelle["ana_kart_turu_id"] = yeni.id
+                        guncelle["cari_turu"] = KartTuruService.cari_rol_metni(yeni, tur)
+                        rapor["cari_eslesen"] += 1
+                        rapor["eslesme_dokumu"].append(
+                            {
+                                "tur": "cari",
+                                "id": cid,
+                                "eski": tur,
+                                "eski_ana": mevcut_ana.ad if mevcut_ana else None,
+                                "ana": yeni.ad,
+                            }
+                        )
+                    else:
+                        rapor["belirsiz"].append(
+                            {
+                                "id": cid,
+                                "cari_turu": tur,
+                                "ana_tur": mevcut_ana.ad if mevcut_ana else None,
+                                "neden": "fazla_ana_tur_otomatik_eslenemedi",
+                            }
+                        )
+                elif not ana_id:
                     tur_n = (tur or "").strip()
-                    if _norm(tur_n) in {_norm("Tedarikçi")} and tedarik_ana:
-                        guncelle["ana_kart_turu_id"] = tedarik_ana.id
+                    hedef_kod = KartTuruService.cari_ana_kod_esle(tur_n)
+                    if _norm(tur_n) == _norm("Hizmet Tedarikçisi"):
+                        hedef_kod = "TEDARIKCI"
+                    if hedef_kod and hedef_kod in ana_by_kod:
+                        yeni = ana_by_kod[hedef_kod]
+                        guncelle["ana_kart_turu_id"] = yeni.id
+                        guncelle["cari_turu"] = KartTuruService.cari_rol_metni(yeni, tur_n)
                         rapor["cari_eslesen"] += 1
-                    elif _norm(tur_n) in {_norm("Personel")} and personel_ana:
-                        guncelle["ana_kart_turu_id"] = personel_ana.id
-                        rapor["cari_eslesen"] += 1
-                    elif _norm(tur_n) in {_norm("Müşteri/Tedarikçi"), _norm("Musteri/Tedarikci")} and mt_ana:
-                        guncelle["ana_kart_turu_id"] = mt_ana.id
-                        rapor["cari_eslesen"] += 1
-                    elif musteri_ana:
-                        guncelle["ana_kart_turu_id"] = musteri_ana.id
-                        rapor["cari_eslesen"] += 1
+                        rapor["eslesme_dokumu"].append(
+                            {"tur": "cari", "id": cid, "eski": tur_n, "ana": yeni.ad}
+                        )
+                    elif _norm(tur_n) in _CARI_BELIRSIZ_TURLER or not tur_n:
+                        rapor["belirsiz"].append(
+                            {
+                                "id": cid,
+                                "cari_turu": tur_n,
+                                "ana_tur": None,
+                                "neden": "belirsiz_eski_tur",
+                            }
+                        )
+                    else:
+                        rapor["belirsiz"].append(
+                            {
+                                "id": cid,
+                                "cari_turu": tur_n,
+                                "ana_tur": None,
+                                "neden": "esleme_yok",
+                            }
+                        )
 
                 grup_s = (grup or "").strip()
                 if grup_s and _norm(grup_s) in {_norm("Perakende Müşteri"), _norm("PERAKENDE MÜŞTERİ")}:
@@ -803,6 +1129,33 @@ class KartTuruService:
                     )
 
             session.flush()
+            # Pasif fazla tür tanımlarını raporla (kart silinmez)
+            for dig in session.scalars(
+                select(KartAnaTuru).where(KartAnaTuru.kapsam == KAPSAM_CARI)
+            ).all():
+                kod_u = (dig.kod or "").upper()
+                if kod_u not in CARI_ANA_KODLARI:
+                    if dig.aktif:
+                        dig.aktif = False
+                    rapor["kaldirilan_turler"].append(
+                        {"id": dig.id, "kod": dig.kod, "ad": dig.ad, "aktif": False}
+                    )
+
+            # Son sayılar
+            son_satirlar = session.execute(
+                select(Cari.id, Cari.cari_turu, Cari.ana_kart_turu_id)
+            ).all()
+            ana_by_id = {
+                a.id: a
+                for a in session.scalars(
+                    select(KartAnaTuru).where(KartAnaTuru.kapsam == KAPSAM_CARI)
+                ).all()
+            }
+            for _cid1, tur1, ana1 in son_satirlar:
+                et = _tur_etiket(ana1, tur1)
+                rapor["tur_sayilari_sonra"][et] = rapor["tur_sayilari_sonra"].get(et, 0) + 1
+
+            session.flush()
         return rapor
 
     @staticmethod
@@ -830,46 +1183,104 @@ class KartTuruService:
     ):
         from database.models.cari import Cari
 
+        # karma_yalniz artık ayrı ana tür değil — eski çağrılar boş sonuç görür
         if karma_yalniz:
             statement = statement.where(Cari.cari_turu == "Müşteri/Tedarikçi")
         elif ana_rol:
             rol = ana_rol.strip()
-            if rol.casefold().startswith("müşter") or rol.casefold().startswith("muster"):
-                statement = statement.where(
-                    or_(
-                        Cari.cari_turu == "Müşteri",
-                        Cari.cari_turu == "Müşteri/Tedarikçi",
-                        Cari.cari_turu.ilike("müster%"),
-                        Cari.cari_turu.ilike("muster%"),
+            # Diğer Cari Listesi: Personel + Resmi + Düzenleyici (6. ana tür değil)
+            if KartTuruService.digger_liste_mi(rol):
+                digger_idler: list[int] = []
+                digger_adlar: list[str] = []
+                try:
+                    for a in KartTuruService.ana_turleri_listele(KAPSAM_CARI, sadece_aktif=False):
+                        if (a.kod or "").upper() in DIGER_CARI_ANA_KODLARI:
+                            digger_idler.append(int(a.id))
+                            digger_adlar.append(a.ad)
+                except Exception:
+                    digger_idler, digger_adlar = [], list(DIGER_CARI_ANA_ADLARI)
+                kosullar = []
+                if digger_idler:
+                    kosullar.append(Cari.ana_kart_turu_id.in_(digger_idler))
+                if digger_adlar:
+                    kosullar.append(
+                        Cari.ana_kart_turu_id.is_(None) & Cari.cari_turu.in_(digger_adlar)
+                    )
+                for ad in DIGER_CARI_ANA_ADLARI:
+                    if ad not in digger_adlar:
+                        kosullar.append(Cari.cari_turu == ad)
+                if kosullar:
+                    statement = statement.where(or_(*kosullar))
+                else:
+                    statement = statement.where(Cari.cari_turu.in_(DIGER_CARI_ANA_ADLARI))
+            elif KartTuruService.esleme_gereken_filtre_mi(rol):
+                # Eşleme gereken: belirsiz metin + Evo'da haritasız grup (rastgele tür yok)
+                # Bilinen Evo: Müşteri/Tedarikçi/Personel… burada çekilmez
+                iptal_idler: list[int] = []
+                try:
+                    for a in KartTuruService.ana_turleri_listele(KAPSAM_CARI, sadece_aktif=False):
+                        if (a.kod or "").upper() in _CARI_ANA_IPTAL_KODLAR:
+                            iptal_idler.append(int(a.id))
+                except Exception:
+                    iptal_idler = []
+                kosullar = [
+                    Cari.cari_turu.in_(("Müşteri/Tedarikçi", "Diğer", "Diger")),
+                    Cari.musteri_grubu.ilike("Evo: Türü belirtilmemiş%"),
+                    Cari.musteri_grubu.ilike("Evo: Turu belirtilmemis%"),
+                ]
+                if iptal_idler:
+                    kosullar.append(Cari.ana_kart_turu_id.in_(iptal_idler))
+                kosullar.append(
+                    Cari.ana_kart_turu_id.is_(None)
+                    & or_(
+                        Cari.cari_turu.is_(None),
+                        Cari.cari_turu == "",
+                        Cari.cari_turu.in_(("Müşteri/Tedarikçi", "Diğer", "Diger")),
                     )
                 )
-            elif rol.casefold().startswith("tedarik"):
-                statement = statement.where(
-                    or_(
-                        Cari.cari_turu == "Tedarikçi",
-                        Cari.cari_turu == "Müşteri/Tedarikçi",
-                        Cari.cari_turu.ilike("tedarik%"),
-                    )
-                )
+                statement = statement.where(or_(*kosullar))
             else:
-                statement = statement.where(Cari.cari_turu == rol)
+                kod = KartTuruService.cari_ana_kod_esle(rol) or rol.strip().upper()
+                ana = None
+                try:
+                    for a in KartTuruService.ana_turleri_listele(KAPSAM_CARI, sadece_aktif=False):
+                        if (a.kod or "").upper() == kod or _norm(a.ad) == _norm(rol):
+                            ana = a
+                            break
+                except Exception:
+                    ana = None
+                if ana:
+                    # Liste grupları güncel Ana Cari Kart Türü alanına göre
+                    statement = statement.where(
+                        or_(
+                            Cari.ana_kart_turu_id == int(ana.id),
+                            # Henüz ana_id yazılmamış eski satırlar (aynı metin)
+                            (Cari.ana_kart_turu_id.is_(None) & (Cari.cari_turu == ana.ad)),
+                        )
+                    )
+                elif rol.casefold().startswith("müşter") or rol.casefold().startswith("muster"):
+                    statement = statement.where(Cari.cari_turu == "Müşteri")
+                elif rol.casefold().startswith("tedarik"):
+                    statement = statement.where(Cari.cari_turu == "Tedarikçi")
+                else:
+                    statement = statement.where(Cari.cari_turu == rol)
 
         if atanmamis_alt:
-            if ana_rol and ana_rol.casefold().startswith("tedarik"):
+            if ana_rol and (
+                ana_rol.casefold().startswith("tedarik")
+                or (KartTuruService.cari_ana_kod_esle(ana_rol) == "TEDARIKCI")
+            ):
                 statement = statement.where(Cari.tedarikci_alt_tur_id.is_(None))
             else:
                 statement = statement.where(Cari.musteri_alt_tur_id.is_(None))
         elif alt_id:
-            if ana_rol and ana_rol.casefold().startswith("tedarik"):
+            if ana_rol and (
+                ana_rol.casefold().startswith("tedarik")
+                or (KartTuruService.cari_ana_kod_esle(ana_rol) == "TEDARIKCI")
+            ):
                 statement = statement.where(Cari.tedarikci_alt_tur_id == int(alt_id))
             else:
-                # Müşteri filtresinde karma carinin müşteri alt türü değerlendirilir
-                statement = statement.where(
-                    or_(
-                        Cari.musteri_alt_tur_id == int(alt_id),
-                        Cari.tedarikci_alt_tur_id == int(alt_id),
-                    )
-                )
+                statement = statement.where(Cari.musteri_alt_tur_id == int(alt_id))
 
         if atanmamis_grup:
             statement = statement.where(

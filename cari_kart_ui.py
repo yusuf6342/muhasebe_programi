@@ -1165,6 +1165,15 @@ class CariDialog(tk.Toplevel):
         )
         self._hizli_islem_btn.pack(side="left", padx=3)
         ToolTip(self._hizli_islem_btn, "Sipariş, fatura, tahsilat ve diğer cari işlemler")
+        if getattr(self, "tedarikci_modu", False):
+            self._haftalik_odeme_btn = tk_buton(
+                btn_satir, "Haftalık Ödeme", self.haftalik_odeme_ac, rol="vurgu"
+            )
+            self._haftalik_odeme_btn.pack(side="left", padx=3)
+            ToolTip(
+                self._haftalik_odeme_btn,
+                "Seçili haftada ödenecek Cuma taksitleri (valör ≈ 30 gün)",
+            )
         self._pasif_btn = tk_buton(btn_satir, "Pasife Al", self.durumu_degistir, rol="tehlike")
         self._pasif_btn_yeri = tk.Frame(btn_satir, bg=LACIVERT)
         self._pasif_btn_yeri.pack(side="left")
@@ -1287,10 +1296,20 @@ class CariDialog(tk.Toplevel):
 
     def cari_listesi_ac(self):
         def _ac(app):
-            if self.tedarikci_modu:
-                app.tedarikciler_goster()
-            else:
-                app.cariler_goster()
+            tur = (self.cari_turu or "").strip()
+            digger_ac = getattr(app, "diger_cariler_goster", None)
+            ac = {
+                "Tedarikçi": getattr(app, "tedarikciler_goster", None),
+                "Personel": digger_ac or getattr(app, "personel_cariler_goster", None),
+                "Resmi Kurumlar": digger_ac or getattr(app, "resmi_kurumlar_goster", None),
+                "Düzenleyici Hesaplar": digger_ac
+                or getattr(app, "duzenleyici_hesaplar_goster", None),
+                "Müşteri": getattr(app, "cariler_goster", None),
+            }.get(tur) or getattr(app, "genel_cariler_goster", None) or getattr(
+                app, "cariler_goster", None
+            )
+            if ac:
+                ac()
 
         self._ana_pencereye_gec(_ac)
 
@@ -1357,26 +1376,17 @@ class CariDialog(tk.Toplevel):
             )
             return "break"
 
-        if self.tedarikci_modu:
-            try:
+        try:
+            if self.tedarikci_modu:
                 kayitlar = list(CariService.aktif_tedarikciler())
-            except Exception:
-                kayitlar = []
-            kayitlar.sort(
-                key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
-            )
-            varsayilan = kayitlar[:80]
-            canli = False
-        else:
-            try:
+            else:
                 kayitlar = list(CariService.aktif_musteriler())
-            except Exception:
-                kayitlar = []
-            kayitlar.sort(
-                key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
-            )
-            varsayilan = kayitlar[:80]
-            canli = True
+        except Exception:
+            kayitlar = []
+        kayitlar.sort(
+            key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
+        )
+        varsayilan = kayitlar[:80]
 
         bakiyeler: dict = {}
         ids = [c.id for c in varsayilan]
@@ -1393,7 +1403,8 @@ class CariDialog(tk.Toplevel):
             ara=ara,
             baslik=f"{self.etiket} Seçimi",
             kayit_adi=self.etiket.lower(),
-            canli_arama=canli,
+            canli_arama=True,
+            cari_turu=self.etiket,
         )
         self.wait_window(dlg)
         if dlg.result:
@@ -1729,7 +1740,7 @@ class CariDialog(tk.Toplevel):
         from cari_borc_alacak_ozet import BUYUK_SATIRLAR
 
         buyuk = buyuk or baslik in BUYUK_SATIRLAR
-        if baslik in ("Kalan Bakiye", "Kalan Bakiye Gün") or buyuk:
+        if baslik in ("Kalan Bakiye", "Açık Valör Gün", "Kalan Bakiye Gün") or buyuk:
             deger_pt, kalin = VERI_VURGU_PT, True
         else:
             deger_pt, kalin = VERI_DEGER_PT, False
@@ -2281,7 +2292,7 @@ class CariDialog(tk.Toplevel):
         self._risk_bakiye_fark_lbl.bind("<Button-1>", self.risk_panelini_ac)
 
     def _bakiye_ozet_paneli(self, parent):
-        """Beş satırlı borç/alacak özeti: Borç, Alacak, Kalan (B/A), Kalan Gün, Kapatılan Gün."""
+        """Beş satırlı borç/alacak özeti: Borç, Alacak, Kalan (B/A), Açık Valör, Kapanan Valör."""
         from cari_borc_alacak_ozet import OZET_SATIRLARI
 
         self._bolum_baslik(parent, "Borç / Alacak Özeti")
@@ -2292,18 +2303,27 @@ class CariDialog(tk.Toplevel):
         for baslik in OZET_SATIRLARI:
             lbl, _ = self._ozet_deger_satiri(parent, baslik)
             if baslik == "Kalan Bakiye":
-                ToolTip(lbl, "Toplam borç − toplam alacak. (B)=borçlu, (A)=alacaklı.")
-            elif baslik == "Kalan Bakiye Gün":
                 ToolTip(
                     lbl,
-                    "Açık kalan tutarların ağırlıklı ortalama valör günü (bakiyeye göre borç/alacak). "
-                    "Hareket tablosundaki «Gün» sütunu belgenin yaşını (bugün − belge tarihi) gösterir; "
-                    "bu özet satırıyla aynı hesap değildir.",
+                    "Net bakiye = toplam borç − toplam alacak. (B)=borçlu, (A)=alacaklı. "
+                    "Kart türüne göre işaret ters çevrilmez.",
                 )
-            elif baslik == "Kapatılan Bakiye Gün":
+            elif baslik == "Açık Valör Gün":
                 ToolTip(
                     lbl,
-                    "Kapanan borcun tutar-ağırlıklı ortalama valörü (gün). FIFO; kapanan faturalar.",
+                    "Açık valör = hesap tarihi (T) − belge/işlem tarihi (I); "
+                    "kalan açık tutarların tutar-ağırlıklı ortalaması (belge yaşı). "
+                    "Belge bağlantılı kapamalar öncelikli; aksi halde FIFO. "
+                    "Avans/fazla ödeme veya tahsilatta açık fatura yoksa «—».",
+                )
+            elif baslik == "Kapanan Valör Gün":
+                ToolTip(
+                    lbl,
+                    "Kapanan valör = ödeme/tahsilat mali tarihi (P) − borç belge tarihi (I); "
+                    "her eşleşen dilim kendi tutarıyla. Aynı gün kapama = 0 gün. "
+                    "Doğrulanmış belge bağlantısı önce; kalan tutar FIFO "
+                    "(işlem tarihi→belge no→id). Aynı belgedeki borç+alacak önce "
+                    "kendi içinde kapanır.",
                 )
 
         # Özet dışı ek bilgi (beş satırın altında, bakiyeye dahil değil)
@@ -2329,33 +2349,36 @@ class CariDialog(tk.Toplevel):
     def _hizli_islem_maddelerini_hazirla(self):
         """Menü maddeleri; orta panel düğmeleri kaldırıldı (alan Cari Hareketler'e gider)."""
         self.hizli_dugmeleri = []
-        soz_baslik = "Ödeme Sözleri (Verilen)" if self.tedarikci_modu else "Ödeme Sözleri (Alınan)"
+        # Ana tür sınıflandırmadır; alış/satış/virman tüm türlerde açıktır
+        soz_baslik = "Ödeme Sözleri"
+        karsi = (
+            (("Tedarikçi Ara", self.karsi_taraf_ara, None),)
+            if not self.tedarikci_modu
+            else (("Müşteri Ara", self.karsi_taraf_ara, None),)
+        )
+        ana = karsi + (
+            ("Satış Siparişi", self.yeni_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
+            ("Satış İrsaliyesi", self.yeni_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
+            ("Satış Faturası", self.yeni_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
+            ("Satış İade Faturaları", self.satis_iade_faturalari_ac, None),
+            ("Alış Siparişi", self.yeni_alis_siparis_ac,
+             ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
+            ("Alış İrsaliyesi", self.yeni_alis_irsaliye_ac,
+             ("alis_irsaliye_duzenleme", "alis_duzenleme", "yeni_kayit")),
+            ("Alış Faturası", self.yeni_alis_fatura_ac,
+             ("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")),
+            ("Alış Evrakları", self.alis_evraklari_ac, None),
+            ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
+            ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
+            ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
+            ("Müşteriden Tedarikçiye", self.kk_cekimi_ac, ("finans_duzenleme", "cari_duzenleme")),
+        )
         if self.tedarikci_modu:
-            ana = (
-                ("Yeni Sipariş", self.yeni_alis_siparis_ac,
-                 ("alis_siparis_duzenleme", "alis_duzenleme", "yeni_kayit")),
-                ("Yeni İrsaliye", self.yeni_alis_irsaliye_ac,
-                 ("alis_irsaliye_duzenleme", "alis_duzenleme", "yeni_kayit")),
-                ("Yeni Fatura", self.yeni_alis_fatura_ac,
-                 ("alis_fatura_duzenleme", "alis_duzenleme", "yeni_kayit")),
-                ("Alış Evrakları", self.alis_evraklari_ac, None),
-                ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
-                ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
-                ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
-                ("Müşteriden Tedarikçiye", self.kk_cekimi_ac, ("finans_duzenleme", "cari_duzenleme")),
-            )
-        else:
-            ana = (
-                ("Yeni Sipariş", self.yeni_siparis_ac, ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni İrsaliye", self.yeni_irsaliye_ac, ("satis_duzenleme", "yeni_kayit")),
-                ("Yeni Fatura", self.yeni_fatura_ac, ("satis_duzenleme", "yeni_kayit")),
-                ("Satış İade Faturaları", self.satis_iade_faturalari_ac, None),
-                ("Tahsilat", self.tahsilat_gir, ("finans_duzenleme", "cari_duzenleme")),
-                ("Ödeme Gir", self.odeme_gir, ("finans_duzenleme", "cari_duzenleme")),
-                ("Cari Virman", self.cari_virman_ac, ("finans_duzenleme", "cari_duzenleme")),
-                ("Müşteriden Tedarikçiye", self.kk_cekimi_ac, ("finans_duzenleme", "cari_duzenleme")),
+            ana = ana + (
+                ("Haftalık Ödeme", self.haftalik_odeme_ac, ("finans_duzenleme", "cari_duzenleme")),
             )
         ek = (
+            ("Alt Hesap Ekle", self.alt_hesap_ekle, ("cari_duzenleme", "yeni_kayit")),
             ("Stok Detaylı Cari Ekstre", self.stok_detayli_ekstre_ac, None),
             ("Bekleyen Siparişler", self.bekleyen_siparisler_ac, None),
             ("Açık Kalemler", self.acik_kalemler_ac, None),
@@ -2411,8 +2434,8 @@ class CariDialog(tk.Toplevel):
         for baslik, komut, izinler in maddeler:
             izin_ok = True if izinler is None else _izin_var(*izinler)
             etkin = bool(kayitli and izin_ok)
-            # Yenile kayıtlı cari olmadan da çalışabilir
-            if baslik == "Yenile":
+            # Yenile / karşı taraf arama kayıtlı cari olmadan da çalışabilir
+            if baslik in ("Yenile", "Tedarikçi Ara", "Müşteri Ara"):
                 etkin = True
             menu.add_command(
                 label=baslik,
@@ -2844,6 +2867,9 @@ class CariDialog(tk.Toplevel):
         self.after(140, self._hareket_sutunlari_sigdir)
         self._hareket_menu = tk.Menu(self, tearoff=0)
         self._hareket_menu.add_command(label="Belgeyi Aç", command=self._hareket_belge_ac)
+        self._hareket_menu.add_command(
+            label="Makbuz Çıktısı / Yazdır / PDF", command=self._hareket_makbuz_ciktisi
+        )
         self._hareket_menu.add_command(label="Kapatma Detayı", command=self._hareket_kapatma_detayi)
         self._hareket_menu.add_command(
             label="Fatura ürünlerini göster/gizle", command=self._secili_fatura_detay_toggle
@@ -3240,7 +3266,7 @@ class CariDialog(tk.Toplevel):
         yonet = self._ust_yan_dugme(ana_sag, "Yönet", self._cari_ana_tur_yonet)
         sarmali_yerlestir(ana_sag, [ana_cb, yonet], padx=2, pady=0, genisleyen=(ana_cb,))
 
-        m_sag = self._form_satiri(parent, "Müşteri Alt Türü", alan_anahtar="musteri_alt_tur")
+        m_sag = self._form_satiri(parent, "Alt Tür", alan_anahtar="musteri_alt_tur")
         self._musteri_alt_satiri = m_sag.master
         m_cb = ttk.Combobox(m_sag, state="readonly", width=16, style="CariKart.TCombobox")
         self.degerler["musteri_alt_tur"] = m_cb
@@ -3302,9 +3328,10 @@ class CariDialog(tk.Toplevel):
 
         ad = (self.degerler.get("ana_kart_turu").get() if "ana_kart_turu" in self.degerler else "") or ""
         ana = self._cari_ana_map.get(ad)
-        rol = getattr(ana, "muhasebe_rol", None) if ana else None
-        musteri_gorunur = rol in {"MUSTERI", "MUSTERI_TEDARIKCI"}
-        tedarik_gorunur = rol in {"TEDARIKCI", "MUSTERI_TEDARIKCI"}
+        rol = (getattr(ana, "muhasebe_rol", None) or getattr(ana, "kod", None) or "").upper()
+        # Beş ana türün tamamında alt tür yönetilebilir (alt hesap ayrı kavram)
+        tedarik_gorunur = rol == "TEDARIKCI"
+        musteri_gorunur = bool(ana) and not tedarik_gorunur
 
         def _goster(satir, acik: bool, *, after_widget=None):
             if satir is None:
@@ -3345,17 +3372,11 @@ class CariDialog(tk.Toplevel):
             except tk.TclError:
                 pass
 
-        # Müşteri alt türleri (Müşteri ana tanımından)
-        musteri_ana = next(
-            (a for a in self._cari_ana_map.values() if a.muhasebe_rol == "MUSTERI"), None
-        )
-        tedarik_ana = next(
-            (a for a in self._cari_ana_map.values() if a.muhasebe_rol == "TEDARIKCI"), None
-        )
+        # Alt türler seçili ana türden (beş türün tamamı)
         self._cari_alt_map = {}
         m_vals = ["— Alt Tür Atanmamış —"]
-        if musteri_ana:
-            for a in KartTuruService.alt_turleri_listele(musteri_ana.id, sadece_aktif=True):
+        if ana and musteri_gorunur:
+            for a in KartTuruService.alt_turleri_listele(ana.id, sadece_aktif=True):
                 m_vals.append(a.ad)
                 self._cari_alt_map[a.ad] = a.id
         if "musteri_alt_tur" in self.degerler:
@@ -3365,13 +3386,13 @@ class CariDialog(tk.Toplevel):
                 alt = KartTuruService.alt_getir(self.cari.musteri_alt_tur_id)
                 if alt and alt.ad in self._cari_alt_map:
                     sec_m = alt.ad
-                elif alt and not ilk:
-                    pass
                 elif alt:
                     if hasattr(self, "_cari_tur_uyari"):
                         self._cari_tur_uyari.configure(
-                            text="Uyumsuz müşteri alt türü temizlendi; sektör grubu korundu."
+                            text="Uyumsuz alt tür yeni ana türle bağdaşmıyor; seçimi güncelleyin (silinmedi)."
                         )
+                        if not self._cari_tur_uyari.winfo_ismapped():
+                            self._cari_tur_uyari.pack(fill="x", pady=2)
             elif not ilk:
                 sec_m = "— Alt Tür Atanmamış —"
             self.degerler["musteri_alt_tur"].set(sec_m)
@@ -3381,8 +3402,8 @@ class CariDialog(tk.Toplevel):
 
         self._cari_ted_alt_map = {}
         t_vals = ["— Alt Tür Atanmamış —"]
-        if tedarik_ana:
-            for a in KartTuruService.alt_turleri_listele(tedarik_ana.id, sadece_aktif=True):
+        if ana and tedarik_gorunur:
+            for a in KartTuruService.alt_turleri_listele(ana.id, sadece_aktif=True):
                 t_vals.append(a.ad)
                 self._cari_ted_alt_map[a.ad] = a.id
         if "tedarikci_alt_tur" in self.degerler:
@@ -3402,11 +3423,25 @@ class CariDialog(tk.Toplevel):
             from database.kart_turu_service import KartTuruService as KTS
 
             self.cari_turu = KTS.cari_rol_metni(ana, self.cari_turu)
-            self.tedarikci_modu = self.cari_turu in {"Tedarikçi", "Müşteri/Tedarikçi"} and (
-                self.cari_turu == "Tedarikçi" or tedarik_gorunur
-            )
-            # tedarikci_modu: saf tedarikçi ekran davranışı
+            # tedarikci_modu yalnız Tedarikçi ana türünde (bakiye yönünü ters çevirmez)
             self.tedarikci_modu = self.cari_turu == "Tedarikçi"
+            # Alt hesap uyarısı: üst tür değişince bağlı altlar da güncellenir
+            if (
+                not ilk
+                and self.cari
+                and getattr(self.cari, "id", None)
+                and hasattr(self, "_cari_tur_uyari")
+            ):
+                try:
+                    alt_n = len(CariService.alt_hesaplari_listele(int(self.cari.id)))
+                except Exception:
+                    alt_n = 0
+                if alt_n:
+                    self._cari_tur_uyari.configure(
+                        text=f"Kayıtta {alt_n} bağlı alt hesabın ana türü de «{self.cari_turu}» olur."
+                    )
+                    if not self._cari_tur_uyari.winfo_ismapped():
+                        self._cari_tur_uyari.pack(fill="x", pady=2)
 
     def _cari_ana_tur_yonet(self):
         from kart_turleri_gruplari_ui import hizli_tanim_penceresi
@@ -3424,24 +3459,74 @@ class CariDialog(tk.Toplevel):
         from kart_turleri_gruplari_ui import hizli_tanim_penceresi
         from database.kart_turu_service import KAPSAM_CARI
 
-        ana = next(
-            (a for a in self._cari_ana_map.values() if a.muhasebe_rol == rol),
-            None,
-        )
+        # Önce seçili ana tür; yoksa istenen role göre bul
+        ad = (self.degerler.get("ana_kart_turu").get() if "ana_kart_turu" in self.degerler else "") or ""
+        ana = self._cari_ana_map.get(ad)
+        if ana is None:
+            ana = next(
+                (
+                    a
+                    for a in self._cari_ana_map.values()
+                    if (a.muhasebe_rol or a.kod or "").upper() == rol
+                ),
+                None,
+            )
         if not ana:
-            messagebox.showinfo("Alt tür", f"{rol} ana türü bulunamadı.", parent=self)
+            messagebox.showinfo("Alt tür", "Önce ana cari kart türü seçin.", parent=self)
             return
 
         def on_saved(sonuc):
             self._cari_ana_tur_degisti(ilk=True)
             if getattr(sonuc, "ad", None):
-                hedef = "musteri_alt_tur" if rol == "MUSTERI" else "tedarikci_alt_tur"
+                hedef = (
+                    "tedarikci_alt_tur"
+                    if (ana.muhasebe_rol or ana.kod or "").upper() == "TEDARIKCI"
+                    else "musteri_alt_tur"
+                )
                 if hedef in self.degerler:
                     self.degerler[hedef].set(sonuc.ad)
 
         hizli_tanim_penceresi(
             self, kapsam=KAPSAM_CARI, tur="alt", ana_tur_id=ana.id, on_saved=on_saved
         )
+
+    def alt_hesap_ekle(self):
+        """Seçili cariye bağlı alt hesap açar (beş ana türün tamamında)."""
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showinfo(
+                "Alt hesap",
+                "Önce cari kartı kaydedin; ardından alt hesap eklenebilir.",
+                parent=self,
+            )
+            return
+        if not _izin_var("cari_duzenleme", "yeni_kayit"):
+            messagebox.showwarning("Yetki", "Cari düzenleme yetkiniz yok.", parent=self)
+            return
+        from tkinter import simpledialog
+
+        unvan = simpledialog.askstring(
+            "Alt Hesap Ekle",
+            f"Üst hesap: {self.cari.cari_kodu} — {self.cari.unvan}\n"
+            f"Ana tür: {self.cari_turu}\n\nAlt hesap ünvanı:",
+            parent=self,
+        )
+        if unvan is None:
+            return
+        try:
+            yeni = CariService.alt_hesap_ekle(int(self.cari.id), unvan=unvan)
+        except Exception as hata:
+            messagebox.showerror("Alt hesap", str(hata), parent=self)
+            return
+        messagebox.showinfo(
+            "Alt hesap",
+            f"Alt hesap açıldı: {yeni.cari_kodu} — {yeni.unvan}\n"
+            f"Üst: {self.cari.cari_kodu} · Ana tür: {yeni.cari_turu}",
+            parent=self,
+        )
+        try:
+            CariDialog(self.master if hasattr(self, "master") else self, cari=yeni)
+        except Exception:
+            pass
 
     def _cari_tur_kayit_alanlari(self) -> dict:
         from database.kart_turu_service import KartTuruService
@@ -3457,13 +3542,11 @@ class CariDialog(tk.Toplevel):
         m_id = self._cari_alt_map.get(musteri_ad) if musteri_ad not in {"", "— Alt Tür Atanmamış —"} else None
         t_id = self._cari_ted_alt_map.get(ted_ad) if ted_ad not in {"", "— Alt Tür Atanmamış —"} else None
         # Rol görünür değilse ilgili alt türü kaydetme
-        rol = getattr(ana, "muhasebe_rol", None) if ana else None
-        if rol == "MUSTERI":
-            t_id = None
-        elif rol == "TEDARIKCI":
+        rol = (getattr(ana, "muhasebe_rol", None) or getattr(ana, "kod", None) or "").upper()
+        if rol == "TEDARIKCI":
             m_id = None
-        elif rol == "PERSONEL":
-            m_id = t_id = None
+        else:
+            t_id = None
         return {
             "cari_turu": KartTuruService.cari_rol_metni(ana, self.cari_turu),
             "ana_kart_turu_id": getattr(ana, "id", None),
@@ -3591,12 +3674,10 @@ class CariDialog(tk.Toplevel):
         bakiye = Decimal(str(metrik.get("bakiye") or 0))
         durum = metrik.get("bakiye_durumu") or "Bakiye yok"
         etiket = self._bakiye_yon_metni(bakiye)
-        if bakiye > 0:
-            renk = UYARI
-        elif bakiye < 0:
-            renk = BASARI
-        else:
-            renk = IKINCIL
+        from cari_borc_alacak_ozet import bakiye_rengi
+
+        # Ana tür Tedarikçi + alacaklı (A): siyah; müşteri kuralları ayrı
+        renk = bakiye_rengi(bakiye, tedarikci_modu=bool(self.tedarikci_modu))
         if "guncel_bakiye" in self.ozet_kartlari:
             self.ozet_kartlari["guncel_bakiye"]["deger"].configure(
                 text=para_goster(abs(bakiye)), fg=renk
@@ -4431,6 +4512,30 @@ class CariDialog(tk.Toplevel):
 
         return hareket_belgeyi_ac(self, tur, belge_no)
 
+    def _hareket_makbuz_ciktisi(self):
+        """Yazdır / PDF / makbuz çıktısı — mali hareket üretmez; MKB çıktı no ≠ TMK belge kimliği."""
+        meta = self._secili_hareket_meta("Makbuz Çıktısı")
+        if meta is None:
+            return
+        belge_no = (meta.get("belge_no") or "").strip()
+        tur = (meta.get("tur") or "").strip()
+        if not belge_no:
+            messagebox.showinfo("Makbuz Çıktısı", "Bu satırda belge numarası yok.", parent=self)
+            return
+        from belge_onizleme_ui import kasa_makbuz_onizle, cari_virman_onizle
+
+        if belge_no.startswith(("TMK-", "OMK-")) or tur in ("Tahsilat", "Ödeme"):
+            if kasa_makbuz_onizle(self, belge_no):
+                return
+        if belge_no.startswith("CVR-"):
+            if cari_virman_onizle(self, belge_no):
+                return
+        messagebox.showinfo(
+            "Makbuz Çıktısı",
+            f"{belge_no} için makbuz çıktısı açılamadı. Önce «Belgeyi Aç» ile kaydı kontrol edin.",
+            parent=self,
+        )
+
     def _hareket_kapatma_detayi(self):
         if not self.hareket_tablosu or not self.cari:
             return
@@ -4556,6 +4661,23 @@ class CariDialog(tk.Toplevel):
         dialog = CariOdemeSozleriDialog(self, self.cari)
         self.wait_window(dialog)
         self._soz_ozetini_guncelle()
+
+    def haftalik_odeme_ac(self):
+        """Tedarikçi haftalık Cuma ödeme planı / rapor penceresi."""
+        if not self.tedarikci_modu:
+            messagebox.showinfo(
+                "Haftalık Ödeme",
+                "Haftalık ödeme planı yalnız tedarikçi kartlarında kullanılır.",
+                parent=self,
+            )
+            return
+        if not self.cari or not getattr(self.cari, "id", None):
+            messagebox.showwarning("Cari", "Önce cari kartı kaydedin.", parent=self)
+            return
+        from haftalik_odeme_ui import HaftalikOdemeDialog
+
+        dialog = HaftalikOdemeDialog(self, self.cari)
+        self.wait_window(dialog)
 
     def _soz_ozetini_guncelle(self):
         lbl = getattr(self, "_soz_ozet_lbl", None)
@@ -4780,13 +4902,21 @@ class CariDialog(tk.Toplevel):
             self.yenile()
 
     def odeme_gir(self):
-        if self.cari:
-            from app import CariTahsilatOdemeDialog
+        """Tedarikçi ödemesi: kasa ödeme makbuzu (Firma Kredi Kartıyla Ödeme dâhil)."""
+        if not self.cari or self._makbuz_acik:
+            return
+        from kasa_makbuz_ui import KasaMakbuzDialog
 
-            dialog = CariTahsilatOdemeDialog(self, self.cari, tur="odeme")
-            self.wait_window(dialog)
-            if dialog.result:
-                self.yenile()
+        self._makbuz_acik = True
+        try:
+            cari_id = int(self.cari.id)
+            dialog = KasaMakbuzDialog(self, makbuz_turu="ODEME", cari_id=cari_id)
+            if dialog.winfo_exists():
+                self.wait_window(dialog)
+        finally:
+            self._makbuz_acik = False
+        if getattr(dialog, "result", None) and self.cari is not None and int(self.cari.id) == cari_id:
+            self.yenile()
 
     def cari_virman_ac(self):
         """Cari Virman fişi: müşteri alacak (kaynak), tedarikçi borç (karşı) tarafına gelir."""
@@ -4812,6 +4942,54 @@ class CariDialog(tk.Toplevel):
             self.wait_window(dialog)
         if dialog.result:
             self.yenile()
+
+    def karsi_taraf_ara(self):
+        """Müşteri kartında tedarikçi / tedarikçi kartında müşteri ara; mevcut form korunur.
+
+        Seçilen kart iç içe açılır (önceki kart kapanmaz); kapatınca geri dönülür.
+        Ana cari türü arama veya seçimle değişmez.
+        """
+        from app import MusteriSecimDialog
+
+        hedef = "Tedarikçi" if not self.tedarikci_modu else "Müşteri"
+        try:
+            if hedef == "Tedarikçi":
+                kayitlar = list(CariService.aktif_tedarikciler())
+            else:
+                kayitlar = list(CariService.aktif_musteriler())
+        except Exception:
+            kayitlar = []
+        kayitlar.sort(
+            key=lambda c: ((c.unvan or "").casefold(), (c.cari_kodu or "").casefold())
+        )
+        varsayilan = kayitlar[:80]
+        bakiyeler: dict = {}
+        ids = [c.id for c in varsayilan]
+        if ids:
+            try:
+                bakiyeler = CariService.musteri_bakiyeleri_toplu(ids)
+            except Exception:
+                bakiyeler = {}
+
+        dlg = MusteriSecimDialog(
+            self,
+            musteriler=varsayilan,
+            bakiyeler=bakiyeler,
+            ara="",
+            baslik=f"{hedef} Ara",
+            kayit_adi=hedef.lower(),
+            canli_arama=True,
+            cari_turu=hedef,
+        )
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        # Parent=self → mevcut kart (ve kaydedilmemiş girişler) açık kalır
+        CariDialog(
+            self,
+            cari=dlg.result,
+            cari_turu=(getattr(dlg.result, "cari_turu", None) or hedef),
+        )
 
     # ─── Doğrulama / kayıt ────────────────────────────────────────
     def _vergi_no_kontrol(self, _event=None):
@@ -4862,8 +5040,8 @@ class CariDialog(tk.Toplevel):
         if getattr(self, "risk_paneli", None) is not None:
             from database.cari_risk_service import kart_alanlarini_dogrula
 
-            risk_verileri = self.risk_paneli.degerler()
             try:
+                risk_verileri = self.risk_paneli.degerler()
                 kart_alanlarini_dogrula(dict(risk_verileri))
             except ValueError as hata:
                 messagebox.showwarning("Risk ve Limitler", str(hata), parent=self)
@@ -5104,6 +5282,9 @@ class CariDialog(tk.Toplevel):
                 return
             w = odak
             while w is not None:
+                # Makbuz vb. ayrı Toplevel açıksa cari kartını kaydetme
+                if isinstance(w, tk.Toplevel) and w is not self:
+                    return "break"
                 if w == self:
                     self.kaydet()
                     return "break"

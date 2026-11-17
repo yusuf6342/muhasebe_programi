@@ -14,15 +14,12 @@ LABELS = {
     "POS": "POS",
     "KREDI_KARTI": "Kredi kartı",
     "KREDILER": "Kredi",
-    "VADELI": "Vadeli",
+    "VADELI": "Yatırım",
 }
 
 
 def money(v):
-    return (
-        f"{Decimal(str(v or 0)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        + " TL"
-    )
+    return FinansService.para_metni(v, isaretli=True)
 
 
 class BankaAltHesapDetayDialog(tk.Toplevel):
@@ -95,6 +92,20 @@ class BankaAltHesapDetayDialog(tk.Toplevel):
         self.moves.configure(yscrollcommand=scroll2.set)
         self.table.bind("<<TreeviewSelect>>", self.show_movements)
         self.table.bind("<Double-1>", lambda _e: self._duzenle())
+        from finans_ui import _hareket_listesi_belge_bagla
+
+        def _hareket_sonrasi_yenile():
+            self._yenile()
+            if hasattr(self.parent_dlg, "bakiyeleri_yenile"):
+                self.parent_dlg.bakiyeleri_yenile()
+
+        _hareket_listesi_belge_bagla(
+            self.moves,
+            self,
+            _hareket_sonrasi_yenile,
+            belge_alan="number",
+            tur_alan="kind",
+        )
         alt = ttk.Frame(frame)
         alt.pack(fill="x")
         ttk.Button(alt, text="Düzenle", command=self._duzenle).pack(side="left")
@@ -108,7 +119,7 @@ class BankaAltHesapDetayDialog(tk.Toplevel):
         for item in self.table.get_children():
             self.table.delete(item)
         for h in sorted(self.accounts.values(), key=lambda a: ((a.alt_hesap_turu or ""), a.hesap_adi)):
-            value = FinansService.varlik_bakiyesi(FinansService.bakiye(h), hesap=h)
+            value = FinansService.isletme_bakiyesi(h)
             self.table.insert(
                 "",
                 "end",

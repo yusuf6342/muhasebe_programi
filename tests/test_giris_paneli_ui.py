@@ -10,7 +10,7 @@ import unittest
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.stok_test_ortami import StokOrtami
 
@@ -99,9 +99,87 @@ class GirisPaneliUITest(unittest.TestCase):
             pencere.csv_kaydet()
         with open(yol, encoding="utf-8-sig") as f:
             satirlar = list(csv.reader(f, delimiter=";"))
-        self.assertEqual(satirlar[0][0], "Kaynak")
-        self.assertEqual(satirlar[-1][-1], para_tr(net))
+        self.assertEqual(satirlar[0][0], "Belge türü")
+        # Tutar sütunu (kaynak, belge_no, tarih, islem_saati, cari, tutar, …)
+        self.assertIn("İşlem Saati", satirlar[0])
+        tutar_ix = satirlar[0].index("Tutar")
+        self.assertEqual(satirlar[-1][tutar_ix], para_tr(net))
         self.assertEqual(len(satirlar), 3)
+        # Kritik sütunlar: tür + belge + tarih + işlem saati + cari + tutar + kapanan + açık
+        self.assertEqual(
+            [c[0] for c in gp.AYRINTI_KOLONLARI[:8]],
+            [
+                "kaynak",
+                "belge_no",
+                "tarih",
+                "islem_saati",
+                "cari",
+                "tutar",
+                "kapanan_tutar",
+                "acik_kalan_tutar",
+            ],
+        )
+        self.assertIn("Kapanan Tutar", satirlar[0])
+        self.assertIn("Açık Kalan Tutar", satirlar[0])
+        kap_ix = satirlar[0].index("Kapanan Tutar")
+        acik_ix = satirlar[0].index("Açık Kalan Tutar")
+        kalem = pencere._kalemler[0]
+        self.assertTrue(kalem.get("belge_id"), "Net satış kaleminde belge_id olmalı")
+        self.assertEqual(kalem.get("belge_turu"), "satis")
+        self.assertIn("islem_saati", kalem)
+        self.assertIn("kapanan_tutar", kalem)
+        self.assertIn("acik_kalan_tutar", kalem)
+        # Varsayılan açık fatura: kapanan 0, açık = tutar
+        self.assertEqual(kalem["kapanan_tutar"], D("0.00"))
+        self.assertEqual(kalem["acik_kalan_tutar"], D("1200.00"))
+        self.assertEqual(satirlar[-1][kap_ix], para_tr(D("0")))
+        self.assertEqual(satirlar[-1][acik_ix], para_tr(D("1200")))
+        self.assertIn("Toplam Kapanan", pencere._ozet_lbl.cget("text"))
+        # Saat belgeden gelir; yoksa None (tahmini yazılmaz)
+        if kalem.get("islem_saati"):
+            self.assertRegex(str(kalem["islem_saati"]), r"^\d{2}:\d{2}(:\d{2})?$")
+
+    def test_ayrinti_belge_id_ile_acar_ve_yeniler(self):
+        """Belge kimliğiyle açılır; kayıt sonrası liste/toplam yenilenir (kopya yok)."""
+        self.o.alis(10, 10, date.today() - timedelta(days=30))
+        self.fatura(1000)
+        p = self.panel()
+        p.kartlar[0]["cmd"]()
+        pencere = self._pencereler()[-1]
+        kalem = pencere._kalemler[0]
+        belge_id = int(kalem["belge_id"])
+        once_toplam = gp._toplam(pencere._kalemler)
+
+        acilan = []
+
+        class _SahteDlg(tk.Toplevel):
+            def __init__(self, parent, fatura=None, **_kw):
+                super().__init__(parent)
+                acilan.append(int(getattr(fatura, "id", 0) or 0))
+                self.after(10, self.destroy)
+
+        # belge_id_ile_ac: from app import SatisFaturasiDialog
+        with patch("app.SatisFaturasiDialog", _SahteDlg), patch("app.CariDialog", MagicMock):
+            from belge_onizleme_ui import belge_id_ile_ac
+
+            ok = belge_id_ile_ac(
+                self.kok, belge_id=belge_id, belge_turu="satis", kaynak="Satış faturası"
+            )
+            self.assertTrue(ok)
+        self.assertEqual(acilan, [belge_id])
+
+        # Yenileme: aynı kapsam, tutar tutarlı
+        pencere._kayit_sonrasi_yenile()
+        self.assertTrue(pencere.winfo_exists())
+        self.assertEqual(gp._toplam(pencere._kalemler), once_toplam)
+        self.assertEqual(int(pencere._kalemler[0]["belge_id"]), belge_id)
+
+        # Kapatılmış pencere yenilemede hata vermez
+        pencere.destroy()
+        self.kok.update_idletasks()
+        # panel hâlâ ayakta
+        p.yenile(zorla=True)
+        self.assertEqual(p._sonuc["satis"]["satirlar"]["bugun"]["net"], once_toplam)
 
     def test_eski_cevap_ve_mukerrer_calisma(self):
         p = self.panel()
@@ -189,7 +267,9 @@ class GirisPaneliUITest(unittest.TestCase):
                         permissions={"satis_goruntuleme"})
         p = self.panel()
         for i in (2, 3):
-            self.assertEqual(p.kartlar[i]["deger"].cget("text"), "Yetkisiz")
+            # Yetkisiz kartta tutar yerine —; açıklama alt satırda
+            self.assertEqual(p.kartlar[i]["deger"].cget("text"), "—")
+            self.assertIn("yetkiniz yok", (p.kartlar[i]["alt"].cget("text") or "").lower())
             self.assertIsNone(p.kartlar[i]["cmd"])
         metinler = [w.cget("text") for w in p.k_borc.govde.winfo_children() if isinstance(w, tk.Label)]
         self.assertEqual(metinler, ["Bu bölümü görüntüleme yetkiniz yok."])
@@ -232,6 +312,92 @@ class GirisPaneliUITest(unittest.TestCase):
         with patch.dict(os.environ, {"CIN_ESKI_GIRIS": ""}), patch.object(gp, "giris_paneli_goster") as yeni:
             ana_panel_ui.giris_dashboard_goster(self.kok)
         yeni.assert_called_once()
+
+    def test_likit_kart_ayrinti_ayni_toplam(self):
+        """Likit kart lambda'sı borç kalemlerine ezilmeden gerçek kasa/mevduat satırlarını açar."""
+        from database.database import get_session
+        from database.models.finans import BankaKarti, FinansHesabi
+
+        # Devir bakiyeli kasa + mevduat (bugün hareket şart değil; açılış bakiyesi yeterli)
+        with get_session() as s:
+            bk = BankaKarti(banka_adi="LİKİT TEST BANKASI")
+            s.add(bk)
+            s.flush()
+            s.add_all(
+                [
+                    FinansHesabi(
+                        hesap_adi="LİKİT ANA KASA",
+                        hesap_turu="KASA",
+                        acilis_bakiyesi=D("1000.00"),
+                        para_birimi="TRY",
+                    ),
+                    FinansHesabi(
+                        hesap_adi="LİKİT MEVDUAT",
+                        hesap_turu="BANKA",
+                        alt_hesap_turu="MEVDUAT",
+                        banka_karti_id=bk.id,
+                        banka_adi="LİKİT TEST BANKASI",
+                        hesap_no="TR00-TEST",
+                        acilis_bakiyesi=D("2500.00"),
+                        para_birimi="TRY",
+                    ),
+                ]
+            )
+            s.commit()
+        go.onbellegi_temizle()
+        p = self.panel()
+        kart_tutar = p._sonuc["likit"]["likit"]
+        self.assertEqual(kart_tutar, D("3500.00"))
+        self.assertEqual(len(p._sonuc["likit"]["kalemler"]), 2)
+        self.assertIsNotNone(p.kartlar[2]["cmd"])
+        p.kartlar[2]["cmd"]()
+        pencere = self._pencereler()[-1]
+        self.assertTrue(pencere._baslik.startswith("Likit varlıklar"))
+        self.assertEqual(len(pencere._kalemler), 2, "Ayrıntı boş olmamalı (closure/filtre hatası)")
+        self.assertEqual(gp._toplam(pencere._kalemler), kart_tutar)
+        self.assertTrue(all(k.get("kaynak") in ("Kasa", "Banka mevduatı", "KMH") for k in pencere._kalemler))
+        self.assertTrue(all(k.get("hesap_id") for k in pencere._kalemler))
+
+    def test_ayrinti_tutar_sirala_ve_kolon_ayari(self):
+        """Tutar sayısal sıralama + kolon tercihi kullanıcı/tablo bazında kalıcı."""
+        from copy import deepcopy
+
+        self.o.alis(10, 10, date.today() - timedelta(days=30))
+        self.fatura(500)
+        self.fatura(1500)
+        self.fatura(200)
+        p = self.panel()
+        p.kartlar[0]["cmd"]()
+        pencere = self._pencereler()[-1]
+        self.assertEqual(len(pencere._kalemler), 3)
+        pencere._tutar_sirala()
+        self.assertEqual(pencere._tutar_yon, "desc")
+        tutarlar = [Decimal(str(k["tutar"])) for k in pencere._kalemler]
+        self.assertEqual(tutarlar, sorted(tutarlar, reverse=True))
+        self.assertIn("▼", pencere.tablo.heading("tutar", "text"))
+        pencere._tutar_sirala()
+        self.assertEqual(pencere._tutar_yon, "asc")
+        tutarlar = [Decimal(str(k["tutar"])) for k in pencere._kalemler]
+        self.assertEqual(tutarlar, sorted(tutarlar))
+        # Yenileme sıralama yönünü korur
+        pencere.kalemleri_yenile(list(pencere._kalemler))
+        self.assertEqual(pencere._tutar_yon, "asc")
+        # Kolon gizle / kaydet / yeniden yükle
+        ayar = deepcopy(pencere._ayar)
+        ayar["kolonlar"]["aciklama"]["gorunur"] = False
+        ayar["sira"] = ["tutar", "kaynak", "belge_no", "tarih", "islem_saati", "cari",
+                        "vade", "yontem", "aciklama"]
+        pencere._ayar_uygula(ayar)
+        self.assertEqual(list(pencere.tablo["displaycolumns"])[0], "tutar")
+        self.assertNotIn("aciklama", list(pencere.tablo["displaycolumns"]))
+        yol = gp.ayrinti_ayar_dosyasi(pencere._tablo_anahtari)
+        self.assertTrue(yol.exists())
+        yeniden = gp.ayrinti_ayarlari_yukle(pencere._tablo_anahtari)
+        self.assertFalse(yeniden["kolonlar"]["aciklama"]["gorunur"])
+        self.assertEqual(yeniden["sira"][0], "tutar")
+        # Evrak bağlantısı kolon sırasından bağımsız belge_id kullanır
+        iid = pencere.tablo.get_children()[0]
+        self.assertTrue(pencere._iid_kalem[iid].get("belge_id"))
 
 
 class SabitGiderEkraniTest(unittest.TestCase):

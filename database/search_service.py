@@ -441,20 +441,23 @@ class SearchService:
         arama: str = "",
         *,
         limit: int = 50,
-        cari_turu: str | None = "Müşteri",
+        cari_turu: str | None = "EVRAK",
         sadece_aktif: bool = True,
+        min_blok_len: int = 2,
     ) -> list[dict[str, Any]]:
         """Cari çoklu blok arama. Dönüş: [{cari, kod, unvan}, ...]
 
+        Varsayılan EVRAK: satış/alış belgelerinde tür kısıtı yok.
         Bloklar AND; her blok cari alanları VEYA yetkili alanlarında OR.
         Aynı cari tekilleşir.
+        ``min_blok_len``: tek harfle açılan belge alanları için 1 verilebilir.
         """
         from database.cari_service import CariService
         from database.models.cari import Cari
 
         limit = max(1, min(int(limit or 50), 100))
         ham = (arama or "").strip()
-        bloklar = tokenize_query(ham)
+        bloklar = tokenize_query(ham, min_len=max(1, int(min_blok_len or 2)))
         if not bloklar:
             return []
 
@@ -594,8 +597,9 @@ class SearchService:
 
     @staticmethod
     def search_suppliers(arama: str = "", *, limit: int = 50) -> list[dict[str, Any]]:
+        # Alış belgeleri de tüm gerçek cari türlerini arar (müşteri kartı seçilebilir).
         return SearchService.search_customers(
-            arama, limit=limit, cari_turu="Tedarikçi"
+            arama, limit=limit, cari_turu="EVRAK"
         )
 
 

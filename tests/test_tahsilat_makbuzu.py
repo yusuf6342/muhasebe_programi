@@ -127,14 +127,15 @@ class TahsilatMakbuzuTest(unittest.TestCase):
                     alacak=Decimal("0"),
                 )
             )
+            # Evo polaritesi: tedarikçiye borcumuz alacak bakiyesi (negatif net).
             s.add(
                 CariIslem(
                     cari_id=tedarikci.id,
                     tarih=date(2026, 1, 2),
                     islem_turu="Açılış",
                     belge_no="ACL-2",
-                    borc=Decimal("5000"),
-                    alacak=Decimal("0"),
+                    borc=Decimal("0"),
+                    alacak=Decimal("5000"),
                 )
             )
             s.commit()
@@ -266,7 +267,7 @@ class TahsilatMakbuzuTest(unittest.TestCase):
         self._nakit("800")
         ozet = self._bakiye(self.musteri_id)
         self.assertEqual((ozet["tutar"], ozet["yon"]), (Decimal("200.00"), "Alacaklı"))
-        self.assertEqual(self._bakiye(self.tedarikci_id)["yon"], "Borçlu")
+        self.assertEqual(self._bakiye(self.tedarikci_id)["yon"], "Alacaklı")
 
     # —— kartla tahsilat ——
     def test_musteriden_kartla_tahsilat_pos_hesabina_komisyon_ve_valor(self):
@@ -346,11 +347,13 @@ class TahsilatMakbuzuTest(unittest.TestCase):
         with get_session() as s:
             islem = s.scalar(select(CariIslem).where(CariIslem.belge_no == m.belge_no))
             self.assertEqual(islem.islem_turu, "Ödeme")
+            self.assertEqual((islem.borc, islem.alacak), (Decimal("3000.00"), Decimal("0.00")))
             ko = s.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.id == m.satirlar[0].kk_odeme_id))
             self.assertEqual((ko.taksit_sayisi, ko.tutar, ko.durum, len(ko.taksitler)), (3, Decimal("3000.00"), "AÇIK", 3))
             kk_hesap = s.get(FinansHesabi, self.kk_hesap_id)
             self.assertEqual(FinansService.bakiye(kk_hesap), Decimal("3000.00"))
-        self.assertEqual(self._bakiye(self.tedarikci_id)["tutar"], Decimal("2000.00"))
+        ozet = self._bakiye(self.tedarikci_id)
+        self.assertEqual((ozet["tutar"], ozet["yon"]), (Decimal("2000.00"), "Alacaklı"))
 
     def test_kart_limiti_asilamaz(self):
         with self.assertRaises(ValueError):

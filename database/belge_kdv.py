@@ -59,23 +59,33 @@ def belge_kdv(f, satir_toplam_fn, satirlar=None) -> dict:
     ``satir_toplam_fn``: belge servisinin ``toplam`` fonksiyonu (çoklu iskonto, satır yuvarlaması dahil).
     Dönüş: matrah, kdv, genel, durum, notlar (bilgi), sorun (EKSIK nedeni), satir (satır toplamları).
     """
-    satirlar = list(f.satirlar if satirlar is None else satirlar)
-    t = {k: _q2(v) for k, v in satir_toplam_fn(satirlar).items()} if satirlar else {
-        "ara_toplam": SIFIR, "iskonto": SIFIR, "kdv": SIFIR, "genel_toplam": SIFIR}
     genel = _q2(getattr(f, "tl_genel_toplam", 0))
     hk = _q2(getattr(f, "tl_kdv", 0))
     hm = _q2(getattr(f, "tl_matrah", 0))
     brut = _q2(getattr(f, "tl_brut_toplam", 0))
-    sk, sg = t["kdv"], t["genel_toplam"]
-    tol = tolerans(len(satirlar))
-    sonuc = {"satir": t, "notlar": [], "sorun": None}
+    sonuc = {"satir": None, "notlar": [], "sorun": None}
 
-    def ver(matrah, kdv, genel_, durum, *, not_=None, sorun=None):
+    def ver(matrah, kdv, genel_, durum, *, not_=None, sorun=None, satir=None):
         sonuc.update(matrah=_q2(matrah), kdv=_q2(kdv), genel=_q2(genel_), durum=durum)
+        if satir is not None:
+            sonuc["satir"] = satir
         if not_:
             sonuc["notlar"].append(not_)
         sonuc["sorun"] = sorun
         return sonuc
+
+    # Başlıkta genel+KDV kayıtlıysa satır toplamını yeniden hesaplama (ana panel N×CPU).
+    if genel > 0 and hk:
+        return ver(genel - hk, hk, genel, KAYITLI, satir={
+            "ara_toplam": SIFIR, "iskonto": SIFIR, "kdv": hk, "genel_toplam": genel,
+        })
+
+    satirlar = list(f.satirlar if satirlar is None else satirlar)
+    t = {k: _q2(v) for k, v in satir_toplam_fn(satirlar).items()} if satirlar else {
+        "ara_toplam": SIFIR, "iskonto": SIFIR, "kdv": SIFIR, "genel_toplam": SIFIR}
+    sk, sg = t["kdv"], t["genel_toplam"]
+    tol = tolerans(len(satirlar))
+    sonuc["satir"] = t
 
     if genel <= 0:
         if not satirlar or sg <= 0:

@@ -628,25 +628,36 @@ class CariVirmanEkranTest(unittest.TestCase):
             app_mod.messagebox, "showinfo"
         ) as bilgi:
             d = app_mod.KkCekimiDialog(self.root)
-            m_etiket = next(e for e, c in d.musteri_map.items() if c.id == self.musteri_id)
-            t_etiket = next(e for e, c in d.tedarikci_map.items() if c.id == self.tedarikci_id)
-            d.girdiler["musteri"].set(m_etiket)
-            d.girdiler["tedarikci"].set(t_etiket)
+            d._taraf_sec("musteri", d.musteri_map[self.musteri_id])
+            d._taraf_sec("tedarikci", d.tedarikci_map[self.tedarikci_id])
             d.girdiler["tutar"].insert(0, "300")
             d.girdiler["banka"].insert(0, "Ziraat")
             d.girdiler["taksit_sayisi"].delete(0, "end")
             d.girdiler["taksit_sayisi"].insert(0, "3")
             d._guncelle()
             self.assertIn("ALACAK", d.onizleme.cget("text"))
+            self.assertEqual(d.girdiler["musteri"].get(), d._unvan(d.musteri_map[self.musteri_id]))
+            self.assertEqual(d.girdiler["tedarikci"].get(), d._unvan(d.tedarikci_map[self.tedarikci_id]))
             d.kaydet()
         belge = d.result["belge_no"]
         self.assertIn(belge, bilgi.call_args.args[1])
+        # Müşteri alacak (−300), tedarikçi borç (+300); açılış: müşteri 1000B, tedarikçi 5000A
         self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("700"))
-        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("5300"))
+        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("-4700"))
         kayit = KkCekimiService.getir(belge)
         self.assertEqual((kayit["banka"], kayit["taksit_sayisi"]), ("Ziraat", 3))
+        self.assertEqual((kayit["musteri_id"], kayit["tedarikci_id"]), (self.musteri_id, self.tedarikci_id))
         with get_session() as s:
-            self.assertEqual(s.scalar(select(func.count(CariIslem.id)).where(CariIslem.belge_no == belge)), 2)
+            islemler = s.scalars(select(CariIslem).where(CariIslem.belge_no == belge)).all()
+            self.assertEqual(len(islemler), 2)
+            ozet = {(i.cari_id, Decimal(str(i.borc)), Decimal(str(i.alacak))) for i in islemler}
+            self.assertEqual(
+                ozet,
+                {
+                    (self.musteri_id, Decimal("0"), Decimal("300")),
+                    (self.tedarikci_id, Decimal("300"), Decimal("0")),
+                },
+            )
 
         # Finans → Banka İşlemleri → KK çekimi sayfası listeler ve yeni fiş düğmesi pencereyi açar
         root = self.root
@@ -668,7 +679,11 @@ class CariVirmanEkranTest(unittest.TestCase):
         with patch.object(app_mod, "KkCekimiDialog") as pencere:
             pencere.return_value.winfo_exists.return_value = False
             pencere.return_value.result = None
-            next(b for b in bul(root.icerik, ttk.Button) if b.cget("text") == "Yeni KK Çekim Fişi").invoke()
+            next(
+                b
+                for b in bul(root.icerik, ttk.Button)
+                if b.cget("text") == "Müşteriden Tedarikçiye Kredi Kartı Çekim Fişi"
+            ).invoke()
         pencere.assert_called_once()
 
     def _liste_sayfasi(self):
@@ -709,24 +724,32 @@ class CariVirmanEkranTest(unittest.TestCase):
         self.assertIn(self.ui.KK_ODEME_SEKLI, d.sekil_cb.cget("values"))
         self.assertIn("CARİ VİRMAN", d.sekil_cb.cget("values"))
         d.cari_var.set("çelik")
+        d._cari_arama.eslesen = d._cari_arama.ara("çelik")
+        self.assertTrue(d._cari_arama.eslesen)
         d._cari_arama.sec(0)
+        self.assertEqual(d._cari_arama.secili_id, self.musteri_id)
         d.tutar_var.set("300")
         acilan = {}
 
-        def fisi_doldur(pencere):
+        def fisi_doldur(*args, **_kwargs):
+            pencere = next((a for a in args if hasattr(a, "girdiler")), None)
+            if pencere is None:
+                return None
             acilan["musteri"] = pencere.girdiler["musteri"].get()
             acilan["tutar"] = pencere.girdiler["tutar"].get()
-            t_etiket = next(e for e, c in pencere.tedarikci_map.items() if c.id == self.tedarikci_id)
-            pencere.girdiler["tedarikci"].set(t_etiket)
+            pencere._taraf_sec("tedarikci", pencere.tedarikci_map[self.tedarikci_id])
             pencere.girdiler["banka"].insert(0, "Garanti")
             pencere.kaydet()
+            return None
 
         with patch.object(app_mod.KkCekimiDialog, "grab_set"), patch.object(
             app_mod.messagebox, "showinfo"
         ), patch.object(d, "wait_window", side_effect=fisi_doldur):
-            d.sekil_var.set(self.ui.KK_ODEME_SEKLI)
-            d._sekil_degisti()
-        self.assertIn("M001", acilan["musteri"])
+            d.kk_odeme_ac()
+        self.assertIn("musteri", acilan, "KK fiş diyaloğu açılmadı")
+        # Form alanında yalnızca unvan görünür (kod yok)
+        self.assertNotIn("M001", acilan["musteri"])
+        self.assertTrue(acilan["musteri"].strip())
         self.assertEqual(acilan["tutar"], "300,00")
         self.assertFalse(d.winfo_exists())
         belge = kayitlar[0]["belge_no"]
@@ -777,7 +800,8 @@ class CariVirmanEkranTest(unittest.TestCase):
             dugmeler["İptal Et"].invoke()
         self.assertEqual(tablo.set(kk_iid, "durum"), "İPTAL")
         self.assertEqual(_bakiye(self.musteri_id)["bakiye"], Decimal("550"))
-        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("4600"))
+        # Virman 400: tedarikçiye de alacak → net -5000 - 400 = -5400 (KK iptalinden sonra)
+        self.assertEqual(_bakiye(self.tedarikci_id)["bakiye"], Decimal("-5400"))
         with get_session() as s:
             self.assertEqual(s.scalar(select(func.count(CariIslem.id)).where(CariIslem.belge_no == belge)), 0)
         self.assertEqual(KkCekimiService.makbuz_listesi(durum="IPTAL")[0].belge_no, belge)

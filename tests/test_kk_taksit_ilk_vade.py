@@ -1,4 +1,4 @@
-"""KK taksit planı: ilk vade çekimden bağımsız; ekstre kesim yazılır."""
+"""KK taksit planı: iç plan işlem gününden; ekstre/banka vadesi ayrı."""
 
 from __future__ import annotations
 
@@ -41,7 +41,9 @@ class KkTaksitIlkVadeTest(unittest.TestCase):
         self.assertEqual(len(plan), 2)
         self.assertIsNotNone(plan[0].get("ekstre_kesim_tarihi"))
         self.assertEqual(plan[0]["ekstre_kesim_tarihi"], date(2026, 11, 7))
-        self.assertEqual(plan[0]["vade_tarihi"], date(2026, 11, 8))
+        # İç plan vadesi işlem günü; banka son ödeme ayrı
+        self.assertEqual(plan[0]["vade_tarihi"], date(2026, 10, 19))
+        self.assertEqual(plan[0]["banka_vade_tarihi"], date(2026, 11, 8))
 
 
 if __name__ == "__main__":

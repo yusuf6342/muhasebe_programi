@@ -138,10 +138,22 @@ def schema_hazirla(motor=None) -> None:
             },
         )
 
+    def _v6(e) -> None:
+        # Kredi notu (yıldız / dolandırıcı) + saklanan manuel açık hesap limiti
+        eksik_kolonlari_ekle(
+            e,
+            "cari_kartlar",
+            {
+                "kredi_notu": "VARCHAR(10)",
+                "kredi_notu_manuel_limit": "NUMERIC(18, 2)",
+            },
+        )
+
     if inspect(motor).has_table("cari_kartlar"):
         surum_uygula(motor, "cari_kart", 1, _v1)
         surum_uygula(motor, "cari_kart", 2, _v2)
         surum_uygula(motor, "cari_kart", 3, _v3)
         surum_uygula(motor, "cari_kart", 4, _v4)
         surum_uygula(motor, "cari_kart", 5, _v5)
+        surum_uygula(motor, "cari_kart", 6, _v6)
     _HAZIR_MOTORLAR.add(motor)

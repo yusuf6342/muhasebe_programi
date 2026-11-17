@@ -189,6 +189,13 @@ def assert_siparis_form_safe(vm: SiparisFormViewModel, metin: str = "") -> None:
     assert_customer_model_safe(vm)
     if metin:
         assert_customer_output_safe(metin)
+        # Ekran bilgilendirme sütunu PDF/yazıcıya taşınmasın
+        dusuk = metin.casefold()
+        for yasak in ("stok durumu", "stok_durumu"):
+            if yasak in dusuk:
+                raise ValueError(
+                    "Sipariş müşteri çıktısında ekran Stok Durumu bilgisi bulunmamalı."
+                )
 
 
 def belge_bilgi_satirlari(vm: SiparisFormViewModel) -> list[tuple[str, str]]:

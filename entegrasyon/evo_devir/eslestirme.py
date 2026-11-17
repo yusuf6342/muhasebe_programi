@@ -24,12 +24,19 @@ SIFIR = Decimal("0")
 KURUS = Decimal("0.01")
 
 # Evo MUSTIP → yerel cari türü. Evo türü ayrıca müşteri grubunda korunur.
+# Bilinmeyen türler varsayılan Müşteri olur; grup alanında "Evo: …" korunur (elle eşleme).
 CARI_TUR_HARITASI = {
     "müşteri": "Müşteri",
     "perakende müşteriler": "Müşteri",
     "tedarikçi": "Tedarikçi",
     "hizmet satıcılar": "Tedarikçi",
     "personel": "Personel",
+    "resmi kurumlar": "Resmi Kurumlar",
+    "resmi kurum": "Resmi Kurumlar",
+    "düzenleyici": "Düzenleyici Hesaplar",
+    "düzenleyici hesaplar": "Düzenleyici Hesaplar",
+    "duzenleyici": "Düzenleyici Hesaplar",
+    "duzenleyici hesaplar": "Düzenleyici Hesaplar",
 }
 
 

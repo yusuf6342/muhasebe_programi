@@ -314,6 +314,12 @@ def _tedarikci_cari_ac(app) -> Callable:
     return ac
 
 
+def tedarikci_kartlari_goster(app):
+    """Tedarikçi ana türündeki cari kartlar listesi."""
+    if hasattr(app, "tedarikciler_goster"):
+        app.tedarikciler_goster()
+
+
 def alis_faturasi_yeni(app):
     """Yeni boş alış faturası (kayıt oluşturmaz; kaydedilene kadar veri tabanına yazılmaz)."""
     from alis_ui import AlisFaturasiDialog

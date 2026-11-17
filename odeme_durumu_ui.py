@@ -601,43 +601,49 @@ def odeme_durumu_sayfasi_goster(app):
         for i, ay in enumerate(aylar):
             _ay_karti(ay_kap, ay, odeme_ac_cb=_odeme_ac, sutun=i)
 
-        odenenler = []
-        for ay in aylar:
-            odenenler.extend(ay.get("odenen_satirlar") or [])
-        odenenler.sort(key=lambda s: s.get("due_date") or date.min)
-        tv = ttk.Treeview(
-            gecmis_frm,
-            columns=("tarih", "aciklama", "tur", "banka", "tutar", "belge"),
-            show="headings",
-            height=4,
-        )
-        for k, b, w in (
-            ("tarih", "Tarih", 90),
-            ("aciklama", "Açıklama", 260),
-            ("tur", "Tür", 110),
-            ("banka", "Banka", 120),
-            ("tutar", "Tutar", 100),
-            ("belge", "Belge", 110),
-        ):
-            tv.heading(k, text=b)
-            tv.column(k, width=w)
-        tv.pack(fill="x", padx=4, pady=4)
-        if not odenenler:
-            tv.insert("", "end", values=("—", "Bu dönemde ödenen kayıt yok", "", "", "", ""))
+        # Ödeme Geçmişi yalnızca «Ödenenleri göster» açıkken
+        if odenen_var.get():
+            if not gecmis_frm.winfo_ismapped():
+                gecmis_frm.pack(fill="x", pady=(6, 0))
+            odenenler = []
+            for ay in aylar:
+                odenenler.extend(ay.get("odenen_satirlar") or [])
+            odenenler.sort(key=lambda s: s.get("due_date") or date.min)
+            tv = ttk.Treeview(
+                gecmis_frm,
+                columns=("tarih", "aciklama", "tur", "banka", "tutar", "belge"),
+                show="headings",
+                height=4,
+            )
+            for k, b, w in (
+                ("tarih", "Tarih", 90),
+                ("aciklama", "Açıklama", 260),
+                ("tur", "Tür", 110),
+                ("banka", "Banka", 120),
+                ("tutar", "Tutar", 100),
+                ("belge", "Belge", 110),
+            ):
+                tv.heading(k, text=b)
+                tv.column(k, width=w)
+            tv.pack(fill="x", padx=4, pady=4)
+            if not odenenler:
+                tv.insert("", "end", values=("—", "Bu dönemde ödenen kayıt yok", "", "", "", ""))
+            else:
+                for s in odenenler[:200]:
+                    tv.insert(
+                        "",
+                        "end",
+                        values=(
+                            _tarih(s.get("due_date")),
+                            s.get("aciklama") or "",
+                            s.get("kaynak_etiket") or "",
+                            s.get("banka_adi") or "",
+                            _para(s.get("tl_tutar")),
+                            s.get("belge_no") or "",
+                        ),
+                    )
         else:
-            for s in odenenler[:200]:
-                tv.insert(
-                    "",
-                    "end",
-                    values=(
-                        _tarih(s.get("due_date")),
-                        s.get("aciklama") or "",
-                        s.get("kaynak_etiket") or "",
-                        s.get("banka_adi") or "",
-                        _para(s.get("tl_tutar")),
-                        s.get("belge_no") or "",
-                    ),
-                )
+            gecmis_frm.pack_forget()
 
     _yenile()
     if hasattr(app, "nav_sayfa_isaretle"):

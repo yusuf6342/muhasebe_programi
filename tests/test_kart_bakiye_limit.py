@@ -133,8 +133,15 @@ class KartBakiyeLimitTest(unittest.TestCase):
     def test_k1_k3_ekstre_odeme_bakiye_isareti_ve_limit(self):
         self.harca("30000")
         self.assertEqual(self.bakiye(self.kk_id), D("30000.00"))
-        self.assertEqual(FinansService.varlik_bakiyesi(self.bakiye(self.kk_id), alt_tur="KREDI_KARTI"),
-                         D("-30000.00"))
+        with get_session() as s:
+            from sqlalchemy.orm import selectinload
+
+            kk_h = s.scalar(
+                select(FinansHesabi)
+                .where(FinansHesabi.id == self.kk_id)
+                .options(selectinload(FinansHesabi.hareketler))
+            )
+            self.assertEqual(FinansService.isletme_bakiyesi(kk_h), D("-30000.00"))
         oz = self.ozet()
         self.assertEqual((oz["toplam_borc"], oz["kullanilan"], oz["kullanilabilir"]),
                          (D("30000.00"), D("30000.00"), D("20000.00")))
@@ -144,8 +151,15 @@ class KartBakiyeLimitTest(unittest.TestCase):
         self.assertTrue(sonuc["belge_no"].startswith("KKE"))
         self.assertEqual(self.bakiye(self.kk_id), D("20000.00"))
         self.assertEqual(self.bakiye(self.mev_id), D("990000.00"))
-        self.assertEqual(FinansService.varlik_bakiyesi(self.bakiye(self.kk_id), alt_tur="KREDI_KARTI"),
-                         D("-20000.00"))
+        with get_session() as s:
+            from sqlalchemy.orm import selectinload
+
+            kk_h = s.scalar(
+                select(FinansHesabi)
+                .where(FinansHesabi.id == self.kk_id)
+                .options(selectinload(FinansHesabi.hareketler))
+            )
+            self.assertEqual(FinansService.isletme_bakiyesi(kk_h), D("-20000.00"))
         oz = self.ozet()
         self.assertEqual((oz["kullanilan"], oz["kullanilabilir"]), (D("20000.00"), D("30000.00")))
         self.assertEqual(FinansService.kredi_karti_kullanilan(self.kart_id), D("20000.00"))
@@ -304,8 +318,14 @@ class KartBakiyeLimitTest(unittest.TestCase):
                 E.odeme_yap(ekstre_id=eid, tutar="100", tarih=BUGUN)
             with self.assertRaisesRegex(ValueError, "yalnız kasa"):
                 E.odeme_yap(ekstre_id=eid, tutar="100", tarih=BUGUN, finans_hesap_id=self.kk_id)
-            with self.assertRaisesRegex(ValueError, "büyük olamaz"):
-                E.odeme_yap(ekstre_id=eid, tutar="30000.02", tarih=BUGUN, finans_hesap_id=self.mev_id)
+            # V6: serbest tutar — ekstre kalanını aşan ödeme fazla/alacak olarak kabul
+            fazla = E.odeme_yap(
+                ekstre_id=eid, tutar="30000.02", tarih=BUGUN, finans_hesap_id=self.mev_id,
+                odeme_yontemi="BANKA",
+            )
+            self.assertFalse(fazla.get("mevcut"))
+            self.assertGreaterEqual(D(str(fazla.get("fazla_odeme") or 0)), D("0.02"))
+            self.iptal(fazla["belge_no"], "Serbest tutar test geri al")
         self.ode("1000", hesap=self.kasa_id)
         self.assertEqual(self.bakiye(self.kasa_id), D("99000.00"))
         self.assertEqual(self.bakiye(self.kk_id), D("29000.00"))
@@ -433,14 +453,15 @@ class KartBakiyeLimitTest(unittest.TestCase):
                     "istek_anahtari; ALTER TABLE kredi_karti_ekstreleri RENAME TO eski_tmp;"
                     + ddl.replace("son_odeme_tarihi DATE,", "son_odeme_tarihi DATE NOT NULL,") + ";"
                     "DROP TABLE eski_tmp;"
-                    "INSERT INTO kredi_karti_tanimlari (id, banka_karti_id, kart_adi, kart_limiti, aktif) "
-                    "VALUES (1, 1, 'K', 0, 1);"
+                    "INSERT INTO kredi_karti_tanimlari (id, banka_karti_id, kart_adi, kart_limiti, "
+                    "otomatik_faiz_tahakkuku, aktif) VALUES (1, 1, 'K', 0, 0, 1);"
                     "INSERT INTO kredi_karti_ekstreleri (kredi_karti_id, kesim_tarihi, donem_baslangic, donem_bitis,"
-                    " son_odeme_tarihi, durum, toplam_borc, odenen, kalan, para_birimi, kesin, olusturma) VALUES"
-                    " (1, '2026-09-07', '2026-08-08', '2026-09-07', '2026-09-12', 'ODENDI', 100.5, 100.5, 0, 'TRY',"
-                    " 1, '2026-09-07 00:00:00'),"
+                    " son_odeme_tarihi, durum, toplam_borc, odenen, kalan, asgari_odenen, para_birimi, kesin,"
+                    " son_odeme_manuel, olusturma) VALUES"
+                    " (1, '2026-09-07', '2026-08-08', '2026-09-07', '2026-09-12', 'ODENDI', 100.5, 100.5, 0, 0,"
+                    " 'TRY', 1, 0, '2026-09-07 00:00:00'),"
                     " (1, '2026-10-07', '2026-09-08', '2026-10-07', '2026-10-12', 'KISMI', 27773.81, 10000, "
-                    "17773.81, 'TRY', 1, '2026-10-07 00:00:00');")
+                    "17773.81, 0, 'TRY', 1, 0, '2026-10-07 00:00:00');")
                 c.commit()
                 c.close()
                 ins = inspect(motor)

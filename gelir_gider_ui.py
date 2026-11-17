@@ -26,6 +26,52 @@ def _tarih(t):
     return t.strftime("%d.%m.%Y") if t else ""
 
 
+def _hizmet_kart_sil(parent, hizmet_id: int, *, yenile=None, kapat=None) -> bool:
+    """Boş gelir/gider hizmet kartını siler. Kullanılmışsa engeli gösterir; Pasif seçeneği sunar."""
+    try:
+        ozet_k = HizmetService.kullanim_ozeti(int(hizmet_id))
+    except ValueError as hata:
+        messagebox.showerror("Sil", str(hata), parent=parent)
+        return False
+    if not ozet_k["silinebilir"]:
+        mesaj = ozet_k.get("engel_mesaji") or (
+            f"«{ozet_k['hizmet_kodu']} — {ozet_k['hizmet_adi']}» kullanılmış; silinemez."
+        )
+        secim = messagebox.askyesnocancel(
+            "Silinemez",
+            mesaj + "\n\nEvet = Hareketler · Hayır = Pasif Yap · İptal = vazgeç",
+            parent=parent,
+        )
+        if secim is True:
+            HizmetHareketlerDialog(parent, hizmet_id=int(hizmet_id))
+        elif secim is False:
+            try:
+                HizmetService.pasif_yap(int(hizmet_id))
+                if callable(yenile):
+                    yenile()
+            except Exception as exc:
+                messagebox.showerror("Pasif", str(exc), parent=parent)
+        return False
+    if not messagebox.askyesno(
+        "Sil",
+        f"«{ozet_k['hizmet_kodu']} — {ozet_k['hizmet_adi']}» silinsin mi?\n"
+        "Bu kart hiçbir belgede / harekette kullanılmamış.\n"
+        "Yalnız seçilen kart silinir.",
+        parent=parent,
+    ):
+        return False
+    try:
+        HizmetService.sil(int(hizmet_id), onaylandi=True)
+    except ValueError as hata:
+        messagebox.showerror("Sil", str(hata), parent=parent)
+        return False
+    if callable(yenile):
+        yenile()
+    if callable(kapat):
+        kapat()
+    return True
+
+
 def _menu_isaretle(app, anahtar="gelir_gider"):
     kabuk = getattr(app, "_ana_panel_kabuk", None)
     if kabuk is not None:
@@ -622,45 +668,7 @@ def hizmet_kartlari_sayfasi(app, hizmet_turu: str):
         hid = secili()
         if hid is None:
             return
-        try:
-            ozet_k = HizmetService.kullanim_ozeti(hid)
-        except ValueError as hata:
-            messagebox.showerror("Sil", str(hata), parent=app)
-            return
-        if not ozet_k["silinebilir"]:
-            secim = messagebox.askyesnocancel(
-                "Silinemez",
-                (
-                    f"«{ozet_k['hizmet_kodu']} — {ozet_k['hizmet_adi']}» kullanılmış.\n"
-                    f"Hareket: {ozet_k['hareket']}, fatura satırı: {ozet_k['fatura_satir']}, "
-                    f"gider fişi: {ozet_k['gider_fisi']}.\n\n"
-                    "Geçmiş kayıtlar silinmez.\n"
-                    "Evet = Hareketler · Hayır = Pasif Yap · İptal = vazgeç"
-                ),
-                parent=app,
-            )
-            if secim is True:
-                HizmetHareketlerDialog(app, hizmet_id=hid)
-            elif secim is False:
-                try:
-                    HizmetService.pasif_yap(hid)
-                    listeyi_yenile()
-                except Exception as exc:
-                    messagebox.showerror("Pasif", str(exc), parent=app)
-            return
-        if not messagebox.askyesno(
-            "Sil",
-            f"«{ozet_k['hizmet_kodu']} — {ozet_k['hizmet_adi']}» silinsin mi?\n"
-            "Bu kart hiçbir belgede kullanılmamış.",
-            parent=app,
-        ):
-            return
-        try:
-            HizmetService.sil(hid, onaylandi=True)
-        except ValueError as hata:
-            messagebox.showerror("Sil", str(hata), parent=app)
-            return
-        listeyi_yenile()
+        _hizmet_kart_sil(app, hid, yenile=listeyi_yenile)
 
     def aktif_pasif():
         hid = secili()
@@ -820,6 +828,8 @@ class HizmetKartiDialog(tk.Toplevel):
             else "HİZMET SATIŞ (GELİR) FATURASI"
         )
         ttk.Button(kayit, text=fatura_etiket, command=self.fatura_ac).pack(side="left")
+        if self.hizmet_id:
+            ttk.Button(kayit, text="Sil", command=self.sil).pack(side="left", padx=(10, 0))
         ttk.Button(kayit, text="Vazgeç", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(kayit, text="Kaydet", width=14, command=self.kaydet).pack(side="right")
 
@@ -1104,6 +1114,17 @@ class HizmetKartiDialog(tk.Toplevel):
             )
             self.destroy()
         return True
+
+    def sil(self):
+        if not self.hizmet_id:
+            messagebox.showinfo("Sil", "Önce kartı kaydedin.", parent=self)
+            return
+
+        def _kapat():
+            self.result = {"silindi": True}
+            self.destroy()
+
+        _hizmet_kart_sil(self, int(self.hizmet_id), kapat=_kapat)
 
     def fatura_ac(self):
         if not self.hizmet_id:

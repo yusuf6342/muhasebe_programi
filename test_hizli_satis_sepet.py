@@ -460,6 +460,40 @@ def test_s23_para_ustu_kuralı():
     _assert(para_ustu == Decimal("14.00"), para_ustu)
 
 
+def test_hizli_nakit_tutar_sirasi_ve_kucuk_banknotlar():
+    """Nakit hazır tutarlar: TAMAMI sonrası 5→10→20→50→…→1000; kupür mevcut tutara ekler."""
+    import hizli_satis_tahsilat_ui as tahsilat
+
+    beklenen = [Decimal(x) for x in ("5", "10", "20", "50", "100", "200", "500", "1000")]
+    _assert(list(tahsilat.HIZLI_NAKIT_TUTARLARI) == beklenen, tahsilat.HIZLI_NAKIT_TUTARLARI)
+    genel = Decimal("0.20")
+    for alinan, ustu in (
+        (Decimal("5"), Decimal("4.80")),
+        (Decimal("10"), Decimal("9.80")),
+        (Decimal("20"), Decimal("19.80")),
+    ):
+        _assert(alinan - genel == ustu, (alinan, genel, alinan - genel))
+
+    # Kupür ekleme mantığı (GUI yok): boş→0; tekrarlı tıklama birikir
+    def ekle(mevcut: str, kupur: Decimal) -> str:
+        ham = (mevcut or "").strip()
+        if not ham:
+            baz = Decimal("0.00")
+        else:
+            baz = tahsilat._parse_tutar(ham)
+        return f"{tahsilat._kurus(baz + kupur):.2f}".replace(".", ",")
+
+    _assert(ekle("", Decimal("20")) == "20,00", "bos+20")
+    _assert(ekle("20,00", Decimal("20")) == "40,00", "20+20")
+    _assert(ekle("40,00", Decimal("50")) == "90,00", "40+50")
+    _assert(ekle("100,00", Decimal("5")) == "105,00", "100+5")
+    _assert(ekle("105,00", Decimal("5")) == "110,00", "105+5")
+    _assert(ekle("110,00", Decimal("5")) == "115,00", "110+5")
+    _assert(ekle("12,50", Decimal("10")) == "22,50", "12,50+10")
+    # Para üstü: kalan 36 iken alinan 90 → 54
+    _assert(Decimal("90.00") - Decimal("36.00") == Decimal("54.00"), "para_ustu")
+
+
 def test_asama9_cikti_html_pdf_smoke():
     """§23 yardımcı: fiş/PDF üreticileri örnek veriyle (GUI yok)."""
     import hizli_satis_cikti_ui as cikti
@@ -596,6 +630,7 @@ def main():
         test_s23_barkod_cift_okutma_miktar_birlestir,
         test_s23_ondalik_miktar_ve_genel_iskonto,
         test_s23_para_ustu_kuralı,
+        test_hizli_nakit_tutar_sirasi_ve_kucuk_banknotlar,
         test_asama9_cikti_html_pdf_smoke,
         test_hedef_toplam_1050_1000,
         test_hedef_toplam_yukari_olcekle,

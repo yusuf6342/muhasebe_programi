@@ -61,6 +61,8 @@ CARI_LISTE_KOLONLARI = (
     ("ana_tur", "Ana Kart Türü", 120, False),
     ("musteri_alt_tur", "Müşteri Alt Tür", 120, False),
     ("tedarikci_alt_tur", "Tedarikçi Alt Tür", 120, False),
+    ("alt_tur", "Alt Kart Türü", 120, False),
+    ("ust_hesap", "Bağlı Üst Hesap", 160, False),
     ("grup", "Sektör Grubu", 135, True),
     ("vergi_dairesi", "Vergi Dairesi", 120, False),
     ("vergi_numarasi", "VKN", 100, False),
@@ -113,8 +115,8 @@ CARI_LISTE_KOLONLARI = (
     ("toplam_borc", "Toplam Borç", 120, False),
     ("toplam_alacak", "Toplam Alacak", 120, False),
     ("bakiye", "Yekûn Bakiye", 140, True),
-    ("agirlikli", "Kalan Bakiye Gün", 120, True),
-    ("kapatilan_gun", "Kapatılan Bakiye Gün", 120, False),
+    ("agirlikli", "Açık Valör Gün", 120, True),
+    ("kapatilan_gun", "Kapanan Valör Gün", 120, False),
     ("ozel_notlar", "Özel Notlar", 160, False),
     ("uyari_notu", "Uyarı Notu", 160, False),
     ("durum", "Durum", 75, True),
@@ -251,7 +253,7 @@ def baslik_metni(anahtar: str, *, etiket: str = "Cari") -> str:
         "kod": f"{etiket} Kodu",
         "unvan": f"{etiket} Adı",
         "grup": "Sektör Grubu",
-        "agirlikli": "Kalan Bakiye Gün",
+        "agirlikli": "Açık Valör Gün",
     }
     if anahtar in ozel:
         return ozel[anahtar]
@@ -340,13 +342,28 @@ def satir_deger_haritasi(
         except (TypeError, ValueError):
             return ""
 
+    m_alt_ad = _id_ad(m_alt, alt_map)
+    t_alt_ad = _id_ad(t_alt, alt_map)
+    alt_birlesik = m_alt_ad or t_alt_ad
+    if m_alt_ad and t_alt_ad and m_alt_ad != t_alt_ad:
+        alt_birlesik = f"{m_alt_ad} / {t_alt_ad}"
+    ust_metin = (ozet.get("ust_hesap") or "").strip()
+    if not ust_metin:
+        ust = getattr(cari, "ust_cari", None)
+        if ust is not None:
+            ust_metin = f"{getattr(ust, 'cari_kodu', '') or ''} {getattr(ust, 'unvan', '') or ''}".strip()
+        elif getattr(cari, "ust_cari_id", None):
+            ust_metin = f"#{int(cari.ust_cari_id)}"
+
     return {
         "kod": cari.cari_kodu or "",
         "unvan": cari.unvan or "",
         "cari_turu": (cari.cari_turu or "").strip(),
-        "ana_tur": _id_ad(ana_id, ana_map),
-        "musteri_alt_tur": _id_ad(m_alt, alt_map),
-        "tedarikci_alt_tur": _id_ad(t_alt, alt_map),
+        "ana_tur": _id_ad(ana_id, ana_map) or (cari.cari_turu or "").strip(),
+        "musteri_alt_tur": m_alt_ad,
+        "tedarikci_alt_tur": t_alt_ad,
+        "alt_tur": alt_birlesik,
+        "ust_hesap": ust_metin,
         "grup": grup_hucresi(cari.musteri_grubu),
         "vergi_dairesi": cari.vergi_dairesi or "",
         "vergi_numarasi": cari.vergi_numarasi or "",
@@ -414,17 +431,12 @@ def satir_deger_haritasi(
 
 
 def ozet_etiketleri(*, tedarikci_modu: bool = False) -> dict[str, str]:
-    if tedarikci_modu:
-        return {
-            "borclu_sayisi": "Borçlu Cari Sayısı",
-            "borclar_toplami": "Borçlar Toplamı",
-            "alacakli_sayisi": "Alacaklı Cari Sayısı",
-            "alacaklar_toplami": "Alacaklar Toplamı",
-        }
+    """Özet etiketleri — tür bağımsız (B = cari bize borçlu, A = cari bizden alacaklı)."""
+    del tedarikci_modu
     return {
-        "borclu_sayisi": "Borçlu Müşteri Sayısı",
+        "borclu_sayisi": "Borçlu Cari Sayısı",
         "borclar_toplami": "Borçlar Toplamı",
-        "alacakli_sayisi": "Alacaklı Müşteri Sayısı",
+        "alacakli_sayisi": "Alacaklı Cari Sayısı",
         "alacaklar_toplami": "Alacaklar Toplamı",
     }
 

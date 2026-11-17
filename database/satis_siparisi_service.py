@@ -518,6 +518,116 @@ class SatisSiparisiService:
             )
 
     @staticmethod
+    def _avans_mali_senkron(session, siparis: SatisSiparisi) -> None:
+        """Açık sipariş avansını kasa + cari alacak + rezerv SatisHareketi olarak yazar.
+
+        Taslak/iptalde mali iz bırakılmaz. Faturaya taşınmış pay varsa tahsilat altına
+        inilemez; yeniden yazım yalnız taşınmamış rezerv için yapılır.
+        """
+        from sqlalchemy import delete, func
+
+        from database.acik_kalem_service import AcikKalemService, _kurus
+        from database.finans_service import FinansService
+        from database.models.cari import CariIslem, CariKapatma, SatisHareketi
+
+        belge = (siparis.siparis_no or "").strip()
+        if not belge:
+            return
+        durum = (siparis.durum or "").upper()
+        tahsilatlar = list(siparis.tahsilatlar or [])
+        toplam = _kurus(sum((decimal(t.tutar or 0, "Tahsilat") for t in tahsilatlar), Decimal("0")))
+
+        tasinan = Decimal("0")
+        if AcikKalemService._tablo_var(session):
+            tasinan = _kurus(
+                session.scalar(
+                    select(func.coalesce(func.sum(CariKapatma.tutar), 0)).where(
+                        CariKapatma.kaynak_belge_no == belge,
+                        CariKapatma.iptal.is_(False),
+                    )
+                )
+                or 0
+            )
+        if toplam + Decimal("0.001") < tasinan:
+            raise ValueError(
+                f"Sipariş avansı ({toplam}) faturaya taşınmış tutardan ({tasinan}) az olamaz."
+            )
+
+        if durum in ("TASLAK", "İPTAL", "IPTAL"):
+            if tasinan > 0:
+                raise ValueError("Faturaya taşınmış avansı olan sipariş taslağa/iptale alınamaz.")
+            FinansService.siparis_avansini_geri_al(session, belge)
+            session.execute(delete(CariIslem).where(CariIslem.belge_no == belge))
+            avans = session.scalar(
+                select(SatisHareketi).where(
+                    SatisHareketi.belge_no == belge,
+                    SatisHareketi.satis_tutari == 0,
+                )
+            )
+            if avans is not None:
+                session.delete(avans)
+            return
+
+        # AÇIK / kısmi: kasa + CI yeniden yaz; rezerv = toplam − taşınan
+        FinansService.siparis_avansini_geri_al(session, belge)
+        session.execute(delete(CariIslem).where(CariIslem.belge_no == belge))
+        for th in tahsilatlar:
+            tutar = _kurus(th.tutar)
+            if tutar <= 0:
+                continue
+            if not (th.hesap or "").strip():
+                raise ValueError("Sipariş avansı için kasa/banka hesabı seçin.")
+            FinansService.hareket_ekle(
+                session,
+                belge,
+                th.tahsilat_tarihi,
+                tutar,
+                "SİPARİŞ AVANSI",
+                th.hesap,
+                th.odeme_sekli or "Sipariş avansı",
+            )
+            session.add(
+                CariIslem(
+                    cari_id=int(siparis.cari_id),
+                    tarih=th.tahsilat_tarihi,
+                    islem_turu="Tahsilat",
+                    belge_no=belge,
+                    aciklama=th.aciklama or th.odeme_sekli or "Sipariş avansı",
+                    borc=Decimal("0"),
+                    alacak=tutar,
+                    hesap_adi=th.hesap,
+                )
+            )
+
+        rezerv = _kurus(toplam - tasinan)
+        avans = session.scalar(
+            select(SatisHareketi).where(
+                SatisHareketi.cari_id == int(siparis.cari_id),
+                SatisHareketi.belge_no == belge,
+                SatisHareketi.satis_tutari == 0,
+            )
+        )
+        if rezerv <= 0:
+            if avans is not None and tasinan <= 0:
+                session.delete(avans)
+            elif avans is not None:
+                avans.kalan_acik_tutar = Decimal("0")
+            return
+        if avans is None:
+            AcikKalemService.avans_ekle(
+                session,
+                int(siparis.cari_id),
+                rezerv,
+                belge_no=belge,
+                tarih=siparis.siparis_tarihi or date.today(),
+            )
+        else:
+            avans.kalan_acik_tutar = -rezerv
+            avans.cari_id = int(siparis.cari_id)
+            if siparis.siparis_tarihi:
+                avans.satis_tarihi = siparis.siparis_tarihi
+
+    @staticmethod
     def kaydet(
         veriler: dict[str, Any],
         satir_verileri: list[dict[str, Any]],
@@ -526,7 +636,8 @@ class SatisSiparisiService:
     ) -> SatisSiparisi:
         """Siparişi kaydeder. ``tahsilat_verileri=None``: kayıtlı avanslar olduğu gibi korunur.
 
-        Stok hareketi veya cari borç oluşturmaz.
+        Stok hareketi veya cari borç (satış) oluşturmaz. Açık siparişte avans satırları
+        kasa + cari alacak + rezerv açık kalem olarak yazılır.
         """
         yazma_zorunlu("satis_duzenleme", "yeni_kayit")
         SatisSiparisiService.schema_hazirla()
@@ -692,6 +803,7 @@ class SatisSiparisiService:
                     "Sipariş kaydedilemedi; sipariş numarası başka bir kayıtta kullanılıyor olabilir. "
                     "Tekrar deneyin."
                 ) from hata
+            SatisSiparisiService._avans_mali_senkron(session, siparis)
             sid = int(siparis.id)
             sno = siparis.siparis_no
         audit_document(
@@ -729,13 +841,19 @@ class SatisSiparisiService:
         if not neden:
             raise ValueError("İptal nedeni zorunludur.")
         with get_session() as session:
-            siparis = session.get(SatisSiparisi, siparis_id)
+            siparis = session.scalar(
+                select(SatisSiparisi)
+                .options(selectinload(SatisSiparisi.tahsilatlar))
+                .where(SatisSiparisi.id == siparis_id)
+            )
             if siparis is None:
                 raise ValueError("Sipariş bulunamadı.")
             if siparis.durum == "İPTAL":
                 return
             siparis.durum = "İPTAL"
             stamp_cancel(siparis, neden)
+            # Kullanılmayan rezerv avansı + kasa/cari izini temizle; taşınmış pay varsa reddet
+            SatisSiparisiService._avans_mali_senkron(session, siparis)
             sno = siparis.siparis_no
         from database.deleted_record_service import ENTITY_SATIS_SIPARIS, safe_log_cancel
 

@@ -49,6 +49,89 @@ class SatisKarAnalizFormulTest(unittest.TestCase):
         self.assertEqual(net, Decimal("855"))
         self.assertEqual(isk, Decimal("145"))
 
+    def test_ozet_brut_kar_net_eksi_maliyet_eksik_satirda(self):
+        """Eksik maliyetli satır satırda «—»; özet brüt = net − bilinen maliyet (Gelir Tablosu)."""
+        from datetime import date
+
+        from database.satis_kar_analiz_service import (
+            KarAnalizFiltre,
+            SatirAnaliz,
+            SatisKarAnalizService,
+        )
+
+        filtre = KarAnalizFiltre(
+            baslangic=date(2026, 11, 12),
+            bitis=date(2026, 11, 12),
+            maliyet_yontemi="FIFO",
+        )
+        bilinen = SatirAnaliz(
+            belge_turu="SATIS",
+            belge_id=1,
+            belge_no="R1",
+            tarih=date(2026, 11, 12),
+            cari_id=1,
+            cari_kodu="M1",
+            cari_unvan="A",
+            musteri_grubu="",
+            urun_kodu="U1",
+            urun_adi="U1",
+            marka="",
+            rapor_grubu="",
+            birim="Adet",
+            depo="ANA",
+            miktar=Decimal("1"),
+            brut_satis=Decimal("100"),
+            iskonto=Decimal("0"),
+            net_satis=Decimal("100"),
+            birim_maliyet=Decimal("60"),
+            toplam_maliyet=Decimal("60"),
+            brut_kar=Decimal("40"),
+            kar_marji=Decimal("40"),
+            maliyet_uzeri_kar=Decimal("66.67"),
+            maliyet_yontemi="FIFO",
+            maliyet_kaynagi="t",
+            maliyet_kodu=None,
+            durum="karli",
+            personel="",
+        )
+        eksik = SatirAnaliz(
+            belge_turu="SATIS",
+            belge_id=2,
+            belge_no="R2",
+            tarih=date(2026, 11, 12),
+            cari_id=1,
+            cari_kodu="M1",
+            cari_unvan="A",
+            musteri_grubu="",
+            urun_kodu="U2",
+            urun_adi="U2",
+            marka="",
+            rapor_grubu="",
+            birim="Adet",
+            depo="ANA",
+            miktar=Decimal("1"),
+            brut_satis=Decimal("140"),
+            iskonto=Decimal("0"),
+            net_satis=Decimal("140"),
+            birim_maliyet=None,
+            toplam_maliyet=None,
+            brut_kar=None,
+            kar_marji=None,
+            maliyet_uzeri_kar=None,
+            maliyet_yontemi="FIFO",
+            maliyet_kaynagi="",
+            maliyet_kodu="ZERO_COST",
+            durum="maliyeti_belirsiz",
+            personel="",
+        )
+        sonuc = SatisKarAnalizService._derle(filtre, [bilinen, eksik])
+        self.assertEqual(sonuc.ozet["net_satis"], Decimal("240.00"))
+        self.assertEqual(sonuc.ozet["maliyet"], Decimal("60.00"))
+        self.assertEqual(sonuc.ozet["brut_kar"], Decimal("180.00"))  # 240 − 60
+        self.assertTrue(sonuc.ozet["kar_eksik"])
+        self.assertEqual(sonuc.ozet["satir_kar_toplami"], Decimal("40.00"))
+        self.assertEqual(sonuc.ozet["sifir_satis"], Decimal("140.00"))
+
 
 if __name__ == "__main__":
     unittest.main()

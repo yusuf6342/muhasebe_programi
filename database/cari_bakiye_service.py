@@ -21,6 +21,25 @@ logger = logging.getLogger("cari_bakiye")
 
 KURUS = Decimal("0.01")
 
+# Tablo varlık kontrolü (inspect) her listelemede tekrarlanmasın
+_TABLO_VAR_ONBELLEK: dict[str, bool] = {}
+
+
+def _tablo_var_mi(session, tablo_adi: str) -> bool:
+    ad = (tablo_adi or "").strip()
+    if not ad:
+        return False
+    if ad in _TABLO_VAR_ONBELLEK:
+        return _TABLO_VAR_ONBELLEK[ad]
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        var = bool(sa_inspect(session.connection()).has_table(ad))
+    except Exception:
+        var = False
+    _TABLO_VAR_ONBELLEK[ad] = var
+    return var
+
 # Defterde SatisHareketi olarak ayrıca gösterilmeyen önekler (CariIslem zaten var)
 _DEFTER_ATLA_ONEK = (
     "ODM-", "VRM-", "KKC-", "THS-", "AHV-", "GHV-", "POS-", "BNC-", "KBY-", "KKO-",
@@ -62,39 +81,119 @@ def _satis_hareketi_borc_alacak(
             # Sessiz fazla tahsilat (defter satırı yok)
             alacak_ek += -k
         return t, alacak_ek
+    # t < 0: alış/tedarikçi — alacak = -t (tam tutar).
+    # Ödeme borcu yalnız CariIslem (OMK/BNC/OD…) ile netlenir.
+    # Kalan düşmüş olsa bile burada "sessiz borc" yazılmaz: aksi halde aynı ödeme
+    # hem CI borc hem SH sessiz borc olarak çift sayılır (D2 Yönem/Beyax/ESCAL kanıtı).
     return Decimal("0"), -t
 
 
 def _defterde_kapanan_toplamlari(
     session, hareket_idler: list[int], islem_belgeleri: set[str]
 ) -> dict[int, Decimal]:
-    """hedef_hareket_id → CariIslem belgesi olan aktif kapatma tutarı toplamı."""
-    ids = [int(i) for i in hareket_idler if i is not None]
-    if not ids or not islem_belgeleri:
-        return {}
-    try:
-        from sqlalchemy import inspect as sa_inspect
+    """hedef_hareket_id → defterde zaten alacak yazılmış kapanma tutarı.
 
-        if not sa_inspect(session.connection()).has_table(CariKapatma.__tablename__):
-            return {}
-    except Exception:
-        return {}
+    1) CariKapatma (kaynak belge CariIslem'de) — klasik açık kalem tahsisi.
+    2) Satış faturasına bağlı tahsilat makbuzu (SatisFaturaMakbuzBagi): bazı
+       fatura-makbuz yolları kalanı düşürüp CariIslem yazar ama CariKapatma
+       üretmez; fatura satırına sessiz alacak basılmasın diye bağ tutarı da
+       sayılır (yalnız makbuz belgesi islem_belgeleri'nde ise). Aynı kaynak
+       belgede CariKapatma varsa bağ payı tekrar eklenmez.
+    """
+    ids = [int(i) for i in hareket_idler if i is not None]
     sonuc: dict[int, Decimal] = {}
-    for bas in range(0, len(ids), 500):
-        parca = ids[bas : bas + 500]
-        for hid, toplam in session.execute(
-            select(
-                CariKapatma.hedef_hareket_id,
-                func.coalesce(func.sum(CariKapatma.tutar), 0),
-            )
-            .where(
-                CariKapatma.hedef_hareket_id.in_(parca),
-                CariKapatma.iptal.is_(False),
-                CariKapatma.kaynak_belge_no.in_(list(islem_belgeleri)),
-            )
-            .group_by(CariKapatma.hedef_hareket_id)
-        ):
-            sonuc[int(hid)] = _d(toplam)
+    if not ids or not islem_belgeleri:
+        return sonuc
+    has_kapatma = _tablo_var_mi(session, CariKapatma.__tablename__)
+
+    # (hedef_id, kaynak_belge) → kapatma toplamı (bağ ile örtüşme kontrolü)
+    kapatma_kaynak: dict[tuple[int, str], Decimal] = {}
+    if has_kapatma:
+        for bas in range(0, len(ids), 500):
+            parca = ids[bas : bas + 500]
+            for hid, kaynak, toplam in session.execute(
+                select(
+                    CariKapatma.hedef_hareket_id,
+                    CariKapatma.kaynak_belge_no,
+                    func.coalesce(func.sum(CariKapatma.tutar), 0),
+                )
+                .where(
+                    CariKapatma.hedef_hareket_id.in_(parca),
+                    CariKapatma.iptal.is_(False),
+                    CariKapatma.kaynak_belge_no.in_(list(islem_belgeleri)),
+                )
+                .group_by(CariKapatma.hedef_hareket_id, CariKapatma.kaynak_belge_no)
+            ):
+                hid_i = int(hid)
+                kaynak_s = (kaynak or "").strip()
+                tut = _d(toplam)
+                kapatma_kaynak[(hid_i, kaynak_s)] = tut
+                sonuc[hid_i] = sonuc.get(hid_i, Decimal("0")) + tut
+
+    try:
+        from database.models.finans import KasaMakbuzu, SatisFaturaMakbuzBagi
+        from database.models.satis_faturasi import SatisFaturasi
+
+        if not _tablo_var_mi(session, SatisFaturaMakbuzBagi.__tablename__):
+            return sonuc
+        sh_map = {
+            int(hid): (bn or "").strip()
+            for hid, bn in session.execute(
+                select(SatisHareketi.id, SatisHareketi.belge_no).where(
+                    SatisHareketi.id.in_(ids)
+                )
+            ).all()
+            if hid is not None
+        }
+        fatura_nos = {bn for bn in sh_map.values() if bn}
+        if not fatura_nos:
+            return sonuc
+        fatura_id_to_no = {
+            int(f.id): (f.fatura_no or "").strip()
+            for f in session.scalars(
+                select(SatisFaturasi).where(SatisFaturasi.fatura_no.in_(list(fatura_nos)))
+            ).all()
+        }
+        no_to_sh = {bn: hid for hid, bn in sh_map.items() if bn}
+        if not fatura_id_to_no:
+            return sonuc
+        baglar = list(
+            session.scalars(
+                select(SatisFaturaMakbuzBagi).where(
+                    SatisFaturaMakbuzBagi.fatura_id.in_(list(fatura_id_to_no.keys()))
+                )
+            ).all()
+        )
+        if not baglar:
+            return sonuc
+        makbuzlar = {
+            int(m.id): m
+            for m in session.scalars(
+                select(KasaMakbuzu).where(
+                    KasaMakbuzu.id.in_([int(b.makbuz_id) for b in baglar])
+                )
+            ).all()
+        }
+        for bag in baglar:
+            makbuz = makbuzlar.get(int(bag.makbuz_id))
+            if makbuz is None or (makbuz.durum or "").upper() == "İPTAL":
+                continue
+            belge = (makbuz.belge_no or "").strip()
+            if not belge or belge not in islem_belgeleri:
+                continue
+            fatura_no = fatura_id_to_no.get(int(bag.fatura_id)) or (bag.fatura_no or "").strip()
+            hid = no_to_sh.get(fatura_no)
+            if hid is None:
+                continue
+            pay = _d(bag.fatura_kapanan)
+            if pay <= 0:
+                continue
+            already = kapatma_kaynak.get((int(hid), belge), Decimal("0"))
+            extra = pay - already
+            if extra > 0:
+                sonuc[int(hid)] = sonuc.get(int(hid), Decimal("0")) + extra
+    except Exception:
+        logger.exception("fatura makbuz bağından defterde_kapanan okunamadı")
     return sonuc
 
 
@@ -132,6 +231,62 @@ def _hareket_dahil_mi(
     return t <= as_of
 
 
+def _evo_onaysiz_satis_faturasi_belgesi_mi(belge_no: str) -> bool:
+    """Evo onaysız satış faturası (SAF… / EVB-SF-…) mi?
+
+    Satış Fişi (SFŞ…), RAY vb. fiş/düzeltme belgeleri False döner — bakiyeden düşülmez.
+    """
+    bn = (belge_no or "").strip().upper()
+    if not bn:
+        return False
+    if bn.startswith("SAF"):
+        return True
+    if bn.startswith("EVB-SF-"):
+        return True
+    return False
+
+
+def _onaysiz_veya_kesim_sonrasi_onayli_belgeler(
+    session, belge_nolari: set[str], *, as_of: date | None
+) -> set[str]:
+    """Onaysız Evo satış faturası veya kesim sonrası onaylı satış faturasını bakiyeden çıkar.
+
+    Satış Fişi / sayım düzeltme / diğer fiş türleri (ör. SFŞ) bu kapsama girmez;
+    Evo finans bakiyesinde sayılan fişlerin Cin SH'si korunur.
+    """
+    nos = {b for b in belge_nolari if b}
+    if not nos:
+        return set()
+    try:
+        from database.models.satis_faturasi import SatisFaturasi
+    except Exception:
+        return set()
+    haric: set[str] = set()
+    for bas in range(0, len(nos), 500):
+        parca = list(nos)[bas : bas + 500]
+        for fat in session.scalars(
+            select(SatisFaturasi).where(SatisFaturasi.fatura_no.in_(parca))
+        ):
+            bn = (fat.fatura_no or "").strip()
+            if not bn:
+                continue
+            if not bool(getattr(fat, "onaylandi", False)):
+                # Yalnız Evo onaysız satış faturası (SAF / EVB-SF); SFŞ Satış Fişi hariç
+                if _evo_onaysiz_satis_faturasi_belgesi_mi(bn):
+                    haric.add(bn)
+                continue
+            if as_of is None:
+                continue
+            # Onaylı belge: geçerli onay kesimden sonraysa tarihsel 08.11 bakiyesine katma
+            onay_dt = getattr(fat, "approved_at", None)
+            if onay_dt is None:
+                continue
+            onay_gun = onay_dt.date() if isinstance(onay_dt, datetime) else onay_dt
+            if isinstance(onay_gun, date) and onay_gun > as_of:
+                haric.add(bn)
+    return haric
+
+
 def _kayitlari_topla(
     session,
     cari_id: int,
@@ -153,6 +308,11 @@ def _kayitlari_topla(
         session.scalars(select(SatisHareketi).where(SatisHareketi.cari_id == cid)).all()
     )
     islem_belgeleri = {(i.belge_no or "") for i in islemler}
+    onaysiz_haric = _onaysiz_veya_kesim_sonrasi_onayli_belgeler(
+        session,
+        {(h.belge_no or "").strip() for h in hareketler},
+        as_of=as_of,
+    )
     defterde = _defterde_kapanan_toplamlari(
         session,
         [int(h.id) for h in hareketler if getattr(h, "id", None)],
@@ -164,6 +324,8 @@ def _kayitlari_topla(
     for h in hareketler:
         bn = h.belge_no or ""
         if haric and bn == haric:
+            continue
+        if bn in onaysiz_haric:
             continue
         if bn in islem_belgeleri or bn.startswith(_DEFTER_ATLA_ONEK):
             continue
@@ -364,6 +526,7 @@ def liste_bakiyeleri_detay(
         for bas in range(0, len(ids), 500):
             parca = ids[bas : bas + 500]
             islem_belgeleri: dict[int, set[str]] = {cid: set() for cid in parca}
+            # Belge seti + tutarlar: tek tarama (önceki satır satır Python toplamı)
             for cid, bn, borc, alacak, pb in session.execute(
                 select(
                     CariIslem.cari_id,
@@ -373,11 +536,12 @@ def liste_bakiyeleri_detay(
                     CariIslem.para_birimi,
                 ).where(CariIslem.cari_id.in_(parca))
             ):
-                islem_belgeleri[int(cid)].add(bn or "")
+                cid_i = int(cid)
+                islem_belgeleri[cid_i].add(bn or "")
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
-                borclar[int(cid)] += _d(borc)
-                alacaklar[int(cid)] += _d(alacak)
+                borclar[cid_i] += _d(borc)
+                alacaklar[cid_i] += _d(alacak)
             hareket_satirlari = list(
                 session.execute(
                     select(
@@ -390,7 +554,7 @@ def liste_bakiyeleri_detay(
                     ).where(SatisHareketi.cari_id.in_(parca))
                 )
             )
-            tum_belgeler = set()
+            tum_belgeler: set[str] = set()
             for belgeler in islem_belgeleri.values():
                 tum_belgeler |= belgeler
             defterde = _defterde_kapanan_toplamlari(
@@ -400,15 +564,16 @@ def liste_bakiyeleri_detay(
             )
             for hid, cid, bn, tutar, kalan, pb in hareket_satirlari:
                 bn = bn or ""
-                if bn in islem_belgeleri[int(cid)] or bn.startswith(_DEFTER_ATLA_ONEK):
+                cid_i = int(cid)
+                if bn in islem_belgeleri[cid_i] or bn.startswith(_DEFTER_ATLA_ONEK):
                     continue
                 if pb_filtre and (pb or "TRY").upper() != pb_filtre:
                     continue
                 b, a = _satis_hareketi_borc_alacak(
                     tutar, kalan, defterde_kapanan=defterde.get(int(hid), Decimal("0"))
                 )
-                borclar[int(cid)] += b
-                alacaklar[int(cid)] += a
+                borclar[cid_i] += b
+                alacaklar[cid_i] += a
     sonuc: dict[int, dict[str, Any]] = {}
     for cid in ids:
         tb = _kurus(borclar[cid])
@@ -427,12 +592,17 @@ OZET_ESIK_TL = Decimal("10.00")
 
 
 def bakiye_yon_kisa(bakiye, *, tedarikci_modu: bool = False) -> str:
-    """Liste sütunu için yön: müşteride + Borçlu; tedarikçide + Alacaklı (bizim borcumuz)."""
+    """Liste sütunu yönü — tüm cari türlerinde aynı kural.
+
+    net = toplam borç − toplam alacak.
+    net > 0 → Borçlu (cari bize borçlu) · net < 0 → Alacaklı (cari bizden alacaklı).
+    ``tedarikci_modu`` geriye uyumluluk için kabul edilir; yönü ters çevirmez
+    (tür değişince bakiye yönü değişmemeli).
+    """
+    del tedarikci_modu  # yön türden bağımsız
     net = _d(bakiye)
     if net == 0:
         return "Kapalı"
-    if tedarikci_modu:
-        return "Alacaklı" if net > 0 else "Borçlu"
     return "Borçlu" if net > 0 else "Alacaklı"
 
 

@@ -81,6 +81,7 @@ ESLEME_ANAHTARLARI = (
     ("pos_valor_alacagi", "POS valör alacağı (bankadan alınacak kart tahsilatı)"),
     ("pos_komisyon_gideri", "POS komisyon gideri"),
     ("sirket_kart_borcu", "Şirket kredi kartı borcu"),
+    ("nakit_avans_borcu", "Nakit avans borcu (firma kartı nakit avans anaparası)"),
     ("cek_portfoy", "Alınan çekler — portföyde"),
     ("cek_tahsilde", "Alınan çekler — tahsile verilen"),
     ("cek_teminatta", "Alınan çekler — teminata verilen"),

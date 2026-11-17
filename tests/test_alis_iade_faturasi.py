@@ -106,7 +106,8 @@ class _Taban(unittest.TestCase):
         with get_session() as s:
             no = AlisFaturasiService.getir(fatura_id).fatura_no
             h = s.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == no))
-            return D(str(AcikKalemService._guncel_kalan(s, h)))
+            # Tedarikçi alış SH negatif kalan tutar; açık tutar mutlak değer
+            return abs(D(str(AcikKalemService._guncel_kalan(s, h))))
 
     def ikinci_tedarikci(self) -> int:
         with get_session() as s:
@@ -167,8 +168,9 @@ class S02TemelIadeTest(_Taban):
         self.assertEqual(self.say(CariIslem, CariIslem.belge_no == iade.iade_no), 1)
         with get_session() as s:
             ci = s.scalar(select(CariIslem).where(CariIslem.belge_no == iade.iade_no))
-            self.assertEqual(D(str(ci.alacak)), D("360.00"))
-        # İade alacağı tedarikçi borcunu azaltır (otomatik nakit oluşmaz)
+            self.assertEqual(D(str(ci.borc)), D("360.00"))
+            self.assertEqual(D(str(ci.alacak)), D("0"))
+        # İade BORÇ yazar; tedarikçi borcunu azaltır (otomatik nakit oluşmaz)
         self.assertEqual(self.alis_acik(fid), D("840.00"))
         self.assertEqual(self.say(FinansHareketi, FinansHareketi.belge_no.like(f"{iade.iade_no}%")), 0)
         # İkinci onay tekrar etki üretmez

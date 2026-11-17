@@ -104,11 +104,13 @@ class HizmetFaturasiService:
             ara += miktar * fiyat
             iskonto += indirim
             kdv += net * decimal(get("kdv_orani", 0), "KDV") / Decimal("100")
+        matrah = ara - iskonto
         return {
             "ara_toplam": ara,
             "iskonto": iskonto,
+            "matrah": matrah,
             "kdv": kdv,
-            "genel_toplam": ara - iskonto + kdv,
+            "genel_toplam": matrah + kdv,
         }
 
     @staticmethod
@@ -165,6 +167,8 @@ class HizmetFaturasiService:
                 fatura.odeme_tutari,
                 fatura.odeme_sekli,
                 fatura.odeme_hesabi,
+                cari_id=getattr(fatura, "cari_id", None),
+                sube_id=getattr(fatura, "sube_id", None),
             )
         else:
             FinansService.fatura_odemesi(
@@ -335,6 +339,10 @@ class HizmetFaturasiService:
                         birim_fiyat_doviz=birim_fiyat_doviz,
                         tl_birim_fiyat=birim_fiyat,
                         tl_tutar=net.quantize(Decimal("0.01")),
+                        # Satışla aynı: manuel birim fiyat bayrağı. Kaynakta yok → False.
+                        manuel_fiyat=bool(veri.get("manuel_fiyat") or False),
+                        # Anlam: Fiyatlara Dağıt kilidi (satış/alış ile aynı). Kaynakta yok → False.
+                        dagitima_kapali=bool(veri.get("dagitima_kapali") or False),
                     )
                 )
                 session.add(

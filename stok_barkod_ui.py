@@ -81,27 +81,56 @@ def code128_bitleri(metin: str) -> str:
     return "".join(_CODE128[k] for k in kodlar)
 
 
-def code128_svg(metin: str, yukseklik: int = 70, modul: int = 2) -> str:
-    """Code 128B barkod SVG üretir."""
+def code128_svg(
+    metin: str,
+    yukseklik: int = 70,
+    modul: int | None = 2,
+    *,
+    hedef_genislik_px: int | None = None,
+    quiet_modul: int = 10,
+) -> str:
+    """Code 128B barkod SVG üretir.
+
+    ``hedef_genislik_px`` verilirse çubuklar + iki yan quiet zone (ISO/IEC 15417)
+    bu genişliğe sığacak şekilde ölçeklenir; SVG ``width=100%`` ile etikete yayılır
+    ve barkod + altındaki numara aynı eksende ortalanır.
+    """
     veri = (metin or "").strip()
     if not veri:
         return ""
     bits = code128_bitleri(veri)
-    genislik = len(bits) * modul
+    if not bits:
+        return ""
+    quiet = max(0, int(quiet_modul))
+    modul_adet = len(bits) + 2 * quiet
+    if hedef_genislik_px and hedef_genislik_px > 0:
+        # Modül biriminde viewBox; CSS width:100% etikete yayar (daralmayı önler)
+        modul_w = 1
+        svg_w_attr = 'width="100%"'
+        vb_w = modul_adet
+    else:
+        modul_w = max(1, int(modul or 2))
+        vb_w = modul_adet * modul_w
+        svg_w_attr = f'width="{vb_w}"'
+    # Kısa çubuklarda (lot etiketi) numara çubuğu geçmesin
+    metin_h = max(8, min(14, int(yukseklik * 0.5) + 2))
+    svg_h = yukseklik + metin_h + 2
     dikeyler = []
-    x = 0
+    x = quiet * modul_w
     for bit in bits:
         if bit == "1":
             dikeyler.append(
-                f'<rect x="{x}" y="0" width="{modul}" height="{yukseklik}" fill="#000"/>'
+                f'<rect x="{x}" y="0" width="{modul_w}" height="{yukseklik}" fill="#000"/>'
             )
-        x += modul
+        x += modul_w
+    # Quiet zone sağda: x zaten quiet sonrası bits bitince + quiet boş kalır (viewBox)
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{genislik}" height="{yukseklik + 18}" '
-        f'viewBox="0 0 {genislik} {yukseklik + 18}">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" {svg_w_attr} height="{svg_h}" '
+        f'viewBox="0 0 {vb_w} {svg_h}" preserveAspectRatio="xMidYMid meet" '
+        f'style="display:block;margin:0 auto;max-width:100%;height:auto">'
         f'{"".join(dikeyler)}'
-        f'<text x="{genislik / 2}" y="{yukseklik + 14}" text-anchor="middle" '
-        f'font-family="Consolas, monospace" font-size="12">{escape(veri)}</text>'
+        f'<text x="{vb_w / 2}" y="{yukseklik + metin_h - 2}" text-anchor="middle" '
+        f'font-family="Consolas, monospace" font-size="{metin_h - 2}">{escape(veri)}</text>'
         f"</svg>"
     )
 
@@ -170,15 +199,16 @@ def etiket_html(etiketler, kopya=1, genislik_mm=58, yukseklik_mm=36) -> str:
         genislik_mm, yukseklik_mm = 58.0, 36.0
 
     # Boyuta göre barkod yüksekliği ve yazı punto
-    barkod_h = max(28, min(90, int(yukseklik_mm * 1.6)))
-    modul = 2 if genislik_mm >= 45 else 1
+    barkod_h = max(28, min(90, int(yukseklik_mm * 1.55)))
     ad_pt = 9 if yukseklik_mm < 28 else (11 if yukseklik_mm < 45 else 13)
     alt_pt = 8 if yukseklik_mm < 28 else 10
     pad = 2 if yukseklik_mm < 28 else 3
+    # Kullanılabilir yatay alan (padding hariç) → barkod bu genişliğe yayılır
+    hedef_px = max(80, int((genislik_mm - 2 * pad) * 3.78))
 
     kartlar = []
     for et in etiketler:
-        svg = code128_svg(et["barkod"], yukseklik=barkod_h, modul=modul)
+        svg = code128_svg(et["barkod"], yukseklik=barkod_h, hedef_genislik_px=hedef_px)
         ad = escape(et["stok_adi"] or "")
         birim = escape(et.get("birim") or "Adet")
         fiyat = escape(_para(et.get("fiyat") or 0))
@@ -255,11 +285,15 @@ def etiket_html(etiketler, kopya=1, genislik_mm=58, yukseklik_mm=36) -> str:
     justify-content: center;
     align-items: center;
     min-height: 0;
+    overflow: hidden;
   }}
   .barkod svg {{
+    width: 100%;
     max-width: 100%;
     max-height: 100%;
     height: auto;
+    display: block;
+    margin: 0 auto;
   }}
   .ad {{
     font-size: {ad_pt}pt;
@@ -267,7 +301,9 @@ def etiket_html(etiketler, kopya=1, genislik_mm=58, yukseklik_mm=36) -> str:
     line-height: 1.15;
     margin: 0.5mm 0;
     max-width: 100%;
-    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
     flex: 0 0 auto;
   }}
   .alt {{
@@ -450,7 +486,7 @@ class StokBarkodBasimSayfasi:
         self.tablo.pack(side="left", fill="both", expand=True)
         kaydirma.pack(side="right", fill="y")
         self.tablo.bind("<Button-1>", self._secim_tikla)
-        self.tablo.bind("<Double-1>", lambda _e: self.onizle_secili())
+        self.tablo.bind("<Double-1>", self._satir_cift_tik)
 
         onizleme = ttk.LabelFrame(app.icerik, text="Etiket şablonu (önizleme)", padding=10)
         onizleme.pack(fill="x", pady=6)
@@ -577,38 +613,103 @@ class StokBarkodBasimSayfasi:
             return
         self._sablon_ciz(liste[0])
 
+    def _satir_cift_tik(self, event):
+        """Çift tık: satırın stok kartını düzenleme modunda aç (geçersiz barkod dahil)."""
+        if self.tablo.identify_region(event.x, event.y) == "heading":
+            return
+        # Seç sütunundaki çift tık yalnızca seçim yapsın
+        if self.tablo.identify_column(event.x) == "#1":
+            return
+        satir = self.tablo.identify_row(event.y) or (
+            self.tablo.selection()[0] if self.tablo.selection() else ""
+        )
+        if not satir:
+            return
+        try:
+            idx = int(satir)
+            kayit = self._kayitlar[idx]
+        except (ValueError, IndexError):
+            return
+        stok_id = kayit.get("stok_id")
+        if not stok_id:
+            messagebox.showwarning("Stok", "Bu satırda stok kimliği yok.", parent=self.app)
+            return
+        from stok_ui import StokKartiDialog
+
+        stok_ref = type("StokRef", (), {"id": int(stok_id)})()
+
+        def _kayit_sonrasi(_stok=None):
+            self.listeyi_yenile()
+            # Aynı stok satırını yeniden seç / önizle
+            for i, k in enumerate(self._kayitlar):
+                if int(k.get("stok_id") or 0) == int(stok_id):
+                    self.tablo.selection_set(str(i))
+                    self.tablo.see(str(i))
+                    if etiket_barkod_durumu(k["barkod"]) is None:
+                        self._sablon_ciz(k)
+                    break
+
+        dlg = StokKartiDialog(self.app, stok_ref, on_saved=_kayit_sonrasi)
+        self.app.wait_window(dlg)
+        # Kaydetmeden çıkışta on_saved çağrılmaz → eski barkod listede kalır
+
     def _sablon_ciz(self, etiket):
         c = self.onizleme_cerceve
         c.delete("all")
-        w = max(c.winfo_width(), 520)
-        # Kart çerçevesi
-        c.create_rectangle(20, 10, 300, 140, outline="#888", dash=(3, 2))
-        c.create_text(160, 18, text="ETİKET ŞABLONU", font=("Segoe UI", 8), fill="#888")
-        if not etiket:
-            c.create_text(160, 75, text="Barkod seçince önizleme burada", fill="#999")
-            return
-        # Basit barkod çizgileri (görsel önizleme)
-        barkod = etiket["barkod"]
-        x0 = 40
-        for i, ch in enumerate(barkod[:24]):
-            kalin = 2 if (ord(ch) + i) % 3 else 1
-            c.create_rectangle(x0, 28, x0 + kalin, 78, fill="#000", outline="")
-            x0 += kalin + 1
-        c.create_text(160, 90, text=barkod, font=("Consolas", 9))
-        c.create_text(160, 108, text=etiket["stok_adi"][:40], font=("Segoe UI", 10, "bold"))
-        c.create_text(
-            160,
-            128,
-            text=f"{etiket['birim']}    {_para(etiket['fiyat'])}",
-            font=("Segoe UI", 9),
+        try:
+            en_mm, boy_mm = self._boyut_oku()
+        except ValueError:
+            en_mm, boy_mm = 58.0, 40.0
+        # Önizleme kartı seçilen etiket oranında
+        kart_x0, kart_y0 = 20, 8
+        kart_w = 280
+        kart_h = max(90, int(kart_w * (boy_mm / max(en_mm, 1))))
+        kart_h = min(kart_h, 138)
+        cx = kart_x0 + kart_w / 2
+        c.create_rectangle(
+            kart_x0, kart_y0, kart_x0 + kart_w, kart_y0 + kart_h,
+            outline="#888", dash=(3, 2),
         )
-        # Sağda açıklama
         c.create_text(
-            360,
-            50,
-            anchor="w",
-            justify="left",
-            text="Üst: Barkod\nAlt: Stok adı\n      Birim + Satış fiyatı",
+            cx, kart_y0 + 10,
+            text=f"ETİKET {en_mm:g}×{boy_mm:g} mm",
+            font=("Segoe UI", 8), fill="#888",
+        )
+        if not etiket:
+            c.create_text(cx, kart_y0 + kart_h / 2, text="Barkod seçince önizleme burada", fill="#999")
+            c.create_text(
+                kart_x0 + kart_w + 24, kart_y0 + 40, anchor="w", justify="left",
+                text="Üst: Barkod (ortalı)\nAlt: Stok adı\n      Birim + Satış fiyatı",
+                font=("Segoe UI", 10),
+            )
+            return
+        barkod = etiket["barkod"]
+        bits = code128_bitleri(barkod)
+        quiet = 10
+        pad = 8
+        kullanilabilir = kart_w - 2 * pad
+        modul_adet = max(1, len(bits) + 2 * quiet)
+        modul = max(1, kullanilabilir // modul_adet)
+        gercek_w = modul_adet * modul
+        x0 = int(cx - gercek_w / 2) + quiet * modul
+        bar_ust = kart_y0 + 18
+        bar_alt = kart_y0 + int(kart_h * 0.55)
+        x = x0
+        for bit in bits:
+            if bit == "1":
+                c.create_rectangle(x, bar_ust, x + modul, bar_alt, fill="#000", outline="")
+            x += modul
+        c.create_text(cx, bar_alt + 12, text=barkod, font=("Consolas", 9))
+        ad = (etiket["stok_adi"] or "")[:48]
+        c.create_text(cx, bar_alt + 28, text=ad, font=("Segoe UI", 9, "bold"), width=kart_w - 16)
+        c.create_text(
+            cx, bar_alt + 44,
+            text=f"{etiket['birim']}    {_para(etiket['fiyat'])}",
+            font=("Segoe UI", 8),
+        )
+        c.create_text(
+            kart_x0 + kart_w + 24, kart_y0 + 40, anchor="w", justify="left",
+            text="Üst: Barkod (ortalı)\nAlt: Stok adı\n      Birim + Satış fiyatı\n\nÇift tık → stok kartı",
             font=("Segoe UI", 10),
         )
 
@@ -710,8 +811,12 @@ class EtiketYazdirDialog(tk.Toplevel):
         c = self.onizleme
         c.delete("all")
         bits = code128_bitleri(et["barkod"])
-        modul = max(1, min(2, 300 // max(1, len(bits))))
-        x = (340 - len(bits) * modul) // 2
+        quiet = 10
+        alan = 320
+        modul_adet = max(1, len(bits) + 2 * quiet)
+        modul = max(1, alan // modul_adet)
+        gercek = modul_adet * modul
+        x = (340 - gercek) // 2 + quiet * modul
         for bit in bits:
             if bit == "1":
                 c.create_rectangle(x, 12, x + modul, 72, fill="#000", outline="")

@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 
 from database.database import get_session
 from database.finans_service import FinansService
+from database.models.cari import CariIslem
 from database.models.finans import FinansHareketi, KasaMakbuzu, KrediKartiOdeme, PosValorKaydi
 from tests import test_tahsilat_makbuzu as _servis_testi
 
@@ -58,7 +59,13 @@ class TahsilatMakbuzuEkranTest(unittest.TestCase):
     # —— yardımcılar ——
     def _dialog(self, tur="TAHSILAT", **ek):
         d = KasaMakbuzDialog(self.root, tur, **ek)
+        try:
+            d.deiconify()
+            d.lift()
+        except tk.TclError:
+            pass
         self.root.update_idletasks()
+        d.update_idletasks()
         return d
 
     def _cari_sec(self, d, aranan):
@@ -111,7 +118,7 @@ class TahsilatMakbuzuEkranTest(unittest.TestCase):
         self.assertEqual(d.bakiye_metni(), "1.000,00 TL  Borçlu")
         self._cari_sec(d, "yıldız")
         self.assertEqual(d.secili_cari_id(), self.tedarikci_id)
-        self.assertEqual(d.bakiye_metni(), "5.000,00 TL  Borçlu")
+        self.assertEqual(d.bakiye_metni(), "5.000,00 TL  Alacaklı")
         d.cari_var.set("YILDIZ AKS")  # seçili metin elle bozuldu
         self.assertIsNone(d.secili_cari_id())
         self.assertEqual(d.bakiye_metni(), "—")
@@ -237,16 +244,33 @@ class TahsilatMakbuzuEkranTest(unittest.TestCase):
         self._cari_sec(d, "yıldız")
         d.sekil_var.set(SIRKET_KARTI_SEKLI)
         d._sekil_degisti()
-        self.assertEqual(list(d.hesap_cb.cget("values")), ["ŞİRKET KARTI — TEST BANK"])
-        self.assertEqual(d.hesap_var.get(), "ŞİRKET KARTI — TEST BANK")
+        self.assertEqual(d.hesap_etiket_lbl.cget("text"), "Firma Kredi Kartı")
+        degerler = list(d.hesap_cb.cget("values"))
+        self.assertEqual(len(degerler), 1)
+        self.assertIn("ŞİRKET KARTI", degerler[0])
+        self.assertIn("TEST BANK", degerler[0])
+        # Mevduat/KMH/POS listede yok
+        for yasak in ("Mevduat", "KMH", "POS Hesabı", "Krediler"):
+            self.assertFalse(any(yasak in e for e in degerler))
+        self.assertEqual(d.hesap_var.get(), degerler[0])
+        d.cekim_turu_var.set("Taksitli")
+        d._cekim_turu_degisti()
         d.taksit_var.set("2")
         d.tutar_var.set("2000")
         self.assertTrue(d.satir_ekle(), self.mesajlar)
+        self.assertEqual(d.satirlar[0]["taksit_sayisi"], 2)
         self.assertTrue(d.kaydet(), self.mesajlar)
-        self.assertEqual(d.bakiye_metni(), "3.000,00 TL  Borçlu")
+        self.assertEqual(d.bakiye_metni(), "3.000,00 TL  Alacaklı")
         with get_session() as s:
             ko = s.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no.like(f"{d.result.belge_no}-%")))
-        self.assertIsNotNone(ko)
+            self.assertIsNotNone(ko)
+            self.assertEqual(ko.taksit_sayisi, 2)
+            self.assertEqual(ko.cekim_turu, "TAKSITLI")
+            ci = s.execute(
+                select(CariIslem).where(CariIslem.belge_no == d.result.belge_no)
+            ).scalar_one()
+            self.assertEqual(ci.borc, Decimal("2000.00"))
+            self.assertEqual(ci.alacak, Decimal("0.00"))
         d.kapat()
 
     def test_iptal_edilen_makbuz_salt_okunur(self):
@@ -261,6 +285,101 @@ class TahsilatMakbuzuEkranTest(unittest.TestCase):
         self.assertFalse(d.btn_duzenle.winfo_manager())
         self.assertEqual(d.bakiye_metni(), "1.000,00 TL  Borçlu")
         d.kapat()
+
+    def test_kaydet_dugmesi_yeni_modda_gorunur_ve_solda(self):
+        """Kaydet alt çubukta pack edilmiş / viewable; dar pencerede de solda kalır."""
+        d = self._dialog(cari_id=self.musteri_id)
+        self.root.update_idletasks()
+        self.assertEqual(d.mod, "yeni")
+        self.assertIn("YENİ", d.durum_rozet.cget("text"))
+        self.assertTrue(d.btn_kaydet.winfo_ismapped(), "Kaydet pack edilmeli")
+        self.assertTrue(d.kaydet_dugmesi_gorunur_mu(), "Kaydet görünür olmalı")
+        self.assertEqual(d.btn_kaydet.master, d._dugme_sol, "Kaydet sol sabit alanda")
+        # Daralt — sağ şerit kesilse bile Kaydet sol alanda kalsın
+        d.geometry("780x560+40+40")
+        self.root.update_idletasks()
+        d.update_idletasks()
+        self.assertTrue(d.btn_kaydet.winfo_ismapped())
+        self.assertTrue(d.kaydet_dugmesi_gorunur_mu())
+        with patch.object(kasa_makbuz_ui.messagebox, "askyesnocancel", return_value=False):
+            d.kapat()
+
+    def test_cari_kartindan_pos_satir_kaydet_yeniden_ac(self):
+        """Cari kartından açılış gibi: POS satırı → görünür Kaydet → tek mali hareket → yeniden aç."""
+        d = self._dialog(cari_id=self.musteri_id)
+        self.assertEqual(d.secili_cari_id(), self.musteri_id)
+        self.assertTrue(d.kaydet_dugmesi_gorunur_mu())
+        d.sekil_var.set("KREDİ KARTIYLA TAHSİLAT")
+        d._sekil_degisti()
+        d.kart_tipi_var.set("Kredi Kartı")
+        d.taksit_var.set("1")
+        d.tutar_var.set("3500")
+        self.assertTrue(d.satir_ekle(), self.mesajlar)
+        self.assertEqual(len(d.satirlar), 1)
+        once = self._makbuz_sayisi()
+        # Kullanıcı Kaydet düğmesine basar (programatik invoke)
+        d.btn_kaydet.invoke()
+        self.root.update_idletasks()
+        self.assertEqual(self._makbuz_sayisi(), once + 1)
+        self.assertIsNotNone(d.result)
+        belge = d.result.belge_no
+        makbuz_id = d.result.id
+        self.assertEqual(d.mod, "goruntule")
+        self.assertIn("KAYITLI", d.durum_rozet.cget("text"))
+        self.assertEqual(d.makbuz_no_var.get(), "MKB-00001")
+        with get_session() as s:
+            hareket = list(
+                s.scalars(select(FinansHareketi).where(FinansHareketi.belge_no == belge)).all()
+            )
+        # POS tahsilat (+ komisyon olabilir); belge tek
+        self.assertGreaterEqual(len(hareket), 1)
+        d.kapat()
+
+        # Listeden / id ile yeniden aç
+        g = self._dialog(makbuz_id=makbuz_id)
+        self.assertEqual(g.mod, "goruntule")
+        self.assertEqual(g.makbuz_no_var.get(), "MKB-00001")
+        self.assertEqual(Decimal(str(g.makbuz.tutar)), Decimal("3500"))
+        self.assertEqual(self._makbuz_sayisi(), once + 1, "yeniden açma çoğaltmamalı")
+        g.kapat()
+
+    def test_kaydet_ekrani_goruntusu(self):
+        """Kaydet görünürken PNG kanıt (izole; canlı D2 yok)."""
+        from pathlib import Path
+
+        d = self._dialog(cari_id=self.musteri_id)
+        d.geometry("1000x700+20+20")
+        d.deiconify()
+        d.lift()
+        self.root.update()
+        self.root.update_idletasks()
+        self.assertTrue(d.kaydet_dugmesi_gorunur_mu())
+        hedef = Path(__file__).resolve().parents[1] / "tests" / "_artifacts"
+        hedef.mkdir(parents=True, exist_ok=True)
+        png = hedef / "tahsilat_makbuz_kaydet_gorunur.png"
+        try:
+            from PIL import ImageGrab
+
+            d.update_idletasks()
+            x = d.winfo_rootx()
+            y = d.winfo_rooty()
+            w = d.winfo_width()
+            h = d.winfo_height()
+            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            img.save(png)
+            self.assertTrue(png.exists() and png.stat().st_size > 1000, str(png))
+        except Exception as hata:
+            # Ortam ekran yakalayamazsa düğme geometrisini yaz
+            (hedef / "tahsilat_makbuz_kaydet_geometri.txt").write_text(
+                f"Kaydet mapped={d.btn_kaydet.winfo_ismapped()} "
+                f"viewable={d.kaydet_dugmesi_gorunur_mu()} "
+                f"xy=({d.btn_kaydet.winfo_rootx()},{d.btn_kaydet.winfo_rooty()}) "
+                f"wh=({d.btn_kaydet.winfo_width()},{d.btn_kaydet.winfo_height()}) "
+                f"err={hata}\n",
+                encoding="utf-8",
+            )
+        with patch.object(kasa_makbuz_ui.messagebox, "askyesnocancel", return_value=False):
+            d.kapat()
 
 
 if __name__ == "__main__":

@@ -106,6 +106,7 @@ KREDI_YENI_KOLONLAR = {
     "bitis_tarihi": "DATE",
     "plan_versiyon": "INTEGER DEFAULT 1",
     "aktif": "BOOLEAN DEFAULT 1",
+    "bagli_hesap_id": "INTEGER",
 }
 
 TAKSIT_YENI_KOLONLAR = {
@@ -1300,8 +1301,261 @@ class BankaKrediService:
         raise ValueError(f"Geçersiz vade tarihi: {deger}")
 
     @staticmethod
+    def odenmemis_taksit_excel_oku(path, *, sayfa: str | None = "Aktarim") -> dict:
+        """Akbank ödenmemiş taksit Excel'i (Aktarim sayfası).
+
+        Ödenmiş satırlar (Ödendi) atlanır. Evo_Kaynak okunmaz.
+        Dönüş: kredi_anahtari, plan[], ozet.
+        """
+        yol = str(path)
+        try:
+            from openpyxl import load_workbook
+        except ImportError as hata:
+            raise ValueError("Excel okumak için openpyxl kurulu değil.") from hata
+        wb = load_workbook(yol, data_only=True)
+        if sayfa and sayfa in wb.sheetnames:
+            ws = wb[sayfa]
+        elif "Aktarim" in wb.sheetnames:
+            ws = wb["Aktarim"]
+        else:
+            ws = wb.active
+        ham = [list(r) for r in ws.iter_rows(values_only=True)]
+        wb.close()
+
+        def norm(metin):
+            ham_m = str(metin or "").strip().lower()
+            for eski, yeni in (
+                ("ı", "i"), ("İ", "i"), ("ş", "s"), ("ğ", "g"),
+                ("ü", "u"), ("ö", "o"), ("ç", "c"),
+            ):
+                ham_m = ham_m.replace(eski, yeni)
+            return " ".join(ham_m.replace(".", " ").split())
+
+        baslik_ix = None
+        for i, row in enumerate(ham):
+            hucreler = [norm(c) for c in row]
+            if "vade tarihi" in hucreler and (
+                "anapara borcu" in hucreler or "anapara" in hucreler
+            ):
+                baslik_ix = i
+                break
+        if baslik_ix is None:
+            raise ValueError("Aktarım başlık satırı bulunamadı (Vade Tarihi / Anapara).")
+
+        col = {}
+        for i, h in enumerate(ham[baslik_ix]):
+            n = norm(h)
+            if n in ("kaynak taksit no", "taksit no", "taksit", "no"):
+                col["taksit_no"] = i
+            elif n in ("vade tarihi", "vade"):
+                col["vade_tarihi"] = i
+            elif n in ("anapara borcu", "anapara", "ana para"):
+                col["anapara"] = i
+            elif n == "faiz":
+                col["faiz"] = i
+            elif n == "kkdf":
+                col["kkdf"] = i
+            elif n == "bsmv":
+                col["bsmv"] = i
+            elif n in ("birlesik gider", "birleşik gider"):
+                col["birlesik_gider"] = i
+            elif n in ("tek odeme tutari", "tek ödeme tutarı", "taksit tutari"):
+                col["tek_odeme"] = i
+            elif n in ("kaynak durum", "durum"):
+                col["durum"] = i
+            elif n in ("kredi anahtari", "kredi anahtarı"):
+                col["kredi_anahtari"] = i
+            elif n in ("aktarim satir anahtari", "aktarım satır anahtarı"):
+                col["satir_anahtari"] = i
+            elif n == "aciklama":
+                col["aciklama"] = i
+        if "vade_tarihi" not in col or "anapara" not in col:
+            raise ValueError("Vade Tarihi ve Anapara Borcu kolonları zorunludur.")
+
+        plan = []
+        anahtarlar: set[str] = set()
+        for row in ham[baslik_ix + 1 :]:
+            if not any(str(c or "").strip() for c in row):
+                continue
+
+            def hucre(ad, default=None):
+                ix = col.get(ad)
+                if ix is None or ix >= len(row):
+                    return default
+                return row[ix]
+
+            ka0 = str(hucre("kredi_anahtari") or row[0] or "").strip()
+            if ka0.upper() in ("TOPLAM", "TOPLAM:", "SUMMARY", "ÖZET", "OZET"):
+                continue
+            if hucre("vade_tarihi") in (None, ""):
+                continue
+            try:
+                tno = int(str(hucre("taksit_no") or "0").strip() or "0")
+            except ValueError:
+                continue
+            if tno < 1:
+                continue
+
+            durum = str(hucre("durum") or "").strip()
+            if durum and "oden" in norm(durum) and "odenmedi" not in norm(durum):
+                # Ödendi / ödenmiş — aktarılmaz
+                continue
+            if durum and norm(durum) not in ("", "odenmedi", "bekliyor", "acil"):
+                if "odendi" in norm(durum) or "paid" in norm(durum):
+                    continue
+
+            vade = BankaKrediService._tarih_coz(hucre("vade_tarihi"))
+            anapara = BankaKrediService._d(hucre("anapara") or 0, "Anapara", SIFIR)
+            faiz = BankaKrediService._d(hucre("faiz") or 0, "Faiz", SIFIR)
+            kkdf = BankaKrediService._d(hucre("kkdf") or 0, "KKDF", SIFIR)
+            bsmv = BankaKrediService._d(hucre("bsmv") or 0, "BSMV", SIFIR)
+            birlesik = hucre("birlesik_gider")
+            if birlesik is not None and str(birlesik).strip() != "":
+                birlesik_d = BankaKrediService._d(birlesik, "Birleşik gider", SIFIR)
+                # Faiz boşsa birleşik gideri faiz kabul et; doluysa tutarlılık kontrolü
+                if faiz == SIFIR and kkdf == SIFIR and bsmv == SIFIR:
+                    faiz = birlesik_d
+                elif faiz + kkdf + bsmv != birlesik_d:
+                    raise ValueError(
+                        f"Taksit {tno}: faiz+KKDF+BSMV ({faiz + kkdf + bsmv}) "
+                        f"birleşik giderden ({birlesik_d}) farklı."
+                    )
+            if anapara <= 0:
+                raise ValueError(f"Taksit {tno}: anapara sıfır/negatif olamaz.")
+            ka = str(hucre("kredi_anahtari") or "").strip()
+            if ka:
+                anahtarlar.add(ka)
+            satir_key = str(hucre("satir_anahtari") or "").strip() or None
+            plan.append({
+                "taksit_no": tno,
+                "vade_tarihi": vade,
+                "anapara": anapara,
+                "faiz": faiz,
+                "kkdf": kkdf,
+                "bsmv": bsmv,
+                "komisyon": SIFIR,
+                "sigorta": SIFIR,
+                "dosya_masrafi": SIFIR,
+                "diger_masraflar": SIFIR,
+                "gecikme_faizi": SIFIR,
+                "aciklama": (
+                    str(hucre("aciklama") or "").strip()
+                    or (f"Kaynak {satir_key}" if satir_key else None)
+                ),
+                "satir_anahtari": satir_key,
+                "tek_odeme": BankaKrediService._d(
+                    hucre("tek_odeme") or (anapara + faiz + kkdf + bsmv),
+                    "Tek ödeme",
+                    SIFIR,
+                ),
+            })
+
+        if not plan:
+            raise ValueError("Ödenmemiş taksit satırı bulunamadı.")
+        plan.sort(key=lambda s: s["taksit_no"])
+        if len({s["taksit_no"] for s in plan}) != len(plan):
+            raise ValueError("Taksit numaraları tekrar ediyor.")
+        ana_toplam = sum((s["anapara"] for s in plan), SIFIR)
+        faiz_toplam = sum((s["faiz"] for s in plan), SIFIR)
+        tek_toplam = sum((s["tek_odeme"] for s in plan), SIFIR)
+        return {
+            "kredi_anahtari": next(iter(anahtarlar)) if len(anahtarlar) == 1 else None,
+            "kredi_anahtarlari": sorted(anahtarlar),
+            "plan": plan,
+            "ozet": {
+                "taksit_adedi": len(plan),
+                "anapara": ana_toplam,
+                "faiz": faiz_toplam,
+                "tek_odeme": tek_toplam,
+                "ilk_vade": plan[0]["vade_tarihi"],
+                "son_vade": plan[-1]["vade_tarihi"],
+                "ilk_taksit_no": plan[0]["taksit_no"],
+                "son_taksit_no": plan[-1]["taksit_no"],
+            },
+        }
+
+    @staticmethod
+    def odenmemis_plan_uygula(
+        kredi_id: int,
+        plan: list[dict],
+        *,
+        aciklama: str | None = None,
+        ana_para_hizala: bool = True,
+        dry_run: bool = False,
+    ) -> dict:
+        """Yalnız ödenmemiş plan satırlarını yazar; ödeme/hareket üretmez.
+
+        ``ana_para_hizala``: kredi.ana_para ← plan anapara toplamı (kalan anapara ile
+        mutabık; ledger bakiyesi değiştirilmez).
+        """
+        BankaKrediService._izin("banka_kredi_plan", "finans_duzenleme", "banka_kredi_duzenleme")
+        if not plan:
+            raise ValueError("Plan boş.")
+        plan_ana = sum(
+            (BankaKrediService._d(s.get("anapara") or 0, "Anapara", SIFIR) for s in plan),
+            SIFIR,
+        )
+        with get_session() as session:
+            kredi = session.scalar(
+                select(BankaKredisi)
+                .where(BankaKredisi.id == int(kredi_id))
+                .options(selectinload(BankaKredisi.taksitler))
+            )
+            if not kredi:
+                raise ValueError("Kredi bulunamadı.")
+            eski_ana = BankaKrediService._d(kredi.ana_para or 0, "Ana para")
+            bagli = None
+            hesap_bakiye = None
+            if kredi.bagli_hesap_id:
+                bagli = session.get(FinansHesabi, int(kredi.bagli_hesap_id))
+                if bagli is not None:
+                    hesap_bakiye = FinansService.isletme_bakiyesi(bagli)
+            sonuc = {
+                "kredi_id": int(kredi.id),
+                "belge_no": kredi.belge_no,
+                "kredi_adi": kredi.kredi_adi,
+                "eski_ana_para": eski_ana,
+                "yeni_ana_para": plan_ana if ana_para_hizala else eski_ana,
+                "plan_anapara": plan_ana,
+                "plan_taksit": len(plan),
+                "hesap_isletme_bakiyesi": hesap_bakiye,
+                "hesap_borc": (-hesap_bakiye if hesap_bakiye is not None and hesap_bakiye < 0 else SIFIR),
+                "dry_run": bool(dry_run),
+            }
+            if dry_run:
+                sonuc["uygulanacak"] = True
+                return sonuc
+            if ana_para_hizala and eski_ana != plan_ana:
+                kredi.ana_para = plan_ana
+                BankaKrediService._gunluk(
+                    session,
+                    "ANA_PARA_HIZALA",
+                    kredi_id=kredi.id,
+                    detay=f"{eski_ana} → {plan_ana} (ödenmemiş plan)",
+                )
+            session.flush()
+        kayit = BankaKrediService.odeme_plani_kaydet(
+            int(kredi_id),
+            plan,
+            aciklama=aciklama or "Ödenmemiş taksit Excel aktarımı",
+        )
+        sonuc.update(kayit)
+        sonuc["uygulandi"] = True
+        return sonuc
+
+    @staticmethod
     def odeme_plani_excel_aktar(path) -> list[dict]:
-        """Excel / CSV ödeme planını okur (openpyxl yoksa csv ile)."""
+        """Excel / CSV ödeme planını okur (openpyxl yoksa csv ile).
+
+        ``Aktarim`` sayfalı ödenmemiş taksit dosyası otomatik tanınır.
+        """
+        yol = str(path)
+        if yol.lower().endswith((".xlsx", ".xlsm")):
+            try:
+                okunan = BankaKrediService.odenmemis_taksit_excel_oku(yol)
+                return okunan["plan"]
+            except ValueError:
+                pass
         basliklar = {
             "taksit_no": "taksit_no",
             "taksit": "taksit_no",
@@ -1312,6 +1566,7 @@ class BankaKrediService:
             "anapara": "anapara",
             "ana_para": "anapara",
             "ana para": "anapara",
+            "anapara borcu": "anapara",
             "faiz": "faiz",
             "bsmv": "bsmv",
             "kkdf": "kkdf",
@@ -1324,6 +1579,7 @@ class BankaKrediService:
             "gecikme": "gecikme_faizi",
             "gecikme_faizi": "gecikme_faizi",
             "aciklama": "aciklama",
+            "kaynak taksit no": "taksit_no",
         }
 
         def normalize(metin):
@@ -1336,7 +1592,6 @@ class BankaKrediService:
             return ham.replace(".", "").replace("  ", " ").strip()
 
         satirlar = []
-        yol = str(path)
         if yol.lower().endswith((".xlsx", ".xlsm")):
             try:
                 from openpyxl import load_workbook
@@ -1778,6 +2033,241 @@ class BankaKrediService:
             odeme_turu="ARA",
             transaction_id=transaction_id,
         )
+
+    @staticmethod
+    def mevcut_hareketten_odeme_bagla(
+        taksit_id=None,
+        *,
+        kredi_id=None,
+        banka_hareket_id,
+        anapara_hareket_id=None,
+        bilesenler=None,
+        odeme_tarihi=None,
+        banka_hesap_id=None,
+        banka_dekont_no=None,
+        aciklama=None,
+        transaction_id=None,
+        odeme_belge_no=None,
+        odeme_turu="KISMI",
+        yaz_gider=False,
+        gider_belge_no=None,
+    ) -> dict:
+        """Aktarılmış banka çıkışını takside (veya kredi hesabına) bağla — yeni çıkış YOK.
+
+        ``banka_hareket_id``: ödeme kaynağı (mevduat/KMH çıkışı).
+        ``anapara_hareket_id``: krediler hesabındaki mevcut anapara girişi (kanıt; tekrar yazılmaz).
+        ``yaz_gider=False``: Evo aktarımında faiz/masraf genelde ayrı havale + mevcut giderdir;
+        ikinci gider fişi üretilmez. Gider bileşeni bağlanırken yalnız taksit kalanı güncellenir.
+        ``taksit_id`` yoksa ``kredi_id`` zorunlu: ödeme kredi hesabı düzeyinde tutulur
+        (plan dışı / taksit numarası belirsiz faiz).
+        ``gider_belge_no``: mevcut gider/evrak (ör. EVB-GG-*) bağlanır; ``yaz_gider`` ile çakışmaz.
+        """
+        BankaKrediService._izin("banka_kredi_odeme", "finans_duzenleme")
+        tur = (odeme_turu or "KISMI").strip().upper()
+        if tur not in ODEME_TURLERI:
+            raise ValueError("Geçersiz ödeme türü.")
+        tx = (transaction_id or "").strip() or None
+        dekont = (banka_dekont_no or "").strip() or None
+        mevcut_gider = (gider_belge_no or "").strip() or None
+
+        with get_session() as session:
+            if tx:
+                mevcut = session.scalar(
+                    select(BankaKrediOdeme).where(BankaKrediOdeme.transaction_id == tx)
+                )
+                if mevcut is not None:
+                    return BankaKrediService._odeme_sonuc(session, mevcut)
+
+            taksit = None
+            kredi = None
+            if taksit_id is not None:
+                taksit = session.scalar(
+                    select(BankaKrediTaksit)
+                    .where(BankaKrediTaksit.id == int(taksit_id))
+                    .options(selectinload(BankaKrediTaksit.kredi))
+                )
+                if taksit is None:
+                    raise ValueError("Taksit bulunamadı.")
+                kredi = taksit.kredi
+                durum = (taksit.durum or "").upper()
+                if durum == "ODENDI":
+                    raise ValueError("Bu taksit zaten ödenmiş.")
+                if durum in ("IPTAL", "YAPILANDIRILDI", "ERKEN_KAPATILDI"):
+                    raise ValueError("Bu taksit ödemeye kapalı.")
+            elif kredi_id is not None:
+                kredi = session.get(BankaKredisi, int(kredi_id))
+            else:
+                raise ValueError("Taksit veya kredi seçilmelidir.")
+            if kredi is None or (kredi.durum or "") != "KULLANDIRILDI":
+                raise ValueError("Kredi aktif değil.")
+
+            kaynak = session.get(FinansHareketi, int(banka_hareket_id))
+            if kaynak is None:
+                raise ValueError("Banka hareketi bulunamadı.")
+            bagli = session.scalar(
+                select(BankaKrediOdeme).where(
+                    BankaKrediOdeme.banka_hareket_id == int(banka_hareket_id),
+                    BankaKrediOdeme.durum == "AKTIF",
+                )
+            )
+            if bagli is not None:
+                return BankaKrediService._odeme_sonuc(session, bagli)
+
+            if anapara_hareket_id is not None:
+                ana_har = session.get(FinansHareketi, int(anapara_hareket_id))
+                if ana_har is None:
+                    raise ValueError("Anapara hareketi bulunamadı.")
+
+            odeme_hesap = session.get(FinansHesabi, int(banka_hesap_id or kaynak.hesap_id))
+            if odeme_hesap is None:
+                raise ValueError("Ödeme hesabı bulunamadı.")
+            if (odeme_hesap.alt_hesap_turu or "") not in ODEME_HESAP_ALT_TURLERI:
+                raise ValueError("Ödeme hesabı mevduat/KMH/kart olmalı.")
+
+            if not bilesenler:
+                raise ValueError("Bağlanacak ödeme bileşenleri girilmelidir.")
+            hedef = {
+                alan: BankaKrediService._d(
+                    bilesenler.get(alan) or 0, ALAN_ETIKET[alan], SIFIR
+                )
+                for alan in BILESEN_ALANLARI
+            }
+            toplam = BankaKrediService.taksit_toplam(hedef)
+            if toplam <= 0:
+                raise ValueError("Ödenecek tutar sıfır olamaz.")
+
+            plan = None
+            odenmis = None
+            if taksit is not None:
+                plan = BankaKrediService.taksit_bilesenleri(taksit)
+                odenmis = BankaKrediService._odenen_bilesenler(session, taksit.id)
+                kalan = {
+                    alan: max(SIFIR, plan.get(alan, SIFIR) - odenmis[alan])
+                    for alan in BILESEN_ALANLARI
+                }
+                for alan in BILESEN_ALANLARI:
+                    if alan == "gecikme_faizi":
+                        continue
+                    if hedef[alan] > kalan[alan]:
+                        raise ValueError(
+                            f"{ALAN_ETIKET[alan]} ödemesi kalan tutarı aşıyor."
+                        )
+
+            odeme_tarihi = odeme_tarihi or kaynak.tarih or date.today()
+            if odeme_tarihi > date.today():
+                raise ValueError("Ödeme tarihi gelecek olamaz.")
+
+            belge = (odeme_belge_no or "").strip() or (
+                f"KTO-BAG-{(kaynak.belge_no or str(kaynak.id)).replace('EVB-BN-', '')}"
+            )
+            if session.scalar(
+                select(BankaKrediOdeme).where(BankaKrediOdeme.odeme_belge_no == belge)
+            ):
+                raise ValueError(f"Ödeme belge no zaten var: {belge}")
+
+            if taksit is not None:
+                acik = (aciklama or "").strip() or (
+                    f"{kredi.kredi_adi} — T{taksit.taksit_no} mevcut hareket bağlama"
+                    f" | {kaynak.belge_no or kaynak.id}"
+                )
+            else:
+                acik = (aciklama or "").strip() or (
+                    f"{kredi.kredi_adi} — kredi hesabı faiz bağlama"
+                    f" | {kaynak.belge_no or kaynak.id}"
+                )
+            if dekont:
+                acik = f"{acik} | Dekont: {dekont}"
+
+            odeme = BankaKrediOdeme(
+                transaction_id=tx or f"BAG-{uuid.uuid4().hex}",
+                kredi_id=kredi.id,
+                taksit_id=taksit.id if taksit is not None else None,
+                odeme_turu=tur,
+                odeme_tarihi=odeme_tarihi,
+                odeme_belge_no=belge[:50],
+                banka_hesap_id=odeme_hesap.id,
+                banka_dekont_no=dekont,
+                toplam=toplam,
+                para_birimi=(kredi.para_birimi or "TRY"),
+                kur=kredi.kur,
+                kur_tarihi=kredi.kur_tarihi,
+                banka_hareket_id=int(kaynak.id),
+                gider_belge_no=mevcut_gider[:50] if mevcut_gider else None,
+                aciklama=acik[:500],
+                durum="AKTIF",
+                created_by=BankaKrediService._kullanici(),
+                created_at=datetime.now(),
+            )
+            for alan in BILESEN_ALANLARI:
+                setattr(odeme, alan, hedef[alan])
+            session.add(odeme)
+            session.flush()
+
+            # Yeni banka çıkışı / anapara hareketi YOK — mevcut EVB bacakları korunur.
+            gider_belge = mevcut_gider
+            gider_toplam = toplam - hedef["anapara"]
+            if yaz_gider and gider_toplam > 0 and not mevcut_gider:
+                gider_belge = BankaKrediService._gider_belge_no(session)
+                for alan in GIDER_ALANLARI:
+                    tutar_bilesen = hedef[alan]
+                    if tutar_bilesen <= 0:
+                        continue
+                    gider_turu, gider_acik, ek = GIDER_TURU_ESLEME[alan]
+                    session.add(
+                        GiderFisi(
+                            belge_no=f"{gider_belge}-{ek}",
+                            tarih=odeme_tarihi,
+                            gider_turu=gider_turu,
+                            tutar=tutar_bilesen,
+                            finans_hesap_id=odeme_hesap.id,
+                            bagli_belge_no=odeme.odeme_belge_no,
+                            aciklama=f"{gider_acik} | {acik}"[:500],
+                            durum="AÇIK",
+                        )
+                    )
+                odeme.gider_belge_no = gider_belge
+
+            if taksit is not None and plan is not None and odenmis is not None:
+                yeni_odenen = {alan: odenmis[alan] + hedef[alan] for alan in BILESEN_ALANLARI}
+                taksit.odenen_anapara = yeni_odenen["anapara"]
+                taksit.odenen_faiz = yeni_odenen["faiz"]
+                taksit.odenen_masraf = sum(
+                    (yeni_odenen[a] for a in GIDER_ALANLARI if a != "faiz"), SIFIR
+                )
+                taksit.odenen_tutar = BankaKrediService.taksit_toplam(yeni_odenen)
+                taksit.odeme_tarihi = odeme_tarihi
+                taksit.odeme_belge_no = odeme.odeme_belge_no
+                if gider_belge:
+                    taksit.gider_belge_no = gider_belge
+                taksit.transaction_id = odeme.transaction_id
+                taksit.banka_dekont_no = dekont or taksit.banka_dekont_no
+                taksit.odeme_hesap_id = odeme_hesap.id
+                taksit.durum = BankaKrediService.taksit_durum_hesapla(
+                    taksit.vade_tarihi,
+                    taksit.odenen_tutar,
+                    plan["toplam"],
+                    None,
+                )
+
+            BankaKrediService._gunluk(
+                session,
+                "MEVCUT_HAREKET_BAGLA",
+                kredi_id=kredi.id,
+                taksit_id=taksit.id if taksit is not None else None,
+                odeme_id=odeme.id,
+                transaction_id=odeme.transaction_id,
+                detay=(
+                    f"kaynak_har={kaynak.id} anapara_har={anapara_hareket_id} "
+                    f"toplam={toplam}"
+                    + (
+                        f" kalan={plan['toplam'] - taksit.odenen_tutar}"
+                        if taksit is not None and plan is not None
+                        else " seviye=kredi"
+                    )
+                ),
+            )
+            session.flush()
+            return BankaKrediService._odeme_sonuc(session, odeme)
 
     @staticmethod
     def erken_kapama_ozeti(kredi_id) -> dict:

@@ -197,5 +197,135 @@ class PosValorHedefTest(unittest.TestCase):
             self.assertEqual(s.get(PosValorKaydi, r["kayit_id"]).durum, "AKTARILDI")
 
 
+class PosAktifAlacakOzetiTest(PosValorHedefTest):
+    """Aktif POS alacağı = PosValor açık kalan; ledger hareket bakiyesi değil."""
+
+    def test_bekleyen_ledger_degil_ve_kismi_kalan(self):
+        with get_session() as s:
+            kart = s.get(BankaKarti, self.banka_id)
+            pos = next(h for h in kart.alt_hesaplar if h.alt_hesap_turu == "POS")
+            hedef = next(h for h in kart.alt_hesaplar if h.alt_hesap_turu == "MEVDUAT")
+            # Ledger'ı şişiren eski hareket — bekleyene girmemeli
+            from database.models.finans import FinansHareketi
+
+            s.add(
+                FinansHareketi(
+                    hesap_id=pos.id,
+                    tarih=date(2026, 11, 1),
+                    hareket_turu="BANKA GİRİŞ",
+                    belge_no="ESKI-LEDGER",
+                    tutar=Decimal("99999.00"),
+                    aciklama="ledger sismanasi",
+                )
+            )
+            s.add(
+                PosValorKaydi(
+                    banka_karti_id=kart.id,
+                    pos_hesap_id=pos.id,
+                    kmh_hesap_id=hedef.id,
+                    hedef_hesap_id=hedef.id,
+                    belge_no="PV-ACIK",
+                    tahsilat_tarihi=date(2026, 11, 7),
+                    valor_tarihi=date(2026, 11, 8),
+                    valor_saati="",
+                    kart_tipi="KREDI_KARTI",
+                    taksit_sayisi=1,
+                    brut_tutar=Decimal("1000.00"),
+                    komisyon_orani=Decimal("2"),
+                    komisyon_tutari=Decimal("20.00"),
+                    net_tutar=Decimal("980.00"),
+                    durum="BEKLIYOR",
+                )
+            )
+            s.add(
+                PosValorKaydi(
+                    banka_karti_id=kart.id,
+                    pos_hesap_id=pos.id,
+                    kmh_hesap_id=hedef.id,
+                    hedef_hesap_id=hedef.id,
+                    belge_no="PV-KISMI",
+                    tahsilat_tarihi=date(2026, 11, 7),
+                    valor_tarihi=date(2026, 11, 8),
+                    valor_saati="",
+                    kart_tipi="KREDI_KARTI",
+                    taksit_sayisi=1,
+                    brut_tutar=Decimal("500.00"),
+                    komisyon_orani=Decimal("2"),
+                    komisyon_tutari=Decimal("10.00"),
+                    net_tutar=Decimal("490.00"),
+                    durum="BEKLIYOR",
+                    gercek_yatis_tarihi=date(2026, 11, 9),
+                    gercek_yatis_tutari=Decimal("200.00"),
+                )
+            )
+            s.add(
+                PosValorKaydi(
+                    banka_karti_id=kart.id,
+                    pos_hesap_id=pos.id,
+                    kmh_hesap_id=hedef.id,
+                    hedef_hesap_id=hedef.id,
+                    belge_no="PV-KAPALI",
+                    tahsilat_tarihi=date(2026, 11, 7),
+                    valor_tarihi=date(2026, 11, 8),
+                    valor_saati="",
+                    kart_tipi="KREDI_KARTI",
+                    taksit_sayisi=1,
+                    brut_tutar=Decimal("300.00"),
+                    komisyon_orani=Decimal("2"),
+                    komisyon_tutari=Decimal("6.00"),
+                    net_tutar=Decimal("294.00"),
+                    durum="AKTARILDI",
+                    gercek_yatis_tarihi=date(2026, 11, 9),
+                    gercek_yatis_tutari=Decimal("294.00"),
+                )
+            )
+            s.commit()
+
+        bugun = FinansService.pos_aktif_alacak_ozeti(banka_karti_id=self.banka_id)
+        # PV-ACIK 980 + PV-KISMI kalan 290 = 1270 net; kapalı ve ledger yok
+        self.assertEqual(bugun["adet"], 2)
+        self.assertEqual(bugun["net"], Decimal("1270.00"))
+        self.assertEqual(bugun["brut"], Decimal("1295.92"))  # 1000 + 500*(290/490)
+        self.assertNotEqual(bugun["net"], Decimal("99999.00"))
+
+        kesim = FinansService.pos_aktif_alacak_ozeti(
+            banka_karti_id=self.banka_id, kesim=date(2026, 11, 8)
+        )
+        # Kesimde AKTARILDI + yatis 09.11 hâlâ açık (tam tutar)
+        self.assertEqual(kesim["adet"], 3)
+        self.assertEqual(kesim["net"], Decimal("1764.00"))
+
+    def test_kanitsiz_aktarildi_bekleyen_kalir(self):
+        with get_session() as s:
+            kart = s.get(BankaKarti, self.banka_id)
+            pos = next(h for h in kart.alt_hesaplar if h.alt_hesap_turu == "POS")
+            hedef = next(h for h in kart.alt_hesaplar if h.alt_hesap_turu == "MEVDUAT")
+            s.add(
+                PosValorKaydi(
+                    banka_karti_id=kart.id,
+                    pos_hesap_id=pos.id,
+                    kmh_hesap_id=hedef.id,
+                    hedef_hesap_id=hedef.id,
+                    belge_no="PV-KANITSIZ",
+                    tahsilat_tarihi=date(2026, 11, 7),
+                    valor_tarihi=date(2026, 11, 8),
+                    valor_saati="",
+                    kart_tipi="KREDI_KARTI",
+                    taksit_sayisi=1,
+                    brut_tutar=Decimal("100.00"),
+                    komisyon_orani=Decimal("0"),
+                    komisyon_tutari=Decimal("0"),
+                    net_tutar=Decimal("100.00"),
+                    durum="AKTARILDI",
+                    gercek_yatis_tarihi=None,
+                )
+            )
+            s.commit()
+        bugun = FinansService.pos_aktif_alacak_ozeti(banka_karti_id=self.banka_id)
+        self.assertGreaterEqual(bugun["net"], Decimal("100.00"))
+        belgeler = {k.belge_no for k in bugun["kayitlar"]}
+        self.assertIn("PV-KANITSIZ", belgeler)
+
+
 if __name__ == "__main__":
     unittest.main()

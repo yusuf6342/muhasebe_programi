@@ -73,7 +73,7 @@ def belgeyi_yazdir(baslik: str, alanlar: list[tuple[str, str]], parent=None, dip
 
 
 class BelgeOnizlemeDialog(tk.Toplevel):
-    """Salt okunur belge kartı + Yazdır."""
+    """Salt okunur belge kartı + Yazdır (+ isteğe bağlı Düzenle/Sil)."""
 
     def __init__(
         self,
@@ -84,11 +84,14 @@ class BelgeOnizlemeDialog(tk.Toplevel):
         dipnot: str | None = None,
         geometry: str = "520x420",
         muhasebe: tuple[str, int | None] | None = None,
+        duzenle_komut=None,
+        sil_komut=None,
     ):
         super().__init__(parent)
         self.baslik = baslik
         self.alanlar = list(alanlar)
         self.dipnot = dipnot
+        self._deger_etiketleri: list[ttk.Label] = []
         self.title(baslik)
         if muhasebe and muhasebe[1]:
             from muhasebe_durum_ui import baslik_guncelle
@@ -113,9 +116,9 @@ class BelgeOnizlemeDialog(tk.Toplevel):
             ttk.Label(tablo, text=f"{etiket}:", foreground="#444").grid(
                 row=i, column=0, sticky="nw", padx=(0, 10), pady=4
             )
-            ttk.Label(tablo, text=str(deger or "—"), wraplength=340).grid(
-                row=i, column=1, sticky="nw", pady=4
-            )
+            deger_lbl = ttk.Label(tablo, text=str(deger or "—"), wraplength=340)
+            deger_lbl.grid(row=i, column=1, sticky="nw", pady=4)
+            self._deger_etiketleri.append(deger_lbl)
 
         if dipnot:
             ttk.Label(govde, text=dipnot, foreground="#666", wraplength=460).pack(
@@ -130,12 +133,26 @@ class BelgeOnizlemeDialog(tk.Toplevel):
             from muhasebe_durum_ui import fis_dugmesi
 
             fis_dugmesi(alt, muhasebe[0], lambda: muhasebe[1]).pack(side="right", padx=(0, 8))
+        if sil_komut:
+            ttk.Button(alt, text="Sil", width=10, command=sil_komut).pack(side="right", padx=(0, 8))
+        if duzenle_komut:
+            ttk.Button(alt, text="Düzenle", width=10, command=duzenle_komut).pack(
+                side="right", padx=(0, 8)
+            )
+
+    def alanlari_yenile(self, alanlar: list[tuple[str, str]]):
+        """Detay alanlarını yerinde günceller (düzenleme sonrası)."""
+        self.alanlar = list(alanlar)
+        for i, (_etiket, deger) in enumerate(self.alanlar):
+            if i < len(self._deger_etiketleri):
+                self._deger_etiketleri[i].configure(text=str(deger or "—"))
 
     def yazdir(self):
         belgeyi_yazdir(self.baslik, self.alanlar, parent=self, dipnot=self.dipnot)
 
 
 def kasa_makbuz_onizle(parent, belge_no: str) -> bool:
+    """Makbuz çıktısı / önizleme (yeni mali hareket üretmez)."""
     from database.finans_service import FinansService
 
     makbuz = FinansService.kasa_makbuz_belge_no_ile(belge_no)
@@ -144,6 +161,26 @@ def kasa_makbuz_onizle(parent, belge_no: str) -> bool:
     from makbuz_cikti_ui import makbuz_ciktisi_ac
 
     makbuz_ciktisi_ac(parent, [int(makbuz.id)], bekle=True)
+    return True
+
+
+def kasa_makbuz_duzenle(parent, belge_no: str) -> bool:
+    """Tahsilat/ödeme makbuzunu belge kimliğiyle düzenleme ekranında açar."""
+    from database.finans_service import FinansService
+
+    makbuz = FinansService.kasa_makbuz_belge_no_ile(belge_no)
+    if not makbuz:
+        return False
+    from kasa_makbuz_ui import KasaMakbuzDialog
+
+    tur = (makbuz.makbuz_turu or "TAHSILAT").upper()
+    dialog = KasaMakbuzDialog(parent, makbuz_turu=tur, makbuz_id=int(makbuz.id))
+    try:
+        dialog.lift()
+        dialog.focus_force()
+    except Exception:
+        pass
+    parent.wait_window(dialog)
     return True
 
 
@@ -200,33 +237,112 @@ def gider_fisi_onizle(parent, belge_no: str) -> bool:
     return True
 
 
+def _cari_virman_alanlari(belge_no: str) -> list[tuple[str, str]]:
+    from database.cari_service import CariService
+
+    kayit = CariService.virman_getir(belge_no)
+    return [
+        ("Belge no", belge_no),
+        ("Tür", "Cari Virman"),
+        ("Tarih", _tarih(kayit["tarih"])),
+        ("Kaynak cari", f"{kayit['kaynak_kodu']} — {kayit['kaynak_unvan']}"),
+        ("Hedef cari", f"{kayit['hedef_kodu']} — {kayit['hedef_unvan']}"),
+        ("Tutar", _para(kayit["tutar"])),
+        ("Açıklama", kayit["aciklama"] or "—"),
+    ]
+
+
+def _virman_listesi_yenile(parent) -> None:
+    """Virman listesi / giriş paneli / cari ekranlarını mümkünse yenile."""
+    kok = parent
+    try:
+        kok = parent.winfo_toplevel()
+    except tk.TclError:
+        pass
+    if hasattr(kok, "virman_listesini_yenile"):
+        try:
+            kok.virman_listesini_yenile()
+        except Exception:
+            pass
+    if hasattr(kok, "cari_hareketlerini_yenile"):
+        try:
+            kok.cari_hareketlerini_yenile()
+        except Exception:
+            pass
+    if hasattr(kok, "ekstre_yenile"):
+        try:
+            kok.ekstre_yenile()
+        except Exception:
+            pass
+
+
 def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
     from database.cari_service import CariService
 
     kayitlar = CariService.islemler_belge_no_ile(belge_no)
     if not kayitlar:
         return False
+    duzenle_komut = None
+    sil_komut = None
+    dialog_ref: dict = {"dlg": None}
     if belge_no.startswith("VRM-") or (tur or "").casefold() in ("cari virman", "virman"):
-        kaynak = next((i for i in kayitlar if float(i.alacak or 0) > 0), kayitlar[0])
-        hedef = next((i for i in kayitlar if float(i.borc or 0) > 0), None)
-        kaynak_cari = getattr(kaynak, "cari", None)
-        hedef_cari = getattr(hedef, "cari", None) if hedef else None
-        alanlar = [
-            ("Belge no", belge_no),
-            ("Tür", "Cari Virman"),
-            ("Tarih", _tarih(kaynak.tarih)),
-            (
-                "Kaynak cari",
-                f"{kaynak_cari.cari_kodu} — {kaynak_cari.unvan}" if kaynak_cari else "—",
-            ),
-            (
-                "Hedef cari",
-                f"{hedef_cari.cari_kodu} — {hedef_cari.unvan}" if hedef_cari else "—",
-            ),
-            ("Tutar", _para(kaynak.alacak or kaynak.borc)),
-            ("Açıklama", kaynak.aciklama or "—"),
-        ]
+        try:
+            alanlar = _cari_virman_alanlari(belge_no)
+        except ValueError:
+            return False
         baslik = "Cari Virman"
+
+        def duzenle_komut():
+            from app import CariVirmanDialog
+
+            dlg = dialog_ref["dlg"]
+            if dlg is None or not dlg.winfo_exists():
+                return
+            form = CariVirmanDialog(dlg, belge_no=belge_no)
+            if not form.winfo_exists():
+                return
+            dlg.wait_window(form)
+            if not form.result:
+                return
+            try:
+                dlg.alanlari_yenile(_cari_virman_alanlari(belge_no))
+            except ValueError as hata:
+                messagebox.showerror("Virman", str(hata), parent=dlg)
+                dlg.destroy()
+                return
+            _virman_listesi_yenile(parent)
+
+        def sil_komut():
+            dlg = dialog_ref["dlg"]
+            if dlg is None or not dlg.winfo_exists():
+                return
+            try:
+                kayit = CariService.virman_getir(belge_no)
+            except ValueError as hata:
+                messagebox.showerror("Silinemedi", str(hata), parent=dlg)
+                return
+            kaynak = f"{kayit['kaynak_kodu']} — {kayit['kaynak_unvan']}"
+            hedef = f"{kayit['hedef_kodu']} — {kayit['hedef_unvan']}"
+            if not messagebox.askyesno(
+                "Virman sil",
+                (
+                    f"Belge: {belge_no}\n"
+                    f"Kaynak cari: {kaynak}\n"
+                    f"Hedef cari: {hedef}\n"
+                    f"Tutar: {_para(kayit['tutar'])}\n\n"
+                    "Bu virman fişi silinsin mi?\n"
+                    "Kaynak ve hedef bakiyeler geri alınır."
+                ),
+                parent=dlg,
+            ):
+                return
+            try:
+                CariService.virman_iptal(belge_no)
+            except ValueError as hata:
+                messagebox.showerror("Silinemedi", str(hata), parent=dlg)
+                return
+            _virman_listesi_yenile(parent)
+            dlg.destroy()
     else:
         islem = kayitlar[0]
         cari = getattr(islem, "cari", None)
@@ -253,7 +369,15 @@ def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
             muhasebe = cari_islem_kaynagi(kayitlar[0].id)
     except Exception:
         muhasebe = None
-    dialog = BelgeOnizlemeDialog(parent, baslik, alanlar, muhasebe=muhasebe)
+    dialog = BelgeOnizlemeDialog(
+        parent,
+        baslik,
+        alanlar,
+        muhasebe=muhasebe,
+        duzenle_komut=duzenle_komut,
+        sil_komut=sil_komut,
+    )
+    dialog_ref["dlg"] = dialog
     if dialog.winfo_exists():
         parent.wait_window(dialog)
     return True
@@ -301,6 +425,14 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
             parent.wait_window(dialog)
         return True
 
+    if belge_no.startswith("PVA-") or (tur or "").upper().startswith("POS VALÖR"):
+        from finans_ui import PosAktarimBelgeDialog
+
+        dialog = PosAktarimBelgeDialog(parent, belge_no)
+        if dialog.winfo_exists():
+            parent.wait_window(dialog)
+        return True
+
     if belge_no.startswith("KKO-"):
         from finans_ui import BankaIslemKkOdemeDialog
 
@@ -333,6 +465,18 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
             parent.wait_window(dialog)
         return True
 
+    if belge_no.startswith("KVR-") or tur.upper() in (
+        "KASA VİRMAN GİRİŞ",
+        "KASA VİRMAN ÇIKIŞ",
+        "KASA VİRMAN",
+    ):
+        from finans_ui import KasalarArasiVirmanDialog
+
+        dialog = KasalarArasiVirmanDialog(parent, belge_no=belge_no)
+        if dialog.winfo_exists():
+            parent.wait_window(dialog)
+        return True
+
     if belge_no.startswith("CVR-"):
         if cari_virman_onizle(parent, belge_no):
             return True
@@ -345,7 +489,9 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
         "TAHSILAT MAKBUZU",
         "ODEME MAKBUZU",
     ):
-        if kasa_makbuz_onizle(parent, belge_no):
+        # Çift tık / Belgeyi Aç → gerçek makbuz kaydı (düzenleme); çıktı ayrı menüde.
+        # EVB-BNC / THS eski tahsilatlar aşağıda cari_islem yoluna düşer.
+        if kasa_makbuz_duzenle(parent, belge_no):
             return True
         messagebox.showinfo(
             "Belge",
@@ -380,6 +526,117 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
         )
         return True
 
+    # Prefix tanımsız EVB / eski belgeler: hareket türü veya fiş içeriğiyle aç
+    tur_u = (tur or "").strip().upper()
+    dialog = None
+    if tur_u in ("KASADAN BANKAYA YATAN", "KASADAN BANKAYA (KASA)"):
+        from finans_ui import KasadanBankayaYatirDialog
+
+        dialog = KasadanBankayaYatirDialog(parent, belge_no=belge_no)
+    elif tur_u in ("BANKADAN NAKİT ÇEKİLEN", "BANKADAN NAKİT (KASA)"):
+        from finans_ui import BankadanCekilenDialog
+
+        dialog = BankadanCekilenDialog(parent, belge_no=belge_no)
+    elif "BANKA VİRMAN" in tur_u:
+        from finans_ui import BankalarArasiVirmanDialog
+
+        dialog = BankalarArasiVirmanDialog(parent, belge_no=belge_no)
+    elif tur_u == "ALINAN HAVALE":
+        from finans_ui import HavaleFisDialog
+
+        dialog = HavaleFisDialog(parent, tur="ahv", belge_no=belge_no)
+    elif tur_u == "GÖNDERİLEN HAVALE":
+        from finans_ui import HavaleFisDialog
+
+        dialog = HavaleFisDialog(parent, tur="ghv", belge_no=belge_no)
+    else:
+        try:
+            from database.finans_service import FinansService
+
+            fis = FinansService.banka_islem_fis_getir(belge_no)
+        except ValueError:
+            fis = None
+        if fis:
+            kod = fis.get("tur")
+            if kod == "kby":
+                from finans_ui import KasadanBankayaYatirDialog
+
+                dialog = KasadanBankayaYatirDialog(parent, belge_no=belge_no)
+            elif kod == "bnc":
+                from finans_ui import BankadanCekilenDialog
+
+                dialog = BankadanCekilenDialog(parent, belge_no=belge_no)
+            elif kod == "bvr":
+                from finans_ui import BankalarArasiVirmanDialog
+
+                dialog = BankalarArasiVirmanDialog(parent, belge_no=belge_no)
+            elif kod == "kvr":
+                from finans_ui import KasalarArasiVirmanDialog
+
+                dialog = KasalarArasiVirmanDialog(parent, belge_no=belge_no)
+            elif kod in ("ahv", "ghv"):
+                from finans_ui import HavaleFisDialog
+
+                dialog = HavaleFisDialog(parent, tur=kod, belge_no=belge_no)
+    if dialog is not None:
+        if dialog.winfo_exists():
+            parent.wait_window(dialog)
+        return True
+
+    return False
+
+
+def belge_id_ile_ac(parent, *, belge_id: int | None, belge_turu: str | None = None,
+                    kaynak: str | None = None) -> bool:
+    """Kayıt kimliğiyle satış/iade evrakını düzenleme ekranında aç (numaraya güvenmez)."""
+    if not belge_id:
+        return False
+    tur = (belge_turu or "").strip().casefold()
+    kay = (kaynak or "").strip().casefold()
+    if tur in {"satis", "satış", "satis_faturasi", "satış faturası"} or kay in {
+        "satış faturası",
+        "satis faturasi",
+    }:
+        from app import CariDialog, SatisFaturasiDialog
+        from database.satis_faturasi_service import SatisFaturasiService
+
+        fatura = SatisFaturasiService.getir(int(belge_id))
+        if not fatura:
+            raise ValueError("Satış faturası bulunamadı.")
+        if getattr(fatura, "is_deleted", False):
+            raise ValueError("Silinmiş fatura açılamaz.")
+        dialog = SatisFaturasiDialog(
+            parent,
+            fatura=fatura,
+            cari_ac=lambda cari: CariDialog(parent, cari),
+        )
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+        parent.wait_window(dialog)
+        return True
+    if tur in {"iade", "satis_iade", "satış iadesi", "satis iadesi"} or kay in {
+        "satış iadesi",
+        "satis iadesi",
+    }:
+        from app import SatisIadeFaturasiDialog
+        from database.satis_iade_faturasi_service import SatisIadeFaturasiService
+
+        iade = SatisIadeFaturasiService.getir(int(belge_id))
+        if not iade:
+            raise ValueError("Satış iade faturası bulunamadı.")
+        if getattr(iade, "is_deleted", False):
+            raise ValueError("Silinmiş iade faturası açılamaz.")
+        dialog = SatisIadeFaturasiDialog(parent, iade=iade)
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+        parent.wait_window(dialog)
+        return True
     return False
 
 

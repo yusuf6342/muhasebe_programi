@@ -3,7 +3,8 @@
 Evo banka_listesi alanları (dokümantasyon):
   id, text, a_dov_id, DOV_Kodu, a_posmu, a_posgun, a_muh_kom_hid, a_kod
 
-Yerel model: BankaKarti + 5 alt FinansHesabi (MEVDUAT/KMH/POS/KK/KREDILER).
+Yerel model: BankaKarti (üst çatı) + ürün FinansHesabi (MEVDUAT/KMH/POS/KK/KREDILER).
+Ürünün tam adı yeni çatı üretmez; kurum + sahip/grup sınıflandırması kullanılır.
 """
 
 from __future__ import annotations
@@ -16,12 +17,13 @@ from sqlalchemy import select
 
 from database.database import get_session
 from database.finans_service import FinansService
-from database.models.finans import BankAccountMatchRule, BankaKarti
+from database.models.finans import BankAccountMatchRule, BankaKarti, FinansHesabi
 from entegrasyon.banka_eslestirme import (
     BankAccountMatchingService,
     normalize_banka_adi,
     normalize_iban,
 )
+from entegrasyon.banka_urun_sinif import siniflandir_evo_satir
 from entegrasyon.evb_import_common import ImportSonuc, _temiz
 
 
@@ -38,6 +40,7 @@ def map_evo_banka_kart(satir: dict[str, Any]) -> dict[str, Any]:
     iban = normalize_iban(satir.get("a_iban") or satir.get("IBAN") or satir.get("iban"))
     hesap_no = _temiz(satir.get("a_hesap_no") or satir.get("hesap_no") or satir.get("HESAP_NO") or kod)
     sube = _temiz(satir.get("a_sube") or satir.get("a_sube_adi") or satir.get("SUBE") or satir.get("sube"))
+    sinif = siniflandir_evo_satir(satir)
     notlar = []
     if doviz and doviz.upper() not in {"TL", "TRY"}:
         notlar.append(f"Döviz: {doviz}")
@@ -46,9 +49,15 @@ def map_evo_banka_kart(satir: dict[str, Any]) -> dict[str, Any]:
     if kod and kod not in {"", "-"}:
         notlar.append(f"Evo kod: {kod}")
     notlar.append(f"Evo id: {evo_id}")
+    notlar.append(f"ürün tür: {sinif['urun_turu']}")
+    notlar.append(f"çatı: {sinif['cati']}")
     return {
         "evo_banka_id": evo_id,
         "banka_adi": ad[:100] if ad else f"Evo Banka {evo_id}",
+        "cati_adi": sinif["cati"],
+        "urun_turu": sinif["urun_turu"],
+        "urun_adi": (sinif["urun_adi"] or ad)[:100],
+        "belirsiz": sinif["belirsiz"],
         "sube": sube[:100] if sube else None,
         "hesap_no": hesap_no[:50] if hesap_no else None,
         "iban": iban[:34] if iban else None,
@@ -120,8 +129,104 @@ def karsilastir(evo_satirlar: list[dict], yerel_kartlar: list[BankaKarti] | None
     return rapor
 
 
+def _cati_bul_veya_olustur(cati_adi: str) -> BankaKarti:
+    """Üst banka çatısını bul; yoksa oluştur. Ürün adıyla yeni çatı açmaz."""
+    with get_session() as session:
+        kart = session.scalar(
+            select(BankaKarti).where(BankaKarti.banka_adi == cati_adi, BankaKarti.aktif.is_(True))
+        )
+        if kart:
+            return FinansService.banka_karti_getir(kart.id)
+    return FinansService.banka_karti_kaydet(
+        {"banka_adi": cati_adi, "aciklama": f"Üst banka çatısı | Evo ürün eşlemesi"}
+    )
+
+
+def _urun_hesap_bul_veya_olustur(
+    *,
+    cati: BankaKarti,
+    urun_turu: str,
+    urun_adi: str,
+    evo_id: str,
+    doviz: str,
+    iban: str | None,
+    hesap_no: str | None,
+    sube: str | None,
+) -> FinansHesabi:
+    """Çatı altında ürün hesabını bul (eşleşme kuralı / ad / tür) veya oluştur."""
+    tur = (urun_turu or "MEVDUAT").upper()
+    with get_session() as session:
+        # mevcut kural
+        kural = session.scalar(
+            select(BankAccountMatchRule).where(
+                BankAccountMatchRule.evo_banka_id == evo_id,
+                BankAccountMatchRule.aktif.is_(True),
+            )
+        )
+        if kural and kural.finans_hesap_id:
+            h = session.get(FinansHesabi, kural.finans_hesap_id)
+            if h:
+                return h
+        # aynı çatıda aynı ad
+        h = session.scalar(
+            select(FinansHesabi).where(
+                FinansHesabi.banka_karti_id == cati.id,
+                FinansHesabi.hesap_adi == urun_adi[:100],
+            )
+        )
+        if h:
+            return h
+        # boş şablon (0 hareket varsayımı yok — yalnız ad şablon ve tek ise)
+        adaylar = list(
+            session.scalars(
+                select(FinansHesabi).where(
+                    FinansHesabi.banka_karti_id == cati.id,
+                    FinansHesabi.alt_hesap_turu == tur,
+                    FinansHesabi.aktif.is_(True),
+                )
+            )
+        )
+        for aday in adaylar:
+            if (aday.hesap_adi or "").startswith(cati.banka_adi) and " — " in (aday.hesap_adi or ""):
+                # şablon slot — ürün adına çevir
+                aday.hesap_adi = urun_adi[:100]
+                aday.iban = iban
+                aday.hesap_no = hesap_no
+                aday.sube = sube
+                aday.para_birimi = doviz
+                session.flush()
+                return aday
+        # yeni ürün hesabı
+        finans_turu = "KREDİ KARTI" if tur == "KREDI_KARTI" else "BANKA"
+        yeni_ad = urun_adi[:100]
+        baz = yeni_ad
+        n = 2
+        while session.scalar(select(FinansHesabi).where(FinansHesabi.hesap_adi == yeni_ad)):
+            yeni_ad = f"{baz} ({n})"[:100]
+            n += 1
+        h = FinansHesabi(
+            hesap_adi=yeni_ad,
+            hesap_turu=finans_turu,
+            acilis_bakiyesi=Decimal("0"),
+            para_birimi=doviz,
+            banka_adi=cati.banka_adi,
+            banka_karti_id=cati.id,
+            alt_hesap_turu=tur,
+            iban=iban,
+            hesap_no=hesap_no,
+            sube=sube,
+            aktif=True,
+            varsayilan=False,
+            aciklama=f"Evo id: {evo_id}",
+        )
+        session.add(h)
+        session.flush()
+        session.refresh(h)
+        return h
+
+
 def aktar_satirlari(satirlar: list[dict[str, Any]], *, guncelle: bool = True) -> ImportSonuc:
-    """Evo banka kartlarını yerelde oluştur / güncelle ve eşleştirme yaz."""
+    """Evo banka ürünlerini üst çatı + doğru alt türe eşle; isim değişince yeni çatı açma."""
     sonuc = ImportSonuc(cekilen=len(satirlar))
     for ham in satirlar:
         try:
@@ -131,60 +236,76 @@ def aktar_satirlari(satirlar: list[dict[str, Any]], *, guncelle: bool = True) ->
                 sonuc.hatalar.append("Evo banka id yok")
                 continue
 
-            mevcut = BankAccountMatchingService.kural_bul(evo_id)
-            kart_id = None
-            if mevcut:
-                kart_id = mevcut.banka_karti_id
-            else:
-                # ada / iban ile bul
-                eslesen = karsilastir([ham]).eslesen
-                if eslesen:
-                    kart_id = eslesen[0]["yerel_id"]
+            from database.kart_silme import banka_kaynak_engelli_mi, eslestirme_gerekli_mesaji
 
-            if kart_id and not guncelle:
+            if banka_kaynak_engelli_mi("EVOBULUT", evo_id):
+                sonuc.hatalar.append(eslestirme_gerekli_mesaji(evo_id, m.get("banka_adi")))
                 sonuc.atlanan += 1
-                BankAccountMatchingService.hafizaya_yaz(
-                    evo_banka_id=evo_id,
-                    banka_karti_id=kart_id,
-                    evo_banka_adi=m["banka_adi"],
-                    iban=m.get("iban"),
-                    hesap_no=m.get("hesap_no"),
-                    kaynak="api",
-                )
+                continue
+
+            mevcut = BankAccountMatchingService.kural_bul(evo_id)
+            if mevcut and not guncelle:
+                sonuc.atlanan += 1
                 continue
 
             doviz = (m.get("doviz") or "TRY").strip().upper()
             if doviz in {"TL", "YTL", ""}:
                 doviz = "TRY"
-            veriler = {
-                "banka_adi": m["banka_adi"],
-                "sube": m.get("sube"),
-                "hesap_no": m.get("hesap_no"),
-                "iban": m.get("iban"),
-                "aciklama": m.get("aciklama"),
-                "pos_valor_gun": m.get("pos_valor_gun", 1),
-                "para_birimi": doviz,
-                "aktif": True,
-            }
-            if kart_id:
-                veriler["kart_id"] = kart_id
-                kart = FinansService.banka_karti_kaydet(veriler)
-                sonuc.atlanan += 1  # güncelleme sayacı yok; atlanan≈güncellenen
+
+            # 1) üst çatı: ürün adından değil, sınıflandırılmış çatı adından
+            hedef_cati = _cati_bul_veya_olustur(m["cati_adi"])
+            if mevcut:
+                eski = FinansService.banka_karti_getir(mevcut.banka_karti_id)
+                # Eski kural yanlış ürün-çatısına bakıyorsa doğru çatıya yönlendir
+                if (
+                    guncelle
+                    and eski
+                    and normalize_banka_adi(eski.banka_adi) != normalize_banka_adi(m["cati_adi"])
+                ):
+                    cati = hedef_cati
+                else:
+                    cati = eski or hedef_cati
+                sonuc.atlanan += 1
             else:
-                kart = FinansService.banka_karti_kaydet(veriler)
+                cati = hedef_cati
                 sonuc.olusturulan += 1
 
-            hesap_id = BankAccountMatchingService.mevduat_hesap_id(kart.id, "MEVDUAT")
+            # 2) ürün hesabı (doğru tür)
+            hesap = _urun_hesap_bul_veya_olustur(
+                cati=cati,
+                urun_turu=m["urun_turu"],
+                urun_adi=m["urun_adi"],
+                evo_id=evo_id,
+                doviz=doviz,
+                iban=m.get("iban"),
+                hesap_no=m.get("hesap_no"),
+                sube=m.get("sube"),
+            )
+            # çatı / tür sapması varsa düzelt (yalnız guncelle; hareket kopyalamaz)
+            if guncelle:
+                with get_session() as session:
+                    h = session.get(FinansHesabi, hesap.id)
+                    if h:
+                        if h.banka_karti_id != cati.id:
+                            h.banka_karti_id = cati.id
+                            h.banka_adi = cati.banka_adi
+                        if (h.alt_hesap_turu or "").upper() != m["urun_turu"]:
+                            h.alt_hesap_turu = m["urun_turu"]
+                            h.hesap_turu = (
+                                "KREDİ KARTI" if m["urun_turu"] == "KREDI_KARTI" else "BANKA"
+                            )
+                        session.flush()
+
             BankAccountMatchingService.hafizaya_yaz(
                 evo_banka_id=evo_id,
-                banka_karti_id=kart.id,
+                banka_karti_id=cati.id,
                 evo_banka_adi=m["banka_adi"],
-                finans_hesap_id=hesap_id,
-                alt_hesap_turu="MEVDUAT",
+                finans_hesap_id=hesap.id,
+                alt_hesap_turu=m["urun_turu"],
                 iban=m.get("iban"),
                 hesap_no=m.get("hesap_no"),
                 guven=Decimal("100"),
-                kaynak="api",
+                kaynak="api_cati",
             )
         except Exception as exc:  # noqa: BLE001
             sonuc.hatalar.append(f"{_temiz(ham.get('text') or ham.get('id'))}: {exc}")

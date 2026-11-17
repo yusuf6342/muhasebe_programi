@@ -155,12 +155,16 @@ class FaturaListePencere(tk.Toplevel):
 
         ust = ttk.Frame(self, padding=8)
         ust.pack(fill="x")
+        from ui_takvim import takvim_entry_bagla
+
         ttk.Label(ust, text="Fatura Tarihi:").pack(side="left")
         self.tarih_bas = ttk.Entry(ust, width=10)
         self.tarih_bas.pack(side="left", padx=2)
+        takvim_entry_bagla(self.tarih_bas, on_select=self.yenile)
         ttk.Label(ust, text="–").pack(side="left")
         self.tarih_bit = ttk.Entry(ust, width=10)
         self.tarih_bit.pack(side="left", padx=2)
+        takvim_entry_bagla(self.tarih_bit, on_select=self.yenile)
         bugun = date.today()
         self.tarih_bas.insert(0, (bugun - timedelta(days=30)).strftime("%d.%m.%Y"))
         self.tarih_bit.insert(0, bugun.strftime("%d.%m.%Y"))
@@ -168,7 +172,7 @@ class FaturaListePencere(tk.Toplevel):
         ttk.Label(ust, text="Fatura No:").pack(side="left", padx=(10, 2))
         self.no_ara = ttk.Entry(ust, width=12)
         self.no_ara.pack(side="left")
-        cari_etiket = "Müşteri:" if satis else "Tedarikçi:"
+        cari_etiket = "Cari Ünvanı Ara:" if satis else "Tedarikçi Ünvanı Ara:"
         ttk.Label(ust, text=cari_etiket).pack(side="left", padx=(10, 2))
         self.cari_ara = ttk.Entry(ust, width=18)
         self.cari_ara.pack(side="left")
@@ -269,7 +273,10 @@ class FaturaListePencere(tk.Toplevel):
         self.tablo.configure(yscrollcommand=dikey.set)
         self.tablo.pack(side="left", fill="both", expand=True)
         dikey.pack(side="right", fill="y")
+        self.tablo.bind("<Button-1>", self._tablo_sol_tik, add="+")
         self.tablo.bind("<Double-1>", lambda _e: self.seciliyi_ac())
+        self.tablo.bind("<Return>", lambda _e: self.seciliyi_ac())
+        self.tablo.bind("<KP_Enter>", lambda _e: self.seciliyi_ac())
         self.tablo.bind("<Button-3>", self._baslik_sag_tik)
 
         alt = ttk.Frame(self, padding=8)
@@ -631,18 +638,40 @@ class FaturaListePencere(tk.Toplevel):
             self._sayfa += 1
             self._tabloyu_doldur()
 
-    def _secili_id(self) -> int | None:
+    def _secili_id(self, *, sessiz: bool = False) -> int | None:
         sec = self.tablo.selection()
         if not sec:
-            messagebox.showinfo("Seçim", "Lütfen bir fatura seçin.", parent=self)
+            if not sessiz:
+                messagebox.showinfo("Seçim", "Lütfen bir fatura seçin.", parent=self)
             return None
-        return int(sec[0])
+        try:
+            return int(sec[0])
+        except (TypeError, ValueError):
+            return None
+
+    def _tablo_sol_tik(self, event):
+        """Evrak No / Kayıt No hücresine tek tık → id ile aç."""
+        try:
+            if self.tablo.identify_region(event.x, event.y) != "cell":
+                return
+            kolon_id = self.tablo.identify_column(event.x)
+            satir_id = self.tablo.identify_row(event.y)
+        except tk.TclError:
+            return
+        if not satir_id or kolon_id != "#1":
+            return
+        try:
+            self.tablo.selection_set(satir_id)
+            self.tablo.focus(satir_id)
+        except tk.TclError:
+            pass
+        self.after_idle(self.seciliyi_ac)
 
     def seciliyi_ac(self):
         fatura_id = self._secili_id()
         if fatura_id is None:
             return
-        # Tür doğrulama (ham listeden)
+        # Tür doğrulama (ham listeden) — satır sırası / no metni değil, iid=id
         kayit = next((r for r in self._filtreli if r.get("id") == fatura_id), None)
         if not kayit or kayit.get("document_type") != self.document_type:
             messagebox.showerror(

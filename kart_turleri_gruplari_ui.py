@@ -217,9 +217,18 @@ def _tur_yonetim(app, kapsam: str, geri_fn) -> None:
 
     btn_sol = ttk.Frame(sol)
     btn_sol.pack(fill="x")
-    ttk.Button(btn_sol, text="Ana Tür Ekle", command=lambda: ana_form()).pack(side="left")
+    # Cari ana türler sabittir (5 tür); yeni ana tür eklenemez — alt tür serbest
+    if kapsam != KAPSAM_CARI:
+        ttk.Button(btn_sol, text="Ana Tür Ekle", command=lambda: ana_form()).pack(side="left")
+    else:
+        ttk.Label(
+            btn_sol,
+            text="Cari ana türler sabit (5). Alt tür / alt hesap kullanın.",
+            wraplength=280,
+        ).pack(side="left", padx=(0, 6))
     ttk.Button(btn_sol, text="Düzenle", command=ana_duzenle).pack(side="left", padx=4)
-    ttk.Button(btn_sol, text="Pasife Al", command=ana_pasif).pack(side="left")
+    if kapsam != KAPSAM_CARI:
+        ttk.Button(btn_sol, text="Pasife Al", command=ana_pasif).pack(side="left")
 
     btn_sag = ttk.Frame(sag)
     btn_sag.pack(fill="x")
@@ -388,6 +397,15 @@ def hizli_tanim_penceresi(parent, *, kapsam: str, tur: str = "alt", ana_tur_id: 
         return
 
     if tur == "ana":
+        if kapsam == KAPSAM_CARI:
+            messagebox.showinfo(
+                "Ana tür",
+                "Cari ana kart türleri sabittir:\n"
+                "Müşteri, Tedarikçi, Personel, Resmi Kurumlar, Düzenleyici Hesaplar.\n\n"
+                "Yeni ana tür eklenemez; alt tür veya alt hesap kullanın.",
+                parent=parent,
+            )
+            return
         alanlar = _ana_alanlar(kapsam, None)
 
         def kaydet(v):

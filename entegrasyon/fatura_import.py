@@ -41,7 +41,6 @@ from entegrasyon.evb_import_common import (
     progress_log,
     satir_verisi_fatura,
     satir_verisi_iade,
-    stok_yetersizligi_kapat,
 )
 
 # tur → (onek, kod_onek, hedef)
@@ -137,10 +136,13 @@ def _tek_aktar(client, liste_satir: dict[str, Any], tur: str, sonuc: ImportSonuc
             satir_verileri,
         )
     elif hedef in {"satis", "satis_fis"}:
-        stok_yetersizligi_kapat(
-            satir_verileri, fatura_no=belge_no, tarih=tarih, depo=depo, sonuc=sonuc
-        )
-        SatisFaturasiService.kaydet(
+        # Evo Onaysız (a_onay=0): Cin'de de taslak kalır; onay/FIFO yok
+        evo_onay = _temiz(liste_satir.get("G.a_onay") or liste_satir.get("a_onay") or "1")
+        taslak_modu = evo_onay == "0" or _temiz(
+            liste_satir.get("TBL_ONAY.a_adi") or ""
+        ).casefold() == "onaysız"
+        # Kaynaksız EVB-OTO stok girişi YOK — yetersiz stok gerçek giriş/açılış ile çözülür
+        fatura = SatisFaturasiService.kaydet(
             {
                 "fatura_no": belge_no,
                 "fatura_tarihi": tarih,
@@ -152,10 +154,12 @@ def _tek_aktar(client, liste_satir: dict[str, Any], tur: str, sonuc: ImportSonuc
             },
             satir_verileri,
         )
+        # kaydet stok/FIFO yazmaz; onaylı Evo belgesi → onayla (eksi stok engel değil, OTO yok)
+        if not taslak_modu:
+            fid = int(getattr(fatura, "id"))
+            SatisFaturasiService.onayla(fid, eksi_izin=True)
     elif hedef == "alis_iade":
-        stok_yetersizligi_kapat(
-            satir_verileri, fatura_no=belge_no, tarih=tarih, depo=depo, sonuc=sonuc
-        )
+        # Kaynaksız EVB-OTO yok; stok yetersizliği gerçek giriş ile çözülür
         AlisIadeFaturasiService.kaydet_ve_onayla(
             {
                 "iade_no": belge_no,

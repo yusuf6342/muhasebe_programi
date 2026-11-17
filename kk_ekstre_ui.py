@@ -25,7 +25,12 @@ DURUM_ETIKET = {
     "KESILMEMIS": "Kesilmedi", "KESILMIS": "Kesildi", "KISMI": "Kısmen ödendi", "ODENDI": "Ödendi",
     "GECIKMIS": "Gecikmiş", "FAZLA": "Fazla ödendi", "EKSIK_BILGI": "Eksik bilgi (son ödeme günü tanımsız)",
 }
-KAYNAK_ETIKET = {"EKSTRE": "Ekstre ödemesi", "KASADAN_BANKAYA": "Kasadan yatırma", "VIRMAN": "Banka virmanı"}
+KAYNAK_ETIKET = {
+    "EKSTRE": "Ekstre ödemesi",
+    "KASADAN_BANKAYA": "Kasadan yatırma",
+    "VIRMAN": "Banka virmanı",
+    "BANKAMATIK": "Bankamatikten nakit",
+}
 
 
 def tutar_coz(metin) -> Decimal:
@@ -42,20 +47,53 @@ def tutar_coz(metin) -> Decimal:
     return d.quantize(Decimal("0.01"))
 
 
-def _odeme_hesaplari() -> list[tuple[int, str]]:
-    """Ekstre ödemesinin çıkabileceği kasa ve vadesiz / KMH banka hesapları."""
-    from database.finans_service import FinansService
+def _odeme_hesaplari(*, yontem: str = "BANKA") -> list[tuple[int, str, int | None, str]]:
+    """(hesap_id, etiket, banka_karti_id, banka_adi) — düz Python değerleri.
 
-    sonuc = []
-    for h in FinansService.hesaplar():
-        tur, alt = (h.hesap_turu or "").upper(), (h.alt_hesap_turu or "").upper()
-        if tur == "KASA" or (tur == "BANKA" and alt in ("MEVDUAT", "KMH")):
-            sonuc.append((int(h.id), h.hesap_adi))
+    BANKA → yalnız MEVDUAT/KMH/VADELI; BANKAMATIK → yalnız KASA.
+    ``banka_karti`` ilişkisi oturum açıkken eager yüklenir; UI oturum kapandıktan
+    sonra ORM lazy-load yapmaz (DetachedInstanceError önlenir).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from database.database import get_session
+    from database.models.finans import FinansHesabi
+
+    yontem = (yontem or "BANKA").upper()
+    sonuc: list[tuple[int, str, int | None, str]] = []
+    with get_session() as session:
+        hesaplar = list(
+            session.scalars(
+                select(FinansHesabi)
+                .where(FinansHesabi.aktif.is_(True))
+                .options(selectinload(FinansHesabi.banka_karti))
+                .order_by(FinansHesabi.hesap_adi)
+            ).all()
+        )
+        for h in hesaplar:
+            tur = (h.hesap_turu or "").upper()
+            alt = (h.alt_hesap_turu or "").upper()
+            banka_id = int(h.banka_karti_id) if h.banka_karti_id else None
+            banka_adi = ""
+            bk = h.banka_karti  # session açık — selectinload
+            if bk is not None:
+                banka_adi = (getattr(bk, "banka_adi", None) or getattr(bk, "kart_adi", None) or "") or ""
+            if not banka_adi and tur == "BANKA":
+                banka_adi = (h.hesap_adi or "").split(" ")[0]
+            hesap_adi = h.hesap_adi or ""
+            if yontem == "BANKAMATIK":
+                if tur == "KASA":
+                    sonuc.append((int(h.id), hesap_adi, None, "Kasa"))
+            else:
+                if tur == "BANKA" and alt in ("MEVDUAT", "KMH", "VADELI"):
+                    etiket = f"{banka_adi} · {hesap_adi}" if banka_adi else hesap_adi
+                    sonuc.append((int(h.id), etiket, banka_id, banka_adi or ""))
     return sonuc
 
 
-def _varsayilan_hesap(kredi_karti_id, hesaplar: list[tuple[int, str]]) -> int | None:
-    """Kartın bankasındaki vadesiz hesap (servisin önceki varsayılanı)."""
+def _varsayilan_hesap(kredi_karti_id, hesaplar: list) -> int | None:
+    """Kartın bankasındaki vadesiz hesap (zorunlu varsayılan değil; yardımcı seçim)."""
     if not kredi_karti_id or not hesaplar:
         return None
     from database.database import get_session
@@ -65,7 +103,8 @@ def _varsayilan_hesap(kredi_karti_id, hesaplar: list[tuple[int, str]]) -> int | 
         kart = s.get(KrediKartiTanimi, int(kredi_karti_id))
         if kart is None:
             return None
-        for i, (hid, _ad) in enumerate(hesaplar):
+        for i, row in enumerate(hesaplar):
+            hid = row[0]
             h = s.get(FinansHesabi, hid)
             if h and h.banka_karti_id == kart.banka_karti_id and (h.alt_hesap_turu or "").upper() == "MEVDUAT":
                 return i
@@ -164,6 +203,8 @@ class KkEkstreDetayDialog(tk.Toplevel):
         ttk.Button(btn, text="Ödeme Yap", command=self._odeme).pack(side="left", padx=2)
         ttk.Button(btn, text="Kısmi Ödeme", command=self._kismi).pack(side="left", padx=2)
         ttk.Button(btn, text="Tamamını Öde", command=self._tamami).pack(side="left", padx=2)
+        ttk.Button(btn, text="PDF Kaydet", command=self._pdf_kaydet).pack(side="left", padx=2)
+        ttk.Button(btn, text="Excel Kaydet", command=self._excel_kaydet).pack(side="left", padx=2)
         ttk.Button(btn, text="Yenile", command=self._yenile_detay).pack(side="left", padx=2)
         ttk.Button(btn, text="Kapat", command=self.destroy).pack(side="right", padx=2)
 
@@ -355,6 +396,60 @@ class KkEkstreDetayDialog(tk.Toplevel):
             return
         self._sonra_yenile()
 
+    def _pdf_kaydet(self):
+        from tkinter import filedialog
+        from database.kk_ekstre_rapor_service import pdf_kaydet, rapor_verisi
+
+        try:
+            kid = int(self.detay.get("kredi_karti_id") or 0)
+            if not kid:
+                from database.database import get_session
+                from database.models.finans import KrediKartiEkstre
+
+                with get_session() as s:
+                    e = s.get(KrediKartiEkstre, int(self.detay["ekstre_id"]))
+                    kid = int(e.kredi_karti_id) if e else 0
+            rapor = rapor_verisi(kid, ekstre_id=int(self.detay["ekstre_id"]))
+            yol = filedialog.asksaveasfilename(
+                parent=self,
+                defaultextension=".pdf",
+                initialfile=f"{rapor['dosya_kok']}.pdf",
+                filetypes=[("PDF", "*.pdf")],
+            )
+            if not yol:
+                return
+            pdf_kaydet(rapor, yol)
+            messagebox.showinfo("PDF", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("PDF", str(exc), parent=self)
+
+    def _excel_kaydet(self):
+        from tkinter import filedialog
+        from database.kk_ekstre_rapor_service import excel_kaydet, rapor_verisi
+
+        try:
+            kid = int(self.detay.get("kredi_karti_id") or 0)
+            if not kid:
+                from database.database import get_session
+                from database.models.finans import KrediKartiEkstre
+
+                with get_session() as s:
+                    e = s.get(KrediKartiEkstre, int(self.detay["ekstre_id"]))
+                    kid = int(e.kredi_karti_id) if e else 0
+            rapor = rapor_verisi(kid, ekstre_id=int(self.detay["ekstre_id"]))
+            yol = filedialog.asksaveasfilename(
+                parent=self,
+                defaultextension=".xlsx",
+                initialfile=f"{rapor['dosya_kok']}.xlsx",
+                filetypes=[("Excel", "*.xlsx")],
+            )
+            if not yol:
+                return
+            excel_kaydet(rapor, yol)
+            messagebox.showinfo("Excel", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Excel", str(exc), parent=self)
+
     def _odeme(self):
         KkEkstreOdemeDialog(
             self, self.detay, tamami=False, yenile_cb=self._sonra_yenile
@@ -373,18 +468,18 @@ class KkEkstreDetayDialog(tk.Toplevel):
 
 
 class KkEkstreOdemeDialog(tk.Toplevel):
-    """Ekstre ödeme — Ekstrenin Tamamı / Asgari / Diğer Tutar."""
+    """Kredi Kartı Ekstre Ödeme Evrakı — Banka hesabı / Bankamatik nakit, serbest tutar (V6)."""
 
     def __init__(self, parent, detay: dict, *, tamami: bool = False, yenile_cb=None):
         super().__init__(parent)
         import uuid
 
         self.detay = detay
-        self.tamami = tamami
+        self.tamami = False  # V6: tutar her zaman serbest; yardımcılar yalnız doldurur
         self.yenile_cb = yenile_cb
         self.istek_anahtari = uuid.uuid4().hex
-        self.title("Ekstre Ödeme")
-        self.geometry("520x520")
+        self.title("Kredi Kartı Ekstre Ödeme Evrakı")
+        self.geometry("580x640")
         self.transient(parent)
         try:
             self.grab_set()
@@ -408,9 +503,12 @@ class KkEkstreOdemeDialog(tk.Toplevel):
                 Decimal(str(asgari_ham)) - asgari_odenen, Decimal("0")
             ).quantize(Decimal("0.01"))
 
-        ttk.Label(self, text=detay.get("aciklama") or "", wraplength=480, font=("Segoe UI", 10, "bold")).pack(
-            anchor="w", padx=12, pady=(10, 4)
-        )
+        ttk.Label(
+            self,
+            text=detay.get("aciklama") or detay.get("kart_adi") or "Ekstre ödemesi",
+            wraplength=540,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 4))
         ttk.Label(self, text=f"Bu ekstrede kalan: {_para(self._kalan)}", font=("Segoe UI", 10, "bold")).pack(
             anchor="w", padx=12
         )
@@ -420,47 +518,56 @@ class KkEkstreOdemeDialog(tk.Toplevel):
         if self._asgari_biliniyor:
             ttk.Label(
                 self,
-                text=f"Asgari kalan: {_para(self._asgari_kalan)}",
+                text=f"Asgari kalan (bilgi): {_para(self._asgari_kalan)}",
                 font=("Segoe UI", 10, "bold"),
             ).pack(anchor="w", padx=12)
         else:
             ttk.Label(
                 self,
-                text="Asgari tutar bilinmiyor — Asgari seçeneği pasif (ekstre aktarımı veya manuel giriş gerekir).",
+                text="Asgari tutar bilinmiyor (bilgi amaçlı). Ödeme tutarı serbest girilir.",
                 foreground="#a40",
-                wraplength=480,
+                wraplength=540,
                 font=("Segoe UI", 9, "bold"),
             ).pack(anchor="w", padx=12, pady=(2, 0))
 
-        secenek = ttk.LabelFrame(self, text="Ödeme seçeneği", padding=8)
-        secenek.pack(fill="x", padx=12, pady=(8, 4))
+        yontem_fr = ttk.LabelFrame(self, text="Ödeme yöntemi", padding=8)
+        yontem_fr.pack(fill="x", padx=12, pady=(8, 4))
+        self._yontem = tk.StringVar(value="BANKA")
+        ttk.Radiobutton(
+            yontem_fr,
+            text="Banka Hesabından Ödeme",
+            variable=self._yontem,
+            value="BANKA",
+            command=self._yontem_degisti,
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            yontem_fr,
+            text="Bankamatikten Nakit Yatırma",
+            variable=self._yontem,
+            value="BANKAMATIK",
+            command=self._yontem_degisti,
+        ).pack(anchor="w")
+
+        yardim = ttk.LabelFrame(self, text="Tutar yardımcısı (serbest değiştirilebilir)", padding=8)
+        yardim.pack(fill="x", padx=12, pady=(4, 4))
         self._sekil = tk.StringVar(value="TAMAMI" if tamami else "DIGER")
         ttk.Radiobutton(
-            secenek,
-            text="Ekstrenin Tamamı",
-            variable=self._sekil,
-            value="TAMAMI",
+            yardim, text="Ekstre kalanını getir", variable=self._sekil, value="TAMAMI",
             command=self._sekil_degisti,
         ).pack(anchor="w")
         asgari_rb = ttk.Radiobutton(
-            secenek,
-            text="Asgari Tutar",
-            variable=self._sekil,
-            value="ASGARI",
+            yardim, text="Asgari kalanı getir", variable=self._sekil, value="ASGARI",
             command=self._sekil_degisti,
         )
         asgari_rb.pack(anchor="w")
         if not self._asgari_biliniyor or self._asgari_kalan <= 0:
             asgari_rb.state(["disabled"])
         ttk.Radiobutton(
-            secenek,
-            text="Diğer Tutar",
-            variable=self._sekil,
-            value="DIGER",
+            yardim, text="Elle tutar", variable=self._sekil, value="DIGER",
             command=self._sekil_degisti,
         ).pack(anchor="w")
 
-        self._onizleme = ttk.Label(self, text="", wraplength=480, font=("Segoe UI", 9, "bold"))
+        self._onizleme = ttk.Label(self, text="", wraplength=540, font=("Segoe UI", 9, "bold"))
         self._onizleme.pack(anchor="w", padx=12, pady=(4, 0))
 
         frm = ttk.Frame(self)
@@ -472,39 +579,40 @@ class KkEkstreOdemeDialog(tk.Toplevel):
         self.tarih.insert(0, date.today().strftime("%d.%m.%Y"))
         self.tarih.grid(row=0, column=1, sticky="w", pady=3)
 
-        ttk.Label(frm, text="Ödenecek tutar", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(frm, text="Ödeme tutarı (serbest)", font=("Segoe UI", 10, "bold")).grid(
             row=1, column=0, sticky="w", pady=3
         )
         self.tutar = ttk.Entry(frm, width=14, font=("Segoe UI", 10, "bold"))
         self.tutar.grid(row=1, column=1, sticky="w", pady=3)
         self.tutar.bind("<KeyRelease>", lambda _e: self._onizleme_guncelle())
 
-        ttk.Label(frm, text="Ödeme hesabı", font=("Segoe UI", 10, "bold")).grid(
-            row=2, column=0, sticky="w", pady=3
-        )
-        self._hesaplar = _odeme_hesaplari()
-        self.hesap = ttk.Combobox(frm, values=[h[1] for h in self._hesaplar], state="readonly", width=34)
+        self._kaynak_etiket = ttk.Label(frm, text="Ödemenin çıkacağı hesap", font=("Segoe UI", 10, "bold"))
+        self._kaynak_etiket.grid(row=2, column=0, sticky="w", pady=3)
+        self.hesap = ttk.Combobox(frm, state="readonly", width=40)
         self.hesap.grid(row=2, column=1, sticky="w", pady=3)
-        varsayilan = _varsayilan_hesap(detay.get("kredi_karti_id"), self._hesaplar)
-        if varsayilan is not None:
-            self.hesap.current(varsayilan)
 
-        ttk.Label(frm, text="Dekont no", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(frm, text="ATM bankası (isteğe bağlı)", font=("Segoe UI", 10, "bold")).grid(
             row=3, column=0, sticky="w", pady=3
         )
-        self.dekont = ttk.Entry(frm, width=20, font=("Segoe UI", 10, "bold"))
-        self.dekont.grid(row=3, column=1, sticky="w", pady=3)
+        self.atm_bankasi = ttk.Entry(frm, width=28, font=("Segoe UI", 10, "bold"))
+        self.atm_bankasi.grid(row=3, column=1, sticky="w", pady=3)
 
-        ttk.Label(frm, text="Açıklama", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(frm, text="Dekont / ATM ref.", font=("Segoe UI", 10, "bold")).grid(
             row=4, column=0, sticky="w", pady=3
         )
-        self.aciklama = ttk.Entry(frm, width=32, font=("Segoe UI", 10, "bold"))
-        self.aciklama.grid(row=4, column=1, sticky="w", pady=3)
+        self.dekont = ttk.Entry(frm, width=28, font=("Segoe UI", 10, "bold"))
+        self.dekont.grid(row=4, column=1, sticky="w", pady=3)
+
+        ttk.Label(frm, text="Açıklama", font=("Segoe UI", 10, "bold")).grid(
+            row=5, column=0, sticky="w", pady=3
+        )
+        self.aciklama = ttk.Entry(frm, width=40, font=("Segoe UI", 10, "bold"))
+        self.aciklama.grid(row=5, column=1, sticky="w", pady=3)
 
         btns = ttk.Frame(self)
         btns.pack(fill="x", padx=12, pady=12)
         ttk.Button(btns, text="Vazgeç", command=self.destroy).pack(side="right", padx=4)
-        kaydet = ttk.Button(btns, text="Öde ve Kaydet", command=self._kaydet)
+        kaydet = ttk.Button(btns, text="Muhasebeleştir / Kaydet", command=self._kaydet)
         kaydet.pack(side="right", padx=4)
         from database.access import yetki_var
 
@@ -514,23 +622,40 @@ class KkEkstreOdemeDialog(tk.Toplevel):
                 anchor="w", padx=12
             )
 
+        self._hesaplar: list = []
+        self._yontem_degisti()
         self._sekil_degisti()
 
+    def _yontem_degisti(self):
+        yontem = self._yontem.get()
+        self._hesaplar = _odeme_hesaplari(yontem=yontem)
+        self.hesap.configure(values=[h[1] for h in self._hesaplar])
+        self.hesap.set("")
+        if yontem == "BANKAMATIK":
+            self._kaynak_etiket.configure(text="Çıkış kasası / nakit kaynağı")
+            if self._hesaplar:
+                self.hesap.current(0)
+        else:
+            self._kaynak_etiket.configure(text="Ödemenin çıkacağı banka hesabı")
+            varsayilan = _varsayilan_hesap(self.detay.get("kredi_karti_id"), self._hesaplar)
+            if varsayilan is not None:
+                self.hesap.current(varsayilan)
+            elif self._hesaplar:
+                self.hesap.current(0)
+        self._onizleme_guncelle()
+
     def _sekil_degisti(self):
+        """Yardımcı tutar doldurur; alan her zaman yazılabilir kalır (V6 serbest tutar)."""
         sekil = self._sekil.get()
         self.tutar.configure(state="normal")
         self.tutar.delete(0, "end")
         if sekil == "TAMAMI":
             self.tutar.insert(0, f"{self._kalan:.2f}".replace(".", ","))
-            self.tutar.configure(state="readonly")
-            self.tamami = True
         elif sekil == "ASGARI":
             self.tutar.insert(0, f"{self._asgari_kalan:.2f}".replace(".", ","))
-            self.tutar.configure(state="readonly")
-            self.tamami = False
         else:
             self.tutar.insert(0, f"{self._kalan:.2f}".replace(".", ","))
-            self.tamami = False
+        self.tamami = False
         self._onizleme_guncelle()
 
     def _onizleme_guncelle(self):
@@ -540,17 +665,19 @@ class KkEkstreOdemeDialog(tk.Toplevel):
             self._onizleme.configure(text="")
             return
         ekstre_sonra = max(self._kalan - tutar, Decimal("0"))
+        fazla = max(tutar - self._kalan, Decimal("0"))
         asgari_sonra = None
         if self._asgari_biliniyor:
             asgari_sonra = max(self._asgari_kalan - tutar, Decimal("0"))
         borc_sonra = max(self._toplam_borc - tutar, Decimal("0"))
         uyari = ""
         if self._asgari_biliniyor and tutar < self._asgari_kalan and tutar > 0:
-            uyari = " · Asgari ödeme altında"
-        elif tutar > self._kalan:
-            uyari = " · Ekstre kalanını aşıyor (fazla dağıtılmamış sayılabilir)"
+            uyari = " · Asgari altında (kayıt engellenmez)"
+        elif fazla > 0:
+            uyari = f" · Fazla ödeme / kart alacağı: {_para(fazla)}"
+        yontem = "ATM nakit" if self._yontem.get() == "BANKAMATIK" else "Banka hesabı"
         metin = (
-            f"Ödeme sonrası — ekstre kalan: {_para(ekstre_sonra)}"
+            f"{yontem} · Ödeme sonrası — ekstre kalan: {_para(ekstre_sonra)}"
             + (f" · asgari kalan: {_para(asgari_sonra)}" if asgari_sonra is not None else "")
             + f" · net kart borcu: {_para(borc_sonra)}{uyari}"
         )
@@ -572,9 +699,14 @@ class KkEkstreOdemeDialog(tk.Toplevel):
             messagebox.showerror("Tutar", str(exc), parent=self)
             return
         secili = self.hesap.current()
-        if secili < 0:
-            messagebox.showerror("Ödeme hesabı", "Ödemenin yapılacağı kasa veya banka hesabını seçin.", parent=self)
+        if secili < 0 or not self._hesaplar:
+            messagebox.showerror(
+                "Kaynak",
+                "Ödemenin çıkacağı hesabı / kasayı seçin.",
+                parent=self,
+            )
             return
+        yontem = self._yontem.get()
         try:
             sonuc = KrediKartiEkstreService.odeme_yap(
                 ekstre_id=int(self.detay["ekstre_id"]),
@@ -583,13 +715,20 @@ class KkEkstreOdemeDialog(tk.Toplevel):
                 tarih=tarih,
                 dekont_no=self.dekont.get(),
                 aciklama=self.aciklama.get(),
-                tamami=self.tamami,
+                tamami=False,
                 istek_anahtari=self.istek_anahtari,
+                odeme_yontemi=yontem,
+                kaynak="BANKAMATIK" if yontem == "BANKAMATIK" else "EKSTRE",
+                atm_bankasi=self.atm_bankasi.get() if yontem == "BANKAMATIK" else None,
+                atm_referans=self.dekont.get() if yontem == "BANKAMATIK" else None,
             )
+            fazla = sonuc.get("fazla_odeme") or Decimal("0")
+            ekstra = f"\nFazla / kart alacağı: {_para(fazla)}" if Decimal(str(fazla)) > 0 else ""
             messagebox.showinfo(
                 "Ödeme",
-                ("Bu ödeme zaten kaydedilmişti: " if sonuc.get("mevcut") else "Ödeme kaydedildi: ")
-                + f"{sonuc['belge_no']}\nTutar: {_para(sonuc['tutar'])}",
+                ("Bu ödeme zaten kaydedilmişti: " if sonuc.get("mevcut") else "Ödeme muhasebeleştirildi: ")
+                + f"{sonuc['belge_no']}\nTutar: {_para(sonuc['tutar'])}"
+                + f"\nYöntem: {sonuc.get('odeme_yontemi') or yontem}{ekstra}",
                 parent=self,
             )
             if self.yenile_cb:

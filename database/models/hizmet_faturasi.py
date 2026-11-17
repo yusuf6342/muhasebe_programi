@@ -66,6 +66,10 @@ class HizmetFaturasiSatiri(Base):
     birim_fiyat_doviz: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_birim_fiyat: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     tl_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Satış ile aynı: kullanıcı manuel birim fiyat girdi mi (varsayılan False)
+    manuel_fiyat: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Satış/alış ile aynı: Fiyatlara Dağıt kilidi; varsayılan açık (False)
+    dagitima_kapali: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     fatura: Mapped["HizmetFaturasi"] = relationship("HizmetFaturasi", back_populates="satirlar")
     hizmet = relationship("HizmetKarti")

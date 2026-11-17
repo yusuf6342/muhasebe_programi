@@ -774,18 +774,21 @@ class SatisKarAnalizService:
                 dusuk_adet += 1
                 dusuk_tutar += s.net_satis
 
+        # Talimat §3 + Gelir Tablosu: brüt kâr = net satış − toplam maliyet (aynı KPI).
+        # Satırda eksik/ZERO_COST hâlâ «—»; uyarı (kar_eksik / sifir_*) kalır. guvenilir_kar
+        # yalnız maliyeti kesin satırların toplamıdır.
+        brut_kar_ozet = _q2(net - maliyet)
         sonuc.ozet = {
             "brut_satis": _q2(brut),
             "iskonto": _q2(iskonto),
             "iade_tutari": _q2(iade_tutar),
             "net_satis": _q2(net),
             "maliyet": _q2(maliyet),
-            "brut_kar": _q2(kar),
-            # Marj yalnız maliyeti bilinen satışlar üzerinden; eksik maliyetli satış kâra katılmaz.
-            "kar_marji": _oran(kar, maliyetli_net),
+            "brut_kar": brut_kar_ozet,
+            "kar_marji": _oran(brut_kar_ozet, net),
             "maliyetli_net": _q2(maliyetli_net),
             "kar_eksik": maliyetli_net != net,
-            "maliyet_uzeri_kar": _oran(kar, maliyet),
+            "maliyet_uzeri_kar": _oran(brut_kar_ozet, maliyet),
             "net_miktar": miktar,
             "belge_sayisi": len({(s.belge_turu, s.belge_id) for s in filtrelenmis}),
             "satir_sayisi": len(filtrelenmis),
@@ -799,6 +802,7 @@ class SatisKarAnalizService:
             "iade_orani": _oran(iade_tutar, brut) if brut else None,
             "guvenilir_kar": _q2(guvenilir_kar),
             "guvenilir_net": _q2(guvenilir_net),
+            "satir_kar_toplami": _q2(kar),
             "maliyet_yontemi": filtre.maliyet_yontemi,
             "gun_sayisi": (filtre.bitis - filtre.baslangic).days + 1,
         }

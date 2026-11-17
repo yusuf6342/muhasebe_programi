@@ -1018,7 +1018,9 @@ class RaporService:
 
         for kart in FinansService.banka_kartlari(aktif_only=True):
             banka = (kart.banka_adi or "Banka").strip()
-            bak = FinansService.banka_bakiyeler(kart)
+            # POS dahil varlık görünümü: operasyonel açık alacak (ledger toplamı değil)
+            bak = FinansService.banka_bakiyeler_varlik(kart)
+            ham = FinansService.banka_bakiyeler(kart)
 
             mev = bak.get("MEVDUAT") or sifir
             if mev != 0:
@@ -1027,10 +1029,12 @@ class RaporService:
 
             pos = bak.get("POS") or sifir
             if pos != 0:
-                pos_kalemleri.append(_satir(f"{banka} — POS", pos, kaynak="pos"))
+                pos_kalemleri.append(
+                    _satir(f"{banka} — POS (bekleyen)", pos, kaynak="pos")
+                )
                 pos_toplam += pos
 
-            kmh = bak.get("KMH") or sifir
+            kmh = ham.get("KMH") or sifir
             if kmh > 0:
                 kmh_varlik.append(_satir(f"{banka} — KMH", kmh, kaynak="kmh"))
                 kmh_varlik_toplam += kmh
@@ -1041,16 +1045,27 @@ class RaporService:
                 kmh_borc_toplam += tutar
 
             kred = bak.get("KREDILER") or sifir
-            if kred != 0:
+            if kred < 0:
                 tutar = abs(kred)
                 kredi_kalemleri.append(_satir(f"{banka} — Kredi", tutar, kaynak="kredi"))
                 kredi_toplam += tutar
+            elif kred > 0:
+                # Fazla ödeme / alacak bakiyesi — varlık
+                mevduat_kalemleri.append(
+                    _satir(f"{banka} — Kredi (alacak)", kred, kaynak="kredi_alacak")
+                )
+                mevduat_toplam += kred
 
             kk = bak.get("KREDI_KARTI") or sifir
-            if kk != 0:
+            if kk < 0:
                 tutar = abs(kk)
                 kk_kalemleri.append(_satir(f"{banka} — Kredi kartı", tutar, kaynak="kk"))
                 kk_toplam += tutar
+            elif kk > 0:
+                mevduat_kalemleri.append(
+                    _satir(f"{banka} — Kredi kartı (alacak)", kk, kaynak="kk_alacak")
+                )
+                mevduat_toplam += kk
 
         # --- Cari ---
         cari_alacak_kalemleri = []
@@ -1235,9 +1250,16 @@ class RaporService:
             hizmet_gelir = sifir
 
             with get_session() as session:
+                # Satış Kâr Analizi ile aynı kapsam: onaylı, silinmemiş, iptal değil
+                from sqlalchemy import or_
+
                 for fatura in session.scalars(
                     select(SatisFaturasi)
-                    .where(SatisFaturasi.durum != "İPTAL")
+                    .where(
+                        SatisFaturasi.durum != "İPTAL",
+                        SatisFaturasi.onaylandi.is_(True),
+                        or_(SatisFaturasi.is_deleted.is_(False), SatisFaturasi.is_deleted.is_(None)),
+                    )
                     .options(selectinload(SatisFaturasi.satirlar))
                 ).all():
                     if fatura.fatura_tarihi < b0 or fatura.fatura_tarihi > e0:
@@ -1300,10 +1322,31 @@ class RaporService:
 
             maliyete_aktarilan = MasrafDagitimService.maliyete_aktarilan_toplam(b0, e0)
             satis_iade_net = satis_iade_brut - satis_iade_iskonto
-            net_satislar = brut_satis - satis_iskonto - satis_iade_net
+            # Satır toplamı (ara − iskonto − iade). Belge geneli indirim/masraf/yuvarlama yok.
+            net_satir_bazli = brut_satis - satis_iskonto - satis_iade_net
             alis_iade_net = alis_iade_brut - alis_iade_iskonto
             net_alislar = alis_brut - alis_iskonto - alis_iade_net + maliyete_aktarilan
-            smm = donem_basi_emtia + net_alislar - donem_sonu_emtia
+            # Klasik stok denklemi (bilgi/mutabakat): dönem başı + net alış − dönem sonu.
+            # Net satış + SMM + brüt kâr: Satış Kâr Analizi ile aynı motor (belge_duzeltme dahil).
+            smm_stok_denklemi = donem_basi_emtia + net_alislar - donem_sonu_emtia
+            from database.satis_kar_analiz_service import KarAnalizFiltre, SatisKarAnalizService
+
+            # Yetki kapısı olmadan aynı satır motoru (analiz() maliyet_zorunlu ister;
+            # gelir tablosu zaten rapor ekranından açılır).
+            _ka_filtre = KarAnalizFiltre(
+                baslangic=b0,
+                bitis=e0,
+                maliyet_yontemi=yontem,
+                iadeleri_dahil=True,
+            )
+            _ka = SatisKarAnalizService._derle(
+                _ka_filtre, SatisKarAnalizService._satirlari_yukle(_ka_filtre)
+            )
+            smm = Decimal(str(_ka.ozet.get("maliyet") or 0))
+            smm_mutabakat = smm_stok_denklemi - smm
+            # Tek kaynak: KA net (genel indirim/masraf/yuvarlama payları dahil).
+            net_satislar = Decimal(str(_ka.ozet.get("net_satis") or 0))
+            satis_belge_duzeltme = net_satislar - net_satir_bazli
             brut_kar = net_satislar - smm
 
             kaynak = GiderRaporService.kaynak_satirlari(b0, e0)
@@ -1322,6 +1365,8 @@ class RaporService:
                 "brut_satis": brut_satis,
                 "satis_iskonto": satis_iskonto,
                 "satis_iade_net": satis_iade_net,
+                "net_satir_bazli": net_satir_bazli,
+                "satis_belge_duzeltme": satis_belge_duzeltme,
                 "net_satislar": net_satislar,
                 "donem_basi_emtia": donem_basi_emtia,
                 "alis_net_gosterim": alis_brut - alis_iskonto,
@@ -1329,6 +1374,8 @@ class RaporService:
                 "maliyete_aktarilan": maliyete_aktarilan,
                 "net_alislar": net_alislar,
                 "donem_sonu_emtia": donem_sonu_emtia,
+                "smm_stok_denklemi": smm_stok_denklemi,
+                "smm_mutabakat": smm_mutabakat,
                 "smm": smm,
                 "brut_kar": brut_kar,
                 "hizmet_gelir": hizmet_gelir,
@@ -1370,6 +1417,15 @@ class RaporService:
                 kaynak="satis_iade",
             )
         )
+        if a.get("satis_belge_duzeltme") or (b and b.get("satis_belge_duzeltme")):
+            satirlar.append(
+                _satir(
+                    "Belge geneli indirim/masraf/yuvarlama",
+                    a["satis_belge_duzeltme"],
+                    tutar_b=_b("satis_belge_duzeltme"),
+                    kaynak="satis_belge_duzeltme",
+                )
+            )
         satirlar.append(
             _satir(
                 "Net satışlar",
@@ -1417,7 +1473,31 @@ class RaporService:
             )
         )
         satirlar.append(
-            _satir("Satılan malın maliyeti", a["smm"], tutar_b=_b("smm"), seviye="ara_toplam", kaynak="smm")
+            _satir(
+                "Stok denklemi SMM",
+                a["smm_stok_denklemi"],
+                tutar_b=_b("smm_stok_denklemi"),
+                seviye="ara_toplam",
+                kaynak="smm_stok_denklemi",
+            )
+        )
+        if a["smm_mutabakat"] or (b and b.get("smm_mutabakat")):
+            satirlar.append(
+                _satir(
+                    "Stok mutabakat (satış FIFO − denklem) (−)",
+                    -a["smm_mutabakat"],
+                    tutar_b=None if b is None else -b.get("smm_mutabakat"),
+                    kaynak="smm_mutabakat",
+                )
+            )
+        satirlar.append(
+            _satir(
+                "Satılan malın maliyeti",
+                a["smm"],
+                tutar_b=_b("smm"),
+                seviye="ara_toplam",
+                kaynak="smm",
+            )
         )
         satirlar.append(
             _satir("Brüt kâr", a["brut_kar"], tutar_b=_b("brut_kar"), seviye="toplam", kaynak="brut_kar")
@@ -1519,6 +1599,7 @@ class RaporService:
                 "brut_satislar": a["brut_satis"],
                 "satis_iskonto": a["satis_iskonto"],
                 "satis_iadeleri": a["satis_iade_net"],
+                "satis_belge_duzeltme": a["satis_belge_duzeltme"],
                 "net_satislar": a["net_satislar"],
                 "donem_basi_emtia": a["donem_basi_emtia"],
                 "donem_ici_alislar": a["alis_net_gosterim"],
@@ -1526,6 +1607,8 @@ class RaporService:
                 "maliyete_aktarilan_masraf": a["maliyete_aktarilan"],
                 "net_alislar": a["net_alislar"],
                 "donem_sonu_emtia": a["donem_sonu_emtia"],
+                "smm_stok_denklemi": a["smm_stok_denklemi"],
+                "smm_mutabakat": a["smm_mutabakat"],
                 "smm": a["smm"],
                 "brut_kar": a["brut_kar"],
                 "hizmet_gelir": a["hizmet_gelir"],
@@ -1538,7 +1621,10 @@ class RaporService:
             "notlar": (
                 "Tutarlar KDV hariçtir. Giderler belge türüne göre değil gider grubu altında bir kez "
                 "toplanır. Son satır vergi öncesi yönetim sonucudur (tahminî vergi üretilmez). "
-                f"Dönem başı emtia {a['onceki_gun'].strftime('%d.%m.%Y')}; dönem sonu bitiş günü."
+                f"Dönem başı emtia {a['onceki_gun'].strftime('%d.%m.%Y')}; dönem sonu bitiş günü. "
+                "Net satış ve SMM, Satış Kâr Analizi ile aynı motordan gelir (belge geneli "
+                "indirim/masraf/yuvarlama net satışa dahildir). Stok denklemi ile satış FIFO "
+                "arasındaki fark mutabakat kaleminde gösterilir."
             ),
         }
         if b is not None:

@@ -807,6 +807,8 @@ class HizliSatisService:
                     th.tutar,
                     th.odeme_sekli,
                     th.hesap,
+                    cari_id=fatura.cari_id,
+                    sube_id=getattr(fatura, "sube_id", None),
                 )
 
             fatura.durum = "AÇIK"
@@ -1606,12 +1608,19 @@ class HizliSatisService:
                     )
                 ).all()
             }
+            depo_id = None
+            try:
+                depo_row = depo_bul(session, satis_deposu_adi())
+                if depo_row is not None:
+                    depo_id = int(depo_row.id)
+            except Exception:
+                depo_id = None
             urunler = []
             for pin in pinler:
                 stok = stoklar.get(int(pin.stok_id))
                 if not stok:
                     continue
-                d = StokService._hizli_satis_urun_dict(stok, fiyat_adi)
+                d = StokService._hizli_satis_urun_dict(stok, fiyat_adi, depo_id=depo_id)
                 if pin.kisa_ad:
                     d["stok_adi"] = pin.kisa_ad
                     d["kisa_ad"] = pin.kisa_ad

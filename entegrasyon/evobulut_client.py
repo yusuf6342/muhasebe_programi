@@ -27,15 +27,25 @@ Cari export: POST /CariExport/base/  cmd=export
 from __future__ import annotations
 
 import json
+import ssl
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from http.cookiejar import CookieJar
 from pathlib import Path
+from typing import Any
 
 
 DEFAULT_BASE = "https://ws.evobulut.com/api"
+WEB_BASE = "https://web.evobulut.com"
 CONFIG_PATH = Path(__file__).resolve().parent / "evobulut.env"
+
+# Stok Yönetimi stokjq.ashx — doğrulanmış aktif/pasif kos (UI checkbox)
+STOKJQ_KOS_AKTIF = "pasif^x^14|barkod_goster^x^1|"
+STOKJQ_KOS_PASIF = "pasif^x^15|barkod_goster^x^1|"
+STOKJQ_CALLER = "1051"
 
 
 class EvobulutConfigError(RuntimeError):
@@ -158,6 +168,10 @@ class EvobulutClient:
     def __init__(self, creds: EvobulutCredentials):
         self.creds = creds
         self.uid: str | None = None
+        self._web_token: str | None = None
+        self._web_firma: str | None = None
+        self._web_opener: Any = None
+        self._son_stok_cek_meta: dict[str, Any] = {}
 
     def _post(self, path: str, payload: dict) -> dict:
         url = f"{self.creds.base_url}/{path.lstrip('/')}"
@@ -246,8 +260,193 @@ class EvobulutClient:
         return _ana_listesi(yanit), _sayfa_adet(yanit)
 
     def tum_stoklari_cek(self, ara: str = "", max_sayfa: int = 2000) -> list[dict]:
-        """Sayfalı stok listesini birleştirir (sayfa başına ~30)."""
-        return self._tum_listeyi_cek(self.stok_liste_sayfa, ara=ara, max_sayfa=max_sayfa)
+        """Aktif + pasif stok listesi (stokjq ayrı sorgular, a_id tekilleştirme).
+
+        Eski jq_list yalnız aktif kartları döndürüyordu; pasif envanter satırları
+        kayboluyordu. Kalıcı toplayıcı doğrulanmış kos ile iki geçiş yapar.
+        `ara` doluysa geriye uyum için jq_list ara kullanılır (tek filtre).
+        """
+        if ara:
+            return self._tum_listeyi_cek(self.stok_liste_sayfa, ara=ara, max_sayfa=max_sayfa)
+        return self.tum_stoklari_cek_aktif_pasif(max_sayfa_her=max_sayfa)
+
+    def tum_stoklari_cek_aktif_pasif(
+        self, *, max_sayfa_her: int = 2000, pagesize: int = 100
+    ) -> list[dict]:
+        """Aktif (pasif^x^14) ve pasif (pasif^x^15) stokjq listelerini birleştirir."""
+        self.web_login()
+        by_id: dict[str, dict] = {}
+        meta_sayac = {"aktif": 0, "pasif": 0, "aktif_total": None, "pasif_total": None}
+        for etiket, kos in (("aktif", STOKJQ_KOS_AKTIF), ("pasif", STOKJQ_KOS_PASIF)):
+            sayfa = 0
+            while sayfa < max_sayfa_her:
+                satirlar, toplam = self.stokjq_liste_sayfa(
+                    sayfa=sayfa, kos=kos, pagesize=pagesize
+                )
+                if meta_sayac[f"{etiket}_total"] is None:
+                    meta_sayac[f"{etiket}_total"] = toplam
+                if not satirlar:
+                    break
+                for s in satirlar:
+                    sid = str(s.get("a_id") or "").strip()
+                    if not sid:
+                        continue
+                    if sid not in by_id:
+                        by_id[sid] = s
+                        meta_sayac[etiket] += 1
+                    else:
+                        # Tekilleştir: pasif/aktif çakışmasında mevcut kalır; alan tamamla
+                        eski = by_id[sid]
+                        for k, v in s.items():
+                            if eski.get(k) in (None, "") and v not in (None, ""):
+                                eski[k] = v
+                if toplam is not None and (sayfa + 1) * pagesize >= int(toplam):
+                    break
+                if len(satirlar) < pagesize:
+                    break
+                sayfa += 1
+        out = list(by_id.values())
+        # İzlenebilir meta (liste tüketici yok sayar)
+        out.sort(key=lambda r: int(str(r.get("a_id") or "0") or 0))
+        self._son_stok_cek_meta = {
+            "kaynak": "stokjq.ashx a_caller=1051",
+            "kos_aktif": STOKJQ_KOS_AKTIF,
+            "kos_pasif": STOKJQ_KOS_PASIF,
+            "aktif_unique": meta_sayac["aktif"],
+            "pasif_unique": meta_sayac["pasif"],
+            "aktif_total_rows": meta_sayac["aktif_total"],
+            "pasif_total_rows": meta_sayac["pasif_total"],
+            "tekil_adet": len(out),
+        }
+        return out
+
+    def web_login(self) -> str:
+        """web.evobulut.com ashx oturumu (stokjq / stok.ashx). API UID yerine geçmez."""
+        if self._web_token and self._web_opener:
+            return self._web_token
+        cj = CookieJar()
+        self._web_opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cj),
+            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        )
+        self._web_req(f"{WEB_BASE}/login.html")
+        st, txt = self._web_req(
+            f"{WEB_BASE}/ashx/login.ashx?komut=login",
+            {
+                "user_code": self.creds.kullanici_kodu,
+                "user_pass": self.creds.sifre,
+                "remember": "on",
+            },
+        )
+        try:
+            j = json.loads(txt)
+        except json.JSONDecodeError as exc:
+            raise EvobulutApiError(f"Web login JSON değil: {txt[:160]}") from exc
+        if not isinstance(j, list) or not j:
+            raise EvobulutApiError(f"Web login beklenmeyen yanıt HTTP {st}")
+        j0 = j[0] if isinstance(j[0], dict) else {}
+        if str(j0.get("RES") or "").upper() != "OK" or not j0.get("token"):
+            raise EvobulutApiError(
+                f"Web login başarısız RES={j0.get('RES')!r} HTTP={st}"
+            )
+        self._web_token = str(j0["token"])
+        self._web_firma = str(j0.get("firma") or "")
+        return self._web_token
+
+    def _web_req(self, url: str, data: dict | None = None) -> tuple[int, str]:
+        if self._web_opener is None:
+            self.web_login()
+        body = None
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "Origin": WEB_BASE,
+            "Referer": f"{WEB_BASE}/index.html",
+        }
+        if data is not None:
+            body = urllib.parse.urlencode(data).encode("utf-8")
+            headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        req = urllib.request.Request(
+            url, data=body, headers=headers, method="POST" if body else "GET"
+        )
+        try:
+            with self._web_opener.open(req, timeout=90) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace")
+
+    def stokjq_liste_sayfa(
+        self,
+        *,
+        sayfa: int = 0,
+        kos: str = STOKJQ_KOS_AKTIF,
+        pagesize: int = 100,
+        full_text: str = "",
+    ) -> tuple[list[dict], int]:
+        """UI stokjq.ashx sayfası → API benzeri stok satırları."""
+        self.web_login()
+        payload = {
+            "a_caller": STOKJQ_CALLER,
+            "profil": "",
+            "modul": "",
+            "grp": "",
+            "kos": kos,
+            "veri": "",
+            "export": "view",
+            "groupscount": "0",
+            "Full_Text": full_text or "",
+            "gnm": "jqxgrid_mod1051",
+            "pagenum": str(sayfa),
+            "pagesize": str(pagesize),
+            "recordstartindex": str(sayfa * pagesize),
+            "recordendindex": str((sayfa + 1) * pagesize),
+            "filterscount": "0",
+            "evo_token": self._web_token or "",
+            "evo_server": "web.evobulut.com",
+        }
+        st, txt = self._web_req(
+            f"{WEB_BASE}/ashx/stokjq.ashx?depo_izni=0&evo_server=web.evobulut.com",
+            payload,
+        )
+        try:
+            j = json.loads(txt)
+        except json.JSONDecodeError as exc:
+            raise EvobulutApiError(f"stokjq JSON değil HTTP {st}: {txt[:160]}") from exc
+        if not isinstance(j, list) or not j:
+            return [], 0
+        wrap = j[0] if isinstance(j[0], dict) else {}
+        rows = wrap.get("Rows") or []
+        try:
+            toplam = int(str(wrap.get("TotalRows") or "0"))
+        except ValueError:
+            toplam = 0
+        mapped = [_stokjq_satir_map(r, kos=kos) for r in rows if isinstance(r, dict)]
+        return mapped, toplam
+
+    def stok_detay_web(self, stok_id: str | int) -> dict:
+        """ashx/stok.ashx SQL — pasif kartlar dahil (API sql pasifte boş kalabilir)."""
+        self.web_login()
+        st, txt = self._web_req(
+            f"{WEB_BASE}/ashx/stok.ashx?evo_server=web.evobulut.com",
+            {
+                "komut": "SQL",
+                "kosul": str(stok_id),
+                "evo_token": self._web_token or "",
+                "evo_server": "web.evobulut.com",
+            },
+        )
+        try:
+            j = json.loads(txt)
+        except json.JSONDecodeError as exc:
+            raise EvobulutApiError(f"stok.ashx SQL JSON değil: {txt[:160]}") from exc
+        if isinstance(j, list) and j and str(j[0].get("Sonuc") or "").upper() == "HATA":
+            raise EvobulutApiError(f"stok.ashx SQL HATA: {j[0].get('ERR')}")
+        if not isinstance(j, dict):
+            return {}
+        return j
 
     def stok_detay(self, stok_id: str | int) -> dict:
         """cmd=sql ile stok kartı detayı (barkod, birimler vb.)."""
@@ -392,32 +591,56 @@ class EvobulutClient:
         )
 
     def fatura_detay(self, fatura_id: str | int) -> dict:
-        """Fatura başlık + satırlar. Döner: {Ana: dict, Detay: list}."""
+        """Fatura başlık + satırlar. Döner: {Ana: dict, Detay: list}.
+
+        Boş Detay ara sıra API yanıtında geliyor; kısa yeniden deneme yapılır.
+        """
+        import time
+
         if not self.uid:
             self.login()
-        yanit = self._post(
-            "fatura/base/",
-            {
-                "cmd": "sql",
-                "UID": self.uid,
-                "sql_id": str(fatura_id),
-            },
-        )
-        veri = yanit.get("veri") or yanit.get("Veri")
-        blok = None
-        if isinstance(veri, list) and veri:
-            blok = veri[0] if isinstance(veri[0], dict) else None
-        elif isinstance(veri, dict):
-            blok = veri
-        if not isinstance(blok, dict):
-            raise EvobulutApiError(f"Fatura detayı alınamadı (id={fatura_id}).")
-        ana = blok.get("Ana") or []
-        detay = blok.get("Detay") or []
-        ana0 = ana[0] if isinstance(ana, list) and ana else {}
-        return {
-            "Ana": ana0 if isinstance(ana0, dict) else {},
-            "Detay": [x for x in detay if isinstance(x, dict)] if isinstance(detay, list) else [],
-        }
+        son: dict = {"Ana": {}, "Detay": []}
+        for deneme in range(4):
+            if deneme == 2:
+                # Boş Detay sürerse oturumu yenile (UID/oturum sönmesi)
+                try:
+                    self.login()
+                except Exception:
+                    pass
+            yanit = self._post(
+                "fatura/base/",
+                {
+                    "cmd": "sql",
+                    "UID": self.uid,
+                    "sql_id": str(fatura_id),
+                },
+            )
+            veri = yanit.get("veri") or yanit.get("Veri")
+            blok = None
+            if isinstance(veri, list) and veri:
+                blok = veri[0] if isinstance(veri[0], dict) else None
+            elif isinstance(veri, dict):
+                blok = veri
+            if not isinstance(blok, dict):
+                if deneme < 3:
+                    time.sleep(0.7 * (deneme + 1))
+                    continue
+                raise EvobulutApiError(f"Fatura detayı alınamadı (id={fatura_id}).")
+            ana = blok.get("Ana") or []
+            detay = blok.get("Detay") or []
+            ana0 = ana[0] if isinstance(ana, list) and ana else {}
+            if isinstance(ana, dict):
+                ana0 = ana
+            detay_list = [x for x in detay if isinstance(x, dict)] if isinstance(detay, list) else []
+            son = {
+                "Ana": ana0 if isinstance(ana0, dict) else {},
+                "Detay": detay_list,
+            }
+            if detay_list:
+                return son
+            if deneme < 3:
+                time.sleep(0.7 * (deneme + 1))
+        return son
 
     def siparis_liste_sayfa(
         self,
@@ -915,6 +1138,37 @@ def _uid_bul(yanit: dict) -> str | None:
         if yanit.get(anahtar):
             return str(yanit[anahtar])
     return None
+
+
+def _stokjq_satir_map(row: dict, *, kos: str) -> dict:
+    """stokjq G.* satırını STOK_MIKTAR/jq_list alanlarına çevirir."""
+    a_pasif = str(row.get("G.a_pasif") or row.get("a_pasif") or "")
+    if a_pasif == "15" or "pasif^x^15" in kos:
+        aktif_pasif = "Pasif"
+    elif a_pasif == "14" or "pasif^x^14" in kos:
+        aktif_pasif = "Aktif"
+    else:
+        aktif_pasif = row.get("TBL_GENEL.a_adi") or ("Pasif" if a_pasif == "15" else "Aktif")
+    return {
+        "a_id": str(row.get("G.a_id") or row.get("a_id") or ""),
+        "a_kod": row.get("G.a_kod") or row.get("a_kod"),
+        "a_adi": row.get("G.a_adi") or row.get("a_adi"),
+        "a_alt_adi": row.get("G.a_alt_adi"),
+        "a_tur": row.get("G.a_tur"),
+        "a_brm_id": row.get("G.a_brm_id"),
+        "ana_birim_adi": row.get("TBL_STOK_BRM.a_adi") or row.get("ana_birim_adi"),
+        "a_giren": row.get("G.a_giren") or row.get("a_giren"),
+        "a_cikan": row.get("G.a_cikan") or row.get("a_cikan"),
+        "a_kalan": row.get("G.a_kalan") or row.get("a_kalan"),
+        "a_fiyat_al": row.get("G.a_fiyat_al"),
+        "a_fiyat_sat": row.get("G.a_fiyat_sat"),
+        "a_kdv_al": row.get("G.a_kdv_al"),
+        "a_kdv_sat": row.get("G.a_kdv_sat"),
+        "a_pasif": a_pasif or None,
+        "aktif_pasif": aktif_pasif,
+        "kaynak_liste": "stokjq",
+        "stokjq_kos": kos,
+    }
 
 
 def _ana_listesi(yanit: dict) -> list[dict]:

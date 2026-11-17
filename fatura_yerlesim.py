@@ -996,8 +996,10 @@ def ust_panel_genislik_kur(dialog) -> None:
     for panel_ad, metinler in (
         ("_fatura_ust_cari", {
             "Kalan Bakiye": "Kalan Bakiye",
-            "Kalan Bakiye Gün": "Kalan Gün",
-            "Kapatılan Bakiye Gün": "Kapatılan Gün",
+            "Açık Valör Gün": "Açık Valör",
+            "Kapanan Valör Gün": "Kapanan Valör",
+            "Kalan Bakiye Gün": "Açık Valör",
+            "Kapatılan Bakiye Gün": "Kapanan Valör",
             "Toplam Borç": "Toplam Borç",
             "Toplam Alacak": "Toplam Alacak",
         }),

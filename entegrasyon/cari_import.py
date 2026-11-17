@@ -142,10 +142,22 @@ def _cari_turu_normalize(ham: str, varsayilan: str = "Müşteri") -> str:
         return varsayilan
     if t.startswith("tedarik") or t in {"t", "2", "tedarikci"}:
         return "Tedarikçi"
+    if t.startswith("personel") or t in {"p", "3"}:
+        return "Personel"
+    if t.startswith("resmi"):
+        return "Resmi Kurumlar"
+    if t.startswith("duzenleyici") or t.startswith("düzenleyici"):
+        return "Düzenleyici Hesaplar"
     if t.startswith("muster") or t in {"m", "1", "0", "musteri"}:
         return "Müşteri"
     if "tedarik" in t:
         return "Tedarikçi"
+    if "personel" in t:
+        return "Personel"
+    if "resmi" in t and "kurum" in t:
+        return "Resmi Kurumlar"
+    if "duzenleyici" in t or "düzenleyici" in t:
+        return "Düzenleyici Hesaplar"
     return varsayilan
 
 
@@ -258,13 +270,32 @@ def _risk_limit_temizle(veriler: dict[str, Any]) -> dict[str, Any]:
 
 
 def kaydet_veya_guncelle(veriler: dict[str, Any]) -> str:
-    """Returns: 'eklendi' | 'guncellendi' | 'atlandi'."""
+    """Returns: 'eklendi' | 'guncellendi' | 'atlandi' | 'engel'."""
     veriler = _risk_limit_temizle(dict(veriler))
     unvan = _temiz(veriler.get("unvan"))
     if not unvan:
         return "atlandi"
     veriler["unvan"] = unvan
     veriler.setdefault("cari_turu", "Müşteri")
+
+    # Silinmiş boş Evo kaynağı — sessizce yeniden açma
+    from database.cari_silme_service import (
+        KAYNAK_EVO,
+        cari_kaynak_engelli_mi,
+        eslestirme_gerekli_mesaji,
+    )
+    import re as _re
+
+    evo_id = None
+    notlar = veriler.get("ozel_notlar") or ""
+    m = _re.search(r"Evo cari id\s+(\d+)", str(notlar), _re.I)
+    if m:
+        evo_id = m.group(1)
+    if not evo_id:
+        evo_id = _temiz(veriler.get("evo_id") or veriler.get("a_id") or "")
+    if evo_id and cari_kaynak_engelli_mi(KAYNAK_EVO, str(evo_id)):
+        raise ValueError(eslestirme_gerekli_mesaji(str(evo_id), unvan))
+
     kod = _temiz(veriler.get("cari_kodu"))
     if kod:
         mevcut = CariService.kod_ile_getir(kod)

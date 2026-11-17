@@ -71,6 +71,39 @@ class OdemeKapatmaIzlemeTest(unittest.TestCase):
             "satirlar": [{"odeme_sekli": "NAKİT / KASA", "finans_hesap_id": self.kasa_id, "tutar": tutar}],
         })
 
+    def test_bagli_makbuz_yontem_ve_esas_vade(self):
+        """Faturaya bağlı tahsilat → yontem=BAGLI / 'Evraka bağlı'; esas vade dolu."""
+        m = self._makbuz("400", self.f1000)
+        with get_session() as s:
+            kayitlar = s.scalars(
+                select(CariKapatma).where(
+                    CariKapatma.kaynak_belge_no == m.belge_no,
+                    CariKapatma.iptal.is_(False),
+                )
+            ).all()
+            self.assertTrue(kayitlar)
+            self.assertTrue(all((k.yontem or "").upper() == "BAGLI" for k in kayitlar))
+        k = kaynak_dagitim_detayi(m.belge_no, self.musteri_id)
+        self.assertEqual(len(k["satirlar"]), 1)
+        satir = k["satirlar"][0]
+        self.assertEqual(satir["yontem"], "Evraka bağlı")
+        self.assertEqual(satir["esas_vade"], date(2026, 5, 1))
+        self.assertIn(satir["vade_kaynak"], ("VADE", "BELGE_TARIHI"))
+        self.assertTrue(satir.get("vade_etiket"))
+
+    def test_erken_gec_odeme_etiketi(self):
+        """Esas vade 1 Mayıs; 6 Mayıs ödeme → 5 gün geç; 20 Nisan → erken."""
+        m_gec = self._makbuz("200", self.f1000, tarih=date(2026, 5, 6))
+        k = kaynak_dagitim_detayi(m_gec.belge_no, self.musteri_id)
+        self.assertEqual(k["satirlar"][0]["erken_gec_gun"], 5)
+        self.assertIn("geç", k["satirlar"][0]["erken_gec_etiket"])
+        with get_session() as s:
+            f2 = _fatura(s, self.musteri_id, "SF-K-ERKEN", date(2026, 5, 1), "300")
+        m_erken = self._makbuz("100", f2, tarih=date(2026, 4, 20))
+        k2 = kaynak_dagitim_detayi(m_erken.belge_no, self.musteri_id)
+        self.assertEqual(k2["satirlar"][0]["erken_gec_gun"], -11)
+        self.assertIn("erken", k2["satirlar"][0]["erken_gec_etiket"])
+
     def test_kismi_sonra_tam_iki_taraftan(self):
         m1 = self._makbuz("400", self.f1000)
         d = evrak_kapatma_detayi("SF-K-1000")

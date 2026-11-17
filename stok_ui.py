@@ -3026,6 +3026,9 @@ class StokKartiDialog(tk.Toplevel):
         stok_tk_buton(bb_btn, "EAN-13 Oluştur", self.ean13_barkod_olustur, rol="ara").pack(
             side="left", padx=(6, 0)
         )
+        stok_tk_buton(
+            bb_btn, "Barkodu Yeniden Oluştur", self.barkodu_yeniden_olustur, rol="vurgu"
+        ).pack(side="left", padx=(6, 0))
         self.etiket_btn = stok_tk_buton(bb_btn, "Etiket Yazdır", self._barkod_etiket_yazdir, rol="ikincil")
         self.etiket_btn.pack(side="left", padx=(6, 0))
         self.etiket_neden_lbl = tk.Label(
@@ -6701,6 +6704,76 @@ class StokKartiDialog(tk.Toplevel):
             parent=self,
         )
         self._barkod_birim_ozet_yenile()
+
+    def barkodu_yeniden_olustur(self):
+        """Birincil barkodu geçerli, benzersiz EAN-13 ile değiştirir (Kaydet ile kalıcı olur)."""
+        from stok_barkod_ui import etiket_barkod_durumu
+
+        birim = self.alanlar["birim"].get().strip() or "Adet"
+        while len(self.barkodlar) < 1:
+            self.barkodlar.append(
+                {
+                    "barkod": "",
+                    "birim": birim,
+                    "fiyat_adi": SATIS_FIYAT_ADLARI[0],
+                    "fiyat": (
+                        self.fiyat_alanlari[SATIS_FIYAT_ADLARI[0]].get().strip()
+                        if SATIS_FIYAT_ADLARI[0] in self.fiyat_alanlari
+                        else "0"
+                    ),
+                    "aciklama": "1. Barkod",
+                }
+            )
+        eski = (self.barkodlar[0].get("barkod") or "").strip()
+        neden = etiket_barkod_durumu(eski) if eski else "Stokta barkod tanımlı değil."
+        if eski and neden is None:
+            if not messagebox.askyesno(
+                "Barkodu Yeniden Oluştur",
+                f"Mevcut birincil barkod geçerli görünüyor:\n{eski}\n\n"
+                "Yine de yeni EAN-13 üretilip birincil barkodun üzerine yazılsın mı?\n"
+                "(Kalıcı olması için Kaydet gerekir.)",
+                parent=self,
+            ):
+                return
+        elif eski:
+            if not messagebox.askyesno(
+                "Barkodu Yeniden Oluştur",
+                f"Mevcut birincil barkod basılamıyor:\n{eski}\n{neden}\n\n"
+                "Yeni geçerli EAN-13 üretilip birincil barkoda yazılsın mı?\n"
+                "(Kalıcı olması için Kaydet gerekir.)",
+                parent=self,
+            ):
+                return
+        # Diğer satırlar hariç; eski kod da hariç (aynı sayı üretilmesin)
+        haric = [b.get("barkod") for b in self.barkodlar[1:]]
+        if eski:
+            haric.append(eski)
+        stok_id = self.stok.id if self.stok else None
+        try:
+            barkod = StokService.ean13_olustur(stok_id=stok_id, haric_barkodlar=haric)
+        except ValueError as hata:
+            messagebox.showerror("Barkodu Yeniden Oluştur", str(hata), parent=self)
+            return
+        fiyat_adi = SATIS_FIYAT_ADLARI[0]
+        fiyat = "0"
+        if fiyat_adi in self.fiyat_alanlari:
+            fiyat = self.fiyat_alanlari[fiyat_adi].get().strip() or "0"
+        onceki = dict(self.barkodlar[0]) if self.barkodlar else {}
+        self.barkodlar[0] = {
+            "barkod": barkod,
+            "birim": onceki.get("birim") or birim,
+            "fiyat_adi": onceki.get("fiyat_adi") or fiyat_adi,
+            "fiyat": onceki.get("fiyat") or fiyat,
+            "aciklama": "1. Barkod (EAN-13 yeniden)",
+            "tur": "EAN-13",
+        }
+        self._barkod_birim_ozet_yenile()
+        messagebox.showinfo(
+            "Barkodu Yeniden Oluştur",
+            f"Yeni birincil barkod forma yazıldı:\n{barkod}\n\n"
+            "Kalıcı kayıt için Kaydet’e basın. Kaydetmeden çıkarsanız eski barkod korunur.",
+            parent=self,
+        )
 
     def fiyat_analiz_ac(self):
         stok_id = self.stok.id if self.stok else None

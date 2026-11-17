@@ -919,6 +919,10 @@ def _gecmis_yaz(session, cari_id: int, alan: str, eski, yeni) -> None:
 def kart_degisikligini_uygula(session, cari, veriler: dict[str, Any], *, yeni_kart: bool = False) -> list[str]:
     """``veriler`` içindeki risk/oran alanlarını çıkarır, doğrular, yetkiyi denetler, karta yazar
     ve değişenleri geçmişe ekler. Değişen alan adlarını döner. Hiçbir hareket üretmez."""
+    from database.cari_kredi_notu_service import kart_notunu_uygula
+
+    # Kredi notu açık hesap limitini veriler üzerinden ayarlar (ayrı bakiye hesabı yok)
+    kart_notunu_uygula(session, cari, veriler)
     ilgili = {a: veriler.pop(a) for a in list(veriler) if a in KART_ALANLARI}
     if not ilgili:
         return []

@@ -59,9 +59,11 @@ def onay_hatalari(
     else:
         if not getattr(cari, "aktif", True):
             hatalar.append("Seçili tedarikçi kartı pasif.")
-        tur = (getattr(cari, "cari_turu", "") or "").casefold()
-        if tur and not tur.startswith("tedarik") and "her" not in tur:
-            hatalar.append("Seçili cari bir tedarikçi kartı değil.")
+        from database.cari_service import CariService
+
+        # Alış belgesinde tüm gerçek cari türleri seçilebilir; stok/ürün kartı değil.
+        if not CariService.evrak_cari_mi(getattr(cari, "cari_turu", None)):
+            hatalar.append("Seçili kart belge carisi değil (stok/ürün kartı seçilemez).")
     if not fatura_tarihi:
         hatalar.append("Fatura tarihi geçersiz.")
     elif fatura_tarihi > date.today():
@@ -246,10 +248,11 @@ class AlisFaturasiService:
                         SatisHareketi.cari_id, SatisHareketi.belge_no, SatisHareketi.kalan_acik_tutar
                     ).where(
                         SatisHareketi.belge_no.in_(nolar[i:i + 500]),
-                        SatisHareketi.satis_tutari > 0,
+                        SatisHareketi.satis_tutari != 0,
                     )
                 ).all():
-                    acik_map[(int(cid), bno)] = Decimal(str(kalan or 0))
+                    # Alış yönü negatif kalan; UI/açık map mutlak
+                    acik_map[(int(cid), bno)] = abs(Decimal(str(kalan or 0)))
             sonuc = []
             for f in faturalar:
                 genel = Decimal(str(getattr(f, "tl_genel_toplam", 0) or 0))
@@ -657,6 +660,8 @@ class AlisFaturasiService:
                         birim_fiyat_doviz=birim_fiyat_doviz,
                         tl_birim_fiyat=stok_maliyeti,
                         tl_tutar=(miktar * stok_maliyeti).quantize(Decimal("0.01")),
+                        # Anlam: Fiyatlara Dağıt kilidi (satışla aynı). Kaynakta yok → False (açık).
+                        dagitima_kapali=bool(veri.get("dagitima_kapali") or False),
                     )
                 )
 
@@ -747,14 +752,21 @@ class AlisFaturasiService:
 
     @staticmethod
     def _cari_finans_yaz(session, fatura, tarih, toplam, pb, kur) -> None:
+        """Tedarikçi açık kalemi: SatisHareketi tutarları negatif (alacak yönü).
+
+        cari_bakiye_service._satis_hareketi_borc_alacak: t<0 → (0, -t) alacak.
+        acik_kalem_service zaten kalan_acik_tutar < 0 alış yönünü destekler.
+        """
         hareket = session.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
         if not hareket:
             hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
             session.add(hareket)
         hareket.cari_id = fatura.cari_id
         hareket.satis_tarihi = tarih
-        hareket.satis_tutari = toplam
-        hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+        # Pozitif genel toplam → negatif satır (tedarikçiye borç = alacak)
+        hareket.satis_tutari = -abs(toplam)
+        kalan = abs(toplam) - abs(fatura.odeme_tutari or 0)
+        hareket.kalan_acik_tutar = -kalan if kalan > 0 else (kalan if kalan < 0 else 0)
         hareket.para_birimi = pb
         hareket.kur = kur if pb != "TRY" else Decimal("1")
         hareket.borc_esasi = "TL_SABIT"
@@ -1155,7 +1167,8 @@ class AlisFaturasiService:
         with get_session() as session:
             hs = session.scalars(
                 select(SatisHareketi).where(
-                    SatisHareketi.cari_id == cari_id, SatisHareketi.kalan_acik_tutar > 0
+                    SatisHareketi.cari_id == cari_id,
+                    SatisHareketi.kalan_acik_tutar != 0,
                 )
             ).all()
             faturalar = session.scalars(
@@ -1178,8 +1191,9 @@ class AlisFaturasiService:
                     continue
                 if not str(h.belge_no).startswith(("AFAT-", "ARAY")):
                     continue
-                bakiye += h.kalan_acik_tutar
-                agirlik += Decimal(h.satis_tarihi.toordinal()) * h.kalan_acik_tutar
+                kalan_abs = abs(h.kalan_acik_tutar or 0)
+                bakiye += kalan_abs
+                agirlik += Decimal(h.satis_tarihi.toordinal()) * kalan_abs
             bakiye += eklenecek
             if eklenecek > 0:
                 agirlik += Decimal((vade or date.today()).toordinal()) * eklenecek

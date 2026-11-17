@@ -40,6 +40,8 @@ KK_CEKIM_TURLERI = (
 )
 
 KK_MAX_TAKSIT = 24
+# Manuel harcama / plan düzenleme ekranında standart seçim üst sınırı (1–12).
+KK_STANDART_MAX_TAKSIT = 12
 POS_MAX_TAKSIT = 12
 KREDI_MAX_TAKSIT = 120
 
@@ -116,12 +118,19 @@ class BankaKarti(Base):
     kk_komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     banka_karti_komisyon_orani: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     pos_valor_gun: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # MEVDUAT | KMH — net POS yatışının hedef hesabı (eski sabit KMH kaldırıldı)
+    # MEVDUAT | KMH — net POS yatışının hedef türü (pos_aktarim_hesap_id ile senkron)
     pos_hedef_hesap_turu: Mapped[str | None] = mapped_column(String(20), nullable=True, default="MEVDUAT")
+    # Aktarımın yatacağı somut mevduat/KMH alt hesap kimliği (FK yok: alt_hesaplar join belirsizliği)
+    pos_aktarim_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # True: valör günü iş günü sayılır (Cmt/Paz atlanır)
     pos_valor_is_gunu: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
     # True olmadıkça planlanan valörden otomatik mevduat hareketi üretilmez
+    # (pos_aktarim_yontemi=OTOMATIK ile eşlenir; tanımsız/eski kartlar Manuel)
     pos_otomatik_mahsup: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # MANUEL | OTOMATIK — bankaya aktarım yöntemi (varsayılan MANUEL)
+    pos_aktarim_yontemi: Mapped[str | None] = mapped_column(String(20), nullable=True, default="MANUEL")
+    # Otomatik aktarımın geçerli olduğu ilk tarih (öncesi manuel kalır / yeniden işlenmez)
+    pos_otomatik_baslangic: Mapped[date | None] = mapped_column(Date, nullable=True)
     # KMH (kredili mevduat): bu limite kadar eksi bakiyeye düşülebilir
     kmh_limiti: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -176,6 +185,32 @@ class BankAccountMatchRule(Base):
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BankaKaynakEngel(Base):
+    """Kullanıcının sildiği banka / firma kredi kartı kaynağı.
+
+    Sonraki Evo aktarımı aynı kaynak kimliğiyle kartı sessizce yeniden açmasın.
+    Teknik eşleştirme (bank_account_match_rules) kaldırılırken kaynak id ve neden burada kalır.
+    """
+
+    __tablename__ = "banka_kaynak_engelleri"
+    __table_args__ = (
+        UniqueConstraint("kaynak_sistem", "kaynak_kimlik", name="uq_banka_kaynak_engel"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kaynak_sistem: Mapped[str] = mapped_column(String(40), nullable=False)
+    kaynak_kimlik: Mapped[str] = mapped_column(String(80), nullable=False)
+    # BANKA | KREDI_KARTI
+    kart_turu: Mapped[str] = mapped_column(String(20), nullable=False, default="BANKA")
+    kart_kodu: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    kart_adi: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    evo_banka_adi: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    eski_kart_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eski_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    neden: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    olusturma_zamani: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 class PosTaksitKomisyon(Base):
@@ -266,17 +301,58 @@ class PosValorKaydi(Base):
     komisyon_tutari: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     net_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     cari_id: Mapped[int | None] = mapped_column(nullable=True)
-    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")  # BEKLIYOR|AKTARILDI
+    durum: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="BEKLIYOR"
+    )  # BEKLIYOR|KISMEN|AKTARILDI|IPTAL
     aktarim_zamani: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Gerçek banka yatışı (mutabakat) — beklenen valörden ayrı
+    # Gerçek banka yatışı (mutabakat) — beklenen valörden ayrı; valör tarihi tek başına kapanış değildir
     gercek_yatis_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
     gercek_yatis_tutari: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    # Toplu/kısmi aktarım fiş no (PVA-…); birden fazla POS aynı banka hareketine bağlanabilir
+    aktarim_belge_no: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    # İşlem anında saklanan valör günü / diğer kesinti (kart değişince geçmiş bozulmaz)
+    valor_gun: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    diger_kesinti: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # Aktarım yöntemi kaydı (kart sonradan değişince geçmiş bozulmaz)
+    aktarim_yontemi: Mapped[str | None] = mapped_column(String(20), nullable=True)  # MANUEL|OTOMATIK
+    # True: otomatik valör döngüsü bu kaydı atlar (geri alınmış; kullanıcı manuel aktarır)
+    otomatik_aktarim_engel: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # Uygulama aktarım fişi oluştu; gerçek banka ekstre teyidi ayrı
+    banka_teyidi: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    banka_teyidi_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    banka_teyidi_notu: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    banka_teyidi_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Geçmiş yatış eşleştirme / kullanıcı bildirimi ile kapanış (yeni banka fişi üretmez)
+    # kapanis_turu: BANKA_ESLESME | KULLANICI_BILDIRIMI | None
+    kapanis_turu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    kapanis_dayanak: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    kapanis_zaman: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    kapanis_kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Mevcut banka hareket id'leri (virgülle); PVA/yeni yatış değildir
+    eslesen_banka_hareket_idler: Mapped[str | None] = mapped_column(String(250), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="pos_valor_kayitlari")
 
     @property
     def hedef_id(self) -> int:
         return int(self.hedef_hesap_id or self.kmh_hesap_id)
+
+
+class PosValorDegisiklik(Base):
+    """POS tahsilat fişi alan değişiklik izi (eski/yeni, kullanıcı, zaman)."""
+
+    __tablename__ = "pos_valor_degisiklikleri"
+    __table_args__ = (Index("ix_pos_valor_degisiklik_belge", "belge_no", "zaman"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    pos_valor_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    belge_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    alan: Mapped[str] = mapped_column(String(60), nullable=False)
+    eski_deger: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    yeni_deger: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    kullanici_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kullanici_adi: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    zaman: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 class KrediKartiTanimi(Base):
@@ -303,6 +379,18 @@ class KrediKartiTanimi(Base):
     tatil_odeme_kurali: Mapped[str | None] = mapped_column(
         String(20), nullable=True, default="AYNI_GUN"
     )  # AYNI_GUN | SONRAKI_IS_GUNU | ONCEKI_IS_GUNU
+    # Ödeme vadesi: KESIM_ARTI_N | AYIN_GUNU (ikisi aynı anda çelişmesin)
+    odeme_vade_yontemi: Mapped[str | None] = mapped_column(String(20), nullable=True, default="KESIM_ARTI_N")
+    # BIREYSEL | TICARI | KURUMSAL — asgari/faiz profili ürün kapsamı
+    banka_urun_turu: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    asgari_oran_yuzde: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    asgari_kaynak: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    asgari_gecerlilik: Mapped[date | None] = mapped_column(Date, nullable=True)
+    otomatik_faiz_tahakkuku: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    # Taksitli harcama formu varsayılanı (1–12); işlemde değiştirilebilir
+    varsayilan_taksit_adet: Mapped[int | None] = mapped_column(Integer, nullable=True, default=6)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     aktif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="kredi_kartlari")
@@ -335,7 +423,9 @@ class KrediKartiEkstre(Base):
     # Kartın son ödeme günü tanımsızsa boş (tahmin edilmez); durum EKSIK_BILGI olur
     son_odeme_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     # True ise son_odeme_tarihi banka bildirimiyle elle sabitlenmiş; kural yeniden hesaplamaz
-    son_odeme_manuel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    son_odeme_manuel: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     # KESILMEMIS | KESILMIS | KISMI | ODENDI | GECIKMIS | FAZLA | EKSIK_BILGI
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="KESILMEMIS")
     toplam_borc: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
@@ -383,8 +473,13 @@ class KrediKartiEkstreOdeme(Base):
     olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     # Aynı istekle ikinci kayıt yeni ödeme üretmez (kayıtlı ödeme döner)
     istek_anahtari: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # EKSTRE | KASADAN_BANKAYA | VIRMAN — ödemenin girildiği ekran (etki her durumda aynı)
+    # EKSTRE | KASADAN_BANKAYA | VIRMAN | BANKAMATIK — ödemenin girildiği ekran
     kaynak: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # BANKA | BANKAMATIK — kullanıcı seçimi (V6)
+    odeme_yontemi: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fazla_odeme: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    atm_bankasi: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    atm_referans: Mapped[str | None] = mapped_column(String(120), nullable=True)
     kart_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     iptal_islem_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
     iptal_nedeni: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -451,13 +546,15 @@ class KrediKartiOdeme(Base):
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|İPTAL
     kaynak_turu: Mapped[str] = mapped_column(
         String(20), nullable=False, default="CARI", server_default="CARI"
-    )  # CARI | GIDER
+    )  # CARI | GIDER | NAKIT_AVANS
     gider_kart_odeme_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    nakit_avans_taksit_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # Kartla gider: bu kaydın muhasebede bir kez yazdığı finansman farkı (düzeltme kaydında fark değişimi, eksi
     # olabilir). Boşsa eski kural: yalnız ana kart ödemesi gider kaydındaki farkı yazar.
     finansman_farki: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     # Kayıt düzeltmesiyle oluşan kart kaydında düzeltme günlüğü satırı
     duzeltme_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    plan_versiyon: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     kredi_karti: Mapped["KrediKartiTanimi"] = relationship("KrediKartiTanimi", back_populates="odemeler")
     taksitler: Mapped[list["KrediKartiOdemeTaksit"]] = relationship(
         "KrediKartiOdemeTaksit",
@@ -468,7 +565,7 @@ class KrediKartiOdeme(Base):
 
 
 class KrediKartiOdemeTaksit(Base):
-    """KK ödeme taksit satırı — vade = çekim günü + (n-1) ay (aynı gün)."""
+    """KK ödeme taksit satırı — iç plan vadesi = çekim/başlangıç + (n-1) ay (aynı gün)."""
 
     __tablename__ = "kredi_karti_odeme_taksitleri"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -476,10 +573,32 @@ class KrediKartiOdemeTaksit(Base):
     taksit_no: Mapped[int] = mapped_column(Integer, nullable=False)
     vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")  # BEKLIYOR|ODENDI|IADE
+    # BEKLIYOR | ODENDI | IADE | PLAN_IPTAL (eski sürüm satırı; borca tekrar sayılmaz)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")
     # Banka planındaki ekstre kesimi; boşsa çekim tarihi + taksit no kuralıyla hesaplanır
     ekstre_kesim_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Doğrulanmış / kural banka son ödeme; iç plan vadesinden ayrı
+    banka_vade_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    odenen_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    plan_versiyon: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     odeme: Mapped["KrediKartiOdeme"] = relationship("KrediKartiOdeme", back_populates="taksitler")
+
+
+class KrediKartiOdemePlanVersiyon(Base):
+    """İç taksit planı sürümü — eski plan silinmez; raporlarda yalnız etkin sürüm toplanır."""
+
+    __tablename__ = "kredi_karti_odeme_plan_versiyonlari"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    odeme_id: Mapped[int] = mapped_column(
+        ForeignKey("kredi_karti_odemeleri.id"), nullable=False, index=True
+    )
+    versiyon: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    kullanici: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 class GiderKartOdeme(Base):
@@ -594,6 +713,8 @@ class BankaKredisi(Base):
     bitis_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
     plan_versiyon: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
     aktif: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    # KREDILER alt hesabı (Evo devir / eşleme); yoksa bankanın varsayılan krediler hesabı
+    bagli_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="banka_kredileri")
     taksitler: Mapped[list["BankaKrediTaksit"]] = relationship(
         "BankaKrediTaksit",
@@ -735,6 +856,9 @@ class KasaMakbuzu(Base):
     """Tahsilat / ödeme makbuzu — cari zorunlu; tek veya çok satırlı tahsilat/ödeme."""
 
     __tablename__ = "kasa_makbuzlari"
+    __table_args__ = (
+        Index("ux_kasa_makbuz_istek", "istek_anahtari", unique=True),
+    )
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     sube_id: Mapped[int | None] = mapped_column(ForeignKey("subeler.id"), nullable=True, index=True)
     belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
@@ -748,6 +872,7 @@ class KasaMakbuzu(Base):
     makbuz_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|IPTAL
+    istek_anahtari: Mapped[str | None] = mapped_column(String(80), nullable=True)
     finans_hesap = relationship("FinansHesabi")
     satirlar: Mapped[list["KasaMakbuzSatiri"]] = relationship(
         "KasaMakbuzSatiri",
@@ -867,3 +992,75 @@ class FinansEvrakKimligi(Base):
     cari_islem_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
     kaynak: Mapped[str] = mapped_column(String(20), nullable=False, default="evrak")  # evrak|gecmis
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class NakitAvans(Base):
+    """Firma kredi kartından nakit avans (tek çekim veya taksitli)."""
+
+    __tablename__ = "nakit_avanslari"
+    __table_args__ = (Index("ux_nakit_avans_istek", "istek_anahtari", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    belge_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    kredi_karti_id: Mapped[int] = mapped_column(
+        ForeignKey("kredi_karti_tanimlari.id"), nullable=False, index=True
+    )
+    banka_karti_id: Mapped[int] = mapped_column(ForeignKey("banka_kartlari.id"), nullable=False, index=True)
+    islem_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    anapara: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    kalan_anapara: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    net_giris: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)  # hesaba geçen
+    kullandirim_masraf: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    kullandirim_vergi: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    hedef_hesap_id: Mapped[int] = mapped_column(ForeignKey("finans_hesaplari.id"), nullable=False)
+    aylik_faiz_orani: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=0)
+    taksit_sayisi: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    cekim_turu: Mapped[str] = mapped_column(String(20), nullable=False, default="TEK_CEKIM")  # TEK_CEKIM|TAKSITLI
+    ilk_yansima_tarihi: Mapped[date] = mapped_column(Date, nullable=False)
+    aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="ACIK")  # ACIK|KAPALI|IPTAL
+    plan_versiyon: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    finans_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)  # hesaba giriş
+    istek_anahtari: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    olusturma: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    guncelleme: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    taksitler: Mapped[list["NakitAvansTaksit"]] = relationship(
+        "NakitAvansTaksit",
+        back_populates="avans",
+        cascade="all, delete-orphan",
+        order_by="NakitAvansTaksit.taksit_no",
+    )
+
+
+class NakitAvansTaksit(Base):
+    """Nakit avans ödeme planı satırı — karta yansıma ile ekstre borcuna aktarılır."""
+
+    __tablename__ = "nakit_avans_taksitleri"
+    __table_args__ = (
+        UniqueConstraint("avans_id", "taksit_no", "plan_versiyon", name="uq_na_taksit_no_ver"),
+        Index("ux_na_taksit_islem", "islem_anahtari", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    avans_id: Mapped[int] = mapped_column(ForeignKey("nakit_avanslari.id"), nullable=False, index=True)
+    taksit_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    yansima_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    faiz_valor_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    son_odeme_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    anapara: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    faiz: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    masraf: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    vergi: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    toplam: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    # PLANLANDI | KARTA_ISLENDI | IPTAL
+    durum: Mapped[str] = mapped_column(String(20), nullable=False, default="PLANLANDI")
+    plan_versiyon: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    kk_odeme_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kk_hareket_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    faiz_gider_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    masraf_gider_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    vergi_gider_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    islem_anahtari: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    islem_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
+    avans: Mapped["NakitAvans"] = relationship("NakitAvans", back_populates="taksitler")

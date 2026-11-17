@@ -619,7 +619,18 @@ class SilinenKayitDetayDialog(tk.Toplevel):
 
 
 def cari_soft_sil(parent, cari) -> bool:
-    """Cari soft-delete; True ise başarılı."""
+    """Cari soft-delete; hareket geçmişi olan kart hiçbir yoldan silinemez."""
+    from database.cari_silme_service import silme_durumu
+
+    durum = silme_durumu(int(cari.id))
+    if not durum.silinebilir:
+        messagebox.showerror(
+            "Silinemedi",
+            durum.neden_metni
+            or "Bu cari hareket/belge geçmişi bulunduğundan silinemez.",
+            parent=parent,
+        )
+        return False
     kritik = True  # her zaman kod onayı
     sonuc = silme_onayi_al(
         parent,

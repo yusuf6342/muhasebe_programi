@@ -27,6 +27,9 @@ KK = "KREDİ KARTIYLA TAHSİLAT"
 ACIK = "AÇIK HESAP"
 
 HIZLI_NAKIT_TUTARLARI = (
+    Decimal("5"),
+    Decimal("10"),
+    Decimal("20"),
     Decimal("50"),
     Decimal("100"),
     Decimal("200"),
@@ -328,9 +331,9 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
                 fg=SARİ,
                 font=("Segoe UI", 9, "bold"),
                 relief="flat",
-                padx=10,
+                padx=8,
                 pady=6,
-                command=lambda x=t: self._tutar_yaz(x),
+                command=lambda x=t: self._tutar_ekle(x),
             ).pack(side="left", padx=2)
 
         self.para_ustu_lbl = tk.Label(
@@ -434,7 +437,23 @@ class HizliSatisTahsilatDialog(tk.Toplevel):
         self._tutar_yaz(self._kalan() if self._kalan() > 0 else self.genel_toplam)
 
     def _tutar_yaz(self, tutar: Decimal) -> None:
+        """TAMAMI: tutar alanını verilen değere yazar (üzerine yazar)."""
         self.tutar_var.set(f"{_kurus(tutar):.2f}".replace(".", ","))
+
+    def _mevcut_tutar(self) -> Decimal:
+        """Tutar alanındaki değer; boş veya geçersizse 0,00."""
+        ham = (self.tutar_var.get() or "").strip()
+        if not ham:
+            return Decimal("0.00")
+        try:
+            return _parse_tutar(ham)
+        except ValueError:
+            return Decimal("0.00")
+
+    def _tutar_ekle(self, tutar: Decimal) -> None:
+        """Kupür: mevcut tutara ekler; para üstü trace ile yenilenir."""
+        yeni = _kurus(self._mevcut_tutar() + _kurus(tutar))
+        self.tutar_var.set(f"{yeni:.2f}".replace(".", ","))
 
     def _tahsil_edilen(self) -> Decimal:
         return _kurus(sum((_kurus(s["tutar"]) for s in self.odeme_satirlari), Decimal("0")))

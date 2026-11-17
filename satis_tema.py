@@ -85,14 +85,17 @@ def stil_uygula(
                 return stil
         except tk.TclError:
             pass
-    if "vista" in stil.theme_names():
-        try:
-            stil.theme_use("vista")
-        except tk.TclError:
-            pass
-    elif "clam" in stil.theme_names():
+    # clam: Treeview.Heading arka planı boyanır (lacivert + beyaz yazı).
+    # vista: Heading bg boyanmaz → beyaz yazı kaybolur (cari/stok listelerinde
+    # aynı kök neden; clam tercih edilir).
+    if "clam" in stil.theme_names():
         try:
             stil.theme_use("clam")
+        except tk.TclError:
+            pass
+    elif "vista" in stil.theme_names():
+        try:
+            stil.theme_use("vista")
         except tk.TclError:
             pass
     _stilleri_yaz(stil, root)
@@ -194,16 +197,40 @@ def _stilleri_yaz(stil: ttk.Style, root: tk.Misc | None) -> None:
         background=BEYAZ,
         foreground=METIN,
     )
+    # Vista: Heading arka planı boyanmaz → beyaz yazı kaybolur.
+    # clam: lacivert zemin + beyaz yazı. vista kalırsa koyu yazı / açık zemin.
+    _heading_fg = BEYAZ
+    _heading_bg = LACIVERT
+    try:
+        if stil.theme_use() == "vista":
+            _heading_fg = LACIVERT
+            _heading_bg = ACIK_BG
+    except tk.TclError:
+        pass
     stil.configure(
         "Satis.Treeview.Heading",
         font=f_bold,
-        background=LACIVERT,
-        foreground=BEYAZ,
+        background=_heading_bg,
+        foreground=_heading_fg,
+        relief="flat",
+        borderwidth=0,
+        padding=(6, 6),
     )
     stil.map(
         "Satis.Treeview",
         background=[("selected", ACIK_SARI)],
         foreground=[("selected", KOYU_LACIVERT)],
+    )
+    stil.map(
+        "Satis.Treeview.Heading",
+        background=[
+            ("active", LACIVERT_HOVER if _heading_fg == BEYAZ else CIZGI),
+            ("pressed", LACIVERT_HOVER if _heading_fg == BEYAZ else CIZGI),
+        ],
+        foreground=[
+            ("active", _heading_fg),
+            ("pressed", _heading_fg),
+        ],
     )
 
 
@@ -383,7 +410,55 @@ def ekran_ust_cubugu(
 
 
 def treeview_stil(tablo: ttk.Treeview) -> None:
-    """Satış tablolarına kurumsal stil + kuşak etiketleri."""
+    """Satış tablolarına kurumsal stil + kuşak etiketleri.
+
+    Windows vista temasında Treeview.Heading arka planı boyanmaz; beyaz yazı
+    kaybolur. clam'a geçip Satis.Treeview stillerini yeniden yazar (cari/stok
+    listeleriyle aynı kök neden düzeltmesi).
+    """
+    root = None
+    try:
+        root = tablo.winfo_toplevel()
+    except tk.TclError:
+        pass
+    stil = ttk.Style(root)
+    tema_degisti = False
+    try:
+        if stil.theme_use() == "vista" and "clam" in stil.theme_names():
+            stil.theme_use("clam")
+            tema_degisti = True
+    except tk.TclError:
+        pass
+    if tema_degisti:
+        # Tema değişince ttk stilleri sıfırlanır — satış stillerini yeniden yaz
+        _stilleri_yaz(stil, root)
+        try:
+            uygulanan = ""
+            if str(stil.tk.call("info", "exists", _STIL_ISARET)) == "1":
+                uygulanan = str(stil.tk.globalgetvar(_STIL_ISARET))
+            stil.tk.globalsetvar(
+                _STIL_ISARET, ",".join(x for x in (uygulanan, "clam") if x)
+            )
+        except tk.TclError:
+            pass
+    else:
+        # Vista kaldıysa en azından koyu başlık yazısı (stil_uygula yazmış olabilir)
+        try:
+            if stil.theme_use() == "vista":
+                stil.configure(
+                    "Satis.Treeview.Heading",
+                    background=ACIK_BG,
+                    foreground=LACIVERT,
+                    font=font(10, "bold", root=root),
+                    padding=(6, 6),
+                )
+                stil.map(
+                    "Satis.Treeview.Heading",
+                    background=[("active", CIZGI), ("pressed", CIZGI)],
+                    foreground=[("active", LACIVERT), ("pressed", LACIVERT)],
+                )
+        except tk.TclError:
+            pass
     tablo.configure(style="Satis.Treeview")
     tablo.tag_configure("tek", background=BEYAZ)
     tablo.tag_configure("cift", background=ACIK_BG)
