@@ -530,6 +530,234 @@ def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
     return True
 
 
+def _kredi_belge_ac(parent, belge_no: str, *, tur: str = "") -> bool:
+    """KRK/KTO/KTI → kaynak id ile önizleme; Sil = iptal (bağlı etkilerle)."""
+    from database.banka_kredi_service import BankaKrediService
+
+    kaynak = BankaKrediService.odeme_kaynak_cozumle(belge_no)
+    if not kaynak:
+        return False
+
+    def _sil_kredi():
+        if not messagebox.askyesno(
+            "Kullandırım iptal",
+            f"Kaynak: {kaynak.get('belge_no')} (id={kaynak.get('kaynak_id')})\n"
+            f"Kredi: {kaynak.get('kredi_adi') or '—'}\n"
+            "Mevduat ve krediler bakiyeleri birlikte geri alınacak.\n"
+            "Aktif ödeme varsa önce ödemeler iptal edilmelidir.\n\nDevam?",
+            parent=parent,
+        ):
+            return
+        neden = "Kullanıcı — banka hareketinden kullandırım iptal"
+        try:
+            BankaKrediService.kredi_kullandirim_iptal(
+                kredi_id=int(kaynak["kaynak_id"]), neden=neden
+            )
+        except Exception as exc:
+            messagebox.showerror("İptal", str(exc), parent=parent)
+            return
+        messagebox.showinfo("İptal", "Kredi kullandırım iptal edildi.", parent=parent)
+        dialog.destroy()
+
+    def _sil_odeme():
+        bagli = []
+        try:
+            from database.database import get_session
+            from database.models.finans import GiderFisi
+            from sqlalchemy import select
+
+            with get_session() as s:
+                for f in s.scalars(
+                    select(GiderFisi).where(
+                        GiderFisi.bagli_belge_no == kaynak.get("belge_no"),
+                        GiderFisi.durum != "IPTAL",
+                    )
+                ).all():
+                    bagli.append(f"{f.belge_no} ({f.gider_turu or 'gider'}) {_para(f.tutar)}")
+        except Exception:
+            pass
+        bagli_yazi = "\n".join(f"· {x}" for x in bagli) if bagli else "· (bağlı aktif gider fişi yok)"
+        if not messagebox.askyesno(
+            "Ödeme iptal",
+            f"Kaynak ödeme: {kaynak.get('belge_no')} (id={kaynak.get('kaynak_id')})\n"
+            f"Tutar: {_para(kaynak.get('toplam'))}\n"
+            f"Etkilenecek gider fişleri:\n{bagli_yazi}\n\n"
+            "Banka çıkışı ters kayıtla geri alınır; anapara ve taksit durumu yenilenir.\n\nDevam?",
+            parent=parent,
+        ):
+            return
+        try:
+            BankaKrediService.odeme_iptal(
+                odeme_id=int(kaynak["kaynak_id"]),
+                neden="Kullanıcı — banka hareketinden ödeme iptal",
+            )
+        except Exception as exc:
+            messagebox.showerror("İptal", str(exc), parent=parent)
+            return
+        messagebox.showinfo("İptal", "Kredi ödemesi iptal edildi.", parent=parent)
+        dialog.destroy()
+
+    if kaynak.get("kaynak_turu") == "BANKA_KREDI":
+        det = BankaKrediService.kredi_detay(int(kaynak["kaynak_id"])) or {}
+        alanlar = [
+            ("Kaynak türü", "BANKA_KREDI"),
+            ("Kayıt id", str(kaynak["kaynak_id"])),
+            ("Belge no", det.get("belge_no") or belge_no),
+            ("Kredi adı", det.get("kredi_adi") or "—"),
+            ("Durum", det.get("durum") or "—"),
+            ("Ana para", _para(det.get("ana_para"))),
+            ("Kalan anapara", _para(det.get("kalan_anapara"))),
+            ("Kullandırım", _tarih(det.get("kullandirim_tarihi"))),
+            ("Banka", det.get("banka_adi") or "—"),
+        ]
+        sil = _sil_kredi if (det.get("durum") or "").upper() != "IPTAL" else None
+        dialog = BelgeOnizlemeDialog(
+            parent,
+            "Kredi Kullandırım",
+            alanlar,
+            sil_komut=sil,
+            dipnot="Sil = kullandırım iptal (iki hesap etkisi birlikte). Düzenleme: Krediler ekranı.",
+        )
+    else:
+        odeme_id = int(kaynak["kaynak_id"])
+        from database.database import get_session
+        from database.models.finans import BankaKrediOdeme
+
+        with get_session() as s:
+            od = s.get(BankaKrediOdeme, odeme_id)
+            od_tur = od.odeme_turu if od else None
+            od_tarih = od.odeme_tarihi if od else None
+            od_acik = (od.aciklama or "—") if od else "—"
+            kredi_id = int(od.kredi_id) if od else int(kaynak.get("kredi_id") or 0)
+        kredi = BankaKrediService.kredi_detay(kredi_id) if kredi_id else None
+        alanlar = [
+            ("Kaynak türü", "BANKA_KREDI_ODEME"),
+            ("Kayıt id", str(odeme_id)),
+            ("Ödeme belge", kaynak.get("belge_no") or belge_no),
+            ("İptal belge", kaynak.get("iptal_belge_no") or "—"),
+            ("Tür", kaynak.get("odeme_turu") or od_tur or "—"),
+            ("Durum", kaynak.get("durum") or "—"),
+            ("Toplam", _para(kaynak.get("toplam"))),
+            ("Kredi", (kredi or {}).get("kredi_adi") or "—"),
+            ("Kredi belge", (kredi or {}).get("belge_no") or "—"),
+            ("Ödeme tarihi", _tarih(od_tarih)),
+            ("Açıklama", od_acik),
+        ]
+
+        def _duzenle_gider():
+            from kredi_gider_fisi_ui import kredi_gider_fisini_ac
+
+            kredi_gider_fisini_ac(parent, odeme_belge_no=kaynak.get("belge_no"))
+
+        sil = _sil_odeme if (kaynak.get("durum") or "").upper() != "IPTAL" else None
+        dialog = BelgeOnizlemeDialog(
+            parent,
+            "Kredi Ödemesi",
+            alanlar,
+            duzenle_komut=_duzenle_gider,
+            sil_komut=sil,
+            dipnot="Düzenle = gider fişi; Sil = ödeme iptal (anapara + faiz/masraf birlikte).",
+        )
+    if dialog.winfo_exists():
+        parent.wait_window(dialog)
+    return True
+
+
+def _kk_ekstre_odeme_ac(parent, belge_no: str) -> bool:
+    """KKE- ekstre ödemesini kaynak id ile aç / iptal onayı ver."""
+    from database.database import get_session
+    from database.models.finans import KrediKartiEkstreOdeme
+    from sqlalchemy import select
+
+    with get_session() as s:
+        kayit = s.scalar(
+            select(KrediKartiEkstreOdeme).where(KrediKartiEkstreOdeme.belge_no == belge_no)
+        )
+        if not kayit:
+            return False
+        det = {
+            "id": int(kayit.id),
+            "belge_no": kayit.belge_no,
+            "tarih": kayit.tarih,
+            "tutar": kayit.tutar,
+            "aciklama": kayit.aciklama,
+            "durum": getattr(kayit, "durum", None) or "AKTIF",
+            "kredi_karti_id": getattr(kayit, "kredi_karti_id", None),
+            "finans_hesap_id": getattr(kayit, "finans_hesap_id", None),
+        }
+
+    def _sil():
+        if not messagebox.askyesno(
+            "Ekstre ödeme iptal",
+            f"Kaynak: {det['belge_no']} (id={det['id']})\n"
+            f"Tutar: {_para(det['tutar'])}\n"
+            "Kart ve ödeme hesabı bakiyeleri birlikte geri alınacak.\n\nDevam?",
+            parent=parent,
+        ):
+            return
+        try:
+            from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+            KrediKartiEkstreService.odeme_iptal(
+                det["belge_no"], neden="Kullanıcı — banka hareketinden ekstre iptal"
+            )
+        except Exception as exc:
+            messagebox.showerror("İptal", str(exc), parent=parent)
+            return
+        messagebox.showinfo("İptal", "Ekstre ödemesi iptal edildi.", parent=parent)
+        dialog.destroy()
+
+    alanlar = [
+        ("Kaynak türü", "KK_EKSTRE_ODEME"),
+        ("Kayıt id", str(det["id"])),
+        ("Belge no", det["belge_no"]),
+        ("Tarih", _tarih(det["tarih"])),
+        ("Tutar", _para(det["tutar"])),
+        ("Durum", det["durum"]),
+        ("Açıklama", det.get("aciklama") or "—"),
+    ]
+    sil = _sil if str(det["durum"]).upper() != "IPTAL" else None
+    dialog = BelgeOnizlemeDialog(
+        parent,
+        "KK Ekstre Ödemesi",
+        alanlar,
+        sil_komut=sil,
+    )
+    if dialog.winfo_exists():
+        parent.wait_window(dialog)
+    return True
+
+
+def _acilis_belge_ac(parent, belge_no: str, *, tur: str = "") -> bool:
+    """Açılış bakiyesi satırı → ilgili finans hesabı düzenleme diyaloğu."""
+    from database.database import get_session
+    from database.finans_service import FinansService
+    from database.models.finans import FinansHareketi, FinansHesabi
+    from sqlalchemy import select
+
+    hesap = None
+    with get_session() as s:
+        har = s.scalar(
+            select(FinansHareketi).where(FinansHareketi.belge_no == belge_no).limit(1)
+        )
+        if har is not None:
+            hesap = s.get(FinansHesabi, int(har.hesap_id))
+        if hesap is None and belge_no.isdigit():
+            hesap = s.get(FinansHesabi, int(belge_no))
+    if hesap is None:
+        # Belge no yoksa / yalnızca tür AÇILIŞ: seçim yok → False
+        return False
+    from finans_ui import AltHesapDuzenleDialog, HesapDialog
+
+    if getattr(hesap, "banka_karti_id", None) and getattr(hesap, "alt_hesap_turu", None):
+        dialog = AltHesapDuzenleDialog(parent, int(hesap.id))
+    else:
+        dialog = HesapDialog(parent, hesap_turu=hesap.hesap_turu or "KASA", hesap=hesap)
+    if dialog.winfo_exists():
+        parent.wait_window(dialog)
+    return True
+
+
 def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
     """
     Finans / kasa / banka / cari fişlerini açar.
@@ -607,6 +835,44 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
             parent.wait_window(dialog)
         return True
 
+    # Kredi kartı ekstre ödemesi
+    if belge_no.startswith("KKE-") or (tur or "").upper().startswith("KK EKSTRE"):
+        if _kk_ekstre_odeme_ac(parent, belge_no):
+            return True
+        messagebox.showinfo("Belge", f"{belge_no} ekstre ödemesi bulunamadı.", parent=parent)
+        return True
+
+    # Kredi kullandırım / taksit ödeme / ödeme iptal — kaynak id ile
+    if (
+        belge_no.startswith(("KRK-", "KTO-", "KTI-"))
+        or (tur or "").upper().startswith("KREDİ KULLANDIRIM")
+        or (tur or "").upper().startswith("KREDI KULLANDIRIM")
+        or (tur or "").upper().startswith("KREDİ TAKSİT")
+        or (tur or "").upper().startswith("KREDI TAKSIT")
+        or (tur or "").upper().startswith("KREDİ ANAPARA")
+        or (tur or "").upper().startswith("KREDI ANAPARA")
+        or (tur or "").upper().startswith("KREDİ ÖDEME İPTAL")
+        or (tur or "").upper().startswith("KREDI ODEME IPTAL")
+    ):
+        if _kredi_belge_ac(parent, belge_no, tur=tur):
+            return True
+        messagebox.showinfo("Belge", f"{belge_no} kredi kaydı bulunamadı.", parent=parent)
+        return True
+
+    # Açılış / hesap açılış bakiyesi — hesap kartını aç
+    tur_u0 = (tur or "").strip().upper()
+    if tur_u0 in ("AÇILIŞ", "ACILIS", "AÇILIŞ BAKİYESİ", "ACILIS BAKİYESİ", "ACILIS BAKİYESI") or (
+        belge_no.upper().startswith("AÇILIŞ") or belge_no.upper().startswith("ACILIS")
+    ):
+        if _acilis_belge_ac(parent, belge_no, tur=tur):
+            return True
+        messagebox.showinfo(
+            "Belge",
+            "Açılış bakiyesi hesap kartından düzenlenir; ayrı fiş bulunamadı.",
+            parent=parent,
+        )
+        return True
+
     if belge_no.startswith("KBY-"):
         from finans_ui import KasadanBankayaYatirDialog
 
@@ -667,6 +933,14 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
         return True
 
     if belge_no.startswith("GDF-") or tur.upper() in ("GİDER FİŞİ", "GIDER FISI"):
+        # Kredi bağlı gider → düzenlenebilir gider fişi ekranı; değilse önizleme + iptal
+        try:
+            from kredi_gider_fisi_ui import kredi_gider_fisini_ac
+
+            if kredi_gider_fisini_ac(parent, gider_belge_no=belge_no):
+                return True
+        except Exception:
+            pass
         if gider_fisi_onizle(parent, belge_no):
             return True
         messagebox.showinfo(

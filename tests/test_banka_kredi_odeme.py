@@ -417,6 +417,67 @@ class BankaKrediOdemeTest(unittest.TestCase):
             bos = s.scalars(select(FinansHareketi).where(FinansHareketi.hesap_id == bos_mev_id)).all()
             self.assertEqual(bos, [])
 
+    def test_kullandirim_iptal_ve_kaynak_cozumle(self):
+        """KRK kaynak id çözülür; iptal iki bacak FH'yi siler; aktif ödeme varken reddeder."""
+        kaynak = bks.BankaKrediService.odeme_kaynak_cozumle("KRK-2026-0001")
+        self.assertIsNotNone(kaynak)
+        self.assertEqual(kaynak["kaynak_turu"], "BANKA_KREDI")
+        self.assertEqual(int(kaynak["kaynak_id"]), int(self.kredi_id))
+
+        # Önce ödeme varsa kullandırım iptali reddedilmeli
+        bks.BankaKrediService.taksit_ode(
+            taksit_id=self.taksit_id,
+            odeme_tarihi=date.today(),
+            bilesenler={
+                "anapara": Decimal("10000.00"),
+                "faiz": Decimal("0"),
+                "bsmv": Decimal("0"),
+                "kkdf": Decimal("0"),
+                "komisyon": Decimal("0"),
+                "sigorta": Decimal("0"),
+                "dosya_masrafi": Decimal("0"),
+                "diger_masraflar": Decimal("0"),
+                "gecikme_faizi": Decimal("0"),
+            },
+        )
+        with self.assertRaises(ValueError):
+            bks.BankaKrediService.kredi_kullandirim_iptal(
+                kredi_id=self.kredi_id, neden="test"
+            )
+
+        # Ödemeyi iptal et, sonra kullandırımı kaldır
+        with self.Session() as s:
+            odeme_belge = s.scalar(
+                select(BankaKrediOdeme.odeme_belge_no).where(
+                    BankaKrediOdeme.kredi_id == self.kredi_id,
+                    BankaKrediOdeme.durum != "IPTAL",
+                    BankaKrediOdeme.odeme_turu != "IPTAL",
+                )
+            )
+        self.assertTrue(odeme_belge)
+        odeme = bks.BankaKrediService.odeme_kaynak_cozumle(odeme_belge)
+        self.assertEqual(odeme["kaynak_turu"], "BANKA_KREDI_ODEME")
+        bks.BankaKrediService.odeme_iptal(
+            odeme_id=int(odeme["kaynak_id"]), neden="test odeme iptal"
+        )
+        iptal = bks.BankaKrediService.kredi_kullandirim_iptal(
+            kredi_id=self.kredi_id, neden="test kullandirim iptal"
+        )
+        self.assertEqual(iptal["durum"], "IPTAL")
+        self.assertEqual(iptal["silinen_hareket"], 2)
+        with self.Session() as s:
+            kalan = list(
+                s.scalars(
+                    select(FinansHareketi).where(
+                        FinansHareketi.belge_no == "KRK-2026-0001"
+                    )
+                ).all()
+            )
+            self.assertEqual(kalan, [])
+            kredi = s.get(BankaKredisi, self.kredi_id)
+            self.assertEqual(kredi.durum, "IPTAL")
+            self.assertFalse(kredi.aktif)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2548,6 +2548,128 @@ class BankaKrediService:
                 "durum": "IPTAL",
             }
 
+    @staticmethod
+    def kredi_kullandirim_iptal(kredi_id=None, belge_no=None, neden=None) -> dict:
+        """Kredi kullandırımını iptal eder: iki bacak FH silinir, kredi IPTAL olur.
+
+        Aktif (IPTAL olmayan) ödeme varsa reddedilir — önce ``odeme_iptal`` gerekir.
+        Ters/dengeleme virmanı yazılmaz; orijinal kullandırım hareketleri kaldırılır.
+        """
+        BankaKrediService._iptal_izni()
+        gerekce = (neden or "").strip()
+        if not gerekce:
+            raise ValueError("İptal nedeni zorunludur.")
+        if not kredi_id and not belge_no:
+            raise ValueError("İptal edilecek kredi seçilmelidir.")
+
+        with get_session() as session:
+            q = select(BankaKredisi).options(selectinload(BankaKredisi.taksitler))
+            if kredi_id:
+                q = q.where(BankaKredisi.id == int(kredi_id))
+            else:
+                q = q.where(BankaKredisi.belge_no == str(belge_no).strip())
+            kredi = session.scalar(q)
+            if not kredi:
+                raise ValueError("Kredi bulunamadı.")
+            if (kredi.durum or "").upper() == "IPTAL":
+                raise ValueError("Bu kredi kullandırım zaten iptal edilmiş.")
+
+            aktif_odeme = session.scalar(
+                select(BankaKrediOdeme.id).where(
+                    BankaKrediOdeme.kredi_id == kredi.id,
+                    BankaKrediOdeme.durum != "IPTAL",
+                    BankaKrediOdeme.odeme_turu != "IPTAL",
+                )
+            )
+            if aktif_odeme:
+                raise ValueError(
+                    "Aktif kredi ödemesi var. Önce ödemeleri iptal edin, sonra kullandırımı iptal edin."
+                )
+
+            belgeno = (kredi.belge_no or "").strip()
+            silinen = 0
+            if belgeno:
+                silinen = FinansService._finans_hareketlerini_sil(session, belgeno)
+
+            for t in list(kredi.taksitler or []):
+                t.durum = "IPTAL"
+                t.odeme_tarihi = None
+                t.odeme_belge_no = None
+                t.gider_belge_no = None
+
+            kredi.durum = "IPTAL"
+            kredi.aktif = False
+            eski_acik = (kredi.aciklama or "").strip()
+            ek = f"KULLANDIRIM İPTAL: {gerekce}"
+            kredi.aciklama = f"{eski_acik} | {ek}".strip(" |")[:500] if eski_acik else ek[:500]
+
+            BankaKrediService._gunluk(
+                session,
+                "KULLANDIRIM_IPTAL",
+                kredi_id=kredi.id,
+                detay=f"{belgeno} | FH={silinen} | {gerekce}",
+            )
+            session.flush()
+            try:
+                from database.muhasebe_entegrasyon import muhasebe_hook
+
+                muhasebe_hook(
+                    "banka_kredi_kullandirim_iptal",
+                    int(kredi.id),
+                    f"Kredi kullandırım iptal: {gerekce}",
+                    session=session,
+                )
+            except Exception as hata:  # pragma: no cover
+                print(f"[Kredi kullandırım] Muhasebe iptal kancası: {hata}")
+
+            return {
+                "kredi_id": int(kredi.id),
+                "belge_no": belgeno,
+                "silinen_hareket": silinen,
+                "durum": "IPTAL",
+                "neden": gerekce,
+            }
+
+    @staticmethod
+    def odeme_kaynak_cozumle(belge_no: str) -> dict | None:
+        """KTO/KTI/KRK belge numarasından kaynak türü + kayıt kimliği."""
+        bno = (belge_no or "").strip()
+        if not bno:
+            return None
+        with get_session() as session:
+            if bno.startswith("KRK-") or bno.upper().startswith("KRK"):
+                kredi = session.scalar(
+                    select(BankaKredisi).where(BankaKredisi.belge_no == bno)
+                )
+                if kredi:
+                    return {
+                        "kaynak_turu": "BANKA_KREDI",
+                        "kaynak_id": int(kredi.id),
+                        "belge_no": kredi.belge_no,
+                        "kredi_adi": kredi.kredi_adi,
+                        "durum": kredi.durum,
+                    }
+            odeme = session.scalar(
+                select(BankaKrediOdeme).where(BankaKrediOdeme.odeme_belge_no == bno)
+            )
+            if odeme:
+                # KTI / odeme_turu=IPTAL → asıl ödemeyi kaynak göster
+                asil = None
+                if (odeme.odeme_turu or "").upper() == "IPTAL" and odeme.iptal_odeme_id:
+                    asil = session.get(BankaKrediOdeme, int(odeme.iptal_odeme_id))
+                hedef = asil or odeme
+                return {
+                    "kaynak_turu": "BANKA_KREDI_ODEME",
+                    "kaynak_id": int(hedef.id),
+                    "belge_no": hedef.odeme_belge_no,
+                    "iptal_belge_no": bno if asil is not None else None,
+                    "kredi_id": int(hedef.kredi_id),
+                    "durum": hedef.durum,
+                    "toplam": BankaKrediService._d(hedef.toplam or 0, "Toplam"),
+                    "odeme_turu": hedef.odeme_turu,
+                }
+        return None
+
     # --- Raporlar ---
 
     @staticmethod

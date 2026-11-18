@@ -253,15 +253,29 @@ def _decimal(deger, alan="Tutar", minimum=None) -> Decimal:
 class FinansService:
     @staticmethod
     def varsayilanlari_hazirla():
+        """Boş (yerel test) kurulum için iskelet hesaplar.
+
+        AG/PostgreSQL canlı firmada zaten hesap varsa örnek «BANKA HESABI» vb. eklenmez.
+        Ödeme/tahsilat/kredi örneği yazılmaz.
+        """
         varsayilanlar = (
             ("ANA KASA", "KASA"),
             ("BANKA HESABI", "BANKA"),
             ("KREDİ KARTI POS", "KREDİ KARTI"),
         )
         with get_session() as session:
-            mevcut = set(session.scalars(select(FinansHesabi.hesap_adi)).all())
+            mevcut_ad = set(session.scalars(select(FinansHesabi.hesap_adi)).all())
+            try:
+                from database.baglanti_modu import ayari_yukle
+
+                ag_mi = bool(ayari_yukle().ag_mi)
+            except Exception:
+                ag_mi = False
+            if ag_mi and mevcut_ad:
+                # Canlı firma: mevcut hesapları koru, iskelet ekleme
+                return
             for ad, tur in varsayilanlar:
-                if ad not in mevcut:
+                if ad not in mevcut_ad:
                     session.add(FinansHesabi(hesap_adi=ad, hesap_turu=tur))
 
     @staticmethod

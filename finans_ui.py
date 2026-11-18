@@ -10444,7 +10444,7 @@ def _hesap_sayfasi(app, hesap_turu: str, baslik: str):
 
     tablo.bind("<<TreeviewSelect>>", secim_degisti)
     tablo.bind("<Double-1>", lambda _e: duzenle())
-    if hesap_turu == "KASA":
+    if hesap_turu in ("KASA", "BANKA"):
         def _belge_sutununa_tik(_event):
             # Belge No sütununa tek tık → aç; diğer sütunlar yalnızca seçim
             col = hareket_tablo.identify_column(_event.x)

@@ -44,10 +44,24 @@ def ornek_veri_var_mi() -> bool:
 
 
 def ornek_veri_ekle() -> dict[str, int]:
-    """Örnek kayıtları ekler; zaten varsa hiçbir şey yapmaz (idempotent)."""
+    """Örnek kayıtları ekler; zaten varsa hiçbir şey yapmaz (idempotent).
+
+    Canlı AG/PostgreSQL firmalarına (DNM_D2 vb.) örnek cari/stok yazılmaz.
+    """
+    from database.baglanti_modu import ayari_yukle
     from database.database import get_session
     from database.models.cari import Cari
     from database.models.stok import StokBirim, StokFiyati, StokKarti
+
+    ayar = ayari_yukle()
+    if ayar.ag_mi:
+        firma_db = (ayar.postgres.firma_db or "").lower()
+        test_mi = any(x in firma_db for x in ("restore_test", "_test", "test_kurulum"))
+        if not test_mi:
+            raise RuntimeError(
+                "Örnek veri canlı firma veritabanına eklenemez. "
+                "Ayrı test/restore_test kopyası kullanın."
+            )
 
     eklenen = {"cari": 0, "stok": 0}
     yeni_urunler: list[tuple[str, str]] = []
