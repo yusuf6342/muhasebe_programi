@@ -10,10 +10,16 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from database.database import get_session
+from database.fatura_kdv_service import kdv_deger
 from database.models.stok import StokBarkod, StokBirim, StokKarti
 from database.stok_service import StokService
 
 _KONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _stok_kdv(stok) -> Decimal:
+    """Stok kartı KDV; %0 geçerli (``or 20`` kullanılmaz)."""
+    return kdv_deger(getattr(stok, "kdv_orani", None))
 
 
 def barkod_temizle(ham: str | None) -> str:
@@ -241,7 +247,7 @@ def barkod_ile_ara(barkod: str) -> dict[str, Any]:
                         "miktar": Decimal("1"),
                         "birim_fiyat": fiyat,
                         "mevcut_stok": mevcut,
-                        "kdv_orani": Decimal(str(stok.kdv_orani or 20)),
+                        "kdv_orani": _stok_kdv(stok),
                         "aktif": True,
                         "satis_kapali": False,
                     }
@@ -271,7 +277,7 @@ def barkod_ile_ara(barkod: str) -> dict[str, Any]:
                         "miktar": Decimal("1"),
                         "birim_fiyat": fiyat,
                         "mevcut_stok": mevcut,
-                        "kdv_orani": Decimal(str(stok.kdv_orani or 20)),
+                        "kdv_orani": _stok_kdv(stok),
                         "aktif": True,
                         "satis_kapali": False,
                     }

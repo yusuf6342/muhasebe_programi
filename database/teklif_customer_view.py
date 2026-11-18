@@ -95,10 +95,17 @@ def _d(v, varsayilan: Decimal = Decimal("0")) -> Decimal:
 
 
 def _para(v) -> str:
+    """Toplam / matrah / yüzde gösterimi (2 hane). Birim fiyat → ``_fiyat``."""
     try:
         return f"{float(_d(v)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "0,00"
+
+
+def _fiyat(v) -> str:
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(v) or "0"
 
 
 def _tarih(d) -> str:
@@ -584,7 +591,7 @@ def build_customer_quote_from_dialog(dialog) -> CustomerQuoteViewModel:
                 kdv_tutari=satir_kdv,
                 kdv_dahil_toplam=satir_dahil,
                 miktar_goster=_para(miktar),
-                birim_fiyat_goster=_para(birim_fiyat),
+                birim_fiyat_goster=_fiyat(birim_fiyat),
                 iskonto_goster=f"%{_para(i1)}" if i1 else "—",
                 net_goster=_para(net),
                 kdv_oran_goster=f"%{_para(kdv_o)}",

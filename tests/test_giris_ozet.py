@@ -155,6 +155,36 @@ class GirisOzetTest(unittest.TestCase):
         self.assertEqual(sum((x["tutar"] for x in sat["kalemler"] if go._icinde(x["tarih"], (GUN, GUN))), D("0")),
                          b["net"])
 
+    def test_coklu_sh_satiri_net_ve_kdv_haric_tutarli(self):
+        """Aynı belge_no için 2. SH=0 yazılınca net 0 / KDV hariç başlık kalmamalı (RAY-00086 tipi)."""
+        from database.models.cari import SatisHareketi
+
+        self.o.alis(100, 10, date(2026, 9, 1))
+        f = self.fatura(GUN, [_satir(1, 1000)])  # 1.200 TL KDV dahil, matrah 1.000
+        with get_session() as s:
+            sh = s.query(SatisHareketi).filter_by(belge_no=f.fatura_no).all()
+            self.assertGreaterEqual(len(sh), 1)
+            # İkinci satır: tutar 0 (eski hatalı üzerine-yazma senaryosu)
+            s.add(SatisHareketi(
+                cari_id=self.o.mus_id,
+                satis_tarihi=GUN,
+                belge_no=f.fatura_no,
+                satis_tutari=D("0"),
+                kalan_acik_tutar=D("0"),
+            ))
+        go.onbellegi_temizle()
+        sat = self.ozet()["satis"]
+        b = sat["satirlar"]["bugun"]
+        self.assertEqual(b["satis_tutari"], D("1200.00"))
+        self.assertEqual(b["net"], D("1200.00"))
+        self.assertEqual(b["kdv_haric_net"], D("1000.00"))
+        self.assertEqual(b["net_kdv"], D("200.00"))
+        self.assertEqual(b["kdv_haric_net"] + b["net_kdv"], b["net"])
+        kal = [x for x in sat["kalemler"] if x.get("belge_no") == f.fatura_no]
+        self.assertEqual(len(kal), 1)
+        self.assertEqual(kal[0]["tutar"], D("1200.00"))
+        self.assertEqual(kal[0]["kdv_haric"], D("1000.00"))
+
     def test_net_satis_kapanan_ve_acik_kalan(self):
         """Tam / kısmi / açık fatura — Kapanan Tutar ve Açık Kalan Tutar (Kapatma Detayı ile uyumlu)."""
         from sqlalchemy import select
@@ -436,7 +466,7 @@ class GirisOzetTest(unittest.TestCase):
                          (D("180000.00"), D("60000.00")))
 
     def test_tedarikci_acik_borcu_kapsami(self):
-        """Kapanmış ve silinmiş tedarikçi katılmaz; müşteri bakiyesi ve tedarikçi avansı toplamı etkilemez."""
+        """Kapanmış/silinmiş katılmaz; avans açık borca, borç açık alacağa gider."""
         from database.models.cari import Cari, SatisHareketi
 
         with get_session() as s:
@@ -451,11 +481,14 @@ class GirisOzetTest(unittest.TestCase):
                 s.add(SatisHareketi(cari_id=cid, belge_no=belge, satis_tarihi=date(2026, 9, 1),
                                     satis_tutari=D("-2500"), kalan_acik_tutar=D("-2500")))
         self.ci(ids[0], "Ödeme", "ODM-K", borc=2500)  # kapanmış: net 0
-        self.ci(ids[2], "Ödeme", "ODM-A", borc=900)   # avans: net > 0, borç toplamına katılmaz
+        self.ci(ids[2], "Ödeme", "ODM-A", borc=900)   # avans: net > 0 → açık borç
         self.ci(self.o.mus_id, "Satış", "MS-1", borc=4000)
         ted = self.ozet()["tedarikci_acik"]
         self.assertEqual((ted["toplam"], ted["adet"]), (D("2500.00"), 1))
         self.assertEqual([k["cari_id"] for k in ted["kalemler"]], [self.o.ted_id])
+        self.assertEqual(ted["acik_alacak"]["toplam"], D("2500.00"))
+        self.assertEqual(ted["acik_borc"]["toplam"], D("900.00"))
+        self.assertEqual([k["cari_id"] for k in ted["acik_borc"]["kalemler"]], [ids[2]])
 
     def test_odeme_sozleri_giris_ozetine_katilmaz(self):
         from database.models.cari import SatisHareketi

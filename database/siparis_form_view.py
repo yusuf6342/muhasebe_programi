@@ -16,6 +16,7 @@ from database.irsaliye_customer_view import (
     _birlestir,
     _d,
     _firma_markasi,
+    _fiyat,
     _para,
     _tarih,
     assert_customer_model_safe,
@@ -116,7 +117,7 @@ def build_siparis_form_from_record(siparis_id: int) -> SiparisFormViewModel:
                     miktar=_d(s.miktar),
                     birim=str(s.birim or "Adet"),
                     miktar_goster=miktar_metni(s.miktar),
-                    birim_fiyat_goster=_para(s.birim_satis_fiyati),
+                    birim_fiyat_goster=_fiyat(s.birim_satis_fiyati),
                     iskonto_goster=_iskonto_metni(i1, i2, i3),
                     kdv_oran_goster=f"%{miktar_metni(kdv)}",
                     tutar_goster=_para(h["net"]),
@@ -191,10 +192,10 @@ def assert_siparis_form_safe(vm: SiparisFormViewModel, metin: str = "") -> None:
         assert_customer_output_safe(metin)
         # Ekran bilgilendirme sütunu PDF/yazıcıya taşınmasın
         dusuk = metin.casefold()
-        for yasak in ("stok durumu", "stok_durumu"):
+        for yasak in ("stok durumu", "stok_durumu", "depolar toplamı", "depolar_toplami"):
             if yasak in dusuk:
                 raise ValueError(
-                    "Sipariş müşteri çıktısında ekran Stok Durumu bilgisi bulunmamalı."
+                    "Sipariş müşteri çıktısında ekran Stok Durumu / Depolar Toplamı bilgisi bulunmamalı."
                 )
 
 

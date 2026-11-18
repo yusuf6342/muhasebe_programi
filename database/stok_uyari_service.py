@@ -31,6 +31,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database.database import get_session
+from database.fatura_kdv_service import kdv_deger
 from database.models.stok import Depo, StokBarkod, StokBirim, StokHareketi, StokKarti, StokLotu
 from database.models.stok_uyari import (
     StokIhtiyac,
@@ -1255,7 +1256,9 @@ class StokUyariService:
                         aciklama=s.get("aciklama"), miktar=miktar, birim=birim,
                         birim_alis_fiyati=Decimal(str(s.get("fiyat") or 0).replace(",", ".")),
                         iskonto_orani=Decimal(str(s.get("iskonto") or 0).replace(",", ".")),
-                        kdv_orani=Decimal(str(s.get("kdv") if s.get("kdv") is not None else kart.kdv_orani or 20)),
+                        kdv_orani=kdv_deger(
+                            s.get("kdv") if s.get("kdv") is not None else getattr(kart, "kdv_orani", None)
+                        ),
                         irsaliyelenen_miktar=SIFIR, faturalanan_miktar=SIFIR,
                     )
                     session.add(satir)

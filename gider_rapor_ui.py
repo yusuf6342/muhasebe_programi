@@ -560,6 +560,8 @@ def r05_goster(app):
 
 
 def r06_goster(app):
+    kaynak_map: dict[str, int] = {}
+
     def doldur(tablo, ozet, v):
         f = v["finansman"]
         ozet.configure(
@@ -569,33 +571,127 @@ def r06_goster(app):
                 f"Efektif oran: {_yuz(f['pos_efektif_oran']) if f['pos_efektif_oran'] is not None else f['pos_efektif_neden']}"
             )
         )
+        kaynak_map.clear()
         for s in f.get("detay") or []:
-            tablo.insert(
+            iid = tablo.insert(
                 "",
                 "end",
                 values=(
                     s.get("belge_no"),
-                    s.get("ana_grup_ad"),
                     s.get("tarih").strftime("%d.%m.%Y") if s.get("tarih") else "",
+                    s.get("gider_turu") or s.get("ana_grup_ad") or "",
+                    (s.get("cari_ad") or "")[:60],
+                    s.get("muhasebe_hesap_kodu") or "—",
+                    s.get("muhasebe_durum_etiket")
+                    or (
+                        "Muhasebe hesabı bekliyor"
+                        if (s.get("muhasebe_durum") or "") == "BEKLIYOR"
+                        else "—"
+                    ),
                     _para(s["net"]),
-                    s.get("sonuc_yeri"),
                 ),
             )
+            if s.get("kaynak") == "gider_fis" and s.get("kaynak_id"):
+                kaynak_map[iid] = int(s["kaynak_id"])
 
-    _rapor_kabuk(
-        app,
-        "R06 — Finansman ve POS",
-        "İnceleme görünümü F'ye ikinci kez eklemez. Rapor faiz tahakkuku üretmez.",
-        lambda b, e, **kw: GiderRaporService.r06_finansman_pos(b, e, **kw),
-        (
-            ("belge", "Belge", 120, "w"),
-            ("grup", "Grup", 200, "w"),
-            ("tarih", "Tarih", 90, "w"),
-            ("net", "Net", 110, "e"),
-            ("yer", "Yer", 50, "c"),
-        ),
-        doldur,
+    def _fisi_ac(tablo):
+        sec = tablo.selection()
+        if not sec:
+            return
+        fid = kaynak_map.get(sec[0])
+        if not fid:
+            messagebox.showinfo("Gider Fişi", "Bu satırdan fiş açılamıyor.", parent=app)
+            return
+        from kredi_gider_fisi_ui import kredi_gider_fisini_ac
+
+        kredi_gider_fisini_ac(app, fis_id=fid)
+
+    from gelir_gider_ui import _menu_isaretle
+
+    app._icerigi_temizle()
+    _menu_isaretle(app)
+    ust = ttk.Frame(app.icerik)
+    ust.pack(fill="x")
+    ttk.Label(ust, text="R06 — Finansman ve POS", style="Baslik.TLabel").pack(side="left")
+    ttk.Button(ust, text="← Raporlar", command=lambda: gider_raporlari_merkezi_goster(app)).pack(
+        side="right"
     )
+    ttk.Label(
+        app.icerik,
+        text=(
+            "Kredi / nakit avans faiz-masraf fişleri bir kez listelenir. "
+            "Anapara ve planlanmış gelecek taksitler dahil edilmez. Çift tık = fişi aç."
+        ),
+        wraplength=900,
+    ).pack(anchor="w", pady=(6, 4))
+
+    filtre = ttk.Frame(app.icerik)
+    filtre.pack(fill="x")
+    ttk.Label(filtre, text="Başlangıç:").pack(side="left")
+    b_c = ttk.Frame(filtre)
+    b_c.pack(side="left")
+    bas = ttk.Entry(b_c, width=11)
+    bas.insert(0, _ay_basi().strftime("%d.%m.%Y"))
+    bas.pack(side="left")
+    takvim_butonu(b_c, bas)
+    ttk.Label(filtre, text="Bitiş:").pack(side="left", padx=(8, 0))
+    e_c = ttk.Frame(filtre)
+    e_c.pack(side="left")
+    bit = ttk.Entry(e_c, width=11)
+    bit.insert(0, date.today().strftime("%d.%m.%Y"))
+    bit.pack(side="left")
+    takvim_butonu(e_c, bit)
+
+    ozet = ttk.Label(app.icerik, text="", font=("Segoe UI", 10, "bold"))
+    ozet.pack(anchor="w", pady=4)
+
+    govde = ttk.Frame(app.icerik)
+    govde.pack(fill="both", expand=True)
+    kolonlar = (
+        ("belge", "Fiş no", 110),
+        ("tarih", "Tarih", 90),
+        ("tur", "Gider türü", 140),
+        ("kaynak", "Kredi / açıklama", 220),
+        ("hesap", "Hesap", 110),
+        ("durum", "Muhasebe durumu", 160),
+        ("net", "Tutar", 100),
+    )
+    tablo = ttk.Treeview(
+        govde, columns=[c[0] for c in kolonlar], show="headings", selectmode="browse"
+    )
+    for kid, baslik_k, w in kolonlar:
+        tablo.heading(kid, text=baslik_k)
+        tablo.column(kid, width=w, anchor="e" if kid == "net" else "w")
+    sy = ttk.Scrollbar(govde, orient="vertical", command=tablo.yview)
+    tablo.configure(yscrollcommand=sy.set)
+    tablo.pack(side="left", fill="both", expand=True)
+    sy.pack(side="right", fill="y")
+    tablo.bind("<Double-1>", lambda _e: _fisi_ac(tablo))
+
+    def yenile(_e=None):
+        try:
+            b = _tarih_oku(bas)
+            e = _tarih_oku(bit)
+            if b > e:
+                raise ValueError("Başlangıç bitişten sonra olamaz.")
+            veri = GiderRaporService.r06_finansman_pos(b, e)
+        except ValueError as exc:
+            messagebox.showwarning("Tarih", str(exc), parent=app)
+            return
+        for i in tablo.get_children():
+            tablo.delete(i)
+        doldur(tablo, ozet, veri)
+
+    alt = ttk.Frame(app.icerik)
+    alt.pack(fill="x", pady=6)
+    ttk.Button(alt, text="Gider Fişini Aç", command=lambda: _fisi_ac(tablo)).pack(side="left")
+    ttk.Button(alt, text="Yenile", command=yenile).pack(side="right")
+    for w in (bas, bit):
+        w.bind("<FocusOut>", lambda _e: yenile())
+        w.bind("<Return>", lambda _e: yenile())
+    yenile()
+    if hasattr(app, "nav_sayfa_isaretle"):
+        app.nav_sayfa_isaretle(lambda: r06_goster(app))
 
 
 def r07_goster(app):

@@ -141,7 +141,13 @@ def turkce_metin_anahtar(metin: Any) -> str | None:
     s = s.replace("İ", "i").replace("I", "ı").casefold()
     parcalar: list[str] = []
     for ch in s:
-        parcalar.append(_TR_HARF_SIRA.get(ch, f"99{ord(ch):04d}"))
+        if ch in _TR_HARF_SIRA:
+            parcalar.append(_TR_HARF_SIRA[ch])
+        elif ch.isspace() or not ch.isalnum():
+            # Boşluk/noktalama harften önce (Kredi Kartı < Krediler)
+            parcalar.append(f"00{ord(ch):04d}")
+        else:
+            parcalar.append(f"99{ord(ch):04d}")
     return "".join(parcalar)
 
 

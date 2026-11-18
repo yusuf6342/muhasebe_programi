@@ -69,12 +69,19 @@ MALIYET_ALANLARI = (
 
 
 def para_metni(tutar, pb: str = "TRY") -> str:
+    """Parasal toplam (2 hane). Birim fiyat için ``fiyat_birim_metni``."""
     try:
         metin = f"{Decimal(str(tutar or 0)):,.2f}"
     except Exception:
         metin = "0.00"
     metin = metin.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"{metin} {'TL' if (pb or 'TRY') == 'TRY' else pb}"
+
+
+def fiyat_birim_metni(tutar, pb: str = "TRY") -> str:
+    from database.fiyat_gorunum_service import fiyat_goster_pb
+
+    return fiyat_goster_pb(tutar, pb)
 
 
 KDV_SECENEKLERI = ("0", "1", "10", "20")
@@ -744,17 +751,17 @@ class SatisSiparisiKarti(tk.Toplevel):
         tablo_alan = tk.Frame(frame, bg=BEYAZ)
         tablo_alan.pack(fill="both", expand=True)
         self._satir_tablo_alan = tablo_alan
-        # Ürün Adı → Stok Durumu → Miktar (Stok Durumu yalnız ekran; PDF/yazıcıya gitmez)
+        # Ürün Adı → Stok Durumu → Depolar Toplamı → Miktar (yalnız ekran; PDF/yazıcıya gitmez)
         kolonlar = (
-            "sira", "kod", "ad", "stok_durumu", "miktar", "birim", "fiyat", "iskonto", "kdv", "net", "toplam",
-            "termin", "sevk", "fatura", "kalan_sevk", "kalan_fatura", "aciklama",
+            "sira", "kod", "ad", "stok_durumu", "depolar_toplami", "miktar", "birim", "fiyat", "iskonto", "kdv",
+            "net", "toplam", "termin", "sevk", "fatura", "kalan_sevk", "kalan_fatura", "aciklama",
         )
         basliklar = (
-            "#", "Ürün Kodu", "Ürün Adı", "Stok Durumu", "Miktar", "Birim", "Birim Fiyat", "İskonto", "KDV%",
-            "Tutar (KDV Hariç)", "Tutar (KDV Dahil)", "Termin", "Sevk Edilen", "Faturalanan",
+            "#", "Ürün Kodu", "Ürün Adı", "Stok Durumu", "Depolar Toplamı", "Miktar", "Birim", "Birim Fiyat",
+            "İskonto", "KDV%", "Tutar (KDV Hariç)", "Tutar (KDV Dahil)", "Termin", "Sevk Edilen", "Faturalanan",
             "Kalan Sevk", "Kalan Fatura", "Açıklama",
         )
-        genislikler = (36, 100, 220, 88, 70, 60, 95, 90, 45, 115, 115, 80, 80, 80, 80, 80, 150)
+        genislikler = (36, 100, 200, 88, 100, 70, 60, 95, 90, 45, 115, 115, 80, 80, 80, 80, 80, 140)
         # height düşük: gerçek yükseklik pack expand ile gelir; kaydırma Treeview içinde
         self.satir_tablosu = ttk.Treeview(tablo_alan, columns=kolonlar, show="headings", height=6, selectmode="browse")
         try:
@@ -764,11 +771,14 @@ class SatisSiparisiKarti(tk.Toplevel):
             self.satir_tablosu.configure(style="SiparisSatir.Treeview")
         except Exception:
             treeview_stil(self.satir_tablosu)
-        sag = {"miktar", "fiyat", "net", "toplam", "sevk", "fatura", "kalan_sevk", "kalan_fatura"}
+        sag = {"miktar", "fiyat", "net", "toplam", "sevk", "fatura", "kalan_sevk", "kalan_fatura", "depolar_toplami"}
         for col, label, gen in zip(kolonlar, basliklar, genislikler):
             if col == "stok_durumu":
                 self.satir_tablosu.heading(col, text=label, anchor="center")
                 self.satir_tablosu.column(col, width=gen, minwidth=72, anchor="center", stretch=False)
+            elif col == "depolar_toplami":
+                self.satir_tablosu.heading(col, text=label, anchor="e")
+                self.satir_tablosu.column(col, width=gen, minwidth=80, anchor="e", stretch=False)
             else:
                 self.satir_tablosu.heading(col, text=label)
                 self.satir_tablosu.column(
@@ -1424,39 +1434,62 @@ class SatisSiparisiKarti(tk.Toplevel):
         except tk.TclError:
             self._siparis_stok_poll_aktif = False
 
+    def _siparis_stok_siparis_id(self) -> int | None:
+        sp = getattr(self, "siparis", None)
+        if sp is None:
+            return None
+        try:
+            sid = getattr(sp, "id", None)
+            return int(sid) if sid is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _siparis_stok_durumlarini_uygula(self, *, nesil: int | None = None):
-        """Yalnız Stok Durumu hücre + satır rengini güncelle (kaydırma/seçim korunur)."""
+        """Stok Durumu + Depolar Toplamı + satır rengi (kaydırma/seçim korunur)."""
         if nesil is not None and nesil != getattr(self, "_siparis_stok_poll_nesil", 0):
             return
         tablo = getattr(self, "satir_tablosu", None)
         if tablo is None or not self.satirlar:
             return
         try:
-            from database.siparis_stok_durumu import satir_durumlari, uyari_durumu_mu
+            from database.siparis_stok_durumu import satir_stok_bilgileri, uyari_durumu_mu
 
-            durumlar = satir_durumlari(self.satirlar)
+            bilgiler = satir_stok_bilgileri(
+                self.satirlar, siparis_id=self._siparis_stok_siparis_id()
+            )
         except Exception:
             self._siparis_stok_baglanti_goster("Stok durumu güncellenemedi (bağlantı)")
             return
-        self._siparis_stok_baglanti_goster("")
+        notlar = [b.get("aciklama") or "" for b in bilgiler if b.get("aciklama")]
+        self._siparis_stok_baglanti_goster(notlar[0] if notlar else "")
         try:
             kolonlar = list(tablo["columns"])
             sd_idx = kolonlar.index("stok_durumu")
+            dt_idx = kolonlar.index("depolar_toplami") if "depolar_toplami" in kolonlar else None
         except (ValueError, tk.TclError, TypeError):
             return
         secim = tablo.selection()
         odak = tablo.focus()
         kaydir = tablo.yview()
-        for sira, durum in enumerate(durumlar):
+        for sira, bil in enumerate(bilgiler):
             iid = str(sira)
             try:
                 if not tablo.exists(iid):
                     continue
                 degerler = list(tablo.item(iid, "values"))
-                while len(degerler) <= sd_idx:
+                durum = bil.get("durum") or ""
+                toplam = bil.get("depolar_toplami") or ""
+                max_idx = sd_idx if dt_idx is None else max(sd_idx, dt_idx)
+                while len(degerler) <= max_idx:
                     degerler.append("")
+                degisti = False
                 if degerler[sd_idx] != durum:
                     degerler[sd_idx] = durum
+                    degisti = True
+                if dt_idx is not None and degerler[dt_idx] != toplam:
+                    degerler[dt_idx] = toplam
+                    degisti = True
+                if degisti:
                     tablo.item(iid, values=degerler)
                 mevcut = list(tablo.item(iid, "tags") or ())
                 tamam = "tamam" in mevcut
@@ -2148,15 +2181,20 @@ class SatisSiparisiKarti(tk.Toplevel):
     def satir_listesini_yenile(self):
         pb = self.para_birimi.get() or "TRY"
         self.satir_tablosu.delete(*self.satir_tablosu.get_children())
-        stok_durumlari: list[str] = []
+        stok_bilgileri: list[dict] = []
         if self.satirlar:
             try:
-                from database.siparis_stok_durumu import satir_durumlari, uyari_durumu_mu
+                from database.siparis_stok_durumu import satir_stok_bilgileri, uyari_durumu_mu
 
-                stok_durumlari = satir_durumlari(self.satirlar)
-                self._siparis_stok_baglanti_goster("")
+                stok_bilgileri = satir_stok_bilgileri(
+                    self.satirlar, siparis_id=self._siparis_stok_siparis_id()
+                )
+                notlar = [b.get("aciklama") or "" for b in stok_bilgileri if b.get("aciklama")]
+                self._siparis_stok_baglanti_goster(notlar[0] if notlar else "")
             except Exception:
-                stok_durumlari = [""] * len(self.satirlar)
+                stok_bilgileri = [
+                    {"durum": "", "depolar_toplami": ""} for _ in self.satirlar
+                ]
                 self._siparis_stok_baglanti_goster("Stok durumu güncellenemedi (bağlantı)")
                 uyari_durumu_mu = lambda _d: False  # noqa: E731
         else:
@@ -2169,7 +2207,9 @@ class SatisSiparisiKarti(tk.Toplevel):
             )
             sevk = decimal(veri.get("irsaliyelenen") or 0, "S")
             fat = decimal(veri.get("faturalanan") or 0, "F")
-            durum = stok_durumlari[index] if index < len(stok_durumlari) else ""
+            bil = stok_bilgileri[index] if index < len(stok_bilgileri) else {}
+            durum = bil.get("durum") or ""
+            depo_top = bil.get("depolar_toplami") or ""
             etiketler: list[str] = []
             if uyari_durumu_mu(durum):
                 etiketler.append("stok_uyari")
@@ -2183,8 +2223,9 @@ class SatisSiparisiKarti(tk.Toplevel):
             self.satir_tablosu.insert(
                 "", "end", iid=str(index), tags=tuple(etiketler),
                 values=(
-                    index + 1, veri.get("urun_kodu", ""), ad, durum, _sayi(miktar), veri.get("birim") or "Adet",
-                    para_metni(veri.get("birim_fiyat") or 0, pb), _iskonto_metni(veri), f"{_sayi(veri.get('kdv_orani') or 0)}%",
+                    index + 1, veri.get("urun_kodu", ""), ad, durum, depo_top, _sayi(miktar),
+                    veri.get("birim") or "Adet",
+                    fiyat_birim_metni(veri.get("birim_fiyat") or 0, pb), _iskonto_metni(veri), f"{_sayi(veri.get('kdv_orani') or 0)}%",
                     para_metni(h["net"], pb), para_metni(h["toplam"], pb), _tarih(veri.get("termin")),
                     _sayi(sevk), _sayi(fat), _sayi(miktar - sevk), _sayi(miktar - fat), veri.get("aciklama") or "",
                 ),

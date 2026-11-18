@@ -80,7 +80,14 @@ def _hucre_yaz(ws, row: int, col: int, deger: Any, tip: str) -> None:
         cell.value = float(sayi)
         if tip == "yuzde":
             cell.number_format = "0.00"
-        elif tip in ("para", "fiyat"):
+        elif tip == "fiyat":
+            try:
+                from database.fiyat_gorunum_service import excel_fiyat_number_format
+
+                cell.number_format = excel_fiyat_number_format()
+            except Exception:
+                cell.number_format = "#,##0.0000"
+        elif tip == "para":
             cell.number_format = "#,##0.00"
         elif tip == "miktar":
             cell.number_format = "#,##0.####"

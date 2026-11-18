@@ -110,6 +110,12 @@ class RaporService:
                 "para_birimi": h.get("para_birimi") or "TRY",
                 "doviz_tutari": h.get("doviz_tutari") or Decimal("0"),
                 "kur": h.get("kur") or Decimal("1"),
+                "taksit_sayisi": h.get("taksit_sayisi"),
+                "taksit_etiket": h.get("taksit_etiket") or "",
+                "kk_odeme_id": h.get("kk_odeme_id"),
+                "taksit_satirlari": h.get("taksit_satirlari") or [],
+                "genisletilebilir": bool(h.get("genisletilebilir")),
+                "belge_tipi": h.get("belge_tipi"),
             })
         return {
             "cari": cari,

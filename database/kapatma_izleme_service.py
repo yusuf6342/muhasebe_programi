@@ -97,6 +97,9 @@ def _evrak_bilgisi(session, cari_id: int | None, belge_no: str) -> dict[str, Any
         "tarih": None,
         "ac_tur": "",
         "makbuz_id": None,
+        "cari_islem_id": None,
+        "odeme_sekli": "",
+        "aciklama": "",
         "durum": "",
     }
     if not belge_no:
@@ -158,14 +161,24 @@ def _evrak_bilgisi(session, cari_id: int | None, belge_no: str) -> dict[str, Any
         if bilgi["tarih"] is None:
             bilgi["tarih"] = islemler[0].tarih
         bilgi["para_birimi"] = (islemler[0].para_birimi or "TRY").upper()
+        bilgi["cari_islem_id"] = int(islemler[0].id)
+        bilgi["aciklama"] = (islemler[0].aciklama or "")[:200]
+        bilgi["odeme_sekli"] = islemler[0].islem_turu or ""
         if not bilgi["evrak_turu"]:
             tur = islemler[0].islem_turu or ""
             bilgi["evrak_turu"] = "Devir" if tur == "Açılış" else tur
             bilgi["ac_tur"] = tur
+        elif not bilgi.get("ac_tur"):
+            bilgi["ac_tur"] = islemler[0].islem_turu or ""
+        if not bilgi.get("durum"):
+            bilgi["durum"] = "Geçerli"
     if not bilgi["evrak_turu"] and belge_no.startswith(GECIS_DEVIR_ONEKI):
         bilgi["evrak_turu"] = "Geçiş Devir Farkı"
         bilgi["hesap"] = "Gerçek fatura/tahsilat değildir"
     bilgi.setdefault("evrak_no_goster", belge_no)
+    bilgi.setdefault("cari_islem_id", None)
+    bilgi.setdefault("odeme_sekli", "")
+    bilgi.setdefault("aciklama", "")
     return bilgi
 
 
@@ -188,10 +201,23 @@ def gecis_devir_aciklamasi(session, belge_no: str) -> str:
 
 
 def _hedef_esas(session, hareket: SatisHareketi, aktif_toplam: Decimal) -> Decimal:
+    """Satış (+)/alış-hizmet gider (−) belge tutarı; avans kalemi (tutar=0) için pay+kalan."""
     esas = _kurus(hareket.satis_tutari)
     if esas > 0:
         return esas
-    return _kurus(max(_d(hareket.kalan_acik_tutar), Decimal("0")) + aktif_toplam)
+    if esas < 0:
+        return abs(esas)
+    # Tutar 0 (avans/mahsup kaynağı): kalan + aktif pay
+    kalan = _d(hareket.kalan_acik_tutar)
+    return _kurus(abs(kalan) + aktif_toplam)
+
+
+def _hedef_kalan(hareket: SatisHareketi) -> Decimal:
+    """Açık kalan — tedarikçi/alış (kalan<0) mutlak değerle gösterilir."""
+    kalan = _kurus(hareket.kalan_acik_tutar)
+    if _d(hareket.satis_tutari) < 0 or kalan < 0:
+        return abs(kalan) if kalan < 0 else Decimal("0")
+    return max(kalan, Decimal("0"))
 
 
 def _aktif_kayitlar(session, hedef_id: int) -> list[CariKapatma]:
@@ -223,6 +249,7 @@ def _iptal_satiri(kayit: CariKapatma, *, evrak_no: str, evrak_turu: str) -> dict
 
 def _fatura_bul(session, cari_id: int | None, belge_no: str):
     from database.models.alis_faturasi import AlisFaturasi
+    from database.models.hizmet_faturasi import HizmetFaturasi
     from database.models.satis_faturasi import SatisFaturasi
 
     sorgu = select(SatisFaturasi).where(SatisFaturasi.fatura_no == belge_no)
@@ -237,6 +264,13 @@ def _fatura_bul(session, cari_id: int | None, belge_no: str):
     alis = session.scalar(sorgu)
     if alis is not None:
         return "ALIS", alis
+    sorgu = select(HizmetFaturasi).where(HizmetFaturasi.fatura_no == belge_no)
+    if cari_id is not None:
+        sorgu = sorgu.where(HizmetFaturasi.cari_id == int(cari_id))
+    hizmet = session.scalar(sorgu)
+    if hizmet is not None:
+        tur = (hizmet.fatura_turu or "GIDER").upper()
+        return f"HIZMET_{tur}", hizmet
     return None, None
 
 
@@ -273,15 +307,32 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
     if fatura is not None:
         cari_id = int(fatura.cari_id)
         sonuc["cari_id"] = cari_id
-        sonuc["evrak_turu"] = "Satış Faturası" if tur == "SATIS" else "Alış Faturası"
-        if (fatura.durum or "") == "İPTAL":
+        if tur == "SATIS":
+            sonuc["evrak_turu"] = "Satış Faturası"
+        elif tur == "ALIS":
+            sonuc["evrak_turu"] = "Alış Faturası"
+        elif tur and tur.startswith("HIZMET_"):
+            ht = tur.replace("HIZMET_", "")
+            sonuc["evrak_turu"] = {
+                "GIDER": "Hizmet Alış (Gider) Faturası",
+                "GELIR": "Hizmet Satış (Gelir) Faturası",
+                "GIDER_IADE": "Hizmet Alış İade Faturası",
+                "GELIR_IADE": "Hizmet Satış İade Faturası",
+            }.get(ht, "Hizmet Faturası")
+        else:
+            sonuc["evrak_turu"] = "Fatura"
+        if (fatura.durum or "") in ("İPTAL", "IPTAL"):
             sonuc["iptal"] = True
         elif tur == "SATIS" and not getattr(fatura, "onaylandi", False):
             sonuc["taslak"] = True
             sonuc["mesaj"] = MESAJ_TASLAK
 
+    # Satış (+), alış/hizmet gider (−) belge kalemleri; tutar=0 avans hariç tutulur
+    from sqlalchemy import or_
+
     sorgu = select(SatisHareketi).where(
-        SatisHareketi.belge_no == belge_no, SatisHareketi.satis_tutari > 0
+        SatisHareketi.belge_no == belge_no,
+        or_(SatisHareketi.satis_tutari > 0, SatisHareketi.satis_tutari < 0),
     )
     if cari_id is not None:
         sorgu = sorgu.where(SatisHareketi.cari_id == int(cari_id))
@@ -290,7 +341,14 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
         sorgu = select(SatisHareketi).where(SatisHareketi.belge_no == belge_no)
         if cari_id is not None:
             sorgu = sorgu.where(SatisHareketi.cari_id == int(cari_id))
-        hareket = session.scalar(sorgu.where(SatisHareketi.kalan_acik_tutar > 0))
+        hareket = session.scalar(
+            sorgu.where(
+                or_(
+                    SatisHareketi.kalan_acik_tutar > 0,
+                    SatisHareketi.kalan_acik_tutar < 0,
+                )
+            )
+        )
 
     if hareket is not None and not sonuc["taslak"]:
         cari_id = int(hareket.cari_id)
@@ -300,7 +358,7 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
         aktif = _aktif_kayitlar(session, int(hareket.id))
         aktif_toplam = sum((_d(k.tutar) for k in aktif), Decimal("0"))
         esas = _hedef_esas(session, hareket, aktif_toplam)
-        kalan = max(_kurus(hareket.kalan_acik_tutar), Decimal("0"))
+        kalan = _hedef_kalan(hareket)
         kapanan = _kurus(esas - kalan)
         sonuc.update(
             esas_tutar=esas,
@@ -326,16 +384,34 @@ def evrak_kapatma_detayi_oturum(session, belge_no: str, cari_id: int | None = No
                     "evrak_toplami": bilgi["toplam"],
                     "para_birimi": k.para_birimi or "TRY",
                     "hesap": bilgi["hesap"],
+                    "odeme_sekli": bilgi.get("odeme_sekli") or "",
+                    "aciklama": bilgi.get("aciklama") or "",
                     "tur": _tur_adi(k),
-                    "yontem": _yontem_adi(k, bilgi["toplam"] is not None and _d(k.tutar) < _d(bilgi["toplam"]) - TOLERANS),
+                    "kaynak_tur": (k.kaynak_tur or "").upper(),
+                    "kaynak_hareket_id": int(k.kaynak_hareket_id)
+                    if k.kaynak_hareket_id
+                    else None,
+                    "yontem": _yontem_adi(
+                        k,
+                        bilgi["toplam"] is not None
+                        and _d(k.tutar) < _d(bilgi["toplam"]) - TOLERANS,
+                    ),
                     "kullanici": k.kullanici_adi or "",
-                    "ac_tur": bilgi["ac_tur"],
+                    "ac_tur": bilgi["ac_tur"] or (k.kaynak_tur or ""),
                     "makbuz_id": bilgi["makbuz_id"],
-                    "durum": "",
+                    "cari_islem_id": bilgi.get("cari_islem_id"),
+                    "durum": bilgi.get("durum") or "Geçerli",
                 }
             )
         if tur == "SATIS" and fatura is not None:
             kapatanlar.extend(_fatura_eski_paylari(session, fatura, belge_payi))
+        # Hizmet fatura: kayıtlı odeme_tutari ile kapatma payı farkı — varsayımsal ödeme üretilmez
+        if tur and str(tur).startswith("HIZMET_") and fatura is not None:
+            kayitli = sum((r["pay"] for r in kapatanlar), Decimal("0"))
+            fatura_odenen = _kurus(getattr(fatura, "odeme_tutari", 0) or 0)
+            if fatura_odenen > kayitli + TOLERANS and kapanan > kayitli + TOLERANS:
+                # Yalnız gerçek kapanan − kayıtlı pay kadar BILINMIYOR (yeni ödeme değil)
+                pass  # aşağıda bilinmeyen bloğu zaten ekler
         aciklanan = sum((r["pay"] for r in kapatanlar), Decimal("0"))
         bilinmeyen = _kurus(kapanan - aciklanan)
         if bilinmeyen > TOLERANS:
@@ -699,14 +775,24 @@ def kaynak_dagitim_detayi(belge_no: str, cari_id: int) -> dict[str, Any]:
 def fatura_odeme_ozeti(fatura_id: int, tur: str = "SATIS") -> dict[str, Any]:
     """Fatura ekranı alt satırı: toplam, kapanan, kalan ve ödeme durumu."""
     from database.models.alis_faturasi import AlisFaturasi
+    from database.models.hizmet_faturasi import HizmetFaturasi
     from database.models.satis_faturasi import SatisFaturasi
 
-    model = SatisFaturasi if tur == "SATIS" else AlisFaturasi
+    tur_u = (tur or "SATIS").upper()
     with get_session() as session:
-        fatura = session.get(model, int(fatura_id))
+        if tur_u == "SATIS":
+            fatura = session.get(SatisFaturasi, int(fatura_id))
+        elif tur_u == "ALIS":
+            fatura = session.get(AlisFaturasi, int(fatura_id))
+        elif tur_u in ("HIZMET", "GIDER", "GELIR", "GIDER_IADE", "GELIR_IADE"):
+            fatura = session.get(HizmetFaturasi, int(fatura_id))
+        else:
+            fatura = session.get(AlisFaturasi, int(fatura_id))
         if fatura is None:
             raise ValueError("Fatura bulunamadı.")
-        detay = evrak_kapatma_detayi_oturum(session, fatura.fatura_no, int(fatura.cari_id))
+        detay = evrak_kapatma_detayi_oturum(
+            session, fatura.fatura_no, int(fatura.cari_id)
+        )
         return {
             "belge_no": fatura.fatura_no,
             "cari_id": int(fatura.cari_id),
@@ -718,6 +804,7 @@ def fatura_odeme_ozeti(fatura_id: int, tur: str = "SATIS") -> dict[str, Any]:
             "taslak": detay["taslak"],
             "iptal": detay["iptal"],
             "tutarli": detay["tutarli"],
+            "kapatanlar": detay.get("kapatanlar") or [],
         }
 
 

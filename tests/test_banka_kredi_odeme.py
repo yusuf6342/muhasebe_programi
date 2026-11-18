@@ -12,8 +12,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from database.database import Base
+from database.models.firma import Firma
 from database.models.finans import (
     BankaKarti,
+    BankaKredisi,
+    BankaKrediIslemGunlugu,
     BankaKrediOdeme,
     BankaKrediTaksit,
     FinansHareketi,
@@ -23,13 +26,26 @@ from database.models.finans import (
 import database.models.finans  # noqa: F401
 import database.banka_kredi_service as bks
 
+_TABLOLAR = (
+    Firma.__table__,
+    BankaKarti.__table__,
+    FinansHesabi.__table__,
+    FinansHareketi.__table__,
+    BankaKredisi.__table__,
+    BankaKrediTaksit.__table__,
+    BankaKrediOdeme.__table__,
+    BankaKrediIslemGunlugu.__table__,
+    GiderFisi.__table__,
+)
+
 
 class BankaKrediOdemeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "test_kredi.db"
         self.engine = create_engine(f"sqlite:///{self.db_path}", future=True)
-        Base.metadata.create_all(self.engine)
+        # create_all(tüm metadata) uretim_receteler→stok FK yüzünden kırılıyor
+        Base.metadata.create_all(self.engine, tables=list(_TABLOLAR))
         self.Session = sessionmaker(bind=self.engine, future=True, expire_on_commit=False)
 
         # get_session monkeypatch

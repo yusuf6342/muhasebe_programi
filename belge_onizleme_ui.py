@@ -200,7 +200,60 @@ def cari_virman_onizle(parent, belge_no: str) -> bool:
 
 def gider_fisi_onizle(parent, belge_no: str) -> bool:
     from database.finans_service import FinansService
+    from database.kredi_gider_fisi_service import KrediGiderFisiService
     from database.models.hizmet import gider_sinifi_etiket
+
+    belge_no = (belge_no or "").strip()
+    if not belge_no:
+        return False
+
+    # Kredi / nakit avans: konsolide özet (faiz+masraf, hesap durumu)
+    ozet = None
+    try:
+        ozet = KrediGiderFisiService.ozet(gider_belge_no=belge_no)
+        if ozet is None:
+            ozet = KrediGiderFisiService.ozet(odeme_belge_no=belge_no)
+    except Exception:
+        ozet = None
+    if ozet and ozet.get("satirlar"):
+        taksit_yazi = "—"
+        if ozet.get("taksit_no"):
+            taksit_yazi = f"{ozet['taksit_no']}/{ozet.get('taksit_sayisi') or '?'}"
+        alanlar = [
+            ("Firma", ozet.get("firma") or "—"),
+            ("Banka", ozet.get("banka") or "—"),
+            ("Kredi", ozet.get("kredi_adi") or "—"),
+            ("Kredi belge", ozet.get("kredi_belge") or "—"),
+            ("Taksit", taksit_yazi),
+            ("Ödeme belgesi", ozet.get("odeme_belge_no") or "—"),
+            ("Ödeme tarihi", _tarih(ozet.get("odeme_tarihi"))),
+            ("Ödeme hesabı", ozet.get("odeme_hesabi") or "—"),
+            ("Anapara (gider değil)", _para(ozet.get("anapara"))),
+            ("Faiz gideri", _para(ozet.get("faiz"))),
+            ("Masraf gideri", _para(ozet.get("masraf"))),
+            ("Toplam gider", _para(ozet.get("toplam_gider"))),
+            ("Muhasebe", ozet.get("muhasebe_durum_etiket") or "—"),
+        ]
+        for s in ozet["satirlar"]:
+            hesap = s.get("muhasebe_hesap_kodu") or "—"
+            if s.get("muhasebe_hesap_adi"):
+                hesap = f"{hesap} — {s['muhasebe_hesap_adi']}"
+            alanlar.append(
+                (
+                    f"{s.get('gider_turu') or 'Gider'} ({s.get('belge_no')})",
+                    f"{_para(s.get('tutar'))} | {hesap} | {s.get('muhasebe_durum_etiket') or '—'}",
+                )
+            )
+        ilk_id = ozet["satirlar"][0].get("id")
+        dialog = BelgeOnizlemeDialog(
+            parent,
+            "Kredi / Finansman Gider Fişi",
+            alanlar,
+            muhasebe=("gider_fisi", ilk_id) if ilk_id else None,
+        )
+        if dialog.winfo_exists():
+            parent.wait_window(dialog)
+        return True
 
     fis = FinansService.gider_fisi_belge_no_ile(belge_no)
     if not fis:
@@ -221,13 +274,18 @@ def gider_fisi_onizle(parent, belge_no: str) -> bool:
             hesap_yazi = hesap.hesap_adi
     else:
         hesap_yazi = "—"
+    mh_kod = getattr(fis, "muhasebe_hesap_kodu", None) or "—"
+    mh_durum = KrediGiderFisiService.durum_etiket(getattr(fis, "muhasebe_durum", None))
     alanlar = [
         ("Belge no", fis.belge_no),
         ("Tarih", _tarih(fis.tarih)),
         ("Ödeme hesabı", hesap_yazi),
         ("Gider hizmeti", hizmet_yazi),
+        ("Gider türü", fis.gider_turu or "—"),
         ("Tutar", _para(fis.tutar)),
         ("Durum", fis.durum or "—"),
+        ("Muhasebe hesabı", mh_kod),
+        ("Muhasebe durumu", mh_durum),
         ("Bağlı belge", fis.bagli_belge_no or "—"),
         ("Açıklama", fis.aciklama or "—"),
     ]
@@ -274,6 +332,44 @@ def _virman_listesi_yenile(parent) -> None:
             kok.ekstre_yenile()
         except Exception:
             pass
+
+
+def _cari_ve_pos_yenile(parent) -> None:
+    """Tahsilat Sil sonrası cari kart ve POS listesini yenile."""
+    _virman_listesi_yenile(parent)
+    adaylar = [parent]
+    try:
+        adaylar.append(parent.winfo_toplevel())
+    except tk.TclError:
+        pass
+    try:
+        master = getattr(parent, "master", None)
+        if master is not None:
+            adaylar.append(master)
+            adaylar.append(master.winfo_toplevel())
+    except tk.TclError:
+        pass
+    gorulen = set()
+    for w in adaylar:
+        if w is None:
+            continue
+        wid = id(w)
+        if wid in gorulen:
+            continue
+        gorulen.add(wid)
+        for ad in (
+            "yenile",
+            "hareketleri_yenile",
+            "_hareketleri_yukle",
+            "listeyi_yenile",
+            "_pos_islemleri_yenile",
+        ):
+            fn = getattr(w, ad, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
 
 
 def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
@@ -359,6 +455,57 @@ def cari_islem_onizle(parent, belge_no: str, tur: str = "") -> bool:
             ("Açıklama", islem.aciklama or "—"),
         ]
         baslik = islem.islem_turu or "Cari İşlem"
+        tur_u = (islem.islem_turu or tur or "").strip()
+        if tur_u in ("Tahsilat", "Ödeme", "CARİ TAHSİLAT", "CARİ ÖDEME"):
+            from database.access import yetki_var
+            from database.finans_service import FinansService
+
+            if yetki_var("finans_duzenleme", "iptal"):
+                cari_id = int(islem.cari_id) if islem.cari_id else None
+
+                def sil_komut():
+                    dlg = dialog_ref["dlg"]
+                    if dlg is None or not dlg.winfo_exists():
+                        return
+                    try:
+                        hedef = FinansService.tahsilat_detay_hedef_coz(
+                            belge_no, cari_id=cari_id
+                        )
+                    except ValueError as hata:
+                        messagebox.showerror("Silinemedi", str(hata), parent=dlg)
+                        return
+                    no_goster = hedef.get("makbuz_no") or hedef["belge_no"]
+                    if not messagebox.askyesno(
+                        "Tahsilatı Sil",
+                        (
+                            f"Belge no: {hedef['belge_no']}\n"
+                            f"Makbuz / kayıt: {no_goster}\n"
+                            f"Cari: {hedef['cari']}\n"
+                            f"Tarih: {_tarih(hedef['tarih'])}\n"
+                            f"Tutar: {_para(hedef['tutar'])}\n"
+                            f"Bağlı hesap: {hedef['hesap']}\n"
+                            f"Kayıt kimliği: {hedef['tur']} #{hedef['id']}\n\n"
+                            "Bu tahsilat aktif cari hareketlerden çıkarılsın mı?\n"
+                            "Fatura kapamaları çözülür; aktarılmamış POS net/komisyon etkisi kaldırılır.\n"
+                            "Aktarılmış veya muhasebeleştirilmiş kayıtta ters kayıt uygulanır."
+                        ),
+                        parent=dlg,
+                    ):
+                        return
+                    try:
+                        kwargs = {"neden": f"Tahsilat silindi {hedef['belge_no']}"}
+                        if hedef["tur"] == "makbuz":
+                            kwargs["makbuz_id"] = hedef["id"]
+                        elif hedef["tur"] == "pos_valor":
+                            kwargs["pos_valor_id"] = hedef["id"]
+                        else:
+                            kwargs["cari_islem_id"] = hedef["id"]
+                        FinansService.tahsilat_detay_iptal(**kwargs)
+                    except (ValueError, PermissionError) as hata:
+                        messagebox.showerror("Silinemedi", str(hata), parent=dlg)
+                        return
+                    _cari_ve_pos_yenile(parent)
+                    dlg.destroy()
     muhasebe = None
     try:
         from muhasebe_durum_ui import belge_no_kaynagi, cari_islem_kaynagi
@@ -441,6 +588,25 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
             parent.wait_window(dialog)
         return True
 
+    # Nakit avans: NAV = ana evrak, NAT = karta işlenen taksit hareketi → aynı kaynak form
+    if belge_no.startswith(("NAV-", "NAT-")) or (tur or "").upper().startswith("KK NAKİT AVANS"):
+        from database.nakit_avans_service import NakitAvansService
+        from nakit_avans_ui import NakitAvansDialog
+
+        av = NakitAvansService.belgeden_getir(belge_no)
+        if not av:
+            messagebox.showinfo("Belge", f"{belge_no} nakit avans kaydı bulunamadı.", parent=parent)
+            return True
+        dialog = NakitAvansDialog(
+            parent,
+            int(av["kredi_karti_id"]),
+            kart_adi=av.get("kart_adi") or "",
+            avans_id=int(av["id"]),
+        )
+        if dialog.winfo_exists():
+            parent.wait_window(dialog)
+        return True
+
     if belge_no.startswith("KBY-"):
         from finans_ui import KasadanBankayaYatirDialog
 
@@ -510,14 +676,18 @@ def finans_belge_ac(parent, tur: str, belge_no: str) -> bool:
         )
         return True
 
-    if belge_no.startswith(("THS-", "ODM-", "VRM-")) or tur in (
-        "Tahsilat",
-        "Ödeme",
-        "Cari Virman",
-        "CARİ TAHSİLAT",
-        "CARİ ÖDEME",
+    if (
+        belge_no.startswith(("THS-", "ODM-", "VRM-", "EVB-BNC-", "EVB-THS-", "EVB-ODM-"))
+        or tur in (
+            "Tahsilat",
+            "Ödeme",
+            "Cari Virman",
+            "CARİ TAHSİLAT",
+            "CARİ ÖDEME",
+            "Avans kullanımı",
+        )
     ):
-        if cari_islem_onizle(parent, belge_no, tur=tur):
+        if cari_islem_onizle(parent, belge_no, tur=tur if tur != "Avans kullanımı" else "Ödeme"):
             return True
         messagebox.showinfo(
             "Belge",
@@ -723,6 +893,30 @@ def hareket_belgeyi_ac(parent, tur: str, belge_no: str) -> bool:
             parent,
             fatura=fatura,
             cari_ac=lambda cari: CariDialog(parent, cari),
+        )
+        parent.wait_window(dialog)
+        return True
+
+    # Hizmet alış/satış (HAG/HSG/…) — etiket veya önek
+    tur_cf = (tur or "").casefold()
+    if (
+        belge_no.upper().startswith(("HAG", "HSG", "HAI", "HSI"))
+        or "hizmet" in tur_cf
+    ):
+        from database.hizmet_faturasi_service import HizmetFaturasiService
+        from database.models.hizmet_faturasi import HizmetFaturasi
+        from hizmet_fatura_ui import HizmetFaturaDialog
+
+        fatura_id = _id_bul(HizmetFaturasi, "fatura_no", belge_no)
+        if not fatura_id:
+            return False
+        fatura = HizmetFaturasiService.getir(fatura_id)
+        if not fatura:
+            raise ValueError("Hizmet faturası bulunamadı.")
+        dialog = HizmetFaturaDialog(
+            parent,
+            hizmet_turu=fatura.fatura_turu,
+            fatura=fatura,
         )
         parent.wait_window(dialog)
         return True

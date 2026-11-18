@@ -13,6 +13,7 @@ from database.access import yazma_zorunlu
 from database.alis_faturasi_service import AlisFaturasiService
 from database.cari_service import CariService
 from database.database import get_session
+from database.fatura_kdv_service import kdv_deger
 from database.satis_faturasi_service import SatisFaturasiService
 from database.session_manager import oturum
 from fatura_belge_aktarim.json_codec import dumps_accounting, to_decimal
@@ -645,7 +646,7 @@ class InvoicePostingService:
                     "birim": "Adet",
                     "birim_fiyat": s.birim_fiyat or Decimal("0"),
                     "iskonto_orani": s.iskonto_orani or Decimal("0"),
-                    "kdv_orani": s.kdv_orani or Decimal("20"),
+                    "kdv_orani": kdv_deger(s.kdv_orani),
                     "barkod": s.barkod,
                 }
                 if getattr(s, "irsaliye_satiri_id", None):

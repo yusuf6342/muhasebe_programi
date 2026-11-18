@@ -563,9 +563,9 @@ class UrunSecDialog(tk.Toplevel):
         fiyat = _satis_fiyati_nesneden(stok)
         mevcut = sum((lot.kalan_miktar for lot in (stok.lotlar or [])), Decimal("0"))
         kdv = getattr(stok, "kdv_orani", None)
-        from database.fatura_kdv_service import satir_kdv_metin_sayisal
+        from database.fatura_kdv_service import kdv_deger, satir_kdv_metin_sayisal
 
-        kdv_metin = satir_kdv_metin_sayisal(kdv if kdv is not None else 20)
+        kdv_metin = satir_kdv_metin_sayisal(kdv_deger(kdv))
         try:
             product_id = int(getattr(stok, "id", 0) or 0) or None
         except (TypeError, ValueError):

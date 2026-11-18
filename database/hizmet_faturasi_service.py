@@ -30,6 +30,17 @@ HAREKET_GELIR_IADE = "HİZMET SATIŞ İADE"
 
 FATURA_TURLERI = ("GIDER", "GELIR", "GIDER_IADE", "GELIR_IADE")
 
+# Cari SatisHareketi işareti: alış/gider negatif (tedarikçi alacak); satış/gelir pozitif (müşteri borç).
+_SH_ISARET = {"GIDER": -1, "GELIR": 1, "GIDER_IADE": 1, "GELIR_IADE": -1}
+
+# Defter / ekstre belge türü etiketleri (kaynak fatura_turu).
+BELGE_TUR_ETIKET = {
+    "GIDER": "Hizmet Alış",
+    "GELIR": "Hizmet Satış",
+    "GIDER_IADE": "Hizmet Alış İadesi",
+    "GELIR_IADE": "Hizmet Satış İadesi",
+}
+
 
 def _kart_turu(fatura_turu: str) -> str:
     """İade faturaları ilgili yönün hizmet kartını kullanır."""
@@ -37,6 +48,92 @@ def _kart_turu(fatura_turu: str) -> str:
     if tur in ("GIDER", "GIDER_IADE"):
         return "GIDER"
     return "GELIR"
+
+
+def _sh_tutar_ve_kalan(tur: str, genel_toplam, odeme_tutari) -> tuple[Decimal, Decimal]:
+    """Alış faturası ile aynı: GIDER negatif SH; kalan aynı işaretle açık tutar."""
+    isaret = _SH_ISARET.get((tur or "GIDER").upper(), -1)
+    brut = abs(Decimal(str(genel_toplam or 0)))
+    odenen = abs(Decimal(str(odeme_tutari or 0)))
+    kalan_abs = brut - odenen
+    satis = isaret * brut
+    if kalan_abs > 0:
+        kalan = isaret * kalan_abs
+    elif kalan_abs < 0:
+        # Fazla ödeme/tahsilat: ters işaretli avans (alışta pozitif kalan = avans)
+        kalan = -isaret * abs(kalan_abs)
+    else:
+        kalan = Decimal("0")
+    return satis, kalan
+
+
+def odeme_sekli_hesap_uygun_mu(
+    odeme_sekli: str | None,
+    hesap_adi: str | None,
+    *,
+    gelir_mi: bool,
+    finans_hesap_id: int | None = None,
+) -> str | None:
+    """Uygun değilse hata metni; uygunsa None. Kayıt katmanı + UI ortak.
+
+    Hesap türü görünen addan değil; ``odeme_hesaplari`` / ``tahsilat_hesaplari``
+    (alt_hesap_turu / hesap_turu) ile doğrulanır. Eski kayıtta firma kartı etiketi
+    verilmişse bağlı ``KREDI_KARTI`` hesabına çözülür.
+    """
+    sekil = (odeme_sekli or "").strip()
+    hesap = (hesap_adi or "").strip()
+    if not sekil:
+        return None
+    if not hesap and not finans_hesap_id:
+        return "Hesap seçin."
+    from database.finans_service import FinansService
+
+    tur = FinansService.odeme_sekil_turu(sekil, gelir_mi=gelir_mi)
+    try:
+        adaylar = (
+            FinansService.tahsilat_hesaplari(sekil)
+            if gelir_mi
+            else FinansService.odeme_hesaplari(sekil)
+        )
+    except Exception as hata:
+        return f"Hesap listesi okunamadı: {hata}"
+    idler = {int(h.id) for h in adaylar if getattr(h, "id", None) is not None}
+    adlar = {(h.hesap_adi or "").strip() for h in adaylar}
+    if finans_hesap_id is not None:
+        if int(finans_hesap_id) in idler:
+            return None
+        return "Seçilen hesap bu ödeme/tahsilat şekline veya firmaya uygun değil."
+    if hesap in adlar:
+        return None
+    # Eski hizmet/alış kayıtları: firma kartı etiketi veya kart_adi
+    if not gelir_mi and tur == "KART":
+        for k in FinansService.sirket_kredi_kartlari():
+            if hesap in {
+                (k.get("etiket") or "").strip(),
+                (k.get("kart_adi") or "").strip(),
+                (k.get("kaynak_kodu") or "").strip(),
+            }:
+                bagli = k.get("bagli_hesap_id")
+                if bagli is not None and int(bagli) in idler:
+                    return None
+                if bagli is None and not adaylar:
+                    return "Bu ödeme şekli için tanımlı kredi kartı hesabı yok."
+                if bagli is not None and int(bagli) not in idler:
+                    return "Seçilen kartın bağlı kredi kartı hesabı aktif değil veya uygun değil."
+                return None
+    if not adaylar:
+        if tur == "KART":
+            return (
+                "Bu tahsilat şekli için uygun POS hesabı yok."
+                if gelir_mi
+                else "Bu ödeme şekli için tanımlı kredi kartı hesabı yok."
+            )
+        if tur == "HAVALE":
+            return "Bu ödeme/tahsilat şekli için uygun mevduat/KMH hesabı yok."
+        if tur == "KASA":
+            return "Bu ödeme/tahsilat şekli için uygun kasa hesabı yok."
+        return "Bu ödeme/tahsilat şekli için uygun hesap yok."
+    return "Seçilen hesap bu ödeme/tahsilat şekline uygun değil."
 
 
 class HizmetFaturasiService:
@@ -105,12 +202,14 @@ class HizmetFaturasiService:
             iskonto += indirim
             kdv += net * decimal(get("kdv_orani", 0), "KDV") / Decimal("100")
         matrah = ara - iskonto
+        # Kuruş: ekran/ödeme karşılaştırması float sapması üretmesin
+        q = Decimal("0.01")
         return {
-            "ara_toplam": ara,
-            "iskonto": iskonto,
-            "matrah": matrah,
-            "kdv": kdv,
-            "genel_toplam": matrah + kdv,
+            "ara_toplam": ara.quantize(q),
+            "iskonto": iskonto.quantize(q),
+            "matrah": matrah.quantize(q),
+            "kdv": kdv.quantize(q),
+            "genel_toplam": (matrah + kdv).quantize(q),
         }
 
     @staticmethod
@@ -371,10 +470,25 @@ class HizmetFaturasiService:
             fatura.tl_kdv = toplam_dict["kdv"]
             fatura.tl_genel_toplam = toplam
             fatura.doviz_ara_toplam = doviz_ara.quantize(Decimal("0.01")) if pb != "TRY" else Decimal("0")
-            if fatura.odeme_tutari > toplam:
+            odeme_q = Decimal(str(fatura.odeme_tutari or 0)).quantize(Decimal("0.01"))
+            toplam_q = Decimal(str(toplam or 0)).quantize(Decimal("0.01"))
+            if odeme_q < 0:
+                raise ValueError("Ödeme/tahsilat tutarı negatif olamaz.")
+            if odeme_q > toplam_q:
                 etiket = "Tahsilat" if kart_turu == "GELIR" else "Ödeme"
-                raise ValueError(f"{etiket} tutarı fatura toplamından büyük olamaz.")
-            fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
+                raise ValueError(
+                    f"{etiket} tutarı fatura kalanını aşamaz "
+                    f"(girilen {odeme_q}, fatura {toplam_q})."
+                )
+            if odeme_q > 0:
+                uyari = odeme_sekli_hesap_uygun_mu(
+                    fatura.odeme_sekli,
+                    fatura.odeme_hesabi,
+                    gelir_mi=(kart_turu == "GELIR"),
+                )
+                if uyari:
+                    raise ValueError(uyari)
+            fatura.durum = "KAPALI" if odeme_q >= toplam_q else "AÇIK"
             session.flush()
 
             if cari_etkisi:
@@ -386,8 +500,11 @@ class HizmetFaturasiService:
                     session.add(hareket)
                 hareket.cari_id = fatura.cari_id
                 hareket.satis_tarihi = tarih
-                hareket.satis_tutari = toplam
-                hareket.kalan_acik_tutar = toplam - fatura.odeme_tutari
+                # Alış (GIDER) negatif — tedarikçi alacak; gelir pozitif — müşteri borç.
+                # Yön cari sınıfından değil kaynak fatura_turu'ndan.
+                satis_t, kalan_t = _sh_tutar_ve_kalan(tur, toplam_q, odeme_q)
+                hareket.satis_tutari = satis_t
+                hareket.kalan_acik_tutar = kalan_t
                 hareket.para_birimi = pb
                 hareket.kur = kur if pb != "TRY" else Decimal("1")
                 hareket.borc_esasi = fatura.borc_esasi or "TL_SABIT"
@@ -407,6 +524,108 @@ class HizmetFaturasiService:
 
             muhasebe_hook("hizmet_faturasi_fisi", fid, yeniden=True, session=session)
         return HizmetFaturasiService.getir(fid)
+
+    @staticmethod
+    def kapatan_odemeleri(fatura_id: int) -> dict:
+        """Faturayı kapatan gerçek ödeme/tahsilat/mahsup kayıtları (cari_kapatmalar).
+
+        Varsayımsal ödeme üretmez; bağlantı yoksa ``eksik_baglanti`` uyarısı döner.
+        """
+        from database.kapatma_izleme_service import evrak_kapatma_detayi, fatura_odeme_ozeti
+
+        fatura = HizmetFaturasiService.getir(int(fatura_id))
+        if fatura is None:
+            raise ValueError("Fatura bulunamadı.")
+        oz = fatura_odeme_ozeti(int(fatura_id), fatura.fatura_turu or "GIDER")
+        detay = evrak_kapatma_detayi(fatura.fatura_no, int(fatura.cari_id))
+        kapatanlar = list(detay.get("kapatanlar") or [])
+        kayitli_pay = sum(
+            (Decimal(str(k.get("pay") or 0)) for k in kapatanlar if k.get("kaynak") != "BILINMIYOR"),
+            Decimal("0"),
+        )
+        bilinmeyen = sum(
+            (Decimal(str(k.get("pay") or 0)) for k in kapatanlar if k.get("kaynak") == "BILINMIYOR"),
+            Decimal("0"),
+        )
+        eksik = bool(
+            (fatura.durum or "").upper() == "KAPALI"
+            and Decimal(str(fatura.odeme_tutari or 0)) > 0
+            and kayitli_pay <= 0
+            and bilinmeyen <= 0
+            and Decimal(str(oz.get("kapanan") or 0)) <= 0
+        )
+        return {
+            "fatura_id": int(fatura.id),
+            "fatura_no": fatura.fatura_no,
+            "fatura_turu": fatura.fatura_turu,
+            "cari_id": int(fatura.cari_id),
+            "toplam": oz.get("toplam"),
+            "kapanan": oz.get("kapanan"),
+            "kalan": oz.get("kalan"),
+            "odeme_durumu": oz.get("durum"),
+            "satirlar": kapatanlar,
+            "eksik_baglanti": eksik,
+            "uyari": (
+                "Kapalı görünen faturada doğrulanabilir kapatma bağlantısı yok. "
+                "Yeni ödeme üretilmedi; cari kapatma / makbuz bağlantısını kontrol edin."
+                if eksik
+                else (detay.get("uyari") or None)
+            ),
+            "mesaj": detay.get("mesaj"),
+        }
+
+    @staticmethod
+    def odeme_durumunu_senkronla(fatura_id: int) -> dict:
+        """Kapatma kayıtlarından ödenen/kalan/durum alanlarını günceller (satırlara dokunmaz)."""
+        yazma_zorunlu("finans_duzenleme", "duzenleme")
+        from database.kapatma_izleme_service import evrak_kapatma_detayi_oturum
+
+        with get_session() as session:
+            fatura = session.get(HizmetFaturasi, int(fatura_id))
+            if fatura is None:
+                raise ValueError("Fatura bulunamadı.")
+            if (fatura.durum or "") == "İPTAL":
+                return {"fatura_id": int(fatura_id), "durum": "İPTAL"}
+            detay = evrak_kapatma_detayi_oturum(
+                session, fatura.fatura_no, int(fatura.cari_id)
+            )
+            # Kapananı yalnızca doğrulanabilir kapatma paylarından al (varsayımsal üretilmez)
+            kapanan = sum(
+                (
+                    Decimal(str(k.get("pay") or 0))
+                    for k in (detay.get("kapatanlar") or [])
+                    if k.get("kaynak") != "BILINMIYOR"
+                ),
+                Decimal("0"),
+            ).quantize(Decimal("0.01"))
+            toplam = Decimal(str(detay.get("esas_tutar") or 0)).quantize(Decimal("0.01"))
+            if toplam <= 0:
+                t = HizmetFaturasiService.toplam(list(fatura.satirlar or []))
+                toplam = Decimal(str(t["genel_toplam"])).quantize(Decimal("0.01"))
+            kalan = max(Decimal("0"), (toplam - kapanan).quantize(Decimal("0.01")))
+            fatura.odeme_tutari = kapanan
+            fatura.durum = "KAPALI" if kapanan + Decimal("0.01") >= toplam else "AÇIK"
+            # SH kalanını da senkron tut
+            hareket = session.scalar(
+                select(SatisHareketi).where(
+                    SatisHareketi.belge_no == fatura.fatura_no,
+                    SatisHareketi.cari_id == int(fatura.cari_id),
+                )
+            )
+            if hareket is not None and Decimal(str(hareket.satis_tutari or 0)) != 0:
+                satis_t, kalan_t = _sh_tutar_ve_kalan(
+                    fatura.fatura_turu or "GIDER", toplam, kapanan
+                )
+                hareket.satis_tutari = satis_t
+                hareket.kalan_acik_tutar = kalan_t
+            session.flush()
+            return {
+                "fatura_id": int(fatura.id),
+                "odeme_tutari": fatura.odeme_tutari,
+                "durum": fatura.durum,
+                "kalan": kalan,
+                "kapanan": kapanan,
+            }
 
     @staticmethod
     def iptal_et(fatura_id):

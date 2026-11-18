@@ -602,8 +602,7 @@ class AlisFaturasiService:
                 birim_maliyet = AlisFaturasiService._net_birim_maliyet(
                     birim_fiyat, iskonto_orani, iskonto_orani_2, iskonto_orani_3
                 )
-                # Stok kartı ALIŞ FİYATI: faturadaki net iskontolu fiyat (FIFO override'dan bağımsız)
-                net_alis_fiyati = birim_maliyet
+                # Stok kartı ALIŞ FİYATI: flush sonrası merkezi alis_stok_fiyat_service
                 stok_maliyeti = birim_maliyet
                 if veri.get("fifo_birim_maliyeti") not in (None, "", 0, "0"):
                     stok_maliyeti = decimal(veri["fifo_birim_maliyeti"], "FIFO maliyet", Decimal("0"))
@@ -624,11 +623,7 @@ class AlisFaturasiService:
                         tedarikci=tedarikci_adi,
                         lot_no=veri.get("lot_no") or "",
                     )
-                    StokService.alis_fiyatini_guncelle(
-                        session,
-                        veri["urun_kodu"].strip(),
-                        (net_alis_fiyati / carpan).quantize(Decimal("0.0001")),
-                    )
+                    # Stok kartı ALIŞ FİYATI: flush sonrası merkezi servis (kaynak + en güncel kural)
                     lot_girisi = stok_girisi["lot_girisi"]
                     fifo_maliyet = stok_girisi["birim_maliyet"]
                 elif konsinye_sid:
@@ -700,6 +695,12 @@ class AlisFaturasiService:
                 raise ValueError("Ödeme tutarı fatura toplamından büyük olamaz.")
             fatura.durum = "KAPALI" if fatura.odeme_tutari >= toplam else "AÇIK"
             fatura.onaylandi = False
+            if hasattr(fatura, "kaynak_sistem"):
+                ks = (veriler.get("kaynak_sistem") or getattr(fatura, "kaynak_sistem", None) or "").strip()
+                kk = (veriler.get("kaynak_kimlik") or getattr(fatura, "kaynak_kimlik", None) or "").strip()
+                fatura.kaynak_sistem = ks or "CIN_MUHASEBE"
+                if kk:
+                    fatura.kaynak_kimlik = kk[:80]
             session.flush()
 
             if hareket_yaz:
@@ -708,6 +709,9 @@ class AlisFaturasiService:
                 from database.acik_kalem_service import AcikKalemService
 
                 AcikKalemService.avanslari_uygula(session, fatura.cari_id)
+                from database.alis_stok_fiyat_service import fatura_alis_fiyatlarini_uygula
+
+                fatura_alis_fiyatlarini_uygula(session, fatura)
             else:
                 AlisFaturasiService._durumlari_guncelle(session, fatura)
             try:
@@ -826,17 +830,6 @@ class AlisFaturasiService:
                 tedarikci=tedarikci_adi,
                 lot_no=satir.lot_no or satir.lot_girisi or "",
             )
-            net_alis = AlisFaturasiService._net_birim_maliyet(
-                satir.birim_fiyat,
-                satir.iskonto_orani,
-                getattr(satir, "iskonto_orani_2", 0) or 0,
-                getattr(satir, "iskonto_orani_3", 0) or 0,
-            )
-            StokService.alis_fiyatini_guncelle(
-                session,
-                satir.urun_kodu,
-                (net_alis / carpan).quantize(Decimal("0.0001")),
-            )
             satir.lot_girisi = stok_girisi["lot_girisi"]
             satir.fifo_birim_maliyeti = stok_girisi["birim_maliyet"]
 
@@ -846,35 +839,41 @@ class AlisFaturasiService:
 
         AcikKalemService.avanslari_uygula(session, fatura.cari_id)
         session.flush()
+        from database.alis_stok_fiyat_service import fatura_alis_fiyatlarini_uygula
+
+        fatura_alis_fiyatlarini_uygula(session, fatura)
         from database.muhasebe_entegrasyon import muhasebe_hook
 
         muhasebe_hook("alis_faturasi_fisi", int(fatura.id), yeniden=True, session=session)
 
     @staticmethod
-    def _stok_etkili_degisiklikler(fatura, veriler, satir_verileri) -> list[str]:
-        """Stok miktarı, birim, depo, fiyat/maliyet, cari veya ödemeyi etkileyen değişen alanlar."""
+    def _q4(v) -> Decimal:
+        try:
+            return Decimal(str(v if v not in (None, "") else 0)).quantize(Decimal("0.0001"))
+        except Exception:  # noqa: BLE001
+            return Decimal("0")
 
-        def _d(v) -> Decimal:
-            try:
-                return Decimal(str(v if v not in (None, "") else 0)).quantize(Decimal("0.0001"))
-            except Exception:  # noqa: BLE001
-                return Decimal("0")
+    @staticmethod
+    def _metin_kucuk(v) -> str:
+        return (str(v or "")).strip().casefold()
 
-        def _m(v) -> str:
-            return (str(v or "")).strip().casefold()
-
+    @staticmethod
+    def _fiziksel_degisiklikler(fatura, veriler, satir_verileri) -> list[str]:
+        """Bağlı satış varken engellenen alanlar: ürün/miktar/birim/depo/lot/cari/ödeme yapısı."""
+        _d = AlisFaturasiService._q4
+        _m = AlisFaturasiService._metin_kucuk
         degisen = []
         if veriler.get("fatura_tarihi") != fatura.fatura_tarihi:
             degisen.append("Fatura tarihi")
-        if veriler.get("vade_tarihi") != fatura.vade_tarihi:
-            degisen.append("Vade tarihi")
         if int(veriler.get("cari_id") or 0) != int(fatura.cari_id or 0):
             degisen.append("Tedarikçi")
         if _m(veriler.get("depo") or "ANA DEPO") != _m(fatura.depo or "ANA DEPO"):
             degisen.append("Depo")
         if _m(veriler.get("para_birimi") or "TRY") != _m(fatura.para_birimi or "TRY"):
             degisen.append("Para birimi")
-        if (veriler.get("para_birimi") or "TRY").upper() != "TRY" and _d(veriler.get("kur", 1)) != _d(fatura.kur):
+        if (veriler.get("para_birimi") or "TRY").upper() != "TRY" and _d(veriler.get("kur", 1)) != _d(
+            fatura.kur
+        ):
             degisen.append("Kur")
         if _d(veriler.get("odeme_tutari")) != _d(fatura.odeme_tutari):
             degisen.append("Ödeme tutarı")
@@ -885,32 +884,178 @@ class AlisFaturasiService:
         if len(eski) != len(satir_verileri):
             degisen.append("Satır sayısı")
             return degisen
-        doviz = (veriler.get("para_birimi") or "TRY").upper() != "TRY"
         for no, (s, v) in enumerate(zip(eski, satir_verileri), start=1):
-            fiyat_yeni = v.get("birim_fiyat_doviz") or v.get("birim_fiyat") if doviz else v.get("birim_fiyat")
-            fiyat_eski = s.birim_fiyat_doviz if doviz else s.birim_fiyat
-            kontroller = (
+            for etiket, farkli in (
                 ("Ürün", _m(v.get("urun_kodu")) != _m(s.urun_kodu)),
                 ("Miktar", _d(v.get("miktar")) != _d(s.miktar)),
                 ("Birim", _m(v.get("birim") or "Adet") != _m(s.birim or "Adet")),
-                ("Birim fiyat", _d(fiyat_yeni) != _d(fiyat_eski)),
-                ("İskonto", _d(v.get("iskonto_orani")) != _d(s.iskonto_orani)),
-                ("İskonto 2", _d(v.get("iskonto_orani_2")) != _d(s.iskonto_orani_2)),
-                ("İskonto 3", _d(v.get("iskonto_orani_3")) != _d(s.iskonto_orani_3)),
-                ("KDV", _d(v.get("kdv_orani", 20)) != _d(s.kdv_orani)),
                 ("Lot", _m(v.get("lot_no")) != _m(s.lot_no)),
-            )
-            for etiket, farkli in kontroller:
+            ):
                 if farkli:
                     degisen.append(f"{no}. satır {etiket}")
         return degisen
 
     @staticmethod
-    def _bagli_alis_duzenleme(fatura_id: int, veriler, satir_verileri, beklenen_versiyon) -> int | None:
-        """Lotundan çıkış yapılmış alışta yalnız maliyeti etkilemeyen alanları günceller.
+    def _mali_degisiklikler(fatura, veriler, satir_verileri) -> list[str]:
+        """Bağlı satış varken serbest mali alanlar: fiyat / iskonto / KDV (+ vade)."""
+        _d = AlisFaturasiService._q4
+        degisen = []
+        if veriler.get("vade_tarihi") != fatura.vade_tarihi:
+            degisen.append("Vade tarihi")
+        eski = list(fatura.satirlar)
+        if len(eski) != len(satir_verileri):
+            return degisen
+        doviz = (veriler.get("para_birimi") or fatura.para_birimi or "TRY").upper() != "TRY"
+        for no, (s, v) in enumerate(zip(eski, satir_verileri), start=1):
+            fiyat_yeni = v.get("birim_fiyat_doviz") or v.get("birim_fiyat") if doviz else v.get("birim_fiyat")
+            fiyat_eski = s.birim_fiyat_doviz if doviz else s.birim_fiyat
+            for etiket, farkli in (
+                ("Birim fiyat", _d(fiyat_yeni) != _d(fiyat_eski)),
+                ("İskonto", _d(v.get("iskonto_orani")) != _d(s.iskonto_orani)),
+                ("İskonto 2", _d(v.get("iskonto_orani_2")) != _d(s.iskonto_orani_2)),
+                ("İskonto 3", _d(v.get("iskonto_orani_3")) != _d(s.iskonto_orani_3)),
+                ("KDV", _d(v.get("kdv_orani", 20)) != _d(s.kdv_orani)),
+            ):
+                if farkli:
+                    degisen.append(f"{no}. satır {etiket}")
+        return degisen
 
-        Bağlı hareket yoksa None (normal kayıt akışı). Stok/maliyet etkili değişiklik varsa
-        ``BagliAlisHatasi``. Yalnız açıklama türü alanlar değiştiyse güncelleyip fatura id döner.
+    @staticmethod
+    def _stok_etkili_degisiklikler(fatura, veriler, satir_verileri) -> list[str]:
+        """Geriye uyumluluk: fiziksel + mali farklar (eski testler)."""
+        return AlisFaturasiService._fiziksel_degisiklikler(
+            fatura, veriler, satir_verileri
+        ) + AlisFaturasiService._mali_degisiklikler(fatura, veriler, satir_verileri)
+
+    @staticmethod
+    def _bagli_alis_mali_uygula(session, fatura, veriler, satir_verileri) -> int:
+        """Bağlı satış varken fiyat/iskonto/KDV güncelle — stok miktarı/bağlantı korunur."""
+        pb = (fatura.para_birimi or "TRY").upper()
+        kur = fatura.kur or Decimal("1")
+        eski_ozet = {
+            "tl_genel_toplam": str(fatura.tl_genel_toplam),
+            "tl_kdv": str(fatura.tl_kdv),
+            "tl_matrah": str(fatura.tl_matrah),
+        }
+        degisen_alanlar = AlisFaturasiService._mali_degisiklikler(fatura, veriler, satir_verileri)
+
+        if veriler.get("vade_tarihi") and veriler["vade_tarihi"] != fatura.vade_tarihi:
+            fatura.vade_tarihi = veriler["vade_tarihi"]
+            fatura.vade_gunu = (fatura.vade_tarihi - fatura.fatura_tarihi).days
+
+        for s, v in zip(fatura.satirlar, satir_verileri):
+            birim_fiyat_doviz = decimal(
+                v.get("birim_fiyat_doviz") or v.get("birim_fiyat", 0) if pb != "TRY" else 0,
+                "Birim fiyat döviz",
+                Decimal("0"),
+            )
+            if pb != "TRY" and birim_fiyat_doviz > 0:
+                birim_fiyat = DovizService.dovizden_tle(birim_fiyat_doviz, kur, Decimal("0.0001"))
+            else:
+                birim_fiyat = decimal(v.get("birim_fiyat", s.birim_fiyat), "Birim fiyat", Decimal("0"))
+                birim_fiyat_doviz = Decimal("0")
+            iskonto_orani = decimal(v.get("iskonto_orani", 0), "İskonto", Decimal("0"))
+            iskonto_orani_2 = decimal(v.get("iskonto_orani_2", 0), "İskonto 2", Decimal("0"))
+            iskonto_orani_3 = decimal(v.get("iskonto_orani_3", 0), "İskonto 3", Decimal("0"))
+            kdv_orani = decimal(v.get("kdv_orani", 20), "KDV", Decimal("0"))
+            carpan = decimal(getattr(s, "birim_carpani", None) or 1, "Çarpan", Decimal("1"))
+            if carpan <= 0:
+                carpan = Decimal("1")
+            net_birim = AlisFaturasiService._net_birim_maliyet(
+                birim_fiyat, iskonto_orani, iskonto_orani_2, iskonto_orani_3
+            )
+            temel_maliyet = (net_birim / carpan).quantize(Decimal("0.0001"))
+            s.birim_fiyat = birim_fiyat
+            s.birim_fiyat_doviz = birim_fiyat_doviz
+            s.iskonto_orani = iskonto_orani
+            s.iskonto_orani_2 = iskonto_orani_2
+            s.iskonto_orani_3 = iskonto_orani_3
+            s.kdv_orani = kdv_orani
+            s.tl_birim_fiyat = net_birim
+            s.tl_tutar = (s.miktar * net_birim).quantize(Decimal("0.01"))
+            s.fifo_birim_maliyeti = temel_maliyet
+            s.aciklama = v.get("aciklama") or s.aciklama
+            StokService.alis_giris_maliyetini_guncelle(
+                session, fatura.fatura_no, s.urun_kodu, temel_maliyet
+            )
+
+        toplam_dict = AlisFaturasiService.toplam(fatura.satirlar)
+        satir_genel = toplam_dict["genel_toplam"]
+        fatura.tl_matrah = toplam_dict["ara_toplam"] - toplam_dict["iskonto"]
+        fatura.tl_kdv = toplam_dict["kdv"]
+        fatura.tl_brut_toplam = satir_genel
+        fatura.tl_genel_toplam = satir_genel
+        # Ödeme tutarı korunur; kalan yeniden hesaplanır — yeni finans hareketi yok
+        odeme = abs(fatura.odeme_tutari or 0)
+        if odeme > abs(satir_genel):
+            raise ValueError(
+                "Mevcut ödeme tutarı yeni fatura toplamından büyük; "
+                "ödeme kaydını ayrı düzeltmeden mali değişiklik yapılamaz."
+            )
+        fatura.durum = "KAPALI" if odeme >= abs(satir_genel) else "AÇIK"
+
+        ted_no = (veriler.get("tedarikci_fatura_no") or "").strip() or None
+        mukerrer = AlisFaturasiService.mukerrer_tedarikci_faturasi(
+            session, fatura.cari_id, ted_no, fatura.id
+        )
+        if mukerrer is not None:
+            raise MukerrerTedarikciFaturaHatasi(
+                f"Bu tedarikçinin '{ted_no}' numaralı faturası zaten kayıtlı "
+                f"(kayıt no: {mukerrer.fatura_no}).",
+                int(mukerrer.id),
+                mukerrer.fatura_no,
+            )
+        fatura.tedarikci_fatura_no = ted_no
+        fatura.aciklama = veriler.get("aciklama") if "aciklama" in veriler else fatura.aciklama
+        if "dokuman_yolu" in veriler:
+            fatura.dokuman_yolu = veriler.get("dokuman_yolu") or None
+
+        # Cari açık kalem — ödeme hareketi üretmeden
+        hareket = session.scalar(select(SatisHareketi).where(SatisHareketi.belge_no == fatura.fatura_no))
+        if hareket is None:
+            hareket = SatisHareketi(cari_id=fatura.cari_id, belge_no=fatura.fatura_no)
+            session.add(hareket)
+        hareket.cari_id = fatura.cari_id
+        hareket.satis_tarihi = fatura.fatura_tarihi
+        hareket.satis_tutari = -abs(satir_genel)
+        kalan = abs(satir_genel) - odeme
+        hareket.kalan_acik_tutar = -kalan if kalan > 0 else (kalan if kalan < 0 else 0)
+        hareket.para_birimi = pb
+        hareket.kur = kur if pb != "TRY" else Decimal("1")
+
+        from database.alis_stok_fiyat_service import fatura_alis_fiyatlarini_uygula
+
+        fatura_alis_fiyatlarini_uygula(session, fatura)
+        fatura.row_version = int(getattr(fatura, "row_version", 1) or 1) + 1
+        session.flush()
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        muhasebe_hook("alis_faturasi_fisi", int(fatura.id), yeniden=True, session=session)
+        try:
+            from database.user_audit import audit_document
+
+            audit_document(
+                "ALIS_MALI_DUZELTME",
+                modul="alis",
+                kayit_id=str(fatura.id),
+                belge_no=fatura.fatura_no,
+                eski=eski_ozet,
+                yeni={
+                    "tl_genel_toplam": str(fatura.tl_genel_toplam),
+                    "tl_kdv": str(fatura.tl_kdv),
+                    "tl_matrah": str(fatura.tl_matrah),
+                    "alanlar": degisen_alanlar[:40],
+                },
+            )
+        except Exception:
+            pass
+        return int(fatura.id)
+
+    @staticmethod
+    def _bagli_alis_duzenleme(fatura_id: int, veriler, satir_verileri, beklenen_versiyon) -> int | None:
+        """Lotundan çıkış yapılmış alış: fiziksel engel; mali düzeltme veya yalnız açıklama.
+
+        Bağlı hareket yoksa None (normal kayıt akışı — stok geri alınıp yeniden yazılır).
         """
         with get_session() as session:
             fatura = session.scalar(
@@ -929,13 +1074,20 @@ class AlisFaturasiService:
                     "Bu fatura başka bir kullanıcı tarafından değiştirilmiş. "
                     "Listeyi yenileyip tekrar açın."
                 )
-            degisen = AlisFaturasiService._stok_etkili_degisiklikler(fatura, veriler, satir_verileri)
-            if degisen:
+            fiziksel = AlisFaturasiService._fiziksel_degisiklikler(fatura, veriler, satir_verileri)
+            if fiziksel:
                 raise BagliAlisHatasi(
                     StokService.bagli_alis_mesaji(fatura.fatura_no, bagli, "değiştirilemez")
-                    + "\n\nDeğiştirilmek istenen alanlar: " + ", ".join(degisen[:15]),
+                    + "\n\nEngellenen alanlar: "
+                    + ", ".join(fiziksel[:15]),
                     bagli,
                 )
+            mali = AlisFaturasiService._mali_degisiklikler(fatura, veriler, satir_verileri)
+            if mali:
+                return AlisFaturasiService._bagli_alis_mali_uygula(
+                    session, fatura, veriler, satir_verileri
+                )
+            # Yalnız açıklama / belge yolu / tedarikçi fatura no
             ted_no = (veriler.get("tedarikci_fatura_no") or "").strip() or None
             mukerrer = AlisFaturasiService.mukerrer_tedarikci_faturasi(
                 session, fatura.cari_id, ted_no, fatura.id
@@ -996,6 +1148,11 @@ class AlisFaturasiService:
                 raise ValueError("Fatura onaylanamadı:\n• " + "\n• ".join(hatalar))
             if not AlisFaturasiService._stok_girisi_var_mi(session, fatura.fatura_no):
                 AlisFaturasiService._aktarim_stok_ve_mali_yaz(session, fatura)
+            else:
+                # Stok zaten kaydet anında yazıldıysa yine de en güncel alış fiyatını uygula
+                from database.alis_stok_fiyat_service import fatura_alis_fiyatlarini_uygula
+
+                fatura_alis_fiyatlarini_uygula(session, fatura)
             fatura.onaylandi = True
             fatura.onay_tarihi = datetime.now()
             fatura.row_version = mevcut_v + 1
@@ -1024,7 +1181,11 @@ class AlisFaturasiService:
 
         MasrafDagitimService.kilit_kontrol(alis_fatura_id=int(fatura_id))
         with get_session() as session:
-            fatura = session.get(AlisFaturasi, int(fatura_id))
+            fatura = session.scalar(
+                select(AlisFaturasi)
+                .options(selectinload(AlisFaturasi.satirlar))
+                .where(AlisFaturasi.id == int(fatura_id))
+            )
             if not fatura:
                 raise ValueError("Fatura bulunamadı.")
             if fatura.durum == "İPTAL":
@@ -1034,6 +1195,16 @@ class AlisFaturasiService:
             fatura.onaylandi = False
             fatura.onay_tarihi = None
             fatura.row_version = int(getattr(fatura, "row_version", 1) or 1) + 1
+            urun_kodlari = [
+                (s.urun_kodu or "").strip()
+                for s in (fatura.satirlar or [])
+                if (s.urun_kodu or "").strip()
+            ]
+            # Onay kalkınca fiyatı kalan geçerli kaynaklardan yeniden kur
+            from database.alis_stok_fiyat_service import stok_alis_fiyatini_yeniden_belirle
+
+            for kod in sorted(set(urun_kodlari)):
+                stok_alis_fiyatini_yeniden_belirle(session, kod)
             session.flush()
             fid = int(fatura.id)
             fno = fatura.fatura_no
@@ -1078,11 +1249,24 @@ class AlisFaturasiService:
                 )
                 fatura.durum = "İPTAL"
                 AlisFaturasiService._durumlari_guncelle(session, fatura)
+                urun_kodlari = [
+                    (s.urun_kodu or "").strip()
+                    for s in (fatura.satirlar or [])
+                    if (s.urun_kodu or "").strip()
+                ]
+                from database.alis_stok_fiyat_service import stok_alis_fiyatini_yeniden_belirle
+
+                for kod in sorted(set(urun_kodlari)):
+                    stok_alis_fiyatini_yeniden_belirle(session, kod)
                 fid = int(fatura.id)
                 from database.muhasebe_entegrasyon import muhasebe_hook
 
-                muhasebe_hook("alis_faturasi_iptal", fid, f"Alış faturası iptal {fatura.fatura_no}",
-                              session=session)
+                muhasebe_hook(
+                    "alis_faturasi_iptal",
+                    fid,
+                    f"Alış faturası iptal {fatura.fatura_no}",
+                    session=session,
+                )
             else:
                 return
 

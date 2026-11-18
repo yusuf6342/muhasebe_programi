@@ -643,11 +643,14 @@ class KrediKartiEkstreService:
             kid = int(o.kredi_karti_id)
             kart = kartlar[kid]
             tutar = _d(t.tutar)
+            from database.kk_taksit_islem_service import taksit_durum_etiket
+
             satir = {
                 "taksit_id": t.id,
                 "odeme_id": o.id,
                 "belge_no": o.belge_no,
                 "islem_tarihi": o.tarih,
+                "taksit_vade_tarihi": t.vade_tarihi,
                 "aciklama": o.aciklama or f"KK ödeme {o.belge_no}",
                 "is_yeri": "",
                 "islem_turu": o.cekim_turu,
@@ -665,11 +668,22 @@ class KrediKartiEkstreService:
                 "etki": tutar,
                 "kaynak_evrak": o.belge_no,
                 "taksit_durum": t.durum,
+                "taksit_durum_etiket": taksit_durum_etiket(t.durum),
                 "gider_kart_odeme_id": getattr(o, "gider_kart_odeme_id", None),
                 "kaynak_gider": "",
             }
             sonuc[kid]["harcama"] += tutar
             donem = KrediKartiEkstreService.taksit_kesimi(o, t, kart)
+            if donem is not None:
+                satir["ekstre_kesim_tarihi"] = donem.get("kesim_tarihi") or getattr(
+                    t, "ekstre_kesim_tarihi", None
+                )
+                satir["son_odeme_tarihi"] = donem.get("son_odeme_tarihi") or getattr(
+                    t, "banka_vade_tarihi", None
+                )
+            else:
+                satir["ekstre_kesim_tarihi"] = getattr(t, "ekstre_kesim_tarihi", None)
+                satir["son_odeme_tarihi"] = getattr(t, "banka_vade_tarihi", None)
             if donem is None:
                 sonuc[kid]["belirsiz"] += tutar
                 sonuc[kid]["belirsiz_satirlar"].append(satir)
@@ -773,6 +787,7 @@ class KrediKartiEkstreService:
         kesim: date | None = None,
         session=None,
         limit_oz: dict | None = None,
+        limit_tarih: date | None = None,
     ) -> dict:
         """``donem_borclari`` kart kaydından ekranlarda gösterilen tutarlar ve limit bilgisi.
 
@@ -781,6 +796,10 @@ class KrediKartiEkstreService:
 
         Kullanılan / kullanılabilir limit ``kk_limit_service`` tek kaynağından gelir
         (bağlı hesap ledger + plan-only; taksit çift sayılmaz).
+
+        ``limit_tarih`` yalnız açık as-of sorgu için verilir; ``bugun`` (ekstre kesim
+        ayrımı) limit hesabına taşınmaz — aksi halde güncel görünüm yanlışlıkla
+        plan_asof'a düşüp ledger borcunu yok sayar.
         """
         bugun = bugun or date.today()
         kart = veri["kart"]
@@ -813,7 +832,7 @@ class KrediKartiEkstreService:
         if limit_oz is None:
             if session is not None:
                 limit_oz = limit_kullanimi(
-                    int(kart.id), tarih=bugun, session=session, plan_veri=veri
+                    int(kart.id), tarih=limit_tarih, session=session, plan_veri=veri
                 )
             else:
                 # Oturumsuz çağrı: yalnız plan (geriye uyum); kart_borc_ozeti session ile çağırır
@@ -852,7 +871,11 @@ class KrediKartiEkstreService:
         if int(kredi_karti_id) not in veri:
             raise ValueError("Kredi kartı bulunamadı.")
         return KrediKartiEkstreService.borc_ozeti_hesapla(
-            veri[int(kredi_karti_id)], bugun=tarih, kesim=kesim, session=session
+            veri[int(kredi_karti_id)],
+            bugun=tarih or date.today(),
+            kesim=kesim,
+            session=session,
+            limit_tarih=tarih,
         )
 
     @staticmethod
@@ -1082,7 +1105,7 @@ class KrediKartiEkstreService:
         session.flush()
         q = (select(KrediKartiOdemeTaksit).join(KrediKartiOdeme)
              .where(KrediKartiOdeme.kredi_karti_id == int(kart.id), KrediKartiOdeme.durum == "AÇIK",
-                    KrediKartiOdemeTaksit.durum.in_(("BEKLIYOR", "ODENDI")))
+                    KrediKartiOdemeTaksit.durum.in_(("BEKLIYOR", "KARTA_ISLENDI", "ODENDI")))
              .options(selectinload(KrediKartiOdemeTaksit.odeme))
              .order_by(KrediKartiOdeme.tarih, KrediKartiOdeme.id, KrediKartiOdemeTaksit.taksit_no,
                        KrediKartiOdemeTaksit.id))
@@ -1123,8 +1146,22 @@ class KrediKartiEkstreService:
         for o in gecerli:
             dagit(_d(o.tutar), o.id)
         for t in taksitler:
-            t.durum = "ODENDI" if kalan[t.id] <= Decimal("0.001") else "BEKLIYOR"
+            if kalan[t.id] <= Decimal("0.001"):
+                t.durum = "ODENDI"
+            elif getattr(t, "kk_hareket_belge_no", None) or (t.durum or "").upper() == "KARTA_ISLENDI":
+                t.durum = "KARTA_ISLENDI"
+            else:
+                t.durum = "BEKLIYOR"
         session.flush()
+        # Nakit avans: kalan anapara yalnız gerçek ODENDI ile düşer; faiz yeniden giderleşmez
+        try:
+            from database.nakit_avans_service import NakitAvansService
+
+            NakitAvansService.ekstre_odeme_sonrasi_guncelle(
+                session, kredi_karti_id=int(kart.id) if kart else None
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def odeme_yap(

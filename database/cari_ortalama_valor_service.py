@@ -148,11 +148,14 @@ def _ortalama_tarih_ve_gun(
     referans: date,
     *,
     valor: bool = True,
+    avans_dahil: bool = False,
 ) -> tuple[date | None, float, Decimal, Decimal, str | None]:
     """Açık kalanlar üzerinden ağırlıklı ortalama.
 
     valor=True → gün = T−V, ortalama tarih ≈ V ağırlıklı.
     valor=False → gün = T−I (yaş), ortalama tarih ≈ I ağırlıklı.
+    avans_dahil=False (varsayılan): Açık Valör hesabında AVANS hariç.
+    avans_dahil=True: salt avans bekleme yaşı için.
     Dönüş: (ortalama_tarih, gun, dahil_tutar, haric_tutar, uyari)
     """
     toplam = ZERO
@@ -174,6 +177,12 @@ def _ortalama_tarih_ve_gun(
             gun = (referans - vade).days
             ord_agirlik += tutar * Decimal(vade.toordinal())
         else:
+            # Açık valör: avans/fazla ödeme ağırlığa girmez (bekleme yaşı ayrı)
+            if not avans_dahil and (
+                d.get("valor_uygulanamaz") or d.get("kalem_turu") == "AVANS"
+            ):
+                haric += tutar
+                continue
             islem = _islem_tarihi(d)
             if islem is None:
                 haric += tutar
@@ -356,17 +365,23 @@ def fifo_valor_paketi_hesapla(
         dilim: Decimal,
         yontem: str,
         kapanis_turu: str,
+        acilis_aktarim: bool = False,
     ) -> None:
         if sadece_acik:
             return
         esas, vade_kaynak, ozgun_eksik = _esas_vade_ve_kaynak(
             vade if not vade_eksik else None, belge_tarih
         )
-        # Kart kapanan valör = P − I (belge tarihi); aynı gün → 0
+        # Ham P−I: açılış BORÇ → sonraki DEVIREN teknik aktarım (P<I) valör dışı
+        ham_gun = None
         if odeme_tarih is not None and belge_tarih is not None:
-            kapanan_gun = (odeme_tarih - belge_tarih).days
-        else:
+            ham_gun = (odeme_tarih - belge_tarih).days
+        teknik_acilis = bool(acilis_aktarim) or (ham_gun is not None and ham_gun < 0)
+        # Kart kapanan valör = P − I; aynı gün → 0. Teknik açılış pay/paydada yok.
+        if ham_gun is None:
             kapanan_gun = None
+        else:
+            kapanan_gun = max(0, ham_gun)
         vade_farki = (odeme_tarih - esas).days if esas and odeme_tarih else None
         kapanan_dilimler.append(
             {
@@ -385,7 +400,9 @@ def fifo_valor_paketi_hesapla(
                 "odeme_suresi_gun": kapanan_gun,
                 "yon": "BORC",
                 "yontem": yontem,
-                "kapanis_turu": kapanis_turu,
+                "kapanis_turu": "ACILIS_AKTARIM" if teknik_acilis else kapanis_turu,
+                "kalem_turu": "ACILIS_AKTARIM" if teknik_acilis else "KAPAMA",
+                "kapanan_valor_haric": teknik_acilis,
             }
         )
 
@@ -398,6 +415,8 @@ def fifo_valor_paketi_hesapla(
             kalan_odeme = _kurus(kalan_odeme)
             odeme_no = (islem.belge_no or "").strip()
 
+            acilis_kredi = CariService._tedarikci_acilis_borc_mu(islem) if tedarikci else False
+
             def _uygula(indeksler: list[int], *, ayni_belge: bool) -> None:
                 nonlocal kalan_odeme, bas
                 for i in indeksler:
@@ -407,7 +426,14 @@ def fifo_valor_paketi_hesapla(
                     vade, belge_tarih, kalan_dilim, _orj, borc_no, _son, vade_eksik = dilim_satir
                     if kalan_dilim <= 0:
                         continue
-                    if belge_tarih and islem.tarih and belge_tarih > islem.tarih:
+                    # Açılış BORÇ, sonraki DEVIREN/alışa mahsup edilebilir; normal ödemede
+                    # gelecek tarihli faturaya avans yazılır (tarih kısıtı).
+                    if (
+                        not acilis_kredi
+                        and belge_tarih
+                        and islem.tarih
+                        and belge_tarih > islem.tarih
+                    ):
                         continue
                     dilim = min(kalan_dilim, kalan_odeme)
                     dilim = _kurus(dilim)
@@ -423,6 +449,7 @@ def fifo_valor_paketi_hesapla(
                         dilim=dilim,
                         yontem="AYNI_BELGE" if ayni_belge else "FIFO",
                         kapanis_turu="AYNI_BELGE" if ayni_belge else "TAHSILAT_ODEME",
+                        acilis_aktarim=acilis_kredi,
                     )
                     kalan_odeme = _kurus(kalan_odeme - dilim)
 
@@ -472,7 +499,7 @@ def fifo_valor_paketi_hesapla(
                     vade if not vade_eksik else None, belge_tarih
                 )
                 kapanan_gun = (
-                    (son_odeme - belge_tarih).days
+                    max(0, (son_odeme - belge_tarih).days)
                     if belge_tarih and son_odeme
                     else None
                 )
@@ -604,6 +631,14 @@ def _sonuc_olustur(
         d.get("valor_uygulanamaz") or d.get("kalem_turu") == "AVANS" for d in dilimler
     )
     if hepsi_avans:
+        yas_t, yas_g, yas_tut, _, _ = _ortalama_tarih_ve_gun(
+            dilimler, referans, valor=False, avans_dahil=True
+        )
+        yas_g_q = (
+            float(Decimal(str(yas_g)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if yas_tut > 0
+            else None
+        )
         return {
             "bakiye": _kurus(bakiye),
             "bakiye_yonu": yon,
@@ -612,8 +647,8 @@ def _sonuc_olustur(
             "valor_turu_etiket": "Avans / fazla ödeme (fatura valörü yok)",
             "ortalama_valor_tarihi": None,
             "ortalama_valor_gun": None,
-            "ortalama_yas_gun": yas_gun if yas_tutar > 0 else None,
-            "ortalama_yas_tarihi": yas_tarih,
+            "ortalama_yas_gun": yas_g_q,
+            "ortalama_yas_tarihi": yas_t,
             "toplam_acik_tutar": _kurus(sum((_kurus(d.get("tutar")) for d in dilimler), ZERO)),
             "valor_dahil_tutar": ZERO,
             "valor_haric_tutar": _kurus(sum((_kurus(d.get("tutar")) for d in dilimler), ZERO)),
@@ -649,6 +684,9 @@ def _sonuc_olustur(
         }
 
     uyari = yas_uyari
+    # Açık valör yalnız fatura/açık borç dilimlerinden; avans hariç tutarı uyar
+    valor_dahil = yas_tutar
+    valor_haric = yas_haric
     fark = abs(_kurus(abs(bakiye)) - toplam_acik)
     if fark > KURUS:
         ek = (
@@ -663,6 +701,11 @@ def _sonuc_olustur(
             fark,
         )
 
+    # Σ(açık × yaş) / Σ(açık) → iki ondalık
+    gun_yuvarla = float(
+        Decimal(str(yas_gun)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
+
     return {
         "bakiye": _kurus(bakiye),
         "bakiye_yonu": yon,
@@ -670,12 +713,12 @@ def _sonuc_olustur(
         "valor_turu": tur,
         "valor_turu_etiket": _valor_turu_etiket(tur),
         "ortalama_valor_tarihi": yas_tarih,
-        "ortalama_valor_gun": yas_gun,
-        "ortalama_yas_gun": yas_gun,
+        "ortalama_valor_gun": gun_yuvarla,
+        "ortalama_yas_gun": gun_yuvarla,
         "ortalama_yas_tarihi": yas_tarih,
         "toplam_acik_tutar": toplam_acik,
-        "valor_dahil_tutar": yas_tutar,
-        "valor_haric_tutar": yas_haric,
+        "valor_dahil_tutar": valor_dahil,
+        "valor_haric_tutar": valor_haric,
         "acik_kalemler": dilimler,
         "uyari": uyari,
         "hesaplama_sebep": None,
@@ -684,13 +727,21 @@ def _sonuc_olustur(
 
 
 def kapanan_valor_ortalama(kapanan_dilimler: list[dict[str, Any]]) -> dict[str, Any]:
-    """Σ(m × (P−I)) / Σ(m) — kart kapanan valör; P−V ayrı ``vade_farki`` olarak tutulur."""
+    """Σ(m × (P−I)) / Σ(m) — kart kapanan valör; P−V ayrı ``vade_farki`` olarak tutulur.
+
+    Teknik açılış aktarımı (``kapanan_valor_haric`` / ACILIS_AKTARIM) pay ve paydada yok.
+    Sıfır günlü gerçek aynı-gün kapama paydada kalır (m×0).
+    """
     gecerli = []
     vade_gecerli = []
     haric = ZERO
+    acilis_haric = ZERO
     for d in kapanan_dilimler:
         tutar = _kurus(d.get("tutar"))
         if tutar <= 0:
+            continue
+        if d.get("kapanan_valor_haric") or d.get("kalem_turu") == "ACILIS_AKTARIM":
+            acilis_haric += tutar
             continue
         g = d.get("kapanan_valor_gun")
         if g is None:
@@ -703,7 +754,7 @@ def kapanan_valor_ortalama(kapanan_dilimler: list[dict[str, Any]]) -> dict[str, 
         if g is None:
             haric += tutar
         else:
-            gecerli.append({"tutar": tutar, "gun": float(g)})
+            gecerli.append({"tutar": tutar, "gun": float(max(0, int(g)))})
         vf = d.get("vade_farki_gun")
         if vf is None:
             p = d.get("odeme_tarihi") or d.get("kapanma_tarihi")
@@ -711,6 +762,7 @@ def kapanan_valor_ortalama(kapanan_dilimler: list[dict[str, Any]]) -> dict[str, 
             if isinstance(p, date) and isinstance(v, date):
                 vf = (p - v).days
         if vf is not None:
+            # Erken ödeme: P−V negatif bırakılır
             vade_gecerli.append({"tutar": tutar, "gun": float(vf)})
     if not gecerli:
         return {
@@ -720,25 +772,43 @@ def kapanan_valor_ortalama(kapanan_dilimler: list[dict[str, Any]]) -> dict[str, 
                 _agirlikli_ortalama_gun(vade_gecerli) if vade_gecerli else None
             ),
             "kapanan_tutar": ZERO,
-            "kapanan_haric_tutar": _kurus(haric),
-            "uyari": "— / kapanan işlem yok" if haric == 0 else "Kapanan dilimlerde tarih eksik",
+            "kapanan_haric_tutar": _kurus(haric + acilis_haric),
+            "acilis_aktarim_haric_tutar": _kurus(acilis_haric),
+            "uyari": (
+                "— / kapanan işlem yok"
+                if haric == 0 and acilis_haric == 0
+                else (
+                    f"Teknik açılış aktarımı {_kurus(acilis_haric)} TL kapanan valör dışı."
+                    if acilis_haric > 0
+                    else "Kapanan dilimlerde tarih eksik"
+                )
+            ),
             "olcu": "kapanan_valor_P_eksi_I",
         }
     gun = _agirlikli_ortalama_gun(gecerli, gun_alani="gun")
+    gun_q = float(Decimal(str(gun)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     tutar = _kurus(sum((_kurus(d["tutar"]) for d in gecerli), ZERO))
+    vade_ort = (
+        _agirlikli_ortalama_gun(vade_gecerli) if vade_gecerli else None
+    )
+    if vade_ort is not None:
+        vade_ort = float(
+            Decimal(str(vade_ort)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+    uyari = None
+    if haric > 0:
+        uyari = f"Kapanan tutarın {_kurus(haric)} TL kısmı tarih eksikliği nedeniyle hariç."
+    if acilis_haric > 0:
+        ek = f"Teknik açılış aktarımı {_kurus(acilis_haric)} TL pay/paydada yok."
+        uyari = f"{uyari} {ek}".strip() if uyari else ek
     return {
-        "odenen_ortalama_valor_gun": gun,
-        "ortalama_odeme_suresi_gun": gun,  # P−I ile aynı ölçü
-        "ortalama_vade_farki_gun": (
-            _agirlikli_ortalama_gun(vade_gecerli) if vade_gecerli else None
-        ),
+        "odenen_ortalama_valor_gun": gun_q,
+        "ortalama_odeme_suresi_gun": gun_q,  # P−I ile aynı ölçü
+        "ortalama_vade_farki_gun": vade_ort,
         "kapanan_tutar": tutar,
-        "kapanan_haric_tutar": _kurus(haric),
-        "uyari": (
-            f"Kapanan tutarın {_kurus(haric)} TL kısmı tarih eksikliği nedeniyle hariç."
-            if haric > 0
-            else None
-        ),
+        "kapanan_haric_tutar": _kurus(haric + acilis_haric),
+        "acilis_aktarim_haric_tutar": _kurus(acilis_haric),
+        "uyari": uyari,
         "olcu": "kapanan_valor_P_eksi_I",
     }
 
@@ -916,8 +986,8 @@ def fifo_valor_paketi_oturumdan(
         p = odeme.tarih  # mali ödeme tarihi; kapatma.tarih değil
         i_tar = h.satis_tarihi
         esas, vade_kaynak, ozgun_eksik = _esas_vade_ve_kaynak(vade, i_tar)
-        # Kart kapanan valör = P − I
-        kapanan_gun = (p - i_tar).days if p and i_tar else None
+        # Kart kapanan valör = P − I; P<I → 0 (vade farkı P−V negatif kalabilir)
+        kapanan_gun = max(0, (p - i_tar).days) if p and i_tar else None
         vade_farki = (p - esas).days if esas and p else None
         if not sadece_acik:
             yontem = (k.yontem or "BAGLI").upper()
@@ -959,7 +1029,14 @@ def fifo_valor_paketi_oturumdan(
                 kalan_acik_tutar=tutar_yaz,
             )
         )
+    # Tedarikçi kuyruğuna yalnız negatif alış SH girer; pozitif DEVIREN SH aynı
+    # belge_no ile CI alacağını engellemesin.
     hareket_belgeleri = {(h.belge_no or "") for h in hareketler}
+    tedarikci_kuyruk_belgeleri = {
+        (h.belge_no or "").strip()
+        for h in hareketler
+        if tedarikci and _kurus(h.satis_tutari) < 0 and (h.belge_no or "").strip()
+    }
     kopya_i = []
     for i in islemler:
         odeme_kalan = kaynak_kalan.get(int(i.id), ZERO)
@@ -969,10 +1046,14 @@ def fifo_valor_paketi_oturumdan(
         borc_tutar = ZERO
         alacak_tutar = ZERO
         if tedarikci:
-            # Ödeme / Virman Ödeme / KK Çekimi: kapama tutarı; açılış alacağı SH yoksa kuyruğa
-            if (i.islem_turu or "") in ("Ödeme", "Virman Ödeme", "KK Çekimi"):
+            # Ödeme / açılış BORÇ: kapama tutarı; DEVIREN vb. açılış alacağı kuyruğa
+            if odeme_kalan > 0 and (
+                (i.islem_turu or "") in ("Ödeme", "Virman Ödeme", "KK Çekimi")
+                or CariService._tedarikci_acilis_borc_mu(i)
+                or (getattr(i, "islem_turu", None) or "").casefold().startswith("iade")
+            ):
                 borc_tutar = odeme_kalan
-            elif orj_alacak > 0 and no and no not in hareket_belgeleri:
+            elif orj_alacak > 0 and no and no not in tedarikci_kuyruk_belgeleri:
                 alacak_tutar = orj_alacak
         else:
             alacak_tutar = odeme_kalan

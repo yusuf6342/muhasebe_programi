@@ -346,6 +346,17 @@ class AcikKalemService:
         raise AcikKalemDegisti(f"{hareket.belge_no} kalemi eşzamanlı güncelleniyor; tekrar deneyin.")
 
     @staticmethod
+    def _acikligi_geri_yukle(session, hareket: SatisHareketi, miktar: Decimal) -> None:
+        """Kapanmış tutarı yeniden açar: satış (+), alış/hizmet gider (−) işaretle."""
+        miktar = _kurus(miktar)
+        if miktar <= 0 or hareket is None:
+            return
+        if _d(hareket.satis_tutari) < 0:
+            AcikKalemService._ekle(session, hareket, -miktar)
+        else:
+            AcikKalemService._ekle(session, hareket, miktar)
+
+    @staticmethod
     def beklenen_dogrula(session, cari_id: int, beklenen: dict | None) -> None:
         """Ekran açıldıktan sonra seçilen kalemlerin açık tutarı değiştiyse kaydı durdurur.
 
@@ -788,7 +799,7 @@ class AcikKalemService:
                 miktar = _d(kayit.tutar) if ks is None else min(_d(kayit.tutar), ks)
                 hedef = session.get(SatisHareketi, int(kayit.hedef_hareket_id))
                 if hedef is not None:
-                    AcikKalemService._ekle(session, hedef, miktar)
+                    AcikKalemService._acikligi_geri_yukle(session, hedef, miktar)
                     AcikKalemService.belge_senkron(session, hedef, -miktar)
                 if kayit.kaynak_hareket_id:
                     kaynak = session.get(SatisHareketi, int(kayit.kaynak_hareket_id))
@@ -861,7 +872,7 @@ class AcikKalemService:
             AcikKalemService._kaydi_iptal_et(kayit, neden, kimlik)
             toplam += miktar
         if toplam > 0:
-            AcikKalemService._ekle(session, hareket, toplam)
+            AcikKalemService._acikligi_geri_yukle(session, hareket, toplam)
             AcikKalemService.belge_senkron(session, hareket, -toplam)
         session.flush()
         return _kurus(toplam)

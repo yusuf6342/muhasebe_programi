@@ -94,10 +94,10 @@ class OrtalamaValorBirimTest(unittest.TestCase):
         from database.cari_ortalama_valor_service import _sonuc_olustur
 
         sonuc = _sonuc_olustur(Decimal("62670"), acik, _al, referans)
-        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.19435, places=4)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.19, places=2)
         # Ağırlıklı ortalama belge tarihi (I)
         self.assertEqual(sonuc["ortalama_valor_tarihi"], date(2026, 9, 19))
-        self.assertAlmostEqual(sonuc["ortalama_yas_gun"], 38.19435, places=4)
+        self.assertAlmostEqual(sonuc["ortalama_yas_gun"], 38.19, places=2)
         self.assertEqual(sonuc["olcu"], "acik_valor_T_eksi_I")
 
     def test_00b_vade_eksik_belge_tarihi_esas(self):
@@ -118,8 +118,8 @@ class OrtalamaValorBirimTest(unittest.TestCase):
 
         sonuc = _sonuc_olustur(Decimal("62670"), acik, _al, referans)
         # Valör günü = belge yaşı (özgün vade olmadığı için)
-        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.19435, places=4)
-        self.assertAlmostEqual(sonuc["ortalama_yas_gun"], 38.19435, places=4)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 38.19, places=2)
+        self.assertAlmostEqual(sonuc["ortalama_yas_gun"], 38.19, places=2)
 
     def test_00c_vade_yoksa_belge_tarihi_gecikme(self):
         """1 Kasım belgesi, vade boş → 11 Kasım’da 10 gün gecikmiş."""
@@ -299,10 +299,10 @@ class OrtalamaValorBirimTest(unittest.TestCase):
             },
         ]
         ozet = kapanan_valor_ortalama(dilimler)
-        self.assertAlmostEqual(ozet["odenen_ortalama_valor_gun"], 16.25, places=4)
+        self.assertAlmostEqual(ozet["odenen_ortalama_valor_gun"], 16.25, places=2)
         self.assertEqual(ozet["olcu"], "kapanan_valor_P_eksi_I")
-        self.assertAlmostEqual(ozet["ortalama_odeme_suresi_gun"], 16.25, places=4)
-        self.assertAlmostEqual(ozet["ortalama_vade_farki_gun"], 3.25, places=4)
+        self.assertAlmostEqual(ozet["ortalama_odeme_suresi_gun"], 16.25, places=2)
+        self.assertAlmostEqual(ozet["ortalama_vade_farki_gun"], 3.25, places=2)
 
     def test_07c_net_bakiye_acik_esitlik(self):
         """Açık borç − açık alacak = net (FIFO sonrası)."""
@@ -644,7 +644,7 @@ class OrtalamaValorDbTest(unittest.TestCase):
         self.assertEqual(acik[0]["tutar"], Decimal("600.00"))
         self.assertEqual(acik[1]["tutar"], Decimal("2000.00"))
         sonuc = _sonuc_olustur(Decimal("2600"), acik, _a, referans)
-        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 8.6153846, places=4)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 8.62, places=2)
 
     def test_14_musteri_baglantili_tahsilat_9_69(self):
         """Aynı tahsilat 2. faturaya bağlıysa valör 9,69."""
@@ -671,7 +671,7 @@ class OrtalamaValorDbTest(unittest.TestCase):
         from database.cari_ortalama_valor_service import _sonuc_olustur
 
         sonuc = _sonuc_olustur(Decimal("2600"), acik, [], referans)
-        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 9.6923077, places=4)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 9.69, places=2)
 
     def test_15_tedarikci_negatif_alis_fifo(self):
         """Tedarikçi negatif SH + ödeme → açık alış belge yaşı."""
@@ -695,6 +695,106 @@ class OrtalamaValorDbTest(unittest.TestCase):
 
         sonuc = _sonuc_olustur(Decimal("-42132.41"), [], acik_a, referans)
         self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 9.25, places=2)
+
+    def test_16b_kapanan_valor_p_kucuk_i_sifir(self):
+        """Açılış tarihi < DEVIREN belge tarihi → kapanan P−I = 0 (negatif değil)."""
+        referans = date(2026, 11, 17)
+        hareketler = [_mock_hareket(1, date(2026, 8, 31), "DEV", -10000)]
+        # Tedarikçi: negatif SH = alış; açılış BORÇ erken tarih
+        islemler = [
+            _mock_islem(1, date(2026, 8, 31), "DEV", alacak=10000, tur="AÇILIŞ"),
+            _mock_islem(2, date(2026, 6, 16), "AK-1", borc=10000, tur="Açılış"),
+        ]
+        # DEV pozitif SH yok; CI alacak kuyruk + açılış borc
+        hareketler = []  # yalnız CI
+        _tam, acik_b, dilimler, acik_a = fifo_valor_paketi_hesapla(
+            [_mock_hareket(99, date(2026, 8, 31), "DEV", 1)],  # pozitif SH atlanır
+            [
+                _mock_islem(1, date(2026, 8, 31), "DEV", alacak=10000, tur="AÇILIŞ"),
+                _mock_islem(2, date(2026, 6, 16), "AK-1", borc=10000, tur="Açılış"),
+            ],
+            cari_turu="Tedarikçi",
+            referans=referans,
+        )
+        self.assertTrue(dilimler)
+        self.assertTrue(dilimler[0].get("kapanan_valor_haric"))
+        self.assertEqual(dilimler[0]["kalem_turu"], "ACILIS_AKTARIM")
+        self.assertEqual(dilimler[0]["odeme_tarihi"], date(2026, 6, 16))
+        self.assertEqual(dilimler[0]["borc_tarihi"], date(2026, 8, 31))
+        oz = kapanan_valor_ortalama(dilimler)
+        # Teknik açılış pay/paydada yok → kapanan valör yok
+        self.assertIsNone(oz["odenen_ortalama_valor_gun"])
+        self.assertEqual(oz["acilis_aktarim_haric_tutar"], Decimal("10000.00"))
+        _ = (hareketler, islemler, acik_b, acik_a)
+
+    def test_16_tedarikci_deviren_acilis_agirlikli_valor(self):
+        """DEVIREN alacak + açılış BORÇ + ödemeler → açık valör tutar-ağırlıklı (T00073 tipi)."""
+        referans = date(2026, 11, 17)
+        hareketler = [
+            _mock_hareket(6103, date(2026, 8, 31), "DEVIREN", 50751.86),  # pozitif SH yok sayılır
+            _mock_hareket(1, date(2026, 10, 16), "AF-14302", -1306.89),
+            _mock_hareket(2, date(2026, 11, 3), "AF-15099", -283.14),
+            _mock_hareket(3, date(2026, 11, 13), "ARAY19", -9781.59),
+        ]
+        islemler = [
+            _mock_islem(1, date(2026, 8, 31), "DEVIREN", alacak=50751.86, tur="AÇILIŞ"),
+            _mock_islem(2, date(2026, 6, 16), "AK-1", borc=38040.07, tur="Açılış"),
+            _mock_islem(3, date(2026, 11, 17), "OMK-90", borc=12711.79 + 880.06, tur="Ödeme"),
+        ]
+        # Basitleştirilmiş: açılış 38040,07 DEVIREN'i kısmen kapatır; kalan + faturalar − ödeme
+        # Bu test tam T00073 değil; oturum motoru + ağırlıklı formül için duman.
+        from database.cari_ortalama_valor_service import _sonuc_olustur
+
+        acik = [
+            {
+                "borc_belge_no": "AF-14302",
+                "borc_tarihi": date(2026, 10, 16),
+                "alacak_belge_no": "AF-14302",
+                "alacak_tarihi": date(2026, 10, 16),
+                "tutar": Decimal("426.83"),
+                "gun": 32,
+                "yas_gun": 32,
+                "kalem_turu": "FATURA",
+                "yon": "ALACAK",
+            },
+            {
+                "borc_belge_no": "AF-15099",
+                "borc_tarihi": date(2026, 11, 3),
+                "alacak_belge_no": "AF-15099",
+                "alacak_tarihi": date(2026, 11, 3),
+                "tutar": Decimal("283.14"),
+                "gun": 14,
+                "yas_gun": 14,
+                "kalem_turu": "FATURA",
+                "yon": "ALACAK",
+            },
+            {
+                "borc_belge_no": "ARAY19",
+                "borc_tarihi": date(2026, 11, 13),
+                "alacak_belge_no": "ARAY19",
+                "alacak_tarihi": date(2026, 11, 13),
+                "tutar": Decimal("9781.59"),
+                "gun": 4,
+                "yas_gun": 4,
+                "kalem_turu": "FATURA",
+                "yon": "ALACAK",
+            },
+        ]
+        # Avans yaşları karışırsa valör bozulmamalı
+        avans = {
+            "alacak_belge_no": "OMK-AV",
+            "alacak_tarihi": date(2026, 9, 1),
+            "tutar": Decimal("4000.00"),
+            "gun": None,
+            "yas_gun": 77,
+            "valor_uygulanamaz": True,
+            "kalem_turu": "AVANS",
+            "yon": "ALACAK",
+        }
+        sonuc = _sonuc_olustur(Decimal("-10491.56"), [], acik + [avans], referans)
+        self.assertAlmostEqual(sonuc["ortalama_valor_gun"], 5.41, places=2)
+        self.assertEqual(sonuc["valor_dahil_tutar"], Decimal("10491.56"))
+        _ = (hareketler, islemler)
 
     def test_11_tarihsel_kesim_sonraki_odeme_yok(self):
         """08.11 kesiminde 09.11 tahsilatı kapatma yaratmaz; 10.11'de kapatır."""

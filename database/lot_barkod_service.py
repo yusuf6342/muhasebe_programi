@@ -16,6 +16,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from database.database import get_session
+from database.fatura_kdv_service import kdv_deger
 from database.models.stok import StokBarkod, StokBirim, StokKarti, StokLotu
 from database.models.stok_lot_barkod import (
     StokEtiketIsi,
@@ -205,7 +206,7 @@ class LotBarkodService:
                 "miktar": Decimal("1"),  # 1 etiket birimi
                 "birim_fiyat": fiyat,
                 "mevcut_stok": Decimal(str(lot.kalan_miktar or 0)),
-                "kdv_orani": Decimal(str(stok.kdv_orani or 20)),
+                "kdv_orani": kdv_deger(getattr(stok, "kdv_orani", None)),
                 "aktif": True,
                 "satis_kapali": False,
             }

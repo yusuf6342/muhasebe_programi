@@ -1695,6 +1695,11 @@ def ayarlar_goster(app) -> None:
 
         tema_ayarlari_ac(app)
 
+    def _fiyat_gorunum():
+        from fiyat_gorunum_ui import fiyat_gorunum_goster
+
+        fiyat_gorunum_goster(app)
+
     def _firma_donem():
         from devir_ui import firma_donem_islemleri_goster
 
@@ -1703,6 +1708,7 @@ def ayarlar_goster(app) -> None:
     for i, (baslik, komut) in enumerate(
         (
             ("GÖRÜNÜM / TEMA", _tema),
+            ("FİYAT GÖRÜNÜMÜ", _fiyat_gorunum),
             ("KART TÜRLERİ VE GRUPLARI", _kart_turleri),
             ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
             ("MUHASEBELEŞTİRME AYARLARI", _muhasebelestirme),

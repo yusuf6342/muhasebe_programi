@@ -25,7 +25,7 @@ from database.stok_service import (
     fabrika_fiyati_hesapla,
     satis_fiyat_gorunen_ad,
 )
-from database.models.stok import KDV_ORANLARI, VARSAYILAN_KDV_ORANI
+from database.models.stok import KDV_ORANLARI
 from database.session_manager import oturum
 
 import stok_kart_tema as sktema
@@ -126,6 +126,12 @@ def para_goster(tutar):
     if tutar is None:
         return ""
     return f"{float(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fiyat_birim_goster(tutar) -> str:
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(tutar)
 
 
 def miktar_goster_tr(miktar, bos_sifir=False):
@@ -2821,7 +2827,12 @@ class StokKartiDialog(tk.Toplevel):
         kdv_w = ttk.Combobox(kdv_satir, values=KDV_ORANLARI, width=8, state="readonly", style="StokKart.TCombobox")
         mevcut_kdv = getattr(self.stok, "kdv_orani", None) if self.stok else None
         if mevcut_kdv is None:
-            kdv_w.set(str(int(VARSAYILAN_KDV_ORANI)))
+            from database.fatura_kdv_service import firma_varsayilan_kdv_orani, satir_kdv_metin_sayisal
+
+            metin = satir_kdv_metin_sayisal(firma_varsayilan_kdv_orani())
+            if metin not in KDV_ORANLARI:
+                kdv_w.configure(values=KDV_ORANLARI + (metin,), state="normal")
+            kdv_w.set(metin)
         else:
             from database.fatura_kdv_service import satir_kdv_metin_sayisal
 
@@ -3186,7 +3197,7 @@ class StokKartiDialog(tk.Toplevel):
             self.fiyat_alanlari[fiyat_adi] = giris
         ttk.Label(
             alis_cerceve,
-            text="Alış = son alış faturası net birim fiyatı",
+            text="Alış = son alış faturası iskonto sonrası KDV dahil net birim",
             style="StokKartPanelMuted.TLabel",
         ).grid(row=10, column=0, columnspan=2, padx=4, pady=(2, 0), sticky="w")
 
@@ -3484,16 +3495,19 @@ class StokKartiDialog(tk.Toplevel):
                     self.iskonto_alanlari[anahtar].insert(
                         0, f"{Decimal(deger):f}".rstrip("0").rstrip(".")
                     )
+            self._fiyat_kaynak = {}
             for fiyat in self.stok.fiyatlar:
                 if fiyat.fiyat_adi in self.fiyat_kdv_alanlari:
                     self.fiyat_kdv_alanlari[fiyat.fiyat_adi].set(
                         fiyat_kdv_metni(getattr(fiyat, "kdv_durumu", None))
                     )
                 if fiyat.fiyat_adi in self.fiyat_alanlari:
+                    self._fiyat_kaynak[fiyat.fiyat_adi] = fiyat.tutar
                     self._fiyat_yaz(fiyat.fiyat_adi, self._fiyat_metni_tr(fiyat.tutar))
                 else:
                     hedef = ESKI_FIYAT_ESLEME.get(fiyat.fiyat_adi)
                     if hedef and hedef in self.fiyat_alanlari and not self.fiyat_alanlari[hedef].get():
+                        self._fiyat_kaynak[hedef] = fiyat.tutar
                         self._fiyat_yaz(hedef, self._fiyat_metni_tr(fiyat.tutar))
                 h = (getattr(self, "fiyat_hesap_alanlari", None) or {}).get(fiyat.fiyat_adi)
                 if h:
@@ -5603,18 +5617,8 @@ class StokKartiDialog(tk.Toplevel):
             messagebox.showerror("Yerine Koyma", str(exc), parent=self)
 
     def _fiyat_metni_tr(self, tutar) -> str:
-        """Türkçe ondalık; hassasiyet korunur (trailing sıfırlar kırpılır)."""
-        if tutar is None or str(tutar).strip() == "":
-            return ""
-        try:
-            d = Decimal(str(tutar).replace(",", "."))
-        except Exception:
-            return str(tutar)
-        s = f"{d:f}".rstrip("0").rstrip(".")
-        if "." in s:
-            tam, kes = s.split(".", 1)
-            return f"{tam},{kes}"
-        return s
+        """Program Ayarları → Fiyat Görünümü (görünüm; kayıt hassasiyeti ayrı)."""
+        return fiyat_birim_goster(tutar)
 
     def _satis_tablosunu_kur(self, kodlar: list[str]):
         """Satış fiyatı satırlarını (yeniden) oluşturur; mevcut tutarları korumaya çalışır."""
@@ -6084,6 +6088,9 @@ class StokKartiDialog(tk.Toplevel):
                 if alis_token != getattr(self, "_alis_fiyat_token", 0) or getattr(self, "_kapaniyor", False):
                     return
                 if son_net is not None:
+                    if not hasattr(self, "_fiyat_kaynak"):
+                        self._fiyat_kaynak = {}
+                    self._fiyat_kaynak["ALIŞ FİYATI"] = son_net
                     self._fiyat_yaz("ALIŞ FİYATI", self._fiyat_metni_tr(son_net))
                 else:
                     w = self.fiyat_alanlari.get("ALIŞ FİYATI")
@@ -6893,7 +6900,7 @@ class StokKartiDialog(tk.Toplevel):
             "ana_kart_turu_id": ana_id,
             "alt_kart_turu_id": alt_id,
             "birim": self.alanlar["birim"].get().strip() or "Adet",
-            "kdv_orani": self.alanlar["kdv_orani"].get().strip() or str(int(VARSAYILAN_KDV_ORANI)),
+            "kdv_orani": self.alanlar["kdv_orani"].get().strip() or None,
             "rapor_grubu": "",
             "ana_grup_id": self._grup_secili_id("ana") if hasattr(self, "grup_alanlari") else None,
             "tali_grup_id": self._grup_secili_id("tali") if hasattr(self, "grup_alanlari") else None,
@@ -7012,7 +7019,25 @@ class StokKartiDialog(tk.Toplevel):
             veriler["raf_omru"] = None
         # Bağlı satış fiyatlarını kayıttan önce güncelle
         self._satis_bagli_fiyatlari_guncelle()
-        fiyatlar = [(ad, giris.get().strip()) for ad, giris in self.fiyat_alanlari.items()]
+        from database.fiyat_gorunum_service import fiyat_kayit_degeri
+
+        onceki_map = {}
+        if self.stok:
+            for f in getattr(self.stok, "fiyatlar", None) or []:
+                onceki_map[f.fiyat_adi] = f.tutar
+        # Asenkron son alış / kaynak hassasiyeti
+        onceki_map.update(getattr(self, "_fiyat_kaynak", {}) or {})
+        fiyatlar = []
+        for ad, giris in self.fiyat_alanlari.items():
+            metin = giris.get().strip()
+            if not metin or metin in ("…", "..."):
+                fiyatlar.append((ad, ""))
+                continue
+            kayit = fiyat_kayit_degeri(metin, onceki_map.get(ad))
+            if kayit is None:
+                fiyatlar.append((ad, metin))
+            else:
+                fiyatlar.append((ad, format(kayit, "f")))
         fiyat_hesaplamalari = {}
         for ad, h in (getattr(self, "fiyat_hesap_alanlari", None) or {}).items():
             fiyat_hesaplamalari[ad] = {

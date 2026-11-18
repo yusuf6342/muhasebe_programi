@@ -114,18 +114,28 @@ class BankaAltHesapDetayDialog(tk.Toplevel):
         self._yenile()
 
     def _yenile(self):
+        from database.hesap_siralama import hesap_sinif_gorunen_adi, hesaplari_sirala
+
+        onceki = None
+        try:
+            sec = self.table.selection()
+            if sec:
+                onceki = sec[0]
+        except tk.TclError:
+            onceki = None
         self.kart = FinansService.banka_karti_getir(self.kart.id)
         self.accounts = {h.id: h for h in (self.kart.alt_hesaplar or [])}
         for item in self.table.get_children():
             self.table.delete(item)
-        for h in sorted(self.accounts.values(), key=lambda a: ((a.alt_hesap_turu or ""), a.hesap_adi)):
+        for h in hesaplari_sirala(self.accounts.values()):
             value = FinansService.isletme_bakiyesi(h)
+            sinif = hesap_sinif_gorunen_adi(h) or LABELS.get(h.alt_hesap_turu, h.alt_hesap_turu or "")
             self.table.insert(
                 "",
                 "end",
                 iid=str(h.id),
                 values=(
-                    LABELS.get(h.alt_hesap_turu, h.alt_hesap_turu or ""),
+                    sinif,
                     h.hesap_adi,
                     h.sube or "—",
                     getattr(h, "hesap_no", None) or "—",
@@ -135,8 +145,9 @@ class BankaAltHesapDetayDialog(tk.Toplevel):
             )
         self.info.set(f"{len(self.accounts)} ayrı hesap")
         if self.accounts:
-            first = self.table.get_children()[0]
-            self.table.selection_set(first)
+            hedef = onceki if onceki and onceki in self.table.get_children() else self.table.get_children()[0]
+            self.table.selection_set(hedef)
+            self.table.focus(hedef)
             self.show_movements()
 
     def show_movements(self, event=None):

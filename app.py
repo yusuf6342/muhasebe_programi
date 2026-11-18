@@ -169,7 +169,15 @@ def fatura_kolon_ayarlari_kaydet(ayarlar: dict) -> None:
 
 
 def para_goster(tutar):
+    """Parasal toplam / bakiye (2 hane + TL). Birim fiyat için ``fiyat_birim_goster`` kullanın."""
     return f"{float(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fiyat_birim_goster(tutar) -> str:
+    """Birim / net birim / liste fiyatı — Program Ayarları → Fiyat Görünümü."""
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(tutar)
 
 
 def miktar_goster(miktar) -> str:
@@ -2714,8 +2722,18 @@ class SatisSiparisiDialog(tk.Toplevel):
         except tk.TclError:
             self._siparis_stok_poll_aktif = False
 
+    def _siparis_stok_siparis_id(self) -> int | None:
+        sp = getattr(self, "siparis", None) or getattr(self, "kayit", None)
+        if sp is None:
+            return None
+        try:
+            sid = getattr(sp, "id", None)
+            return int(sid) if sid is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _siparis_stok_durumlarini_uygula(self, *, nesil: int | None = None):
-        """Yalnız Stok Durumu hücre + satır rengini güncelle (kaydırma/seçim korunur)."""
+        """Stok Durumu + Depolar Toplamı + satır rengi (kaydırma/seçim korunur)."""
         if not getattr(self, "_siparis_karti_mi", False):
             return
         if nesil is not None and nesil != getattr(self, "_siparis_stok_poll_nesil", 0):
@@ -2724,32 +2742,44 @@ class SatisSiparisiDialog(tk.Toplevel):
         if tablo is None or not self.satirlar:
             return
         try:
-            from database.siparis_stok_durumu import satir_durumlari, uyari_durumu_mu
+            from database.siparis_stok_durumu import satir_stok_bilgileri, uyari_durumu_mu
 
-            durumlar = satir_durumlari(self.satirlar)
+            bilgiler = satir_stok_bilgileri(
+                self.satirlar, siparis_id=self._siparis_stok_siparis_id()
+            )
         except Exception:
             self._siparis_stok_baglanti_goster("Stok durumu güncellenemedi (bağlantı)")
             return
-        self._siparis_stok_baglanti_goster("")
-        # Kolon indeksi
+        notlar = [b.get("aciklama") or "" for b in bilgiler if b.get("aciklama")]
+        self._siparis_stok_baglanti_goster(notlar[0] if notlar else "")
         try:
             kolonlar = list(tablo["columns"])
             sd_idx = kolonlar.index("stok_durumu")
+            dt_idx = kolonlar.index("depolar_toplami") if "depolar_toplami" in kolonlar else None
         except (ValueError, tk.TclError, TypeError):
             return
         secim = tablo.selection()
         odak = tablo.focus()
         kaydir = tablo.yview()
-        for sira, durum in enumerate(durumlar):
+        for sira, bil in enumerate(bilgiler):
             iid = str(sira)
             try:
                 if not tablo.exists(iid):
                     continue
                 degerler = list(tablo.item(iid, "values"))
-                while len(degerler) <= sd_idx:
+                durum = bil.get("durum") or ""
+                toplam = bil.get("depolar_toplami") or ""
+                max_idx = sd_idx if dt_idx is None else max(sd_idx, dt_idx)
+                while len(degerler) <= max_idx:
                     degerler.append("")
+                degisti = False
                 if degerler[sd_idx] != durum:
                     degerler[sd_idx] = durum
+                    degisti = True
+                if dt_idx is not None and degerler[dt_idx] != toplam:
+                    degerler[dt_idx] = toplam
+                    degisti = True
+                if degisti:
                     tablo.item(iid, values=degerler)
                 etiket = ("stok_uyari",) if uyari_durumu_mu(durum) else ("stok_normal",)
                 tablo.item(iid, tags=etiket)
@@ -3607,13 +3637,14 @@ class SatisSiparisiDialog(tk.Toplevel):
         kod_w.bind("<KeyRelease>", self.satir_urun_arama_ac)
         ad_w.bind("<KeyRelease>", self.satir_urun_arama_ac)
 
-        # Ürün Adı → Stok Durumu → Miktar → Birim (Stok Durumu yalnız ekran; PDF'ye gitmez)
+        # Ürün Adı → Stok Durumu → Depolar Toplamı → Miktar (yalnız ekran; PDF'ye gitmez)
         kolonlar = (
             "sec",
             "urun_kodu",
             "urun_adi",
             "aciklama",
             "stok_durumu",
+            "depolar_toplami",
             "miktar",
             "birim",
             "fiyat",
@@ -3643,6 +3674,7 @@ class SatisSiparisiDialog(tk.Toplevel):
             "urun_adi": "Ürün Adı",
             "aciklama": "Açıklama",
             "stok_durumu": "Stok Durumu",
+            "depolar_toplami": "Depolar Toplamı",
             "miktar": "Sipariş Miktarı",
             "birim": "Birim",
             "fiyat": "Birim Fiyat",
@@ -3659,6 +3691,7 @@ class SatisSiparisiDialog(tk.Toplevel):
             "urun_adi": 276,
             "aciklama": 184,
             "stok_durumu": 88,
+            "depolar_toplami": 100,
             "miktar": 90,
             "birim": 60,
             "fiyat": 100,
@@ -3679,7 +3712,7 @@ class SatisSiparisiDialog(tk.Toplevel):
             elif kolon == "aciklama":
                 min_w = 120
             anchor = "center" if kolon in ("sec", "birim", "kdv", "iskonto", "irsaliye", "acik", "stok_durumu") else "w"
-            if kolon in ("miktar", "fiyat", "toplam"):
+            if kolon in ("miktar", "fiyat", "toplam", "depolar_toplami"):
                 anchor = "e"
             self.satir_tablosu.heading(kolon, text=basliklar[kolon], anchor=anchor)
             self.satir_tablosu.column(
@@ -4154,17 +4187,22 @@ class SatisSiparisiDialog(tk.Toplevel):
             self._satir_isaretleri = {
                 i for i in self._satir_isaretleri if 0 <= i < len(self.satirlar)
             }
-        stok_durumlari: list[str] = []
+        stok_bilgileri: list[dict] = []
         if siparis_mi and self.satirlar:
             try:
-                from database.siparis_stok_durumu import satir_durumlari
+                from database.siparis_stok_durumu import satir_stok_bilgileri, uyari_durumu_mu
 
-                stok_durumlari = satir_durumlari(self.satirlar)
+                stok_bilgileri = satir_stok_bilgileri(
+                    self.satirlar, siparis_id=self._siparis_stok_siparis_id()
+                )
                 self._siparis_stok_cache = {
                     (v.get("urun_kodu") or "").strip(): None for v in self.satirlar
                 }
             except Exception:
-                stok_durumlari = [""] * len(self.satirlar)
+                stok_bilgileri = [{"durum": "", "depolar_toplami": ""} for _ in self.satirlar]
+                uyari_durumu_mu = lambda _d: False  # noqa: E731
+        else:
+            uyari_durumu_mu = lambda _d: (_d in ("Kısmi", "Yok") or "eksik" in str(_d).casefold())
         for sira, veri in enumerate(self.satirlar):
             brut, indirim, net, kdv, maliyet, kar, marj = self._satir_hesapla(veri)
             miktar = decimal(veri.get("miktar") or 0, "Miktar")
@@ -4177,8 +4215,10 @@ class SatisSiparisiDialog(tk.Toplevel):
                 sevk_kalan_goster = Decimal("0")
             aciklama = bos_metin(veri.get("aciklama"))
             if siparis_mi:
-                durum = stok_durumlari[sira] if sira < len(stok_durumlari) else ""
-                # Alınan Sipariş: Stok Durumu + Sevk Edilen + Kalan
+                bil = stok_bilgileri[sira] if sira < len(stok_bilgileri) else {}
+                durum = bil.get("durum") or ""
+                depo_top = bil.get("depolar_toplami") or ""
+                # Alınan Sipariş: Stok Durumu + Depolar Toplamı + Sevk Edilen + Kalan
                 isaret = "☑" if sira in self._satir_isaretleri else "☐"
                 degerler = (
                     isaret,
@@ -4186,6 +4226,7 @@ class SatisSiparisiDialog(tk.Toplevel):
                     veri["urun_adi"],
                     aciklama,
                     durum,
+                    depo_top,
                     miktar_goster(miktar),
                     veri["birim"],
                     para_goster(veri.get("birim_satis_fiyati") or 0),
@@ -4195,7 +4236,7 @@ class SatisSiparisiDialog(tk.Toplevel):
                     miktar_goster(sevk_goster),
                     miktar_goster(sevk_kalan_goster),
                 )
-                etiket = ("stok_uyari",) if durum in ("Kısmi", "Yok") else ("stok_normal",)
+                etiket = ("stok_uyari",) if uyari_durumu_mu(durum) else ("stok_normal",)
             else:
                 # Fatura / diğer: mevcut kolon düzeni (irsaliye, fatura, acik)
                 degerler = (
@@ -11900,7 +11941,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                 net_birim_kdvli = Decimal("0")
             metin = para_goster(genel)
             iskonto_metin = para_goster(indirim)
-            net_birim_metin = para_goster(net_birim_kdvli)
+            net_birim_metin = fiyat_birim_goster(net_birim_kdvli)
         except (ValueError, AttributeError, ZeroDivisionError):
             metin = sifir
             iskonto_metin = sifir
@@ -12562,14 +12603,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     etiketler, sira in yetersiz
                 )
             # Birim Fiyat satırın PB'sinde; tutar kolonları TL (başlıklarda belirtilir)
-            fiyat_metin = para_goster(veri.get("birim_satis_fiyati") or 0)
+            fiyat_metin = fiyat_birim_goster(veri.get("birim_satis_fiyati") or 0)
             if pb != "TRY" and kur > 0:
                 try:
                     bf_doviz = Decimal(str(veri.get("birim_satis_fiyati") or 0)) / kur
                 except Exception:
                     bf_doviz = Decimal("0")
-                doviz_metin = f"{bf_doviz:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                fiyat_metin = f"{doviz_metin} {pb}"
+                fiyat_metin = f"{fiyat_birim_goster(bf_doviz)} {pb}"
             kur_metin = "1" if pb == "TRY" else (
                 f"{kur:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
             )
@@ -12598,7 +12638,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
                     para_goster(indirim),
                     kdv_goster,
                     para_goster(kdv),
-                    para_goster(net_birim),
+                    fiyat_birim_goster(net_birim),
                     para_goster(net + kdv),
                     veri.get("aciklama", ""),
                     *self._satir_ek_degerleri(veri),
@@ -12675,14 +12715,13 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             etiketler = tuple(etiketler) + ("dagitima_kapali",)
         if sira in getattr(self, "_satir_isaretleri", ()):
             etiketler = tuple(etiketler) + ("isaretli",)
-        fiyat_metin = para_goster(veri.get("birim_satis_fiyati") or 0)
+        fiyat_metin = fiyat_birim_goster(veri.get("birim_satis_fiyati") or 0)
         if pb != "TRY" and kur > 0:
             try:
                 bf_doviz = Decimal(str(veri.get("birim_satis_fiyati") or 0)) / kur
             except Exception:
                 bf_doviz = Decimal("0")
-            doviz_metin = f"{bf_doviz:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            fiyat_metin = f"{doviz_metin} {pb}"
+            fiyat_metin = f"{fiyat_birim_goster(bf_doviz)} {pb}"
         kur_metin = "1" if pb == "TRY" else (
             f"{kur:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
         )
@@ -12706,7 +12745,7 @@ class SatisFaturasiDialog(SatisSiparisiDialog):
             para_goster(indirim),
             kdv_goster,
             para_goster(kdv),
-            para_goster(net_birim),
+            fiyat_birim_goster(net_birim),
             para_goster(net + kdv),
             veri.get("aciklama", ""),
             *self._satir_ek_degerleri(veri),
@@ -18843,18 +18882,110 @@ class MuhasebeApp(tk.Tk):
             side="left", padx=4
         )
 
+        ttk.Button(filtre, text="Excel", command=self._ekstre_excel_aktar).pack(side="left", padx=4)
+        ttk.Button(filtre, text="PDF", command=self._ekstre_pdf_aktar).pack(side="left", padx=4)
+
         self._ekstre_govde = ttk.Frame(self.icerik)
         self._ekstre_govde.pack(fill="both", expand=True)
         self._ekstre_tl_kutu = ttk.Frame(self._ekstre_govde)
         self._ekstre_tl_kutu.pack(fill="both", expand=True)
-        # DOC5 balance-safe: yürüyen bakiye kolonunda hunisi yok
-        self.ekstre_tablo = self._rapor_tablo(
-            self._ekstre_tl_kutu,
-            ("tarih", "tur", "belge", "aciklama", "pb", "doviz", "kur", "borc", "alacak", "bakiye", "gun"),
-            ("Tarih", "Tür", "Belge No", "Açıklama", "PB", "Döviz", "Kur", "Borç", "Alacak", "Bakiye", "Gün"),
-            (85, 95, 120, 150, 40, 85, 75, 100, 100, 110, 55),
+        self._ekstre_iid_meta: dict = {}
+        self._ekstre_tablo_kur()
+
+    def _ekstre_tablo_kur(self):
+        """Cari hesap ekstresi — tree headings; KK taksit açılır satır."""
+        from liste_filtre_ui import treeview_filtre_bagla
+
+        for w in self._ekstre_tl_kutu.winfo_children():
+            w.destroy()
+        kolonlar = (
+            "tarih",
+            "tur",
+            "belge",
+            "taksit",
+            "aciklama",
+            "pb",
+            "doviz",
+            "kur",
+            "borc",
+            "alacak",
+            "bakiye",
+            "gun",
+        )
+        basliklar = {
+            "tarih": "Tarih",
+            "tur": "Tür",
+            "belge": "Belge No",
+            "taksit": "Taksit",
+            "aciklama": "Açıklama",
+            "pb": "PB",
+            "doviz": "Döviz",
+            "kur": "Kur",
+            "borc": "Borç",
+            "alacak": "Alacak",
+            "bakiye": "Bakiye",
+            "gun": "Gün",
+        }
+        genislikler = {
+            "tarih": 85,
+            "tur": 95,
+            "belge": 120,
+            "taksit": 72,
+            "aciklama": 150,
+            "pb": 40,
+            "doviz": 85,
+            "kur": 75,
+            "borc": 100,
+            "alacak": 100,
+            "bakiye": 110,
+            "gun": 55,
+        }
+        tablo = ttk.Treeview(
+            self._ekstre_tl_kutu, columns=kolonlar, show="tree headings"
+        )
+        tablo.heading("#0", text="")
+        tablo.column("#0", width=22, stretch=False)
+        for kolon in kolonlar:
+            tablo.heading(kolon, text=basliklar[kolon])
+            tablo.column(kolon, width=genislikler[kolon])
+        dikey = ttk.Scrollbar(
+            self._ekstre_tl_kutu, orient="vertical", command=tablo.yview
+        )
+        yatay = ttk.Scrollbar(
+            self._ekstre_tl_kutu, orient="horizontal", command=tablo.xview
+        )
+        tablo.configure(yscrollcommand=dikey.set, xscrollcommand=yatay.set)
+        tablo.grid(row=0, column=0, sticky="nsew")
+        dikey.grid(row=0, column=1, sticky="ns")
+        yatay.grid(row=1, column=0, sticky="ew")
+        self._ekstre_tl_kutu.rowconfigure(0, weight=1)
+        self._ekstre_tl_kutu.columnconfigure(0, weight=1)
+        tablo.tag_configure("fatura_toplam", font=("Segoe UI", 9, "bold"))
+        tablo.tag_configure("detay", foreground="#333333")
+        durum = {"filtre": {}, "ham": [], "bag": None, "yenile": None, "ozet_cb": None}
+
+        def _yenile_filtre():
+            yenile = durum.get("yenile")
+            if callable(yenile):
+                yenile()
+
+        durum["bag"] = treeview_filtre_bagla(
+            tablo,
+            basliklar,
+            get_filtre_dict=lambda: durum["filtre"],
+            set_filtre_dict=None,
+            yenile_cb=_yenile_filtre,
+            deger_listesi_cb=lambda: durum["ham"],
+            parent=self,
+            kolonlar=list(kolonlar),
             haric_kolonlar=("bakiye",),
         )
+        tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
+        tablo.bind("<Button-1>", self._ekstre_agac_tikla, add="+")
+        tablo.bind("<<TreeviewOpen>>", self._ekstre_agac_acildi, add="+")
+        tablo.bind("<<TreeviewClose>>", self._ekstre_agac_kapandi, add="+")
+        self.ekstre_tablo = tablo
+        self._ekstre_iid_meta = {}
 
     def _ekstre_tarihleri(self):
         baslangic = bitis = None
@@ -18946,6 +19077,7 @@ class MuhasebeApp(tk.Tk):
 
         vade = tarih_goster(rapor["ortalama_vade"]) if rapor["ortalama_vade"] else "-"
         gercek_kapanis = rapor["bakiye"]
+        self._ekstre_filtrelenmis = list(satirlar)
         ham = []
         for s in satirlar:
             pb = (s.get("para_birimi") or "TRY").upper()
@@ -18961,16 +19093,31 @@ class MuhasebeApp(tk.Tk):
                 if pb != "TRY"
                 else ""
             )
+            kk_g = bool(
+                s.get("genisletilebilir")
+                and s.get("kk_odeme_id")
+                and int(s.get("taksit_sayisi") or 0) > 1
+                and not s.get("fatura_id")
+            )
             ham.append({
                 "values": (
-                    tarih_goster(s["tarih"]), s["tur"], s["belge_no"], s["aciklama"],
+                    tarih_goster(s["tarih"]),
+                    s["tur"],
+                    s["belge_no"],
+                    (s.get("taksit_etiket") or "").strip(),
+                    s["aciklama"],
                     pb if pb != "TRY" else "",
                     doviz_metin,
                     kur_metin,
-                    para_goster(s["borc"]), para_goster(s["alacak"]), para_goster(s["bakiye"]), s["gun"],
+                    para_goster(s["borc"]),
+                    para_goster(s["alacak"]),
+                    para_goster(s["bakiye"]),
+                    s["gun"],
                 ),
                 "borc": s["borc"] or Decimal("0"),
                 "alacak": s["alacak"] or Decimal("0"),
+                "meta": s,
+                "kk_genislet": kk_g,
             })
 
         def _ozet(gorunen, ham_all, filtre):
@@ -18990,7 +19137,351 @@ class MuhasebeApp(tk.Tk):
                 )
             self.ekstre_ozet.configure(text=metin)
 
-        self._rapor_tablo_ham_doldur(self.ekstre_tablo, ham, ozet_cb=_ozet)
+        self._ekstre_ham_doldur(ham, ozet_cb=_ozet)
+
+    def _ekstre_ham_doldur(self, ham_satirlar, *, ozet_cb=None):
+        from liste_filtre_ui import satir_kolon_filtre_uygun
+
+        tablo = self.ekstre_tablo
+        durum = getattr(tablo, "_liste_filtre_durum", None)
+        if durum is None:
+            durum = {"filtre": {}, "ham": [], "bag": None}
+            tablo._liste_filtre_durum = durum  # type: ignore[attr-defined]
+        kolonlar = list(tablo["columns"])
+        durum["ham"] = list(ham_satirlar or [])
+        if ozet_cb is not None:
+            durum["ozet_cb"] = ozet_cb
+        self._ekstre_iid_meta = {}
+
+        def yenile():
+            tablo.delete(*tablo.get_children())
+            self._ekstre_iid_meta = {}
+            filtre = durum.get("filtre") or {}
+            gorunen = []
+            for item in durum["ham"]:
+                vals = item.get("values") if isinstance(item, dict) else item
+                if not satir_kolon_filtre_uygun(vals, kolonlar, filtre):
+                    continue
+                meta = (item.get("meta") if isinstance(item, dict) else None) or {}
+                kk_g = bool(isinstance(item, dict) and item.get("kk_genislet"))
+                text0 = "▶" if kk_g else ""
+                tags = ("fatura_toplam",) if kk_g else ()
+                iid = tablo.insert(
+                    "", "end", text=text0, values=vals, tags=tags, open=False
+                )
+                if kk_g:
+                    self._ekstre_iid_meta[iid] = dict(meta)
+                    tablo.insert(
+                        iid,
+                        "end",
+                        text="",
+                        values=("", "", "", "", "  (ayrıntı yüklenmedi)", "", "", "", "", "", "", ""),
+                        tags=("detay",),
+                        iid=f"{iid}__ph",
+                    )
+                gorunen.append(item)
+            bag = durum.get("bag")
+            if bag:
+                bag["guncelle_basliklar"]()
+            cb = durum.get("ozet_cb")
+            if callable(cb):
+                cb(gorunen, durum["ham"], filtre)
+            return gorunen
+
+        durum["yenile"] = yenile
+        return yenile()
+
+    def _ekstre_agac_tikla(self, event):
+        tablo = getattr(self, "ekstre_tablo", None)
+        if not tablo:
+            return
+        if tablo.identify_region(event.x, event.y) not in ("tree", "cell"):
+            return
+        row = tablo.identify_row(event.y)
+        if not row or row not in self._ekstre_iid_meta:
+            return
+        if tablo.item(row, "open"):
+            tablo.item(row, open=False, text="▶")
+        else:
+            self._ekstre_kk_taksit_ac(row)
+            tablo.item(row, open=True, text="▼")
+        return "break"
+
+    def _ekstre_agac_acildi(self, _event=None):
+        tablo = getattr(self, "ekstre_tablo", None)
+        if not tablo:
+            return
+        secim = tablo.focus() or (tablo.selection()[0] if tablo.selection() else None)
+        if secim and secim in self._ekstre_iid_meta:
+            self._ekstre_kk_taksit_ac(secim)
+            tablo.item(secim, text="▼")
+
+    def _ekstre_agac_kapandi(self, _event=None):
+        tablo = getattr(self, "ekstre_tablo", None)
+        if not tablo:
+            return
+        secim = tablo.focus() or (tablo.selection()[0] if tablo.selection() else None)
+        if secim and secim in self._ekstre_iid_meta:
+            tablo.item(secim, text="▶")
+
+    def _ekstre_kk_taksit_ac(self, iid: str) -> None:
+        tablo = self.ekstre_tablo
+        meta = self._ekstre_iid_meta.get(iid) or {}
+        children = list(tablo.get_children(iid))
+        if children and not any(c.endswith("__ph") for c in children):
+            return
+        for c in children:
+            tablo.delete(c)
+        satirlar = list(meta.get("taksit_satirlari") or [])
+        if not satirlar and meta.get("kk_odeme_id"):
+            try:
+                from database.cari_kk_taksit_detay_service import CariKkTaksitDetayService
+
+                satirlar = CariKkTaksitDetayService.taksit_satirlari(int(meta["kk_odeme_id"]))
+                meta["taksit_satirlari"] = satirlar
+                self._ekstre_iid_meta[iid] = meta
+            except Exception:
+                satirlar = []
+        if not satirlar:
+            tablo.insert(
+                iid,
+                "end",
+                text="",
+                values=("", "", "", "", "  Taksit planı bulunamadı", "", "", "", "", "", "", ""),
+                tags=("detay",),
+            )
+            return
+        n = int(meta.get("taksit_sayisi") or len(satirlar) or 1)
+        cekim = meta.get("tarih")
+        for s in satirlar:
+            islem_t = s.get("islem_tarihi") or cekim
+            vade = s.get("vade_tarihi")
+            no = int(s.get("taksit_no") or 0)
+            tutar = Decimal(str(s.get("tutar") or 0))
+            tablo.insert(
+                iid,
+                "end",
+                text="",
+                values=(
+                    tarih_goster(islem_t) if islem_t else "",
+                    "Taksit",
+                    meta.get("belge_no") or "",
+                    f"{no}/{n}" if n else str(no),
+                    f"Taksit vadesi: {tarih_goster(vade) if vade else '—'}",
+                    "",
+                    "",
+                    "",
+                    para_goster(tutar) if (meta.get("borc") or 0) else "",
+                    para_goster(tutar) if (meta.get("alacak") or 0) else "",
+                    "",
+                    "",
+                ),
+                tags=("detay",),
+            )
+
+    def _ekstre_excel_aktar(self):
+        satirlar = getattr(self, "_ekstre_filtrelenmis", None)
+        cari = getattr(self, "_ekstre_cari", None)
+        if not cari or not satirlar:
+            messagebox.showinfo("Excel", "Önce raporu getirin.", parent=self)
+            return
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            messagebox.showerror("Excel", "openpyxl yüklü değil.", parent=self)
+            return
+        from tkinter import filedialog
+        from pathlib import Path
+
+        yol = filedialog.asksaveasfilename(
+            parent=self,
+            title="Cari ekstre Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"cari_ekstre_{cari.cari_kodu}_{date.today():%Y%m%d}.xlsx",
+        )
+        if not yol:
+            return
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Ekstre"
+        ws.append(["Cari", f"{cari.cari_kodu} - {cari.unvan}"])
+        ws.append(
+            [
+                "Tarih",
+                "Tür",
+                "Belge No",
+                "Taksit",
+                "Taksit Vadesi",
+                "Açıklama",
+                "Borç",
+                "Alacak",
+                "Bakiye",
+                "Gün",
+            ]
+        )
+        for s in satirlar:
+            ws.append(
+                [
+                    tarih_goster(s["tarih"]),
+                    s.get("tur") or "",
+                    s.get("belge_no") or "",
+                    (s.get("taksit_etiket") or "").strip(),
+                    "",
+                    s.get("aciklama") or "",
+                    float(Decimal(str(s.get("borc") or 0))),
+                    float(Decimal(str(s.get("alacak") or 0))),
+                    float(Decimal(str(s.get("bakiye") or 0))),
+                    s.get("gun") or "",
+                ]
+            )
+            if (
+                s.get("genisletilebilir")
+                and s.get("kk_odeme_id")
+                and not s.get("fatura_id")
+            ):
+                taksitler = list(s.get("taksit_satirlari") or [])
+                if not taksitler:
+                    try:
+                        from database.cari_kk_taksit_detay_service import (
+                            CariKkTaksitDetayService,
+                        )
+
+                        taksitler = CariKkTaksitDetayService.taksit_satirlari(
+                            int(s["kk_odeme_id"])
+                        )
+                    except (ValueError, TypeError):
+                        taksitler = []
+                n = int(s.get("taksit_sayisi") or len(taksitler) or 1)
+                for t in taksitler:
+                    islem_t = t.get("islem_tarihi") or s.get("tarih")
+                    vade = t.get("vade_tarihi")
+                    no = int(t.get("taksit_no") or 0)
+                    tutar = float(Decimal(str(t.get("tutar") or 0)))
+                    borc_mi = Decimal(str(s.get("borc") or 0)) != 0
+                    ws.append(
+                        [
+                            tarih_goster(islem_t) if islem_t else "",
+                            "  Taksit",
+                            s.get("belge_no") or "",
+                            f"{no}/{n}" if n else str(no),
+                            tarih_goster(vade) if vade else "",
+                            "",
+                            tutar if borc_mi else "",
+                            tutar if not borc_mi else "",
+                            "",
+                            "",
+                        ]
+                    )
+        try:
+            wb.save(yol)
+        except OSError as exc:
+            messagebox.showerror("Excel", f"Kaydedilemedi:\n{exc}", parent=self)
+            return
+        messagebox.showinfo("Excel", f"Ekstre kaydedildi.\n{Path(yol)}", parent=self)
+
+    def _ekstre_pdf_aktar(self):
+        satirlar = getattr(self, "_ekstre_filtrelenmis", None)
+        cari = getattr(self, "_ekstre_cari", None)
+        if not cari or not satirlar:
+            messagebox.showinfo("PDF", "Önce raporu getirin.", parent=self)
+            return
+        from tkinter import filedialog
+        from pathlib import Path
+        import webbrowser
+
+        yol = filedialog.asksaveasfilename(
+            parent=self,
+            title="Cari ekstre PDF (HTML)",
+            defaultextension=".html",
+            filetypes=[("HTML", "*.html"), ("Tüm dosyalar", "*.*")],
+            initialfile=f"cari_ekstre_{cari.cari_kodu}_{date.today():%Y%m%d}.html",
+        )
+        if not yol:
+            return
+        satir_html = []
+        for s in satirlar:
+            satir_html.append(
+                "<tr class='ana'>"
+                f"<td>{tarih_goster(s['tarih'])}</td>"
+                f"<td>{s.get('tur') or ''}</td>"
+                f"<td>{s.get('belge_no') or ''}</td>"
+                f"<td>{(s.get('taksit_etiket') or '').strip()}</td>"
+                f"<td></td>"
+                f"<td>{s.get('aciklama') or ''}</td>"
+                f"<td class='r'>{para_goster(s.get('borc'))}</td>"
+                f"<td class='r'>{para_goster(s.get('alacak'))}</td>"
+                f"<td class='r'>{para_goster(s.get('bakiye'))}</td>"
+                "</tr>"
+            )
+            if (
+                s.get("genisletilebilir")
+                and s.get("kk_odeme_id")
+                and not s.get("fatura_id")
+            ):
+                taksitler = list(s.get("taksit_satirlari") or [])
+                if not taksitler:
+                    try:
+                        from database.cari_kk_taksit_detay_service import (
+                            CariKkTaksitDetayService,
+                        )
+
+                        taksitler = CariKkTaksitDetayService.taksit_satirlari(
+                            int(s["kk_odeme_id"])
+                        )
+                    except (ValueError, TypeError):
+                        taksitler = []
+                n = int(s.get("taksit_sayisi") or len(taksitler) or 1)
+                borc_mi = Decimal(str(s.get("borc") or 0)) != 0
+                for t in taksitler:
+                    islem_t = t.get("islem_tarihi") or s.get("tarih")
+                    vade = t.get("vade_tarihi")
+                    no = int(t.get("taksit_no") or 0)
+                    tutar = para_goster(t.get("tutar"))
+                    satir_html.append(
+                        "<tr class='detay'>"
+                        f"<td>{tarih_goster(islem_t) if islem_t else ''}</td>"
+                        "<td>Taksit</td>"
+                        f"<td>{s.get('belge_no') or ''}</td>"
+                        f"<td>{no}/{n}</td>"
+                        f"<td>{tarih_goster(vade) if vade else ''}</td>"
+                        "<td></td>"
+                        f"<td class='r'>{tutar if borc_mi else ''}</td>"
+                        f"<td class='r'>{tutar if not borc_mi else ''}</td>"
+                        "<td></td>"
+                        "</tr>"
+                    )
+        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Cari Ekstre {cari.cari_kodu}</title>
+<style>
+body{{font-family:Segoe UI,Arial,sans-serif;font-size:11px;margin:16px}}
+h1{{font-size:16px;margin:0 0 8px}}
+table{{border-collapse:collapse;width:100%}}
+th,td{{border:1px solid #ccc;padding:3px 6px}}
+th{{background:#eee;text-align:left}}
+td.r{{text-align:right}}
+tr.ana td{{font-weight:600}}
+tr.detay td{{color:#333;background:#fafafa}}
+</style></head><body>
+<h1>Cari Hesap Ekstresi — {cari.cari_kodu} {cari.unvan}</h1>
+<table><thead><tr>
+<th>Tarih</th><th>Tür</th><th>Belge No</th><th>Taksit</th><th>Taksit Vadesi</th>
+<th>Açıklama</th><th>Borç</th><th>Alacak</th><th>Bakiye</th>
+</tr></thead><tbody>
+{''.join(satir_html)}
+</tbody></table>
+<p>Yazdır / PDF için tarayıcıdan yazdırın.</p>
+</body></html>"""
+        try:
+            Path(yol).write_text(html, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("PDF", f"Kaydedilemedi:\n{exc}", parent=self)
+            return
+        try:
+            webbrowser.open(Path(yol).resolve().as_uri())
+        except Exception:
+            pass
+        messagebox.showinfo("PDF", f"Ekstre HTML kaydedildi (yazdır→PDF).\n{Path(yol)}", parent=self)
 
     def rapor_stok_detayli_ekstre(self):
         self._icerigi_temizle()

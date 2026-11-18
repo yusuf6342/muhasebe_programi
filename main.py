@@ -469,6 +469,12 @@ def main():
             NakitAvansService.vadesi_gelenleri_isle()
         except Exception:
             pass
+        try:
+            from database.kk_taksit_islem_service import vadesi_gelenleri_isle as kk_taksit_vadesi_isle
+
+            kk_taksit_vadesi_isle()
+        except Exception:
+            pass
 
     threading.Thread(target=_arka_plan_bakim, daemon=True).start()
 

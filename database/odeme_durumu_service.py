@@ -4,9 +4,11 @@ Kaynaklar:
 - Banka kredi taksitleri (BankaKrediService)
 - Kredi kartı ekstre borçları (KrediKartiEkstreService — ay yerleşimi ve gecikme: son ödeme tarihi;
   son ödeme boşsa satır rapor dışı)
+- Planlanan nakit avans taksitleri (henüz karta yansımamış; son ödeme ayında birer kez)
 - Verilen (ödenecek) çek / senet (CekSenetService)
 
 Aynı borç ikinci kez üretilmez; KK satırları ekstre anahtarı (kart + kesim tarihi) ile tekildir.
+Karta işlenmiş nakit avans taksitleri ekstre yoluyla gelir; PLANLANDI olanlar ayrı anahtarla eklenir.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ YAKLASAN_GUN = 7
 KAYNAK_KREDI = "KREDI_TAKSIT"
 KAYNAK_KK = "KREDI_KARTI_EKSTRE"  # ekstre ana satırı (eski: KREDI_KARTI_TAKSIT)
 KAYNAK_KK_TAKSIT_ESKI = "KREDI_KARTI_TAKSIT"  # geriye uyumluluk
+KAYNAK_NAKIT_AVANS = "NAKIT_AVANS"
 KAYNAK_CEK = "CEK_SENET"
 
 DURUM_PLANLANDI = "PLANLANDI"
@@ -265,6 +268,87 @@ class OdemeDurumuService:
         return satirlar
 
     @staticmethod
+    def _nakit_avans_satirlari(*, bugun: date | None = None) -> list[dict]:
+        """PLANLANDI nakit avans taksitleri — son ödeme ayında birer kez (karta işlenmeden önce)."""
+        from database.nakit_avans_service import DURUM_PLAN, schema_hazirla as nakit_avans_schema
+        from database.models.finans import KrediKartiTanimi, NakitAvans, NakitAvansTaksit
+        from database.database import get_session
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        satirlar: list[dict] = []
+        try:
+            nakit_avans_schema()
+        except Exception:
+            return satirlar
+        bugun = bugun or date.today()
+        with get_session() as s:
+            q = (
+                select(NakitAvansTaksit)
+                .join(NakitAvans)
+                .where(
+                    NakitAvansTaksit.durum == DURUM_PLAN,
+                    NakitAvansTaksit.aktif.is_(True),
+                    NakitAvans.durum == "ACIK",
+                )
+                .options(selectinload(NakitAvansTaksit.avans))
+            )
+            for t in s.scalars(q).all():
+                a = t.avans
+                if a is None:
+                    continue
+                kalan = _d(t.toplam)
+                if kalan <= 0:
+                    continue
+                vade = t.son_odeme_tarihi or t.yansima_tarihi
+                if vade is None:
+                    continue
+                kart = s.get(KrediKartiTanimi, int(a.kredi_karti_id))
+                banka = ""
+                if kart is not None:
+                    bk = getattr(kart, "banka_karti", None)
+                    banka = (getattr(bk, "banka_adi", None) if bk is not None else None) or (
+                        kart.kart_bankasi or ""
+                    )
+                satirlar.append({
+                    "obligation_key": OdemeDurumuService.obligation_key(
+                        KAYNAK_NAKIT_AVANS, int(t.id), vade
+                    ),
+                    "source_type": KAYNAK_NAKIT_AVANS,
+                    "source_id": int(t.id),
+                    "ekstre_id": None,
+                    "kredi_id": None,
+                    "kredi_karti_id": int(a.kredi_karti_id),
+                    "nakit_avans_taksit_id": int(t.id),
+                    "due_date": vade,
+                    "payment_month": (vade.year, vade.month),
+                    "aciklama": (
+                        f"Nakit avans {a.belge_no} taksit {t.taksit_no}/{a.taksit_sayisi}"
+                    ),
+                    "kaynak_etiket": "Nakit Avans",
+                    "banka_adi": banka,
+                    "kart_adi": (kart.kart_adi if kart else "") or "",
+                    "son_dort_hane": (kart.son_dort_hane if kart else "") or "",
+                    "belge_no": a.belge_no or "",
+                    "kategori": "Nakit avans taksiti",
+                    "para_birimi": "TRY",
+                    "orijinal_tutar": kalan,
+                    "tl_tutar": kalan,
+                    "odenen": SIFIR,
+                    "kalan": kalan,
+                    "anapara": _d(t.anapara),
+                    "faiz": _d(t.faiz),
+                    "masraf": _d(t.masraf) + _d(t.vergi),
+                    "certainty": "TAHMINI",
+                    "oncelik": "YUKSEK",
+                    "durum": _durum_hesapla(vade, kalan, SIFIR, bugun=bugun),
+                    "kesin": False,
+                    "son_odeme_tarihi": vade,
+                    "kesim_tarihi": t.yansima_tarihi,
+                })
+        return satirlar
+
+    @staticmethod
     def _cek_satirlari() -> list[dict]:
         from database.cek_senet_service import CekSenetService
         from database.models.cek_senet import ISLEM_YONU_VERILEN
@@ -321,7 +405,7 @@ class OdemeDurumuService:
             raise ValueError("Aktif firma seçilmedi.")
 
         bugun = bugun or OdemeDurumuService.referans_tarih()
-        kaynaklar = kaynaklar or {KAYNAK_KREDI, KAYNAK_KK, KAYNAK_CEK}
+        kaynaklar = kaynaklar or {KAYNAK_KREDI, KAYNAK_KK, KAYNAK_NAKIT_AVANS, KAYNAK_CEK}
         birlesik: dict[str, dict] = {}
 
         if KAYNAK_KREDI in kaynaklar:
@@ -338,6 +422,16 @@ class OdemeDurumuService:
             for s in OdemeDurumuService._kk_satirlari(
                 odenenleri_dahil=odenenleri_dahil, bugun=bugun
             ):
+                s["durum"] = _durum_hesapla(
+                    s.get("due_date"),
+                    _d(s.get("kalan")),
+                    _d(s.get("odenen")),
+                    s.get("durum"),
+                    bugun=bugun,
+                )
+                birlesik.setdefault(s["obligation_key"], s)
+        if KAYNAK_NAKIT_AVANS in kaynaklar:
+            for s in OdemeDurumuService._nakit_avans_satirlari(bugun=bugun):
                 s["durum"] = _durum_hesapla(
                     s.get("due_date"),
                     _d(s.get("kalan")),

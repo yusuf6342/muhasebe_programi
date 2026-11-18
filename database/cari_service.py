@@ -664,7 +664,25 @@ class CariService:
                     anahtar = (bn or "").strip()
                     if anahtar and anahtar not in sonuc:
                         sonuc[anahtar] = tur
+        # Hizmet faturaları: fatura_turu → etiket (önek varsayımı değil)
+        if insp.has_table("hizmet_faturalari"):
+            from database.hizmet_faturasi_service import BELGE_TUR_ETIKET
+
+            for bas in range(0, len(liste), 400):
+                parca = liste[bas : bas + 400]
+                stmt = sa_text(
+                    'SELECT fatura_no, fatura_turu FROM hizmet_faturalari '
+                    "WHERE fatura_no IN :nolar"
+                ).bindparams(bindparam("nolar", expanding=True))
+                for bn, ftur in session.execute(stmt, {"nolar": parca}).all():
+                    anahtar = (bn or "").strip()
+                    if not anahtar or anahtar in sonuc:
+                        continue
+                    sonuc[anahtar] = BELGE_TUR_ETIKET.get(
+                        (ftur or "").strip().upper(), "Hizmet Faturası"
+                    )
         return sonuc
+
     @staticmethod
     def _defter_sh_turu(belge_no: str, tur_map: dict[str, str]) -> str:
         """SH satırı için tur: önce kaynak belge; yoksa güvenli önek yedekleri."""
@@ -681,6 +699,16 @@ class CariService:
         # Evo alış faturası öneki — tabloda yoksa bile alış (import kanıtı)
         if bn.upper().startswith("EVB-AF-"):
             return "Alış"
+        # Hizmet fatura önekleri (tabloda yoksa yedek; yön için değil yalnızca etiket)
+        bu = bn.upper()
+        if bu.startswith("HAG"):
+            return "Hizmet Alış"
+        if bu.startswith("HSG"):
+            return "Hizmet Satış"
+        if bu.startswith("HAI"):
+            return "Hizmet Alış İadesi"
+        if bu.startswith("HSI"):
+            return "Hizmet Satış İadesi"
         return "Satış"
 
     @staticmethod
@@ -747,6 +775,9 @@ class CariService:
             for k in session.scalars(select(Cari).where(Cari.id.in_(karsi_idler))).all():
                 karsi_map[int(k.id)] = k
         for islem in islemler:
+            # Sıfır tutarlı iptal artığı (fatura-belge POS silince maske) deftere yazılmaz
+            if Decimal(str(islem.borc or 0)) == 0 and Decimal(str(islem.alacak or 0)) == 0:
+                continue
             aciklama = islem.aciklama or ""
             if islem.karsi_cari_id:
                 karsi = karsi_map.get(int(islem.karsi_cari_id))
@@ -791,6 +822,14 @@ class CariService:
         except Exception:
             for kayit in kayitlar:
                 kayit.setdefault("genisletilebilir", False)
+        try:
+            from database.cari_kk_taksit_detay_service import CariKkTaksitDetayService
+
+            CariKkTaksitDetayService.hareketlere_kk_taksit_meta_ekle(kayitlar)
+        except Exception:
+            for kayit in kayitlar:
+                kayit.setdefault("taksit_etiket", "")
+                kayit.setdefault("taksit_sayisi", None)
         return kayitlar
 
     @staticmethod
@@ -3015,18 +3054,27 @@ class CariService:
     )
 
     @staticmethod
+    def _tedarikci_acilis_borc_mu(islem) -> bool:
+        """Tedarikçi açılış/devir BORÇ satırı — FIFO'da ödeme gibi düşülür (DEVIREN alacağına mahsup)."""
+        tur = (getattr(islem, "islem_turu", None) or "").strip().casefold()
+        if tur not in ("açılış", "acilis") and not tur.startswith("açılış"):
+            return False
+        return Decimal(str(getattr(islem, "borc", None) or 0)) > 0
+
+    @staticmethod
     def _odeme_borc_dusurur_mu(islem: CariIslem, tedarikci: bool) -> Decimal:
         """FIFO eşleştirmede ödemenin bakiyeyi düşüren tutarı.
 
         Müşteri: Tahsilat / virman / KK çekimi → alacak.
-        Tedarikçi: Ödeme, Virman Ödeme, KK Çekimi (müşteriden tedarikçiye) ve iade
-        kapamaları → borc (yoksa alacak); açılış/fatura alacağı ödeme sayılmaz.
+        Tedarikçi: Ödeme, Virman Ödeme, KK Çekimi, iade kapamaları ve açılış BORÇ
+        (DEVIREN öncesi dönem satırları) → borc; açılış/fatura alacağı ödeme sayılmaz.
         """
         tur = (getattr(islem, "islem_turu", None) or "").strip()
         if tedarikci:
             if (
                 tur in ("Ödeme", "Virman Ödeme", "KK Çekimi")
                 or tur.casefold().startswith("iade")
+                or CariService._tedarikci_acilis_borc_mu(islem)
             ):
                 dusen = Decimal(str(islem.borc or 0))
                 if dusen <= 0:

@@ -620,7 +620,9 @@ class HizliStokKartiDialog(tk.Toplevel):
                 fiyat = decimal(fiyat_hint, "Satış fiyatı")
             except Exception:
                 pass
-        kdv = satir_kdv_metin_sayisal(getattr(stok, "kdv_orani", None) or 20)
+        from database.fatura_kdv_service import kdv_deger
+
+        kdv = satir_kdv_metin_sayisal(kdv_deger(getattr(stok, "kdv_orani", None)))
         degerler = (
             stok.stok_kodu,
             stok.stok_adi,

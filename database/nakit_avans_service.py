@@ -2,12 +2,19 @@
 
 Kurallar
 --------
-* Kullandırımda hesaba geçen net tutar bir kez banka/kasa **NAKİT AVANS GİRİŞ** hareketidir.
-  Anapara ``kalan_anapara`` ile izlenir; kullandırım masraf/vergisi ayrı gider fişidir.
-* Taksit karta işlenince kart hesabına bileşenler toplamı tek **KK NAKİT AVANS** hareketi yazılır;
-  anapara avans borcundan düşülür; faiz/masraf/vergi ayrı gider fişleridir. Ekstre takibi için
-  ``KrediKartiOdeme`` (kaynak_turu=NAKIT_AVANS) + tek taksit satırı oluşur.
-* ``islem_anahtari`` / ``istek_anahtari`` ile iki terminal aynı taksiti bir kez işler.
+* Kullandırımda hesaba geçen net tutar bir kez kart bankasının **MEVDUAT/KMH** hesabına
+  **NAKİT AVANS GİRİŞ** olarak yazılır (nakit kesintisi yoksa = anapara). Kart ekstresine
+  yansıyan kullandırım ücreti nakit girişinden düşülmez; KK hesabına ayrı
+  **KK NAKİT AVANS KULLANDIRIM ÜCRETİ** hareketi ve ekstre satırı olarak bir kez izlenir.
+* Kayıtta **bütün taksitler** kendi ``yansima_tarihi`` ile karta işlenir (NAT + KK ödeme
+  + faiz/masraf/vergi gider fişi); manuel «vadesi gelenleri işle» gerekmez. Gelecek
+  vadeler bugünün tarihiyle toplu işlenmez; gider tarihi = ilgili taksit yansıması.
+* **Anapara kredi/avans borcudur — giderleşmez.** Gider fişine yalnız faiz / masraf / vergi
+  yazılır. Muhasebe planı da anaparayı ``nakit_avans_borcu``, faiz/masrafı gider hesaplarına ayırır.
+* Karta işlemek ≠ ödemek. ``kalan_anapara`` yalnız gerçek ekstre ödemesinde
+  (KK taksit ODENDI) **ödenen anapara** kadar azalır; faiz tutarı kalandan düşülmez.
+* Ekstre ödemesi ikinci faiz/masraf/avans girişi üretmez (mevcut GDF / NAT korunur).
+* ``islem_anahtari`` / ``istek_anahtari`` ile mükerrer yazım engellenir.
 * Tüm yazmalar tek ``get_session`` işleminde; hata olursa hiçbir satır kalmaz.
 """
 
@@ -50,6 +57,8 @@ DURUM_IPTAL = "IPTAL"
 HAREKET_GIRIS = "NAKİT AVANS GİRİŞ"
 HAREKET_KART = "KK NAKİT AVANS"
 HAREKET_KART_IPTAL = "KK NAKİT AVANS İPTAL"
+HAREKET_KUL_UCRET = "KK NAKİT AVANS KULLANDIRIM ÜCRETİ"
+HEDEF_ALT_TURLER = ("MEVDUAT", "KMH")
 
 _HAZIR: "weakref.WeakSet" = weakref.WeakSet()
 
@@ -176,12 +185,15 @@ def plan_hesapla(
     toplam_vergi=0,
     kart: KrediKartiTanimi | None = None,
     manuel_plan: list[dict] | None = None,
+    sabit_taksit_tutari=None,
 ) -> list[dict]:
-    """Aylık faiz oranıyla anüite planı; yansıma / faiz valörü kullandırımdan türetilir.
+    """Aylık faiz oranıyla ödeme planı; yansıma / faiz valörü kullandırımdan türetilir.
 
     * Taksit i karta yansıma = kullandırım + (i−1) ay (1. taksit = kullandırım günü)
     * Taksit i faiz valörü = kullandırım + i ay
-    * Faiz = dönemin kalan anaparası × aylık oran (anüite / tek çekim)
+    * Faiz = dönemin kalan anaparası × aylık oran
+    * ``sabit_taksit_tutari`` verilirse bankanın eşit taksiti kullanılır (anüite PMT yerine);
+      aksi halde klasik anüite. Bu tutar global sabit değildir — çağıran belge/banka planı verir.
     * Son ödeme = kartın yansıma dönemindeki son ödeme kuralı
     * Yuvarlama: anapara kuruş farkı son taksitte
     """
@@ -200,6 +212,11 @@ def plan_hesapla(
     r = _d(aylik_faiz_orani) / Decimal("100")
     masraf_l = FinansService._tutar_bol(_kurus(toplam_masraf or 0, "Masraf"), n)
     vergi_l = FinansService._tutar_bol(_kurus(toplam_vergi or 0, "Vergi"), n)
+    sabit_pmt = None
+    if sabit_taksit_tutari not in (None, ""):
+        sabit_pmt = _kurus(sabit_taksit_tutari, "Banka taksit tutarı")
+        if sabit_pmt <= 0:
+            raise ValueError("Banka taksit tutarı pozitif olmalıdır.")
 
     def _tarihler(no: int, sat: dict | None = None) -> tuple[date, date, date | None]:
         """no 1-based → yansıma, faiz_valor, son_odeme."""
@@ -252,21 +269,34 @@ def plan_hesapla(
             )
         return plan
 
-    # Anüite: her dönem kalan anapara × oran; sabit taksit (anapara+faiz)
+    # Anüite veya bankanın eşit taksiti: her dönem kalan × oran
     if r == 0 or n == 1:
         ana_l = FinansService._tutar_bol(ana, n)
         faiz_l = [SIFIR] * n
         if n == 1 and r != 0:
             faiz_l = [_q2(ana * r)]
+        if n == 1 and sabit_pmt is not None:
+            # Tek çekimde banka tutarı = anapara+faiz+masraf/vergi toplamı beklentisi
+            pass
     else:
-        bir_arti = (Decimal("1") + r) ** n
-        pmt = _q2(ana * r * bir_arti / (bir_arti - Decimal("1")))
+        if sabit_pmt is not None:
+            pmt = sabit_pmt
+        else:
+            bir_arti = (Decimal("1") + r) ** n
+            pmt = _q2(ana * r * bir_arti / (bir_arti - Decimal("1")))
         kalan = ana
         ana_l, faiz_l = [], []
         for i in range(1, n + 1):
             fz = _q2(kalan * r)
             if i == n:
                 ap = kalan
+                # Banka eşit taksit: son taksit de aynı toplam; faiz kalan×oran yerine
+                # (pmt − anapara) ile dengelenir (anapara = kalan, toplam = pmt).
+                if sabit_pmt is not None:
+                    fz = _q2(pmt - ap)
+                    if fz < 0:
+                        # PMT kalan anaparadan küçükse faiz 0, toplam = anapara
+                        fz = SIFIR
             else:
                 ap = _q2(pmt - fz)
                 if ap < 0:
@@ -279,11 +309,31 @@ def plan_hesapla(
         fark = ana - sum(ana_l, SIFIR)
         if fark != 0:
             ana_l[-1] = _q2(ana_l[-1] + fark)
+            if sabit_pmt is not None and n > 1:
+                # Son taksit toplamı banka PMT kalsın
+                faiz_l[-1] = _q2(pmt - ana_l[-1])
+                if faiz_l[-1] < 0:
+                    faiz_l[-1] = SIFIR
 
     plan = []
     for i in range(n):
         yan, valor, sod = _tarihler(i + 1)
         ap, fz, ms, vg = ana_l[i], faiz_l[i], masraf_l[i], vergi_l[i]
+        if sabit_pmt is not None and n > 1:
+            top = _q2(sabit_pmt + ms + vg)
+            # Anapara+faiz banka taksitine otursun (masraf/vergi ayrı eklenir)
+            ic = _q2(ap + fz)
+            if ic != sabit_pmt and i == n - 1:
+                fz = _q2(sabit_pmt - ap)
+                if fz < 0:
+                    fz = SIFIR
+                    top = _q2(ap + ms + vg)
+                else:
+                    top = _q2(sabit_pmt + ms + vg)
+            elif i < n - 1:
+                top = _q2(sabit_pmt + ms + vg)
+        else:
+            top = _q2(ap + fz + ms + vg)
         plan.append({
             "taksit_no": i + 1,
             "yansima_tarihi": yan,
@@ -293,7 +343,7 @@ def plan_hesapla(
             "faiz": fz,
             "masraf": ms,
             "vergi": vg,
-            "toplam": _q2(ap + fz + ms + vg),
+            "toplam": top,
         })
     return plan
 
@@ -313,9 +363,139 @@ def plan_ozeti(plan: list[dict], anapara) -> dict:
         "toplam_masraf": top_masraf,
         "toplam_vergi": top_vergi,
         "toplam_taksit": top_taksit,
-        "net_giris": ana,  # kullandırım masrafı ayrı düşülür
+        "geri_odenecek_toplam": top_taksit,
+        "net_giris": ana,  # nakit kesintisi yoksa anapara; UI net alanı yazar
         "adet": len(plan),
     }
+
+
+_BILESEN_ALANLAR = ("anapara", "faiz", "masraf", "vergi")
+KAPSAM_TEK = "tek"
+KAPSAM_TUM = "tum"
+
+
+def taksit_bilesenlerini_orantila(
+    *,
+    anapara,
+    faiz,
+    masraf,
+    vergi,
+    yeni_toplam,
+) -> dict:
+    """Yeni taksit tutarını mevcut bileşen oranlarına göre dağıtır.
+
+    Yeni bileşen = yeni_toplam × eski / eski_toplam.
+    Sıfır bileşen sıfır kalır. Kuruş farkı deterministik olarak ilk pozitif
+    bileşene (öncelik: anapara → faiz → masraf → vergi) eklenir.
+    """
+    yeni = _kurus(yeni_toplam, "Yeni taksit tutarı")
+    if yeni <= 0:
+        raise ValueError("Yeni taksit tutarı pozitif olmalıdır.")
+    eski = {
+        "anapara": _q2(anapara),
+        "faiz": _q2(faiz),
+        "masraf": _q2(masraf),
+        "vergi": _q2(vergi),
+    }
+    eski_top = _q2(sum(eski.values(), SIFIR))
+    if eski_top == SIFIR:
+        raise ValueError(
+            "Eski bileşenler toplamı sıfır. Oran hesaplanamaz; "
+            "önce anapara/faiz/masraf/vergi tanımlayın."
+        )
+    yeni_b: dict[str, Decimal] = {}
+    for alan in _BILESEN_ALANLAR:
+        if eski[alan] == SIFIR:
+            yeni_b[alan] = SIFIR
+        else:
+            yeni_b[alan] = _q2(yeni * eski[alan] / eski_top)
+    dagilan = _q2(sum(yeni_b.values(), SIFIR))
+    fark = _q2(yeni - dagilan)
+    if fark != SIFIR:
+        for alan in _BILESEN_ALANLAR:
+            if eski[alan] != SIFIR or all(v == SIFIR for v in eski.values()):
+                aday = _q2(yeni_b[alan] + fark)
+                if aday >= SIFIR:
+                    yeni_b[alan] = aday
+                    break
+        else:
+            raise ValueError("Kuruş farkı bileşenlere dağıtılamadı.")
+    sonuc_top = _q2(sum(yeni_b.values(), SIFIR))
+    if sonuc_top != yeni:
+        raise ValueError(
+            f"Bileşen toplamı ({sonuc_top}) yeni taksit tutarına ({yeni}) eşit değil."
+        )
+    return {
+        "anapara": yeni_b["anapara"],
+        "faiz": yeni_b["faiz"],
+        "masraf": yeni_b["masraf"],
+        "vergi": yeni_b["vergi"],
+        "toplam": yeni,
+    }
+
+
+def hedef_hesaplari_kart_bankasi(kredi_karti_id: int) -> list[dict]:
+    """Seçili kartın bankasındaki aktif MEVDUAT / KMH hesapları (firma)."""
+    with get_session() as s:
+        kart = s.get(KrediKartiTanimi, int(kredi_karti_id))
+        if kart is None:
+            return []
+        banka_id = int(kart.banka_karti_id)
+        from database.hesap_siralama import hesaplari_sirala
+
+        q = (
+            select(FinansHesabi)
+            .where(
+                FinansHesabi.banka_karti_id == banka_id,
+                FinansHesabi.aktif.is_(True),
+            )
+            .order_by(FinansHesabi.id)
+        )
+        out: list[dict] = []
+        for h in s.scalars(q).all():
+            alt = (h.alt_hesap_turu or "").strip().upper()
+            if alt not in HEDEF_ALT_TURLER:
+                continue
+            out.append(
+                {
+                    "id": int(h.id),
+                    "hesap_adi": h.hesap_adi or f"Hesap #{h.id}",
+                    "hesap_turu": h.hesap_turu,
+                    "alt_hesap_turu": alt,
+                    "banka_karti_id": banka_id,
+                }
+            )
+        return hesaplari_sirala(out)
+
+
+def firma_kredi_kartlari_aktif() -> list[dict]:
+    """Seçili firmanın tüm aktif kredi kartları (tüm bankalar)."""
+    with get_session() as s:
+        q = (
+            select(KrediKartiTanimi)
+            .where(KrediKartiTanimi.aktif.is_(True))
+            .options(selectinload(KrediKartiTanimi.banka_karti))
+            .order_by(KrediKartiTanimi.kart_adi, KrediKartiTanimi.id)
+        )
+        sonuc: list[dict] = []
+        for k in s.scalars(q).all():
+            banka = getattr(getattr(k, "banka_karti", None), "banka_adi", None) or (
+                k.kart_bankasi or "—"
+            )
+            sonuc.append(
+                {
+                    "id": int(k.id),
+                    "kart_adi": k.kart_adi or f"Kart #{k.id}",
+                    "banka_adi": banka,
+                    "banka_karti_id": int(k.banka_karti_id),
+                    "son_dort_hane": k.son_dort_hane or "",
+                    "etiket": (
+                        f"{banka} / {k.kart_adi or 'Kart'}"
+                        f" · ****{k.son_dort_hane or '????'}"
+                    ),
+                }
+            )
+        return sonuc
 
 
 class NakitAvansService:
@@ -348,6 +528,26 @@ class NakitAvansService:
             return _avans_dict(a)
 
     @staticmethod
+    def belgeden_getir(belge_no: str) -> dict | None:
+        """NAV (avans) veya NAT (karta işlenmiş taksit hareketi) belge no → avans dict."""
+        schema_hazirla()
+        bn = (belge_no or "").strip()
+        if not bn:
+            return None
+        with get_session() as s:
+            a = s.scalar(select(NakitAvans).where(NakitAvans.belge_no == bn))
+            if a is None:
+                t = s.scalar(
+                    select(NakitAvansTaksit).where(NakitAvansTaksit.kk_hareket_belge_no == bn)
+                )
+                if t is not None:
+                    a = s.get(NakitAvans, int(t.avans_id))
+            if a is None:
+                return None
+            s.refresh(a, attribute_names=["taksitler"])
+            return _avans_dict(a)
+
+    @staticmethod
     def kaydet(
         *,
         kredi_karti_id: int,
@@ -358,23 +558,35 @@ class NakitAvansService:
         taksit_sayisi=1,
         ilk_yansima_tarihi: date | None = None,
         aciklama: str | None = None,
+        net_giris=None,
         kullandirim_masraf=0,
         kullandirim_vergi=0,
         plan_masraf=0,
         plan_vergi=0,
         manuel_plan: list[dict] | None = None,
+        sabit_taksit_tutari=None,
         istek_anahtari: str | None = None,
         sube_id: int | None = None,
     ) -> dict:
-        """Avans + plan + hesaba net giriş + 1. taksit karta (tek transaction)."""
+        """Avans + plan + hesaba net giriş + 1. taksit karta (tek transaction).
+
+        ``net_giris``: bankanın fiilen yatırdığı tutar (nakit kesintisi yoksa = anapara).
+        ``kullandirim_masraf`` / vergi: kart ekstresine ayrı borç (nakitten düşülmez).
+        ``sabit_taksit_tutari``: bankanın eşit taksit tutarı (opsiyonel; anüite yerine).
+        """
         yazma_zorunlu(*YAZMA)
         schema_hazirla()
         ana = _kurus(anapara, "Anapara")
         k_masraf = _kurus(kullandirim_masraf or 0, "Kullandırım masrafı")
         k_vergi = _kurus(kullandirim_vergi or 0, "Kullandırım vergisi")
-        net = _q2(ana - k_masraf - k_vergi)
+        if net_giris is None or net_giris == "":
+            net = ana  # nakit kesintisi yok → anaparanın tamamı
+        else:
+            net = _kurus(net_giris, "Net hesaba geçecek")
         if net <= 0:
-            raise ValueError("Hesaba geçen net tutar pozitif olmalıdır (anapara − masraf − vergi).")
+            raise ValueError("Hesaba geçen net tutar pozitif olmalıdır.")
+        if net > ana:
+            raise ValueError("Net giriş anaparadan büyük olamaz.")
         anahtar = (istek_anahtari or "").strip() or None
         n = int(taksit_sayisi or 1)
         tur = "TEK_CEKIM" if n == 1 else "TAKSITLI"
@@ -389,11 +601,14 @@ class NakitAvansService:
                 raise ValueError("Aktif firma kredi kartı bulunamadı.")
             hesap = s.get(FinansHesabi, int(hedef_hesap_id))
             if hesap is None:
-                raise ValueError("Hedef banka/kasa hesabı bulunamadı.")
-            tur_h = (hesap.hesap_turu or "").upper()
-            alt = (hesap.alt_hesap_turu or "").upper()
-            if tur_h not in ("KASA", "BANKA") or alt in ("KREDI_KARTI", "KREDILER", "POS"):
-                raise ValueError("Hedef hesap kasa, mevduat veya KMH olmalıdır.")
+                raise ValueError("Hedef mevduat/KMH hesabı bulunamadı.")
+            alt = (hesap.alt_hesap_turu or "").strip().upper()
+            if alt not in HEDEF_ALT_TURLER:
+                raise ValueError("Hedef hesap yalnızca kart bankasının MEVDUAT veya KMH hesabı olabilir.")
+            if int(hesap.banka_karti_id or 0) != int(kart.banka_karti_id):
+                raise ValueError("Hedef hesap, kartı veren bankaya ait olmalıdır.")
+            if not getattr(hesap, "aktif", True):
+                raise ValueError("Hedef hesap aktif değil.")
             plan = plan_hesapla(
                 anapara=ana,
                 aylik_faiz_orani=aylik_faiz_orani,
@@ -404,6 +619,7 @@ class NakitAvansService:
                 toplam_vergi=plan_vergi,
                 kart=kart,
                 manuel_plan=manuel_plan,
+                sabit_taksit_tutari=sabit_taksit_tutari,
             )
             oz = plan_ozeti(plan, ana)
             if oz["anapara_fark"] != 0:
@@ -434,28 +650,26 @@ class NakitAvansService:
             )
             s.add(avans)
             s.flush()
-            ilk_taksit: NakitAvansTaksit | None = None
             for sat in plan:
-                t = NakitAvansTaksit(
-                    avans_id=int(avans.id),
-                    taksit_no=int(sat["taksit_no"]),
-                    yansima_tarihi=sat["yansima_tarihi"],
-                    faiz_valor_tarihi=sat.get("faiz_valor_tarihi"),
-                    son_odeme_tarihi=sat.get("son_odeme_tarihi"),
-                    anapara=sat["anapara"],
-                    faiz=sat["faiz"],
-                    masraf=sat["masraf"],
-                    vergi=sat["vergi"],
-                    toplam=sat["toplam"],
-                    durum=DURUM_PLAN,
-                    plan_versiyon=1,
-                    aktif=True,
+                s.add(
+                    NakitAvansTaksit(
+                        avans_id=int(avans.id),
+                        taksit_no=int(sat["taksit_no"]),
+                        yansima_tarihi=sat["yansima_tarihi"],
+                        faiz_valor_tarihi=sat.get("faiz_valor_tarihi"),
+                        son_odeme_tarihi=sat.get("son_odeme_tarihi"),
+                        anapara=sat["anapara"],
+                        faiz=sat["faiz"],
+                        masraf=sat["masraf"],
+                        vergi=sat["vergi"],
+                        toplam=sat["toplam"],
+                        durum=DURUM_PLAN,
+                        plan_versiyon=1,
+                        aktif=True,
+                    )
                 )
-                s.add(t)
-                if int(sat["taksit_no"]) == 1:
-                    ilk_taksit = t
             s.flush()
-            # Hesaba net giriş
+            # Hesaba net giriş (bir kez)
             s.add(FinansHareketi(
                 hesap_id=int(hesap.id),
                 sube_id=sube_id,
@@ -466,12 +680,19 @@ class NakitAvansService:
                 aciklama=f"Nakit avans {kart.kart_adi} · {belge}",
             ))
             avans.finans_belge_no = belge
-            if k_masraf > 0:
-                _gider_yaz(s, tarih=islem_tarihi, tutar=k_masraf, tur="NAKIT_AVANS_MASRAF",
-                           aciklama=f"Nakit avans kullandırım masrafı {belge}", ref=belge)
-            if k_vergi > 0:
-                _gider_yaz(s, tarih=islem_tarihi, tutar=k_vergi, tur="NAKIT_AVANS_VERGI",
-                           aciklama=f"Nakit avans kullandırım vergisi {belge}", ref=belge)
+            # Kullandırım ücreti: kart ekstresinde ayrı borç (nakit girişinden düşülmez)
+            kul_ucret = _q2(k_masraf + k_vergi)
+            if kul_ucret > 0:
+                _kullandirim_ucreti_ekstre_yaz(
+                    s,
+                    kart=kart,
+                    avans=avans,
+                    tutar=kul_ucret,
+                    tarih=islem_tarihi,
+                    sube_id=sube_id,
+                    masraf=k_masraf,
+                    vergi=k_vergi,
+                )
             from database.kredi_karti_ekstre_service import KrediKartiEkstreService
 
             try:
@@ -486,15 +707,20 @@ class NakitAvansService:
                 muhasebe_hook("nakit_avans_kullandirim_fisi", avans.id, session=s)
             except Exception:
                 pass
-            # 1. taksit: kullandırım günü tek kart hareketi (aynı transaction)
-            if ilk_taksit is not None:
+            # Bütün taksitler: kendi yansıma tarihiyle NAT/KK/gider (aynı transaction)
+            s.flush()
+            for trow in sorted(
+                [x for x in (avans.taksitler or []) if x.aktif],
+                key=lambda x: int(x.taksit_no),
+            ):
                 _taksit_karta_isle_oturum(
                     s,
-                    ilk_taksit,
-                    islem_tarihi=islem_tarihi,
-                    islem_anahtari=f"na-kayit-t1-{avans.id}",
+                    trow,
+                    islem_tarihi=trow.yansima_tarihi or islem_tarihi,
+                    islem_anahtari=f"na-kayit-t{int(trow.taksit_no)}-{avans.id}",
                     sube_id=sube_id,
                 )
+            _kalan_yenile(s, avans)
             s.flush()
             return _avans_dict(avans)
 
@@ -520,32 +746,92 @@ class NakitAvansService:
 
     @staticmethod
     def vadesi_gelenleri_isle(*, kredi_karti_id: int | None = None, bugun: date | None = None) -> list[dict]:
-        """Yansıma tarihi gelmiş planlanan taksitleri karta işler (idempotent)."""
-        bugun = bugun or date.today()
+        """Eski API uyumu: eksik PLANLANDI hareketlerini kendi yansıma tarihiyle tamamlar.
+
+        Kayıtta tüm taksitler oluşur; bu metod yalnız onarım içindir.
+        ``bugun`` tarih filtrelemez — her satır kendi ``yansima_tarihi`` ile işlenir.
+        """
+        _ = bugun
+        return NakitAvansService.eksik_taksit_hareketlerini_tamamla(
+            kredi_karti_id=kredi_karti_id, avans_id=None
+        )
+
+    @staticmethod
+    def ekstre_odeme_sonrasi_guncelle(
+        session,
+        *,
+        kredi_karti_id: int | None = None,
+        banka_karti_id: int | None = None,
+    ) -> list[int]:
+        """KK taksit ODENDI sonrası ``kalan_anapara`` yenile; ikinci gider/NAT yazma.
+
+        Ekstre ödemesi faiz/masrafı yeniden giderleştirmez — bunlar taksit yansımasında
+        bir kez oluşmuştur. Yalnız ödenen anapara bileşeni kalanı düşürür.
+        """
+        q = (
+            select(NakitAvans)
+            .where(NakitAvans.durum == "ACIK")
+            .options(selectinload(NakitAvans.taksitler))
+        )
+        if kredi_karti_id is not None:
+            q = q.where(NakitAvans.kredi_karti_id == int(kredi_karti_id))
+        if banka_karti_id is not None:
+            q = q.where(NakitAvans.banka_karti_id == int(banka_karti_id))
+        guncellenen: list[int] = []
+        for avans in session.scalars(q).all():
+            once = _q2(avans.kalan_anapara)
+            _kalan_yenile(session, avans)
+            if _q2(avans.kalan_anapara) != once or avans.durum == "KAPALI":
+                guncellenen.append(int(avans.id))
+        return guncellenen
+
+    @staticmethod
+    def eksik_taksit_hareketlerini_tamamla(
+        *,
+        kredi_karti_id: int | None = None,
+        avans_id: int | None = None,
+    ) -> list[dict]:
+        """PLANLANDI kalan taksitleri kendi yansıma tarihiyle karta işler (mükerrer yok)."""
+        yazma_zorunlu(*YAZMA)
         schema_hazirla()
-        sonuc = []
         with get_session() as s:
             q = (
                 select(NakitAvansTaksit)
-                .join(NakitAvans)
+                .join(NakitAvans, NakitAvans.id == NakitAvansTaksit.avans_id)
                 .where(
                     NakitAvansTaksit.durum == DURUM_PLAN,
                     NakitAvansTaksit.aktif.is_(True),
-                    NakitAvansTaksit.yansima_tarihi <= bugun,
                     NakitAvans.durum == "ACIK",
                 )
+                .order_by(NakitAvansTaksit.avans_id, NakitAvansTaksit.taksit_no)
             )
             if kredi_karti_id:
                 q = q.where(NakitAvans.kredi_karti_id == int(kredi_karti_id))
-            ids = [int(t.id) for t in s.scalars(q).all()]
-        for tid in ids:
-            try:
-                sonuc.append(NakitAvansService.taksit_karta_isle(
-                    tid, islem_tarihi=bugun, islem_anahtari=f"na-auto-{tid}"
-                ))
-            except Exception as exc:
-                sonuc.append({"taksit_id": tid, "hata": str(exc)})
-        return sonuc
+            if avans_id:
+                q = q.where(NakitAvans.id == int(avans_id))
+            adaylar = list(s.scalars(q).all())
+            sonuc: list[dict] = []
+            for t in adaylar:
+                try:
+                    sonuc.append(
+                        _taksit_karta_isle_oturum(
+                            s,
+                            t,
+                            islem_tarihi=t.yansima_tarihi,
+                            islem_anahtari=(
+                                t.islem_anahtari
+                                or f"na-kayit-t{int(t.taksit_no)}-{int(t.avans_id)}"
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    sonuc.append({"taksit_id": int(t.id), "hata": str(exc)})
+            for aid in {int(t.avans_id) for t in adaylar}:
+                av = s.get(NakitAvans, aid)
+                if av is not None:
+                    _kalan_yenile(s, av)
+            s.flush()
+            return sonuc
 
     @staticmethod
     def planlanan_bekleyenler(
@@ -599,6 +885,156 @@ class NakitAvansService:
                         "kaynak": "NAKIT_AVANS",
                     }
                 )
+            return sonuc
+
+    @staticmethod
+    def taksit_tutari_onizle(
+        *,
+        avans_id: int,
+        taksit_id: int,
+        yeni_tutar,
+        kapsam: str,
+    ) -> dict:
+        """Tek/tüm taksit tutarı değişiminin önizlemesi — veritabanına yazmaz."""
+        schema_hazirla()
+        yeni = _kurus(yeni_tutar, "Yeni taksit tutarı")
+        kap = (kapsam or "").strip().lower()
+        if kap not in (KAPSAM_TEK, KAPSAM_TUM):
+            raise ValueError("Kapsam 'tek' veya 'tum' olmalıdır.")
+        with get_session() as s:
+            avans = s.scalar(
+                select(NakitAvans)
+                .where(NakitAvans.id == int(avans_id))
+                .options(selectinload(NakitAvans.taksitler))
+            )
+            if avans is None:
+                raise ValueError("Nakit avans bulunamadı.")
+            secili = s.get(NakitAvansTaksit, int(taksit_id))
+            if secili is None or int(secili.avans_id) != int(avans.id):
+                raise ValueError("Taksit bu nakit avans evrakına ait değil.")
+            return _taksit_tutari_plan_hazirla(s, avans, secili, yeni, kap)
+
+    @staticmethod
+    def taksit_tutari_uygula(
+        *,
+        avans_id: int,
+        taksit_id: int,
+        yeni_tutar,
+        kapsam: str,
+        onay_anahtari: str | None = None,
+    ) -> dict:
+        """Seçilen kapsamda taksit tutarını orantılı günceller (tek transaction).
+
+        KARTA_ISLENDI satırlarda NAT/KK ödeme/gider yerinde güncellenir;
+        yeni nakit avans girişi veya mükerrer NAT üretilmez.
+        """
+        yazma_zorunlu(*YAZMA)
+        schema_hazirla()
+        yeni = _kurus(yeni_tutar, "Yeni taksit tutarı")
+        kap = (kapsam or "").strip().lower()
+        if kap not in (KAPSAM_TEK, KAPSAM_TUM):
+            raise ValueError("Kapsam 'tek' veya 'tum' olmalıdır.")
+        with get_session() as s:
+            avans = s.scalar(
+                select(NakitAvans)
+                .where(NakitAvans.id == int(avans_id))
+                .options(selectinload(NakitAvans.taksitler))
+            )
+            if avans is None:
+                raise ValueError("Nakit avans bulunamadı.")
+            secili = s.get(NakitAvansTaksit, int(taksit_id))
+            if secili is None or int(secili.avans_id) != int(avans.id):
+                raise ValueError("Taksit bu nakit avans evrakına ait değil.")
+            oniz = _taksit_tutari_plan_hazirla(s, avans, secili, yeni, kap)
+            if not oniz.get("degisecek"):
+                if oniz.get("engeller"):
+                    nedenler = "; ".join(
+                        f"T{e['taksit_no']}: {e['neden']}" for e in oniz["engeller"]
+                    )
+                    raise ValueError(
+                        "Değiştirilebilir taksit yok — işlem uygulanmadı. " + nedenler
+                    )
+                raise ValueError("Değişecek taksit yok.")
+            # "Tüm taksitler": sessizce kısmi uygulama yok — engel varsa açık hata
+            if kap == KAPSAM_TUM and oniz.get("engeller"):
+                nedenler = "; ".join(
+                    f"T{e['taksit_no']}: {e['neden']}" for e in oniz["engeller"]
+                )
+                raise ValueError(
+                    "Tüm taksitler uygulanamadı; değiştirilemeyen kayıtlar var. "
+                    + nedenler
+                )
+            # Plan uygulama anında yeniden hesaplanır (onay_anahtari yalnızca UI izi)
+            _ = onay_anahtari
+
+            eski_snap = {
+                "belge_no": avans.belge_no,
+                "plan_versiyon": int(avans.plan_versiyon or 1),
+                "taksitler": [
+                    {
+                        "taksit_no": d["taksit_no"],
+                        "eski": d["eski"],
+                        "durum": d["durum"],
+                    }
+                    for d in oniz["degisecek"]
+                ],
+            }
+            yeni_v = int(avans.plan_versiyon or 1) + 1
+            avans.plan_versiyon = yeni_v
+            avans.guncelleme = datetime.now()
+            simdi = datetime.now()
+
+            for d in oniz["degisecek"]:
+                t = s.get(NakitAvansTaksit, int(d["id"]))
+                if t is None:
+                    raise ValueError(f"Taksit #{d['id']} kaybolmuş.")
+                nb = d["yeni"]
+                t.anapara = nb["anapara"]
+                t.faiz = nb["faiz"]
+                t.masraf = nb["masraf"]
+                t.vergi = nb["vergi"]
+                t.toplam = nb["toplam"]
+                t.plan_versiyon = yeni_v
+                if t.durum == DURUM_KARTA:
+                    _taksit_karta_islenmis_yerinde_guncelle(s, t, nb)
+                # PLANLANDI: yalnızca bileşenler; vade/tarih korunur
+            _kalan_yenile(s, avans)
+            s.flush()
+            sonuc = _avans_dict(avans)
+            sonuc["taksit_tutari_islem"] = {
+                "kapsam": kap,
+                "yeni_tutar": str(yeni),
+                "plan_versiyon": yeni_v,
+                "degisen_adet": len(oniz["degisecek"]),
+                "islem_zamani": simdi.isoformat(timespec="seconds"),
+                "degisecek": oniz["degisecek"],
+            }
+            try:
+                from database.user_audit import audit_document
+
+                audit_document(
+                    "NAKIT_AVANS_TAKSIT_TUTARI",
+                    modul=GECIS_MODULU,
+                    kayit_id=str(avans.id),
+                    belge_no=avans.belge_no,
+                    eski=eski_snap,
+                    yeni={
+                        "kapsam": kap,
+                        "yeni_tutar": str(yeni),
+                        "plan_versiyon": yeni_v,
+                        "degisen": [
+                            {"taksit_no": d["taksit_no"], "yeni": d["yeni"]}
+                            for d in oniz["degisecek"]
+                        ],
+                        "islem_zamani": simdi.isoformat(timespec="seconds"),
+                    },
+                    aciklama=(
+                        f"Taksit tutarı {kap}: {_q2(yeni)} · "
+                        f"{len(oniz['degisecek'])} satır"
+                    ),
+                )
+            except Exception:
+                pass
             return sonuc
 
     @staticmethod
@@ -672,6 +1108,184 @@ class NakitAvansService:
             return _taksit_dict(t)
 
 
+def _taksit_degistirilebilir_mi(s, t: NakitAvansTaksit) -> tuple[bool, str | None]:
+    """(uygun_mu, engel_nedeni). İptal / ödenmiş ekstre satırı engellenir."""
+    if not t.aktif or t.durum == DURUM_IPTAL:
+        return False, "İptal edilmiş taksit düzenlenemez."
+    if t.durum not in (DURUM_PLAN, DURUM_KARTA):
+        return False, f"Durum '{t.durum}' düzenlemeye uygun değil."
+    if t.durum == DURUM_KARTA and t.kk_odeme_id:
+        od = s.get(KrediKartiOdeme, int(t.kk_odeme_id))
+        if od is not None:
+            od_durum = (od.durum or "").upper()
+            if od_durum in ("ODENDI", "ÖDENDİ", "KAPALI", "IPTAL", "İPTAL"):
+                if od_durum in ("ODENDI", "ÖDENDİ", "KAPALI"):
+                    return False, "Kart ödeme kaydı ödenmiş/kapalı; tutar yerinde değiştirilemez."
+            for kt in od.taksitler or []:
+                kd = (kt.durum or "").upper()
+                if kd in ("ODENDI", "ÖDENDİ", "ODENMIS", "ÖDENMİŞ"):
+                    return False, "Ekstre taksiti ödenmiş; gerçek ödeme kaydı korunuyor."
+    return True, None
+
+
+def _taksit_tutari_plan_hazirla(
+    s,
+    avans: NakitAvans,
+    secili: NakitAvansTaksit,
+    yeni: Decimal,
+    kapsam: str,
+) -> dict:
+    """Önizleme: değişecek / engellenen satırlar (yazma yok)."""
+    adaylar: list[NakitAvansTaksit] = []
+    if kapsam == KAPSAM_TEK:
+        adaylar = [secili]
+    else:
+        adaylar = sorted(
+            [t for t in (avans.taksitler or []) if t.aktif or t.durum != DURUM_IPTAL],
+            key=lambda x: int(x.taksit_no),
+        )
+        # Aynı evrak dışına taşma yok — yalnızca bu avans_id
+        adaylar = [t for t in adaylar if int(t.avans_id) == int(avans.id)]
+
+    degisecek: list[dict] = []
+    engeller: list[dict] = []
+    for t in adaylar:
+        uygun, neden = _taksit_degistirilebilir_mi(s, t)
+        eski = {
+            "anapara": _q2(t.anapara),
+            "faiz": _q2(t.faiz),
+            "masraf": _q2(t.masraf),
+            "vergi": _q2(t.vergi),
+            "toplam": _q2(t.toplam),
+        }
+        if not uygun:
+            engeller.append({
+                "id": int(t.id),
+                "taksit_no": int(t.taksit_no),
+                "durum": t.durum,
+                "eski": eski,
+                "neden": neden,
+            })
+            continue
+        try:
+            yeni_b = taksit_bilesenlerini_orantila(
+                anapara=eski["anapara"],
+                faiz=eski["faiz"],
+                masraf=eski["masraf"],
+                vergi=eski["vergi"],
+                yeni_toplam=yeni,
+            )
+        except ValueError as exc:
+            engeller.append({
+                "id": int(t.id),
+                "taksit_no": int(t.taksit_no),
+                "durum": t.durum,
+                "eski": eski,
+                "neden": str(exc),
+            })
+            continue
+        degisecek.append({
+            "id": int(t.id),
+            "taksit_no": int(t.taksit_no),
+            "durum": t.durum,
+            "yansima_tarihi": t.yansima_tarihi,
+            "son_odeme_tarihi": t.son_odeme_tarihi,
+            "eski": eski,
+            "yeni": {
+                "anapara": yeni_b["anapara"],
+                "faiz": yeni_b["faiz"],
+                "masraf": yeni_b["masraf"],
+                "vergi": yeni_b["vergi"],
+                "toplam": yeni_b["toplam"],
+            },
+        })
+
+    # Tüm kapsamda engel varsa kullanıcıya açıkça göster (sessizce geleceklerle sınırlama yok)
+    onay = uuid.uuid4().hex[:12]
+    aktif_plan = [
+        {
+            "anapara": _q2(t.anapara),
+            "faiz": _q2(t.faiz),
+            "masraf": _q2(t.masraf),
+            "vergi": _q2(t.vergi),
+            "toplam": _q2(t.toplam),
+        }
+        for t in (avans.taksitler or [])
+        if t.aktif and t.durum != DURUM_IPTAL
+    ]
+    # Önizleme sonrası plan özeti (değişecek satırlar yerine konmuş)
+    by_no = {int(d["taksit_no"]): d["yeni"] for d in degisecek}
+    oniz_plan = []
+    for t in sorted(
+        [x for x in (avans.taksitler or []) if x.aktif and x.durum != DURUM_IPTAL],
+        key=lambda x: int(x.taksit_no),
+    ):
+        if int(t.taksit_no) in by_no:
+            oniz_plan.append(by_no[int(t.taksit_no)])
+        else:
+            oniz_plan.append({
+                "anapara": _q2(t.anapara),
+                "faiz": _q2(t.faiz),
+                "masraf": _q2(t.masraf),
+                "vergi": _q2(t.vergi),
+                "toplam": _q2(t.toplam),
+            })
+    return {
+        "avans_id": int(avans.id),
+        "belge_no": avans.belge_no,
+        "kapsam": kapsam,
+        "yeni_tutar": yeni,
+        "secili_taksit_id": int(secili.id),
+        "secili_taksit_no": int(secili.taksit_no),
+        "taksit_sayisi": int(avans.taksit_sayisi),
+        "degisecek": degisecek,
+        "engeller": engeller,
+        "onay_anahtari": onay,
+        "plan_ozeti_once": plan_ozeti(aktif_plan, avans.anapara),
+        "plan_ozeti_sonra": plan_ozeti(oniz_plan, avans.anapara),
+    }
+
+
+def _taksit_karta_islenmis_yerinde_guncelle(s, t: NakitAvansTaksit, yeni_b: dict) -> None:
+    """KARTA_ISLENDI: mevcut NAT / KK ödeme / gider tutarlarını yerinde güncelle (mükerrer yok)."""
+    yeni_top = _q2(yeni_b["toplam"])
+    if t.kk_hareket_belge_no:
+        fh = s.scalars(
+            select(FinansHareketi).where(
+                FinansHareketi.belge_no == t.kk_hareket_belge_no,
+                FinansHareketi.hareket_turu == HAREKET_KART,
+            )
+        ).first()
+        if fh is not None:
+            fh.tutar = yeni_top
+            fh.aciklama = (
+                f"Nakit avans taksit {int(t.taksit_no)} · "
+                f"A{yeni_b['anapara']}+F{yeni_b['faiz']}"
+                f"+M{yeni_b['masraf']}+V{yeni_b['vergi']}"
+            )
+    if t.kk_odeme_id:
+        od = s.get(KrediKartiOdeme, int(t.kk_odeme_id))
+        if od is not None and (od.durum or "").upper() not in ("IPTAL", "İPTAL"):
+            od.tutar = yeni_top
+            for kt in od.taksitler or []:
+                if not kt.aktif:
+                    continue
+                kd = (kt.durum or "").upper()
+                if kd in ("ODENDI", "ÖDENDİ", "ODENMIS", "ÖDENMİŞ"):
+                    continue
+                kt.tutar = yeni_top
+    for belge_g, alan in (
+        (t.faiz_gider_belge_no, "faiz"),
+        (t.masraf_gider_belge_no, "masraf"),
+        (t.vergi_gider_belge_no, "vergi"),
+    ):
+        if not belge_g:
+            continue
+        gf = s.scalar(select(GiderFisi).where(GiderFisi.belge_no == belge_g))
+        if gf is not None and (gf.durum or "").upper() not in ("IPTAL", "İPTAL"):
+            gf.tutar = _q2(yeni_b[alan])
+
+
 def _kk_hesap(s, kart: KrediKartiTanimi) -> FinansHesabi:
     hid = getattr(kart, "bagli_hesap_id", None)
     if hid:
@@ -687,8 +1301,10 @@ def _kk_hesap(s, kart: KrediKartiTanimi) -> FinansHesabi:
 
 
 def _gider_yaz(s, *, tarih: date, tutar: Decimal, tur: str, aciklama: str, ref: str) -> str:
+    from database.kredi_gider_fisi_service import KrediGiderFisiService
+
     belge = FinansService._finans_belge_no(s, "GDF")
-    s.add(GiderFisi(
+    fis = GiderFisi(
         belge_no=belge,
         tarih=tarih,
         tutar=tutar,
@@ -696,8 +1312,87 @@ def _gider_yaz(s, *, tarih: date, tutar: Decimal, tur: str, aciklama: str, ref: 
         aciklama=aciklama,
         durum="AÇIK",
         bagli_belge_no=ref,
-    ))
+    )
+    s.add(fis)
     s.flush()  # sonraki gider aynı belge_no sayacını görsün
+    KrediGiderFisiService.damgala(s, fis)
+    return belge
+
+
+def _kullandirim_ucreti_ekstre_yaz(
+    s,
+    *,
+    kart: KrediKartiTanimi,
+    avans: NakitAvans,
+    tutar: Decimal,
+    tarih: date,
+    sube_id: int | None,
+    masraf: Decimal,
+    vergi: Decimal,
+) -> str:
+    """Kullandırım ücretini kart ekstresine tek borç hareketi olarak yaz (nakitten düşme)."""
+    kk_hesap = _kk_hesap(s, kart)
+    belge = FinansService._finans_belge_no(s, "NAK")
+    s.add(
+        FinansHareketi(
+            hesap_id=int(kk_hesap.id),
+            sube_id=sube_id,
+            tarih=tarih,
+            hareket_turu=HAREKET_KUL_UCRET,
+            belge_no=belge,
+            tutar=tutar,
+            aciklama=f"Nakit avans kullandırım ücreti {avans.belge_no}",
+        )
+    )
+    kk_odeme = KrediKartiOdeme(
+        belge_no=belge,
+        tarih=tarih,
+        vade_tarihi=tarih,
+        banka_karti_id=int(avans.banka_karti_id),
+        kredi_karti_id=int(avans.kredi_karti_id),
+        cari_id=0,
+        cekim_turu="TEK_CEKIM",
+        taksit_sayisi=1,
+        tutar=tutar,
+        aciklama=f"Nakit avans kullandırım ücreti {avans.belge_no}",
+        durum="AÇIK",
+        kaynak_turu="NAKIT_AVANS",
+        plan_versiyon=1,
+    )
+    s.add(kk_odeme)
+    s.flush()
+    s.add(
+        KrediKartiOdemeTaksit(
+            odeme_id=int(kk_odeme.id),
+            taksit_no=1,
+            vade_tarihi=tarih,
+            tutar=tutar,
+            durum="BEKLIYOR",
+            ekstre_kesim_tarihi=tarih,
+            banka_vade_tarihi=tarih,
+            plan_versiyon=1,
+            aktif=True,
+        )
+    )
+    if masraf > 0:
+        _gider_yaz(
+            s,
+            tarih=tarih,
+            tutar=masraf,
+            tur="NAKIT_AVANS_KUL_MASRAF",
+            aciklama=f"Nakit avans kullandırım masrafı {avans.belge_no}",
+            ref=belge,
+        )
+    if vergi > 0:
+        _gider_yaz(
+            s,
+            tarih=tarih,
+            tutar=vergi,
+            tur="NAKIT_AVANS_KUL_VERGI",
+            aciklama=f"Nakit avans kullandırım vergisi {avans.belge_no}",
+            ref=belge,
+        )
+    s.flush()
     return belge
 
 
@@ -817,19 +1512,14 @@ def _taksit_karta_isle_oturum(
             aciklama=f"Nakit avans vergi {avans.belge_no} T{t.taksit_no}",
             ref=belge,
         )
-    avans.kalan_anapara = _q2(avans.kalan_anapara - _q2(t.anapara))
-    if avans.kalan_anapara < 0:
-        avans.kalan_anapara = SIFIR
+    # Karta işlemek kalan anaparayı düşürmez — yalnız gerçek ödeme düşürür
     t.durum = DURUM_KARTA
     t.kk_odeme_id = int(kk_odeme.id)
     t.kk_hareket_belge_no = belge
     t.islem_tarihi = tarih
     t.islem_anahtari = anahtar
     avans.guncelleme = datetime.now()
-    if avans.kalan_anapara == 0 and all(
-        x.durum in (DURUM_KARTA, DURUM_IPTAL) for x in avans.taksitler if x.aktif
-    ):
-        avans.durum = "KAPALI"
+    _kalan_yenile(s, avans)
     try:
         from database.muhasebe_entegrasyon import muhasebe_hook
 
@@ -884,9 +1574,6 @@ def _taksit_kart_geri_al(s, t: NakitAvansTaksit, avans: NakitAvans) -> None:
         muhasebe_hook("nakit_avans_taksit_iptal", tid, "Nakit avans taksit geri alındı", session=s)
     except Exception:
         pass
-    avans.kalan_anapara = _q2(avans.kalan_anapara + _q2(t.anapara))
-    if avans.durum == "KAPALI":
-        avans.durum = "ACIK"
     t.faiz_gider_belge_no = None
     t.masraf_gider_belge_no = None
     t.vergi_gider_belge_no = None
@@ -894,16 +1581,60 @@ def _taksit_kart_geri_al(s, t: NakitAvansTaksit, avans: NakitAvans) -> None:
     t.kk_hareket_belge_no = None
     t.islem_tarihi = None
     t.durum = DURUM_PLAN
+    _kalan_yenile(s, avans)
+    if avans.durum == "KAPALI" and avans.kalan_anapara > 0:
+        avans.durum = "ACIK"
+
+
+def _taksit_odendi_mi(s, t: NakitAvansTaksit) -> bool:
+    """Gerçek ekstre ödemesi var mı? (Karta işlenmiş + KK taksit ODENDI)."""
+    if not t.kk_odeme_id:
+        return False
+    od = s.get(KrediKartiOdeme, int(t.kk_odeme_id))
+    if od is None:
+        return False
+    od_u = (od.durum or "").upper()
+    if od_u in ("ODENDI", "ÖDENDİ", "KAPALI"):
+        return True
+    for kt in od.taksitler or []:
+        if not kt.aktif:
+            continue
+        kd = (kt.durum or "").upper()
+        if kd in ("ODENDI", "ÖDENDİ", "ODENMIS", "ÖDENMİŞ"):
+            return True
+    return False
+
+
+def _karta_aktarilan_anapara(avans: NakitAvans) -> Decimal:
+    return _q2(
+        sum(
+            (_q2(x.anapara) for x in (avans.taksitler or []) if x.aktif and x.durum == DURUM_KARTA),
+            SIFIR,
+        )
+    )
+
+
+def _odenen_anapara_toplami(s, avans: NakitAvans) -> Decimal:
+    """Yalnız gerçek ödeme/mahsup ile kapanan taksit anaparası."""
+    odenen = SIFIR
+    for x in avans.taksitler or []:
+        if not x.aktif or x.durum == DURUM_IPTAL:
+            continue
+        if _taksit_odendi_mi(s, x):
+            odenen += _q2(x.anapara)
+    return _q2(odenen)
 
 
 def _kalan_yenile(s, avans: NakitAvans) -> None:
-    islenen = SIFIR
-    for x in avans.taksitler:
-        if x.aktif and x.durum == DURUM_KARTA:
-            islenen += _q2(x.anapara)
-    avans.kalan_anapara = _q2(avans.anapara - islenen)
+    """kalan_anapara = anapara − ödenen anapara (karta aktarım düşürmez)."""
+    odenen = _odenen_anapara_toplami(s, avans)
+    avans.kalan_anapara = _q2(avans.anapara - odenen)
     if avans.kalan_anapara < 0:
         avans.kalan_anapara = SIFIR
+    if avans.kalan_anapara == 0 and avans.durum == "ACIK":
+        aktif = [x for x in (avans.taksitler or []) if x.aktif and x.durum != DURUM_IPTAL]
+        if aktif and all(_taksit_odendi_mi(s, x) for x in aktif):
+            avans.durum = "KAPALI"
 
 
 def _taksit_dict(t: NakitAvansTaksit) -> dict:
@@ -931,18 +1662,30 @@ def _taksit_dict(t: NakitAvansTaksit) -> dict:
 
 
 def _avans_dict(a: NakitAvans) -> dict:
+    from sqlalchemy.orm import object_session
+
     taksitler = [_taksit_dict(t) for t in (a.taksitler or []) if t.aktif or t.durum != DURUM_IPTAL]
     # iptaller de listelensin
     if not taksitler:
         taksitler = [_taksit_dict(t) for t in (a.taksitler or [])]
+    kart_adi = ""
+    s = object_session(a)
+    if s is not None:
+        k = s.get(KrediKartiTanimi, int(a.kredi_karti_id))
+        kart_adi = (k.kart_adi if k else "") or ""
+    karta_akt = _karta_aktarilan_anapara(a)
+    odenen_ana = _odenen_anapara_toplami(s, a) if s is not None else SIFIR
     return {
         "id": int(a.id),
         "belge_no": a.belge_no,
+        "kart_adi": kart_adi,
         "kredi_karti_id": int(a.kredi_karti_id),
         "banka_karti_id": int(a.banka_karti_id),
         "islem_tarihi": a.islem_tarihi,
         "anapara": _q2(a.anapara),
         "kalan_anapara": _q2(a.kalan_anapara),
+        "karta_aktarilan_anapara": karta_akt,
+        "odenen_anapara": odenen_ana,
         "net_giris": _q2(a.net_giris),
         "kullandirim_masraf": _q2(a.kullandirim_masraf),
         "kullandirim_vergi": _q2(a.kullandirim_vergi),
@@ -954,6 +1697,7 @@ def _avans_dict(a: NakitAvans) -> dict:
         "aciklama": a.aciklama,
         "durum": a.durum,
         "finans_belge_no": a.finans_belge_no,
+        "istek_anahtari": a.istek_anahtari,
         "taksitler": sorted(taksitler, key=lambda x: x["taksit_no"]),
         "plan_ozeti": plan_ozeti(
             [{k: t[k] for k in ("anapara", "faiz", "masraf", "vergi", "toplam")} for t in taksitler

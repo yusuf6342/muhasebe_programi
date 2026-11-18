@@ -243,10 +243,14 @@ class GirisPaneliUITest(unittest.TestCase):
             borc_metni = self._metinler(p.k_borc)
             self.assertNotIn("Tedarikçi açık borcu", borc_metni)
             self.assertNotIn("Tedarikçi borç bakiyesi", borc_metni)
-        # Ayrı başlık: bugünün tarihi ve 600,00 TL; ayrıntı toplamı aynı
+        # İki yön: açık alacak (firmamızın borcu) kırmızı; bugünün tarihi
         ted_metni = self._metinler(p.k_tedarikci)
         self.assertIn(f"Bugün itibarıyla ({gp._tarih_tr(date.today())})", ted_metni)
+        self.assertIn("Tedarikçi açık alacağı", ted_metni)
+        self.assertIn("Tedarikçi açık borcu", ted_metni)
+        self.assertIn("Firmamızın tedarikçilere olan açık borcu", ted_metni)
         self.assertIn(para_tr(D("600.00")), ted_metni)
+        self.assertEqual(p._sonuc["tedarikci_acik"]["acik_alacak"]["toplam"], D("600.00"))
         p._ac("x", p._sonuc["tedarikci_acik"]["kalemler"])
         self.assertEqual(gp._toplam(self._pencereler()[-1]._kalemler), D("600.00"))
         # Ödeme yükü kartı tedarikçi borcunu içermez
@@ -260,7 +264,8 @@ class GirisPaneliUITest(unittest.TestCase):
 
     def test_tedarikci_borcu_yoksa_sifir(self):
         p = self.panel()
-        self.assertIn(para_tr(D("0.00")), self._metinler(p.k_tedarikci))
+        metin = self._metinler(p.k_tedarikci)
+        self.assertGreaterEqual(metin.count(para_tr(D("0.00"))), 2)
 
     def test_yetkisiz_kullanici_tutar_gormez(self):
         oturum.set_user(user_id=2, kullanici_adi="satis", ad_soyad="Satış", role_kod="SATIS", role_ad="Satış",

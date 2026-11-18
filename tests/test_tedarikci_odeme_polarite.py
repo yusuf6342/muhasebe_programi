@@ -88,12 +88,20 @@ class TedarikciOdemePolariteTest(unittest.TestCase):
         with get_session() as s:
             ci = s.scalar(select(CariIslem).where(CariIslem.belge_no == m.belge_no))
             self.assertEqual((ci.borc, ci.alacak), (Decimal("2000.00"), Decimal("0.00")))
-            fh = list(s.scalars(select(FinansHareketi).where(FinansHareketi.belge_no == m.belge_no)).all())
+            ko = s.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no.like(f"{m.belge_no}-%")))
+            self.assertEqual(ko.tutar, Decimal("2000.00"))
+            # Kart hareketi taksit belge no ile yazılır: {odeme}-T1
+            fh = list(
+                s.scalars(
+                    select(FinansHareketi).where(
+                        FinansHareketi.belge_no == f"{ko.belge_no}-T1"
+                    )
+                ).all()
+            )
             self.assertEqual(len(fh), 1)
             self.assertEqual(fh[0].hesap_id, self.kk_hesap_id)
             self.assertEqual(fh[0].hareket_turu, "KK ÖDEME")
-            ko = s.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no.like(f"{m.belge_no}-%")))
-            self.assertEqual(ko.tutar, Decimal("2000.00"))
+            self.assertEqual(fh[0].tutar, Decimal("2000.00"))
         self.assertEqual(self._bakiye(self.tedarikci_id)["tutar"], Decimal("3000.00"))
 
     def test_havale_mevduat_karsi(self):

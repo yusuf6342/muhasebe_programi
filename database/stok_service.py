@@ -2725,6 +2725,7 @@ class StokService:
         import time
 
         from database.access import maliyet_izinli
+        from database.fatura_kdv_service import kdv_deger
         from database.turkce_normalize import (
             arama_like_varyantlari,
             kelime_basi_eslesme,
@@ -2890,7 +2891,7 @@ class StokService:
                             "model": model or None,
                             "birim": (s.birim or "Adet").strip() or "Adet",
                             "barkod": barkod or None,
-                            "kdv_orani": Decimal(str(getattr(s, "kdv_orani", 20) or 20)),
+                            "kdv_orani": kdv_deger(getattr(s, "kdv_orani", None)),
                             "aciklama": aciklama or None,
                             "depo_stok": depo_stok,
                             "kullanilabilir_stok": kullanilabilir,
@@ -3243,10 +3244,11 @@ class StokService:
             stok.muhasebe_maliyet_kodu = veriler.get("muhasebe_maliyet_kodu") or None
             stok.muhasebe_kdv_alis_kodu = veriler.get("muhasebe_kdv_alis_kodu") or None
             stok.muhasebe_kdv_satis_kodu = veriler.get("muhasebe_kdv_satis_kodu") or None
-            ham_kdv = veriler.get("kdv_orani", VARSAYILAN_KDV_ORANI)
-            if ham_kdv is None or (isinstance(ham_kdv, str) and not str(ham_kdv).strip()):
-                ham_kdv = VARSAYILAN_KDV_ORANI
-            kdv = decimal(ham_kdv, "KDV oranı", Decimal("0"))
+            from database.fatura_kdv_service import firma_varsayilan_kdv_orani, kdv_deger
+
+            ham_kdv = veriler.get("kdv_orani", None)
+            # Boş → firma varsayılanı (%0 DNM'de); 0 geçerli kalır (or 20 kullanılmaz)
+            kdv = kdv_deger(ham_kdv, bos_varsayilan=firma_varsayilan_kdv_orani())
             if kdv < 0 or kdv > 100:
                 raise ValueError("KDV oranı 0–100 arasında olmalıdır.")
             stok.kdv_orani = kdv
@@ -3649,7 +3651,10 @@ class StokService:
 
     @staticmethod
     def alis_fiyatini_guncelle(session, stok_kodu, net_fiyat):
-        """Stok kartındaki ALIŞ FİYATI alanını son net alış (iskontolu) ile günceller."""
+        """Stok kartı ALIŞ FİYATI — iskonto sonrası KDV dahil net (eski çağrılar için).
+
+        Yeni alış faturaları ``alis_stok_fiyat_service`` kullanır; bu metot paket vb. yollar içindir.
+        """
         stok = session.scalar(
             select(StokKarti)
             .where(StokKarti.stok_kodu == (stok_kodu or "").strip())
@@ -3660,16 +3665,15 @@ class StokService:
         yeni = decimal(net_fiyat, "Alış fiyatı", Decimal("0")).quantize(Decimal("0.0001"))
         mevcut = next((f for f in stok.fiyatlar if f.fiyat_adi == "ALIŞ FİYATI"), None)
         eski = mevcut.tutar if mevcut is not None else None
-        # Kaynak alış faturası satır neti (iskonto sonrası, KDV hariç)
         if mevcut is None:
             stok.fiyatlar.append(
-                StokFiyati(fiyat_adi="ALIŞ FİYATI", tutar=yeni, para_birimi="TL", kdv_durumu="HARIC")
+                StokFiyati(fiyat_adi="ALIŞ FİYATI", tutar=yeni, para_birimi="TL", kdv_durumu="DAHIL")
             )
         else:
-            if Decimal(mevcut.tutar) == yeni:
+            if Decimal(mevcut.tutar) == yeni and (getattr(mevcut, "kdv_durumu", None) or "").upper() == "DAHIL":
                 return yeni
             mevcut.tutar = yeni
-            mevcut.kdv_durumu = "HARIC"
+            mevcut.kdv_durumu = "DAHIL"
         session.add(
             StokFiyatGecmisi(
                 stok_id=stok.id,
@@ -3683,8 +3687,11 @@ class StokService:
 
     @staticmethod
     def son_alis_faturasi_net(stok_kodu=None, stok_id=None):
-        """Son alış faturasındaki net iskontolu birim fiyatı döndürür (yoksa None)."""
-        from database.models.alis_faturasi import AlisFaturasi, AlisFaturasiSatiri
+        """Son geçerli Cin alışının iskonto sonrası KDV dahil net birim fiyatı (yoksa None)."""
+        from database.alis_stok_fiyat_service import (
+            satir_net_birim_ana,
+            stok_icin_en_guncel_kaynak,
+        )
 
         with get_session() as session:
             kod = (stok_kodu or "").strip()
@@ -3693,25 +3700,14 @@ class StokService:
                 kod = stok.stok_kodu if stok else ""
             if not kod:
                 return None
-            satir = session.scalar(
-                select(AlisFaturasiSatiri)
-                .join(AlisFaturasi, AlisFaturasi.id == AlisFaturasiSatiri.fatura_id)
-                .where(
-                    AlisFaturasiSatiri.urun_kodu == kod,
-                    AlisFaturasi.durum != "İPTAL",
-                )
-                .order_by(
-                    AlisFaturasi.fatura_tarihi.desc(),
-                    AlisFaturasi.id.desc(),
-                    AlisFaturasiSatiri.id.desc(),
-                )
-                .limit(1)
-            )
-            if not satir:
+            pair = stok_icin_en_guncel_kaynak(session, kod)
+            if pair is None:
                 return None
-            tutar = decimal(satir.birim_fiyat, "Birim fiyat", Decimal("0"))
-            oran = decimal(satir.iskonto_orani or "0", "İskonto", Decimal("0"))
-            return (tutar * (Decimal("1") - oran / Decimal("100"))).quantize(Decimal("0.0001"))
+            fatura, satir = pair
+            net = satir_net_birim_ana(satir, fatura, kdv_dahil=True)
+            if net is None:
+                return None
+            return Decimal(str(net)).quantize(Decimal("0.0001"))
 
     @staticmethod
     def lotlar(stok_kodu, depo_adi):
@@ -3787,7 +3783,7 @@ class StokService:
                         "maliyetler": StokService._maliyet_lotlardan(lotlar),
                     }
                     continue
-                alis = StokService.son_alis_fiyati(kod, Decimal("0"))
+                alis = StokService.son_alis_maliyet_net(kod, Decimal("0"))
                 if alis and alis > 0:
                     m = {"fifo": alis, "son_alis": alis, "ortalama": alis, "agirlikli": alis}
                 else:
@@ -3805,13 +3801,34 @@ class StokService:
             return sonuc
 
     @staticmethod
+    def son_alis_maliyet_net(stok_kodu, varsayilan=Decimal("0")):
+        """Maliyet için son geçerli alışın KDV hariç net birim fiyatı (kart DAHIL fiyatına düşmez)."""
+        from database.alis_stok_fiyat_service import (
+            satir_net_birim_ana,
+            stok_icin_en_guncel_kaynak,
+        )
+
+        kod = (stok_kodu or "").strip()
+        if not kod:
+            return Decimal(str(varsayilan))
+        with get_session() as session:
+            pair = stok_icin_en_guncel_kaynak(session, kod)
+            if pair is None:
+                return Decimal(str(varsayilan))
+            fatura, satir = pair
+            net = satir_net_birim_ana(satir, fatura, kdv_dahil=False)
+            if net is None:
+                return Decimal(str(varsayilan))
+            return Decimal(str(net)).quantize(Decimal("0.0001"))
+
+    @staticmethod
     def maliyetler(stok_kodu, depo_adi):
         maliyet_zorunlu()
         lotlar = StokService.lotlar(stok_kodu, depo_adi)
         if lotlar:
             return StokService._maliyet_lotlardan(lotlar)
-        # Lot yoksa: kart ALIŞ FİYATI (paket üretiminden yazılır) veya bileşen tahmini
-        alis = StokService.son_alis_fiyati(stok_kodu, Decimal("0"))
+        # Lot yoksa: KDV hariç son alış neti (kart ALIŞ FİYATI artık KDV dahil)
+        alis = StokService.son_alis_maliyet_net(stok_kodu, Decimal("0"))
         if alis and alis > 0:
             return {"fifo": alis, "son_alis": alis, "ortalama": alis, "agirlikli": alis}
         tahmini = StokService.paket_tahmini_birim_maliyet(stok_kodu, depo_adi)
@@ -4492,9 +4509,55 @@ class StokService:
         return (
             f"{belge_no} alış faturası {islem}: bu alışın stoğundan satış/çıkış yapılmış.\n"
             "Bağlı hareketler:\n" + "\n".join(satirlar) + "\n\n"
-            "Önce ilgili satışı iptal edin veya satış iadesi / alış iadesi belgesiyle düzeltin. "
-            "Maliyeti etkilemeyen açıklama, belge yolu ve tedarikçi fatura no alanları değiştirilebilir."
+            "Ürün, miktar, birim, depo veya lot değişikliği için önce ilgili satışı iptal edin "
+            "veya satış/alış iadesi belgesiyle düzeltin.\n"
+            "Birim fiyat, iskonto ve KDV mali düzeltmeleri bağlı satış varken yapılabilir; "
+            "açıklama / belge yolu / tedarikçi fatura no da serbesttir."
         )
+
+    @staticmethod
+    def alis_giris_maliyetini_guncelle(session, belge_no: str, urun_kodu: str, yeni_birim_maliyet) -> None:
+        """FATURA GİRİŞ + lot + aynı lot üzerindeki çıkış hareketlerinin birim maliyetini günceller.
+
+        Miktar/lot bağlantısı değişmez. Stok kartı ALIŞ FİYATI (KDV dahil) buradan yazılmaz.
+        """
+        from database.models.stok import StokHareketi, StokLotu
+
+        kod = (urun_kodu or "").strip()
+        if not kod:
+            return
+        stok = session.scalar(select(StokKarti).where(StokKarti.stok_kodu == kod))
+        if stok is None:
+            return
+        yeni = decimal(yeni_birim_maliyet, "Birim maliyet", Decimal("0")).quantize(Decimal("0.0001"))
+        girisler = list(
+            session.scalars(
+                select(StokHareketi).where(
+                    StokHareketi.belge_no == belge_no,
+                    StokHareketi.hareket_turu == "FATURA GİRİŞ",
+                    StokHareketi.stok_id == int(stok.id),
+                )
+            ).all()
+        )
+        lot_idler: set[int] = set()
+        for h in girisler:
+            h.birim_maliyet = yeni
+            if h.lot_id:
+                lot_idler.add(int(h.lot_id))
+                lot = session.get(StokLotu, int(h.lot_id))
+                if lot is not None:
+                    lot.birim_maliyet = yeni
+        if not lot_idler:
+            return
+        # Aynı lotlardan yapılmış çıkış/transfer hareketlerinin FIFO birim maliyeti
+        diger = session.scalars(
+            select(StokHareketi).where(
+                StokHareketi.lot_id.in_(lot_idler),
+                StokHareketi.hareket_turu != "FATURA GİRİŞ",
+            )
+        ).all()
+        for h in diger:
+            h.birim_maliyet = yeni
 
     @staticmethod
     def fatura_girislerini_geri_al(session, belge_no):

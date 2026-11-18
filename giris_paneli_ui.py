@@ -1,7 +1,9 @@
-"""GİRİŞ ekranı: satış, tahsilat, ödeme yükü ve tedarikçi açık borcu özeti (sarı-lacivert).
+"""GİRİŞ ekranı: satış, tahsilat, ödeme yükü ve tedarikçi bakiyeleri özeti (sarı-lacivert).
 
 Hesap ``database.giris_ozet_service`` içindedir; bu modül yalnız gösterir. Ana kart, bölüm tablosu ve
 ayrıntı listesi aynı hesap sonucunu kullanır. Eski giriş ekranı ``ana_panel_ui.eski_giris_dashboard_goster``.
+
+Tedarikçi bölümü: açık alacak (firmamızın borcu, kırmızı) + açık borç (ön/fazla ödeme).
 """
 
 from __future__ import annotations
@@ -767,7 +769,13 @@ class AyrintiPenceresi(tk.Toplevel):
             if "tedarikçi" in baslik.casefold() or "tedarikci" in baslik.casefold():
                 bolum = sonuc.get("tedarikci_acik") or {}
                 if bolum.get("durum") == go.HATA:
-                    return [], bolum.get("mesaj") or "Tedarikçi açık borcu yüklenemedi"
+                    return [], bolum.get("mesaj") or "Tedarikçi bakiyeleri yüklenemedi"
+                alacak = (bolum.get("acik_alacak") or {})
+                borc = (bolum.get("acik_borc") or {})
+                if "açık alacağı" in baslik.casefold() or "acik alacagi" in baslik.casefold():
+                    return list(alacak.get("fis_kalemler") or alacak.get("kalemler") or []), None
+                if "açık borcu" in baslik.casefold() or "acik borcu" in baslik.casefold():
+                    return list(borc.get("fis_kalemler") or borc.get("kalemler") or []), None
                 return list(bolum.get("kalemler") or []), None
         except Exception as hata:
             import logging
@@ -1178,7 +1186,7 @@ class GirisPaneli(tk.Frame):
         self.k_satis = _Kutu(self.orta_f, "Satışlar")
         self.k_tahsilat = _Kutu(self.orta_f, "Tahsilatlar ve cari işlemler")
         self.k_borc = _Kutu(p, "Borçlar ve ödeme yükü")
-        self.k_tedarikci = _Kutu(p, "Tedarikçi açık borcu")
+        self.k_tedarikci = _Kutu(p, "Tedarikçi bakiyeleri")
         for k in (self.k_borc, self.k_tedarikci):
             k.pack(fill="x", pady=(0, 10))
         for deger, ad in (("takvim", "Ödeme takvimi"), ("bakiye", "Borç bakiyeleri")):
@@ -1589,6 +1597,7 @@ class GirisPaneli(tk.Frame):
         for ad, alan, tur in (("Satış belgesi adedi", "belge_adedi", None), ("Satış tutarı", "satis_tutari", "satis"),
                               ("İade adedi", "iade_adedi", None), ("İade tutarı", "iade_tutari", "iade"),
                               ("Net satış", "net", ""), ("KDV hariç net satış", "kdv_haric_net", None),
+                              ("Net KDV", "net_kdv", None),
                               ("Önceki dönem net satış", "onceki_net", "onceki"), ("Fark", "fark", None),
                               ("Değişim %", "yuzde", None)):
             satir = [ad]
@@ -1613,6 +1622,18 @@ class GirisPaneli(tk.Frame):
         notlar = list(sat["notlar"])
         if any(x["kdv_haric"] is None for x in kal):
             notlar.append("KDV bilgisi eksik belge(ler) KDV hariç toplama katılmadı.")
+        # Net ≈ KDV hariç + Net KDV (bilinmeyen KDV'li belgeler hariç)
+        for etiket, r in (("Bugün", b), ("Bu ay", a)):
+            if r.get("kdv_bilinmeyen"):
+                continue
+            net = Decimal(str(r["net"] or 0))
+            kh = Decimal(str(r["kdv_haric_net"] or 0))
+            nk = Decimal(str(r.get("net_kdv") or 0))
+            fark = (kh + nk) - net
+            if abs(fark) > Decimal("0.02"):
+                notlar.append(
+                    f"{etiket}: net ≠ KDV hariç + net KDV (fark {_tl(fark)}); belge mutabakatını kontrol edin."
+                )
         k.notlar(sat["uyarilar"], notlar)
 
     def _tahsilat_ciz(self, th, d):
@@ -1740,15 +1761,72 @@ class GirisPaneli(tk.Frame):
         k = self.k_tedarikci
         if not self._hazirla(k, t):
             return
-        satir = tk.Frame(k.govde, bg=BEYAZ)
-        satir.pack(fill="x", pady=(2, 4))
-        tk.Label(satir, text=f"Bugün itibarıyla ({_tarih_tr(t['tarih'])})", bg=BEYAZ, fg=PASIF,
-                 font=FONT_UI).pack(side="left")
-        tutar = tk.Label(satir, text=para_tr(t["toplam"]), bg=BEYAZ, fg=LACIVERT, cursor="hand2",
-                         font=FONT_KART_DEGER + ("underline",))
-        tutar.pack(side="left", padx=(12, 0))
-        baslik = f"Tedarikçi açık borcu — {_tarih_tr(t['tarih'])} itibarıyla"
-        tutar.bind("<Button-1>", lambda _e: self._ac(baslik, t["kalemler"]))
+        alacak = t.get("acik_alacak") or {
+            "toplam": t.get("toplam") or Decimal("0"),
+            "kalemler": t.get("kalemler") or [],
+            "fis_kalemler": t.get("kalemler") or [],
+            "aciklama": "Firmamızın tedarikçilere olan açık borcu",
+        }
+        borc = t.get("acik_borc") or {
+            "toplam": Decimal("0"),
+            "kalemler": [],
+            "fis_kalemler": [],
+            "aciklama": "Ön ödeme / fazla ödemenin mahsup edilmemiş kısmı",
+        }
+        tarih_metin = f"Bugün itibarıyla ({_tarih_tr(t['tarih'])})"
+        tk.Label(k.govde, text=tarih_metin, bg=BEYAZ, fg=PASIF, font=FONT_UI).pack(
+            anchor="w", pady=(2, 4)
+        )
+
+        def _dokum_kalemleri(bolum: dict) -> list:
+            """Fiş dökümü cari liste toplamıyla uyuyorsa onu, değilse cari özetini kullan."""
+            hedef = Decimal(str(bolum.get("toplam") or 0))
+            fis = list(bolum.get("fis_kalemler") or [])
+            ozet = list(bolum.get("kalemler") or [])
+            if fis:
+                fis_top = sum((Decimal(str(x.get("tutar") or 0)) for x in fis), Decimal("0"))
+                if abs(fis_top - hedef) <= Decimal("0.05"):
+                    return fis
+            return ozet
+
+        def _satir(etiket: str, tutar, renk, baslik: str, bolum: dict, aciklama: str):
+            satir = tk.Frame(k.govde, bg=BEYAZ)
+            satir.pack(fill="x", pady=(2, 2))
+            tk.Label(satir, text=etiket, bg=BEYAZ, fg=PASIF, font=FONT_UI).pack(side="left")
+            lbl = tk.Label(
+                satir,
+                text=para_tr(tutar),
+                bg=BEYAZ,
+                fg=renk,
+                cursor="hand2",
+                font=FONT_KART_DEGER + ("underline",),
+            )
+            lbl.pack(side="left", padx=(12, 0))
+            tk.Label(satir, text=aciklama, bg=BEYAZ, fg=PASIF, font=FONT_KUCUK).pack(
+                side="left", padx=(10, 0)
+            )
+            kalemler = _dokum_kalemleri(bolum)
+            lbl.bind(
+                "<Button-1>",
+                lambda _e, b=baslik, kl=kalemler, a=aciklama: self._ac(b, kl, aciklama=a),
+            )
+
+        _satir(
+            "Tedarikçi açık alacağı",
+            alacak.get("toplam") or Decimal("0"),
+            UYARI,
+            f"Tedarikçi açık alacağı — {_tarih_tr(t['tarih'])} itibarıyla",
+            alacak,
+            alacak.get("aciklama") or "Firmamızın tedarikçilere olan açık borcu",
+        )
+        _satir(
+            "Tedarikçi açık borcu",
+            borc.get("toplam") or Decimal("0"),
+            LACIVERT,
+            f"Tedarikçi açık borcu — {_tarih_tr(t['tarih'])} itibarıyla",
+            borc,
+            borc.get("aciklama") or "Ön ödeme / fazla ödemenin mahsup edilmemiş kısmı",
+        )
         k.notlar(t["uyarilar"], t["notlar"])
 
 

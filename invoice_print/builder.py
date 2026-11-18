@@ -26,12 +26,20 @@ def _d(x) -> Decimal:
 
 
 def _para(tutar, pb: str = "TRY") -> str:
+    """Parasal toplam / matrah (2 hane). Birim fiyat için ``_fiyat``."""
     d = _d(tutar).quantize(_KURUS, rounding=ROUND_HALF_UP)
     s = f"{d:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     pb = (pb or "TRY").upper()
     if pb in ("TRY", "TL"):
         return f"{s} TL"
     return f"{s} {pb}"
+
+
+def _fiyat(tutar, pb: str = "TRY") -> str:
+    """Birim / net birim — Fiyat Görünümü ayarı."""
+    from database.fiyat_gorunum_service import fiyat_goster_pb
+
+    return fiyat_goster_pb(tutar, pb)
 
 
 def _miktar(m) -> str:
@@ -146,9 +154,9 @@ def _satirlari_satir_model(
                 miktar_goster=_miktar(miktar),
                 birim=str(s.get("birim") or ""),
                 birim_fiyat=fiyat,
-                birim_fiyat_goster=_para(fiyat, pb),
+                birim_fiyat_goster=_fiyat(fiyat, pb),
                 net_birim_fiyat=net_birim,
-                net_birim_fiyat_goster=_para(net_birim, pb),
+                net_birim_fiyat_goster=_fiyat(net_birim, pb),
                 iskonto_goster=_iskonto_goster(
                     s.get("iskonto_orani", 0),
                     s.get("iskonto_orani_2", 0),

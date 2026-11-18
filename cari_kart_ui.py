@@ -2691,6 +2691,7 @@ class CariDialog(tk.Toplevel):
             "tarih",
             "tur",
             "belge",
+            "taksit",
             "aciklama",
             "barkod",
             "urun_adi",
@@ -2710,6 +2711,7 @@ class CariDialog(tk.Toplevel):
             "tarih",
             "tur",
             "belge",
+            "taksit",
             "aciklama",
             "borc",
             "alacak",
@@ -2778,7 +2780,8 @@ class CariDialog(tk.Toplevel):
             "tarih": ("Tarih", 92, "center", False),
             "tur": ("Belge Türü", 108, "w", False),
             "belge": ("Belge No", 118, "w", False),
-            "aciklama": ("Açıklama", 160, "w", True),
+            "taksit": ("Taksit", 72, "center", False),
+            "aciklama": ("Açıklama", 150, "w", True),
             "barkod": ("Kod/Barkod", 110, "w", False),
             "urun_adi": ("Ürün Adı", 300, "w", True),
             "miktar": ("Miktar", 72, "e", False),
@@ -3990,6 +3993,8 @@ class CariDialog(tk.Toplevel):
             "Tarih",
             "Belge Türü",
             "Belge Numarası",
+            "Taksit",
+            "Taksit Vadesi",
             "Açıklama",
             "Stok Kodu",
             "Barkod",
@@ -4038,6 +4043,8 @@ class CariDialog(tk.Toplevel):
                     tarih_goster(h_tarih) if h_tarih else "",
                     hareket.get("tur") or "",
                     hareket.get("belge_no") or "",
+                    (hareket.get("taksit_etiket") or "").strip(),
+                    "",
                     hareket.get("aciklama") or "",
                     "",
                     "",
@@ -4052,7 +4059,50 @@ class CariDialog(tk.Toplevel):
                     gun,
                 ]
             )
-            if hareket.get("genisletilebilir") and hareket.get("fatura_id"):
+            if (
+                hareket.get("genisletilebilir")
+                and hareket.get("kk_odeme_id")
+                and not hareket.get("fatura_id")
+            ):
+                taksitler = list(hareket.get("taksit_satirlari") or [])
+                if not taksitler:
+                    try:
+                        from database.cari_kk_taksit_detay_service import (
+                            CariKkTaksitDetayService,
+                        )
+
+                        taksitler = CariKkTaksitDetayService.taksit_satirlari(
+                            int(hareket["kk_odeme_id"])
+                        )
+                    except (ValueError, TypeError):
+                        taksitler = []
+                n = int(hareket.get("taksit_sayisi") or len(taksitler) or 1)
+                for t in taksitler:
+                    islem_t = t.get("islem_tarihi") or h_tarih
+                    vade = t.get("vade_tarihi")
+                    no = int(t.get("taksit_no") or 0)
+                    ws.append(
+                        [
+                            tarih_goster(islem_t) if islem_t else "",
+                            "  Taksit",
+                            hareket.get("belge_no") or "",
+                            f"{no}/{n}" if n else str(no),
+                            tarih_goster(vade) if vade else "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            float(Decimal(str(t.get("tutar") or 0))),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+            elif hareket.get("genisletilebilir") and hareket.get("fatura_id"):
                 try:
                     from database.cari_fatura_detay_service import CariFaturaDetayService
 
@@ -4069,6 +4119,8 @@ class CariDialog(tk.Toplevel):
                         [
                             "",
                             "  Ürün",
+                            "",
+                            "",
                             "",
                             "",
                             satir.get("urun_kodu") or "",
@@ -4091,6 +4143,8 @@ class CariDialog(tk.Toplevel):
         ws.append(
             [
                 "TOPLAM",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -4188,9 +4242,17 @@ class CariDialog(tk.Toplevel):
             if pb != "TRY"
             else ""
         )
-        genislet = bool(hareket.get("genisletilebilir") and hareket.get("fatura_id"))
+        fatura_g = bool(hareket.get("genisletilebilir") and hareket.get("fatura_id"))
+        kk_g = bool(
+            hareket.get("genisletilebilir")
+            and hareket.get("kk_odeme_id")
+            and int(hareket.get("taksit_sayisi") or 0) > 1
+            and not hareket.get("fatura_id")
+        )
+        genislet = fatura_g or kk_g
         text0 = "▶" if genislet else ""
         satir_tag = "fatura_toplam" if genislet else tag
+        taksit_metin = (hareket.get("taksit_etiket") or "").strip()
         iid = self.hareket_tablosu.insert(
             "",
             "end",
@@ -4199,6 +4261,7 @@ class CariDialog(tk.Toplevel):
                 tarih_goster(hareket["tarih"]),
                 hareket["tur"],
                 hareket["belge_no"],
+                taksit_metin,
                 (hareket.get("aciklama") or "").strip(),
                 "",  # barkod
                 "",  # urun_adi
@@ -4224,23 +4287,45 @@ class CariDialog(tk.Toplevel):
                 iid,
                 "end",
                 text="",
-                values=("", "", "", "  (ürün detayı yüklenmedi)", "", "", "", "", "", "", "", "", "", "", "", "", ""),
+                values=(
+                    "",
+                    "",
+                    "",
+                    "",
+                    "  (ayrıntı yüklenmedi)",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ),
                 tags=("detay",),
                 iid=f"{iid}__ph",
             )
 
     def _hareket_agac_tikla(self, event):
-        """#0 sütununa tıklanınca aç/kapat."""
+        """Açılır satır: fatura için #0; KK taksit için ana satırın tamamı."""
         if not self.hareket_tablosu:
             return
         if self.hareket_tablosu.identify_region(event.x, event.y) not in ("tree", "cell"):
             return
         col = self.hareket_tablosu.identify_column(event.x)
         row = self.hareket_tablosu.identify_row(event.y)
-        if not row or col != "#0":
+        if not row:
             return
         meta = self._hareket_iid_meta.get(row)
         if not meta or not meta.get("genisletilebilir"):
+            return
+        kk_taksit = bool(meta.get("kk_odeme_id") and not meta.get("fatura_id"))
+        if not kk_taksit and col != "#0":
             return
         # Toggle open state
         if self.hareket_tablosu.item(row, "open"):
@@ -4311,6 +4396,9 @@ class CariDialog(tk.Toplevel):
 
     def _expand_invoice_row(self, iid: str) -> None:
         meta = self._hareket_iid_meta.get(iid) or {}
+        if meta.get("kk_odeme_id") and not meta.get("fatura_id"):
+            self._expand_kk_taksit_row(iid)
+            return
         if not meta.get("genisletilebilir") or not meta.get("fatura_id"):
             if meta.get("detay_uyari"):
                 messagebox.showinfo("Fatura detayı", meta["detay_uyari"], parent=self)
@@ -4351,7 +4439,26 @@ class CariDialog(tk.Toplevel):
                     iid,
                     "end",
                     text="",
-                    values=("", "", "", "  Detay yüklenemedi", "", "", "", "", "", "", "", "", "", "", "", "", ""),
+                    values=(
+                        "",
+                        "",
+                        "",
+                        "",
+                        "  Detay yüklenemedi",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                    ),
                     tags=("detay_uyari",),
                 )
                 return
@@ -4365,7 +4472,26 @@ class CariDialog(tk.Toplevel):
                 iid,
                 "end",
                 text="",
-                values=("", "", "", f"  {msg}", "", "", "", "", "", "", "", "", "", "", "", "", ""),
+                values=(
+                    "",
+                    "",
+                    "",
+                    "",
+                    f"  {msg}",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ),
                 tags=("detay_uyari",),
             )
             return
@@ -4395,6 +4521,7 @@ class CariDialog(tk.Toplevel):
                     "",
                     "Ürün",
                     "",
+                    "",
                     aciklama_metin,
                     kod_barkod,
                     urun_adi,
@@ -4415,6 +4542,93 @@ class CariDialog(tk.Toplevel):
                 tags=("detay",),
             )
 
+    def _expand_kk_taksit_row(self, iid: str) -> None:
+        """KK taksit ana satırının altında vade / sıra / tutar ayrıntısı."""
+        meta = self._hareket_iid_meta.get(iid) or {}
+        kk_id = meta.get("kk_odeme_id")
+        if not kk_id:
+            return
+        children = list(self.hareket_tablosu.get_children(iid))
+        if children and not any(c.endswith("__ph") for c in children):
+            return
+        for c in children:
+            self.hareket_tablosu.delete(c)
+
+        satirlar = list(meta.get("taksit_satirlari") or [])
+        if not satirlar:
+            try:
+                from database.cari_kk_taksit_detay_service import CariKkTaksitDetayService
+
+                satirlar = CariKkTaksitDetayService.taksit_satirlari(int(kk_id))
+                meta["taksit_satirlari"] = satirlar
+                self._hareket_iid_meta[iid] = meta
+            except Exception:
+                satirlar = []
+        if not satirlar:
+            self.hareket_tablosu.insert(
+                iid,
+                "end",
+                text="",
+                values=(
+                    "",
+                    "",
+                    "",
+                    "",
+                    "  Taksit planı bulunamadı",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ),
+                tags=("detay_uyari",),
+            )
+            return
+
+        n = int(meta.get("taksit_sayisi") or len(satirlar) or 1)
+        cekim = meta.get("tarih")
+        for s in satirlar:
+            islem_t = s.get("islem_tarihi") or cekim
+            vade = s.get("vade_tarihi")
+            no = int(s.get("taksit_no") or 0)
+            tutar = Decimal(str(s.get("tutar") or 0))
+            sira = f"{no}/{n}" if n else str(no)
+            # Açıklama: taksit vadesi (ekstre/Excel ile uyumlu)
+            aciklama = f"  Taksit vadesi: {tarih_goster(vade) if vade else '—'}"
+            self.hareket_tablosu.insert(
+                iid,
+                "end",
+                text="",
+                values=(
+                    tarih_goster(islem_t) if islem_t else "",
+                    "Taksit",
+                    meta.get("belge_no") or "",
+                    sira,
+                    aciklama,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    para_goster(tutar),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ),
+                tags=("detay",),
+            )
 
     def _clear_invoice_detail_cache(self):
         self._fatura_detay_cache = {}

@@ -573,7 +573,7 @@ class KrediKartiOdemeTaksit(Base):
     taksit_no: Mapped[int] = mapped_column(Integer, nullable=False)
     vade_tarihi: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    # BEKLIYOR | ODENDI | IADE | PLAN_IPTAL (eski sürüm satırı; borca tekrar sayılmaz)
+    # BEKLIYOR | KARTA_ISLENDI | ODENDI | IADE | PLAN_IPTAL
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="BEKLIYOR")
     # Banka planındaki ekstre kesimi; boşsa çekim tarihi + taksit no kuralıyla hesaplanır
     ekstre_kesim_tarihi: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -582,6 +582,10 @@ class KrediKartiOdemeTaksit(Base):
     odenen_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
     plan_versiyon: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     aktif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Karta yansıyan finans hareketi belge no (idempotent; {odeme.belge_no}-T{n})
+    kk_hareket_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Aynı fiş+taksit için tek kart hareketi (yenileme / iki terminal)
+    islem_anahtari: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     odeme: Mapped["KrediKartiOdeme"] = relationship("KrediKartiOdeme", back_populates="taksitler")
 
 
@@ -715,6 +719,9 @@ class BankaKredisi(Base):
     aktif: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
     # KREDILER alt hesabı (Evo devir / eşleme); yoksa bankanın varsayılan krediler hesabı
     bagli_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Kredi özel muhasebe hesap kodları (yoksa firma MuhasebeHesapEsleme)
+    faiz_muhasebe_hesap_kodu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    masraf_muhasebe_hesap_kodu: Mapped[str | None] = mapped_column(String(40), nullable=True)
     banka_karti: Mapped["BankaKarti"] = relationship("BankaKarti", back_populates="banka_kredileri")
     taksitler: Mapped[list["BankaKrediTaksit"]] = relationship(
         "BankaKrediTaksit",
@@ -849,6 +856,12 @@ class GiderFisi(Base):
     bagli_belge_no: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     aciklama: Mapped[str | None] = mapped_column(String(500), nullable=True)
     durum: Mapped[str] = mapped_column(String(20), nullable=False, default="AÇIK")  # AÇIK|IPTAL
+    # Kredi / nakit avans faiz-masraf: muhasebe hesabı damgası (ikinci para çıkışı yok)
+    muhasebe_hesap_kodu: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    muhasebe_hesap_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # BEKLIYOR | HAZIR | AKTARILDI — eksik eşlemede "Muhasebe hesabı bekliyor"
+    muhasebe_durum: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    kaynak_kredi_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     finans_hesap = relationship("FinansHesabi")
 
 

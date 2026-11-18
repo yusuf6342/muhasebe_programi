@@ -329,6 +329,8 @@ def _tek_fatura_aktar(
             "depo": depo,
             "aciklama": aciklama,
             "odeme_tutari": 0,
+            "kaynak_sistem": "EVOBULUT",
+            "kaynak_kimlik": f"AF:{aid}" if aid else fatura_no,
         },
         satir_verileri,
     )

@@ -15,6 +15,7 @@ from tkinter import messagebox, simpledialog, ttk
 from birim_hatasi_ui import birim_hatasi_goster
 
 from database.access import AccessError, maliyet_izinli, yetki_var
+from database.fatura_kdv_service import kdv_deger
 from database.alis_iade_faturasi_service import (
     BASKA_TEDARIKCI,
     DEVIR,
@@ -823,7 +824,7 @@ class AlisIadeFaturasiPenceresi(tk.Toplevel):
         temel_satir = {"urun_kodu": kart.stok_kodu, "urun_adi": kart.stok_adi, "barkod": barkod or None,
                        "miktar": miktar, "birim": birim or kart.birim or "Adet", "birim_fiyat": SIFIR,
                        "iskonto_orani": SIFIR, "iskonto_orani_2": SIFIR, "iskonto_orani_3": SIFIR,
-                       "kdv_orani": _d(getattr(kart, "kdv_orani", 20) or 20)}
+                       "kdv_orani": kdv_deger(getattr(kart, "kdv_orani", None))}
         yeni = self._kaynak_belirle(temel_satir, cari)
         if not yeni:
             return

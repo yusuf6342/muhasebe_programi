@@ -29,9 +29,11 @@ class KkTanimFormuV4Test(unittest.TestCase):
             "Kredi Kartı Tanımla",
             "Kartları Düzenle",
             "Ekstre Ödeme Evrakı",
+            "Taksitli Nakit Avans",
             "Tarihleri değiştir",
         ):
             self.assertIn(gerekli, src)
+        self.assertIn("_nakit_avans_ac", src)
 
     def test_tanim_dialog_bolum_ve_butonlar(self):
         from finans_ui import KrediKartiTanimDialog
@@ -47,6 +49,7 @@ class KkTanimFormuV4Test(unittest.TestCase):
             self.assertIn(bolum, src)
         for btn in (
             "Taksitli Harcama",
+            "Taksitli Nakit Avans",
             "Taksit Planını Düzenle",
             "Karta Ödeme Kaydet",
             "Hesap Ekstresi",

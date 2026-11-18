@@ -58,17 +58,18 @@ def _odeme_hesaplari(*, yontem: str = "BANKA") -> list[tuple[int, str, int | Non
     from sqlalchemy.orm import selectinload
 
     from database.database import get_session
+    from database.hesap_siralama import hesaplari_sirala
     from database.models.finans import FinansHesabi
 
     yontem = (yontem or "BANKA").upper()
-    sonuc: list[tuple[int, str, int | None, str]] = []
+    ham: list[dict] = []
     with get_session() as session:
         hesaplar = list(
             session.scalars(
                 select(FinansHesabi)
                 .where(FinansHesabi.aktif.is_(True))
                 .options(selectinload(FinansHesabi.banka_karti))
-                .order_by(FinansHesabi.hesap_adi)
+                .order_by(FinansHesabi.id)
             ).all()
         )
         for h in hesaplar:
@@ -84,12 +85,35 @@ def _odeme_hesaplari(*, yontem: str = "BANKA") -> list[tuple[int, str, int | Non
             hesap_adi = h.hesap_adi or ""
             if yontem == "BANKAMATIK":
                 if tur == "KASA":
-                    sonuc.append((int(h.id), hesap_adi, None, "Kasa"))
+                    ham.append(
+                        {
+                            "id": int(h.id),
+                            "hesap_adi": hesap_adi,
+                            "alt_hesap_turu": "KASA",
+                            "hesap_turu": "KASA",
+                            "banka_id": None,
+                            "banka_adi": "Kasa",
+                            "etiket": hesap_adi,
+                        }
+                    )
             else:
                 if tur == "BANKA" and alt in ("MEVDUAT", "KMH", "VADELI"):
                     etiket = f"{banka_adi} · {hesap_adi}" if banka_adi else hesap_adi
-                    sonuc.append((int(h.id), etiket, banka_id, banka_adi or ""))
-    return sonuc
+                    ham.append(
+                        {
+                            "id": int(h.id),
+                            "hesap_adi": hesap_adi,
+                            "alt_hesap_turu": alt,
+                            "hesap_turu": tur,
+                            "banka_id": banka_id,
+                            "banka_adi": banka_adi or "",
+                            "etiket": etiket,
+                        }
+                    )
+    return [
+        (int(r["id"]), r["etiket"], r["banka_id"], r["banka_adi"])
+        for r in hesaplari_sirala(ham)
+    ]
 
 
 def _varsayilan_hesap(kredi_karti_id, hesaplar: list) -> int | None:

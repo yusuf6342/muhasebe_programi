@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from database.access import yazma_zorunlu, yetki_var, yetki_zorunlu
 from database.database import get_session
+from database.fatura_kdv_service import kdv_deger
 from database.models.satin_alma_talep import (
     SatinAlmaTalep,
     SatinAlmaTalepEki,
@@ -1106,7 +1107,7 @@ class SatinAlmaTalepService:
                     "birim": s.birim,
                     "birim_alis_fiyati": _d(StokService.son_alis_fiyati(kod, Decimal("0"))),
                     "iskonto_orani": Decimal("0"),
-                    "kdv_orani": Decimal(str(getattr(stok, "kdv_orani", 20) or 20)),
+                    "kdv_orani": kdv_deger(getattr(stok, "kdv_orani", None) if stok else None),
                     "talep_paylari": [{"talep_satiri_id": int(s.id), "miktar": miktar, "talep_no": t.talep_no}],
                 })
             sorun = StokService.belge_birim_sorunu(session, satirlar, "Satın alma talebi",

@@ -100,8 +100,17 @@ def _tutar_oku(metin: str) -> Decimal:
     return tutar.quantize(Decimal("0.01"))
 
 
+def _sekil_norm_ascii(sekil: str | None) -> str:
+    """Türkçe harfleri ASCII’ye indirger (şekil karşılaştırma)."""
+    t = (sekil or "").replace("İ", "I").replace("ı", "i").upper()
+    for a, b in (("Ö", "O"), ("Ü", "U"), ("Ş", "S"), ("Ğ", "G"), ("Ç", "C")):
+        t = t.replace(a, b)
+    return t
+
+
 def _sekil_turu(sekil: str | None) -> str | None:
-    s = (sekil or "").replace("İ", "I").replace("ı", "i").upper()
+    # Ö/Ü kırılmasın: ASCII indirme (KREDİ KARTIYLA ÖDEME → ...ODEME)
+    s = _sekil_norm_ascii(sekil)
     if "HAVALE" in s or "EFT" in s or "FAST" in s:
         return "HAVALE"
     if "KART" in s or "POS" in s:
@@ -109,14 +118,6 @@ def _sekil_turu(sekil: str | None) -> str | None:
     if "KASA" in s or "NAKIT" in s:
         return "KASA"
     return None
-
-
-def _sekil_norm_ascii(sekil: str | None) -> str:
-    """Türkçe harfleri ASCII’ye indirger (şekil karşılaştırma)."""
-    t = (sekil or "").replace("İ", "I").replace("ı", "i").upper()
-    for a, b in (("Ö", "O"), ("Ü", "U"), ("Ş", "S"), ("Ğ", "G"), ("Ç", "C")):
-        t = t.replace(a, b)
-    return t
 
 
 def _odeme_sekil_normalize(sekil: str | None) -> str:
@@ -758,7 +759,7 @@ class KasaMakbuzDialog(tk.Toplevel):
                                     rol="ara")
         self.btn_duzenle = tk_buton(self._dugme_kutusu, "Düzenle", self.duzenlemeye_gec, rol="ikincil")
         self.btn_vazgec = tk_buton(self._dugme_kutusu, "Vazgeç", self._vazgec, rol="ikincil")
-        self.btn_iptal = tk_buton(self._dugme_kutusu, "İptal Et", self.iptal_et, rol="tehlike")
+        self.btn_iptal = tk_buton(self._dugme_kutusu, "Sil", self.iptal_et, rol="tehlike")
         self.btn_yazdir = tk_buton(self._dugme_kutusu, "Yazdır / PDF / Word", self.yazdir, rol="ikincil")
         self.btn_yeni = tk_buton(self._dugme_kutusu, "Yeni Makbuz", self._yeni_pencere, rol="ikincil")
         self.btn_muhasebe = tk_buton(self._dugme_kutusu, "Muhasebe Fişi", self._muhasebe_fisi, rol="ikincil")
@@ -1419,6 +1420,7 @@ class KasaMakbuzDialog(tk.Toplevel):
         from database.access import yetki_var
 
         yazabilir = yetki_var("finans_duzenleme")
+        silebilir = yetki_var("finans_duzenleme", "iptal")
         for b in list(self._dugme_sol.winfo_children()) + list(self._dugme_kutusu.winfo_children()):
             b.pack_forget()
         # Kaydet her zaman solda — satır tablosu / DPI sağdaki şeridi kesse bile görünür
@@ -1438,8 +1440,11 @@ class KasaMakbuzDialog(tk.Toplevel):
             self.btn_kaydet.configure(text="Değişiklikleri Kaydet  (Ctrl+S / F1)")
         else:
             if not iptal and not self._kilit_nedeni and yazabilir:
-                sag_dugmeler += [self.btn_duzenle, self.btn_iptal]
-            sag_dugmeler += [self.btn_yazdir, self.btn_yeni]
+                sag_dugmeler.append(self.btn_duzenle)
+            sag_dugmeler.append(self.btn_yazdir)
+            if not iptal and not self._kilit_nedeni and silebilir:
+                sag_dugmeler.append(self.btn_iptal)  # Sil — Yazdır ile Kapat arasında
+            sag_dugmeler.append(self.btn_yeni)
             if self.makbuz_id:
                 sag_dugmeler.append(self.btn_muhasebe)
         sag_dugmeler.append(self.btn_kapat)
@@ -2631,15 +2636,64 @@ class KasaMakbuzDialog(tk.Toplevel):
     def iptal_et(self):
         if self.makbuz is None or self.mod != "goruntule":
             return
+        from database.access import yetki_var
+
+        if not yetki_var("finans_duzenleme", "iptal"):
+            messagebox.showerror("Sil", "Bu işlem için yetkiniz yok.", parent=self)
+            return
         no = self.makbuz.makbuz_no or self.makbuz.belge_no
+        belge_no = self.makbuz.belge_no or no
+        cari_metin = "—"
+        try:
+            from database.cari_service import CariService
+
+            cari = CariService.getir(int(self.makbuz.cari_id)) if self.makbuz.cari_id else None
+            if cari:
+                cari_metin = f"{cari.cari_kodu} — {cari.unvan}"
+        except Exception:
+            pass
+        hesap_metin = "—"
+        try:
+            satirlar = list(self.makbuz.satirlar or [])
+            hid = None
+            if satirlar:
+                hid = getattr(satirlar[0], "finans_hesap_id", None)
+            hid = hid or getattr(self.makbuz, "finans_hesap_id", None)
+            if hid:
+                from database.database import get_session
+                from database.models.finans import FinansHesabi
+
+                with get_session() as s:
+                    h = s.get(FinansHesabi, int(hid))
+                    if h:
+                        hesap_metin = h.hesap_adi or "—"
+        except Exception:
+            pass
+        tarih_metin = (
+            self.makbuz.tarih.strftime("%d.%m.%Y") if getattr(self.makbuz, "tarih", None) else "—"
+        )
+        tutar_metin = _para(getattr(self.makbuz, "tutar", 0))
         etki = (
             "Müşteri ve tedarikçi cari hareketleri birlikte geri alınır"
             if self.virman
-            else "Cari, kasa/banka ve kart hareketleri geri alınır"
+            else (
+                "Cari hareketlerden çıkarılır; fatura kapamaları çözülür; "
+                "aktarılmamış POS net/komisyon etkisi kaldırılır. "
+                "Aktarılmış/muhasebeleştirilmiş kayıtta ters kayıt uygulanır"
+            )
         )
         if not messagebox.askyesno(
-            "Makbuzu İptal Et",
-            f"{no} numaralı makbuz iptal edilsin mi?\n\n{etki}; makbuz numarası listede İPTAL olarak kalır.",
+            "Makbuzu Sil",
+            (
+                f"Belge no: {belge_no}\n"
+                f"Makbuz no: {no}\n"
+                f"Cari: {cari_metin}\n"
+                f"Tarih: {tarih_metin}\n"
+                f"Tutar: {tutar_metin}\n"
+                f"Bağlı hesap: {hesap_metin}\n"
+                f"Kayıt kimliği: makbuz #{self.makbuz_id}\n\n"
+                f"{etki}.\nMakbuz numarası listede İPTAL olarak kalır."
+            ),
             parent=self,
         ):
             return
@@ -2649,17 +2703,23 @@ class KasaMakbuzDialog(tk.Toplevel):
             else:
                 FinansService.kasa_makbuz_iptal(self.makbuz_id)
         except (ValueError, PermissionError) as hata:
-            messagebox.showerror("İptal", str(hata), parent=self)
+            messagebox.showerror("Sil", str(hata), parent=self)
             return
         makbuz = self._kayitli_makbuzu_getir()
         self.result = makbuz
         self._makbuzu_yukle(makbuz)
-        self._mesaj(f"{no} iptal edildi.", UYARI)
+        self._mesaj(f"{no} silindi (iptal).", UYARI)
         if callable(self._on_kayit):
             try:
                 self._on_kayit(makbuz)
             except Exception:
                 pass
+        try:
+            from belge_onizleme_ui import _cari_ve_pos_yenile
+
+            _cari_ve_pos_yenile(self.master)
+        except Exception:
+            pass
 
     def yazdir(self):
         kaydedilmemis = self.makbuz_id is None or (self._duzenlenebilir() and self._kirli)

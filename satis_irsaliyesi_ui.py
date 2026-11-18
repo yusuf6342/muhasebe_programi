@@ -58,10 +58,17 @@ YENI_NO_METNI = "Otomatik oluşturulacak"
 
 
 def _para(tutar) -> str:
+    """Parasal toplam. Birim fiyat → ``_fiyat``."""
     try:
         return f"{float(tutar or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " TL"
     except Exception:
         return "0,00 TL"
+
+
+def _fiyat(tutar) -> str:
+    from database.fiyat_gorunum_service import fiyat_goster_pb
+
+    return fiyat_goster_pb(tutar, "TRY")
 
 
 def _tarih(d) -> str:
@@ -1011,7 +1018,7 @@ class SatisIrsaliyesiDialog(tk.Toplevel):
                 "", "end", iid=str(index), tags=("cift" if index % 2 else "tek",),
                 values=(
                     index + 1, veri.get("urun_kodu", ""), veri.get("urun_adi", ""), _sayi(miktar),
-                    veri.get("birim") or "Adet", _para(fiyat), f"{_sayi(iskonto)}%", f"{_sayi(kdv)}%",
+                    veri.get("birim") or "Adet", _fiyat(fiyat), f"{_sayi(iskonto)}%", f"{_sayi(kdv)}%",
                     _para(toplam), veri.get("siparis_no") or "", _sayi(fatura), _sayi(miktar - fatura),
                     veri.get("lot_no") or "", veri.get("aciklama") or "",
                 ),

@@ -254,6 +254,12 @@ class StokFiyatGecmisi(Base):
     eski_tutar: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     yeni_tutar: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     degisim_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    para_birimi: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    birim: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    kaynak_fatura_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kaynak_satir_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kaynak_fatura_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    aciklama: Mapped[str | None] = mapped_column(String(300), nullable=True)
     stok: Mapped["StokKarti"] = relationship("StokKarti", back_populates="fiyat_gecmisi")
 
 

@@ -107,6 +107,8 @@ KREDI_YENI_KOLONLAR = {
     "plan_versiyon": "INTEGER DEFAULT 1",
     "aktif": "BOOLEAN DEFAULT 1",
     "bagli_hesap_id": "INTEGER",
+    "faiz_muhasebe_hesap_kodu": "VARCHAR(40)",
+    "masraf_muhasebe_hesap_kodu": "VARCHAR(40)",
 }
 
 TAKSIT_YENI_KOLONLAR = {
@@ -164,6 +166,12 @@ class BankaKrediService:
                     connection.execute(
                         text(f'ALTER TABLE "{tablo}" ADD COLUMN "{alan}" {tip}')
                     )
+        try:
+            from database.kredi_gider_fisi_service import KrediGiderFisiService
+
+            KrediGiderFisiService.schema_hazirla()
+        except Exception:
+            pass
 
     # --- Yardımcılar ---
 
@@ -1864,24 +1872,28 @@ class BankaKrediService:
             # 10) Gider bileşenleri — ek banka hareketi YOK, sadece gider fişi
             gider_belge = None
             if gider_toplam > 0:
+                from database.kredi_gider_fisi_service import KrediGiderFisiService
+
                 gider_belge = BankaKrediService._gider_belge_no(session)
                 for alan in GIDER_ALANLARI:
                     tutar_bilesen = hedef[alan]
                     if tutar_bilesen <= 0:
                         continue
                     gider_turu, gider_acik, ek = GIDER_TURU_ESLEME[alan]
-                    session.add(
-                        GiderFisi(
-                            belge_no=f"{gider_belge}-{ek}",
-                            tarih=odeme_tarihi,
-                            gider_turu=gider_turu,
-                            tutar=tutar_bilesen,
-                            finans_hesap_id=odeme_hesap.id,
-                            bagli_belge_no=odeme_belge,
-                            aciklama=f"{gider_acik} | {acik}"[:500],
-                            durum="AÇIK",
-                        )
+                    fis = GiderFisi(
+                        belge_no=f"{gider_belge}-{ek}",
+                        tarih=odeme_tarihi,
+                        gider_turu=gider_turu,
+                        tutar=tutar_bilesen,
+                        finans_hesap_id=odeme_hesap.id,
+                        bagli_belge_no=odeme_belge,
+                        aciklama=f"{gider_acik} | {acik}"[:500],
+                        durum="AÇIK",
+                        kaynak_kredi_id=kredi.id,
                     )
+                    session.add(fis)
+                    session.flush()
+                    KrediGiderFisiService.damgala(session, fis, kredi=kredi)
                 odeme.gider_belge_no = gider_belge
 
             # 11) Muhasebe fişi burada yazılmaz: ödeme kaydı tamamlanınca muhasebe_hook (Finans İşlem
@@ -2207,24 +2219,28 @@ class BankaKrediService:
             gider_belge = mevcut_gider
             gider_toplam = toplam - hedef["anapara"]
             if yaz_gider and gider_toplam > 0 and not mevcut_gider:
+                from database.kredi_gider_fisi_service import KrediGiderFisiService
+
                 gider_belge = BankaKrediService._gider_belge_no(session)
                 for alan in GIDER_ALANLARI:
                     tutar_bilesen = hedef[alan]
                     if tutar_bilesen <= 0:
                         continue
                     gider_turu, gider_acik, ek = GIDER_TURU_ESLEME[alan]
-                    session.add(
-                        GiderFisi(
-                            belge_no=f"{gider_belge}-{ek}",
-                            tarih=odeme_tarihi,
-                            gider_turu=gider_turu,
-                            tutar=tutar_bilesen,
-                            finans_hesap_id=odeme_hesap.id,
-                            bagli_belge_no=odeme.odeme_belge_no,
-                            aciklama=f"{gider_acik} | {acik}"[:500],
-                            durum="AÇIK",
-                        )
+                    fis = GiderFisi(
+                        belge_no=f"{gider_belge}-{ek}",
+                        tarih=odeme_tarihi,
+                        gider_turu=gider_turu,
+                        tutar=tutar_bilesen,
+                        finans_hesap_id=odeme_hesap.id,
+                        bagli_belge_no=odeme.odeme_belge_no,
+                        aciklama=f"{gider_acik} | {acik}"[:500],
+                        durum="AÇIK",
+                        kaynak_kredi_id=kredi.id,
                     )
+                    session.add(fis)
+                    session.flush()
+                    KrediGiderFisiService.damgala(session, fis, kredi=kredi)
                 odeme.gider_belge_no = gider_belge
 
             if taksit is not None and plan is not None and odenmis is not None:

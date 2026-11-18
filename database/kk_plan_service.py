@@ -56,6 +56,8 @@ def schema_hazirla(bind=None) -> None:
             "odenen_tutar": "NUMERIC(18, 2) DEFAULT 0 NOT NULL",
             "plan_versiyon": "INTEGER DEFAULT 1 NOT NULL",
             "aktif": "BOOLEAN DEFAULT TRUE NOT NULL",
+            "kk_hareket_belge_no": "VARCHAR(50)",
+            "islem_anahtari": "VARCHAR(80)",
         }
         eklenecek = {a: t for a, t in ekstra.items() if a not in sutun}
         if eklenecek:
@@ -67,6 +69,24 @@ def schema_hazirla(bind=None) -> None:
                             f'ADD COLUMN "{alan}" {tip}'
                         )
                     )
+        # Unique islem_anahtari (PostgreSQL / SQLite)
+        try:
+            idx_adlari = {ix["name"] for ix in insp.get_indexes("kredi_karti_odeme_taksitleri")}
+        except Exception:
+            idx_adlari = set()
+        if "ux_kk_odeme_taksit_islem" not in idx_adlari and "islem_anahtari" in (
+            sutun | set(eklenecek)
+        ):
+            try:
+                with eng.begin() as conn:
+                    conn.execute(
+                        text(
+                            'CREATE UNIQUE INDEX IF NOT EXISTS "ux_kk_odeme_taksit_islem" '
+                            'ON "kredi_karti_odeme_taksitleri" ("islem_anahtari")'
+                        )
+                    )
+            except Exception:
+                pass
     if insp.has_table("kredi_karti_tanimlari"):
         sutun = {c["name"] for c in insp.get_columns("kredi_karti_tanimlari")}
         ekstra = {
@@ -103,7 +123,19 @@ def _taksit_odenen(t: KrediKartiOdemeTaksit) -> Decimal:
     return SIFIR
 
 
+def _taksit_kilitli(t: KrediKartiOdemeTaksit) -> bool:
+    """Ödenmiş veya karta işlenmiş satır plan yeniden dağıtımında kilitli kalır."""
+    durum = (t.durum or "").upper()
+    if durum in ("ODENDI", "KARTA_ISLENDI"):
+        return True
+    return _taksit_kalan(t) <= 0
+
+
 def _taksit_kalan(t: KrediKartiOdemeTaksit) -> Decimal:
+    durum = (t.durum or "").upper()
+    # Karta işlenmiş ama ekstre ödemesi yok: borç ledger'da; yeni plana taşınmaz
+    if durum == "KARTA_ISLENDI":
+        return SIFIR
     return max(SIFIR, _d(t.tutar) - _taksit_odenen(t))
 
 
@@ -277,7 +309,8 @@ def plani_duzenle(
             )
         aktif = [t for t in (o.taksitler or []) if _taksit_aktif(t)]
         odenen_toplam = sum((_taksit_odenen(t) for t in aktif), SIFIR)
-        kalan = max(SIFIR, _d(o.tutar) - odenen_toplam)
+        # KARTA_ISLENDI kilitli: ledger'da; yeni plan yalnız BEKLIYOR kalanını böler
+        kalan = sum((_taksit_kalan(t) for t in aktif), SIFIR)
         if kalan <= 0:
             raise ValueError("Kalan borç yok; tamamen ödenmiş plan yeniden borçlandırılamaz.")
 
@@ -291,7 +324,7 @@ def plani_duzenle(
             manuel_tutarlar=manuel_tutarlar,
         )
 
-        # Eski ödenmemiş satırları pasife al (ödenen kilitli)
+        # Eski ödenmemiş satırları pasife al (ödenen / karta işlenen kilitli)
         eski_snapshot = []
         for t in aktif:
             eski_snapshot.append({
@@ -302,8 +335,7 @@ def plani_duzenle(
                 "kalan": str(_taksit_kalan(t)),
                 "durum": t.durum,
             })
-            if _taksit_kalan(t) <= 0:
-                # Tam ödenmiş — kilitli
+            if _taksit_kilitli(t):
                 continue
             odenen = _taksit_odenen(t)
             if odenen > 0:

@@ -174,21 +174,28 @@ class BirimDonusumTest(_Taban):
 
 
 class SatilmisAlisKorumaTest(_Taban):
-    def test_s06_kismen_satilmis_alis_duzenlenemez(self):
-        """STK-002: 10 alış, 4 satış; stok/maliyet etkili düzenleme engellenir, stok 6 kalır."""
+    def test_s06_kismen_satilmis_alis_fiyat_mali_duzeltilebilir(self):
+        """STK-002: bağlı satış varken birim fiyat mali düzeltmesi serbest; miktar 6 kalır, maliyet güncellenir."""
+        from database.alis_faturasi_service import AlisFaturasiService
         from database.stok_service import BagliAlisHatasi
 
         f = self.o.alis(10, 100, D(2026, 3, 1), lot="L1")
         sf = self.o.satis(4, 200, D(2026, 3, 2))
+        # Miktar değişimi hâlâ engellenir
         with self.assertRaises(BagliAlisHatasi) as ctx:
-            self.o.alis(10, 110, D(2026, 3, 1), lot="L1", fatura_id=f.id, rv=f.row_version)
-        mesaj = str(ctx.exception)
-        self.assertIn(sf.fatura_no, mesaj)
-        self.assertIn("Birim fiyat", mesaj)
-        self.assertTrue(ctx.exception.bagli_belgeler)
+            self.o.alis(9, 100, D(2026, 3, 1), lot="L1", fatura_id=f.id, rv=f.row_version)
+        self.assertIn(sf.fatura_no, str(ctx.exception))
+        self.assertIn("Miktar", str(ctx.exception))
+        # Fiyat mali düzeltmesi — bağlantı korunur
+        hareket_once = self.o.hareket_sayisi()
+        yeni = self.o.alis(10, 110, D(2026, 3, 1), lot="L1", fatura_id=f.id, rv=f.row_version)
         self.assertEqual(self.o.lot_toplam(), Decimal("6"))
         self.assertLotHareketEsit()
-        self.assertEqual(self.o.lot_deger(), Decimal("600"))
+        self.assertEqual(self.o.lot_deger(), Decimal("660"))  # 6 × 110
+        self.assertEqual(self.o.hareket_sayisi(), hareket_once)
+        kayit = AlisFaturasiService.getir(yeni.id)
+        # 10 × 110 × 1,20 KDV = 1.320
+        self.assertEqual(Decimal(str(kayit.tl_genel_toplam)), Decimal("1320.00"))
 
     def test_kismen_satilmis_alista_yalniz_aciklama_degisebilir(self):
         from database.alis_faturasi_service import AlisFaturasiService

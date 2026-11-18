@@ -28,6 +28,7 @@ from satis_tema import (
     stil_uygula,
     tk_buton,
 )
+from ui_takvim import takvim_entry_bagla
 
 
 def _para(v) -> str:
@@ -148,12 +149,21 @@ def satis_kar_analizi_goster(app) -> None:
 
     s1 = _satir(filtre)
     ttk.Label(s1, text="Ana dönem:").pack(side="left")
-    ttk.Entry(s1, textvariable=bas_var, width=11).pack(side="left", padx=4)
+    # Takvim: kutuya tıklayınca açılır (Esc kapatır; elle GG.AA.YYYY yazılabilir)
+    bas_entry = ttk.Entry(s1, textvariable=bas_var, width=11)
+    bas_entry.pack(side="left", padx=4)
+    takvim_entry_bagla(bas_entry)
     ttk.Label(s1, text="—").pack(side="left")
-    ttk.Entry(s1, textvariable=bit_var, width=11).pack(side="left", padx=4)
+    bit_entry = ttk.Entry(s1, textvariable=bit_var, width=11)
+    bit_entry.pack(side="left", padx=4)
+    takvim_entry_bagla(bit_entry)
     ttk.Label(s1, text="Karşılaştırma:").pack(side="left", padx=(16, 4))
-    ttk.Entry(s1, textvariable=kbas_var, width=11).pack(side="left", padx=4)
-    ttk.Entry(s1, textvariable=kbit_var, width=11).pack(side="left", padx=4)
+    kbas_entry = ttk.Entry(s1, textvariable=kbas_var, width=11)
+    kbas_entry.pack(side="left", padx=4)
+    takvim_entry_bagla(kbas_entry)
+    kbit_entry = ttk.Entry(s1, textvariable=kbit_var, width=11)
+    kbit_entry.pack(side="left", padx=4)
+    takvim_entry_bagla(kbit_entry)
 
     def onceki_oner():
         try:
@@ -595,3 +605,18 @@ def satis_kar_analizi_goster(app) -> None:
             messagebox.showinfo("Excel", f"Kaydedildi:\n{yol}", parent=app)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Excel", str(exc), parent=app)
+
+    # Test / otomasyon: takvim seçimi ve filtre doğrulama
+    app._satis_kar_analiz = {
+        "bas_var": bas_var,
+        "bit_var": bit_var,
+        "kbas_var": kbas_var,
+        "kbit_var": kbit_var,
+        "bas_entry": bas_entry,
+        "bit_entry": bit_entry,
+        "kbas_entry": kbas_entry,
+        "kbit_entry": kbit_entry,
+        "filtre_olustur": _filtre_olustur,
+        "getir": _getir,
+        "set_donem": _set_donem,
+    }

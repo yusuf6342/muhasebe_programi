@@ -38,6 +38,24 @@ def _d(val) -> Decimal:
     return Decimal(str(val or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _gelecek_nakit_avans_borcu(session, hesap_id: int, *, bugun: date) -> Decimal:
+    """``tarih > bugun`` olan KK NAKİT AVANS hareket tutarları (gelecek dönem)."""
+    rows = session.execute(
+        select(FinansHareketi.tutar, FinansHareketi.hareket_turu).where(
+            FinansHareketi.hesap_id == int(hesap_id),
+            FinansHareketi.tarih > bugun,
+        )
+    ).all()
+    top = SIFIR
+    for tutar, tur in rows:
+        tu = (tur or "").strip().upper()
+        if tu == "KK NAKİT AVANS":
+            top += _d(tutar)
+        elif tu in {"KK NAKİT AVANS İPTAL", "KK NAKIT AVANS IPTAL"}:
+            top -= _d(tutar)
+    return max(SIFIR, _d(top))
+
+
 def _plan_only_kalan(session, kredi_karti_id: int, bagli_hesap_id: int) -> tuple[Decimal, list[dict]]:
     """Ledger'da belge_no'su olmayan açık planların kalan anaparası (plan-only EVB vb.)."""
     ledger_belge = {
@@ -64,6 +82,7 @@ def _plan_only_kalan(session, kredi_karti_id: int, bagli_hesap_id: int) -> tuple
     satirlar: list[dict] = []
     for o in odemeler:
         bel = (o.belge_no or "").strip()
+        # Eski tek kalem: ana belge ledger'daysa plan zaten tam tutarla sayılmış
         if bel and bel in ledger_belge:
             continue
         kalan = SIFIR
@@ -71,9 +90,11 @@ def _plan_only_kalan(session, kredi_karti_id: int, bagli_hesap_id: int) -> tuple
             if getattr(t, "aktif", True) is False:
                 continue
             durum = (t.durum or "").upper()
-            if durum in ("PLAN_IPTAL", "IADE"):
+            if durum in ("PLAN_IPTAL", "IADE", "ODENDI", "KARTA_ISLENDI"):
+                # Karta işlenmiş / ödenmiş taksit ledger'da; plan-only'ye girmez
                 continue
-            if durum == "ODENDI":
+            t_bel = (getattr(t, "kk_hareket_belge_no", None) or "").strip()
+            if t_bel and t_bel in ledger_belge:
                 continue
             odenen = _d(getattr(t, "odenen_tutar", None) or 0)
             kalan += max(SIFIR, _d(t.tutar) - odenen)
@@ -217,6 +238,14 @@ def limit_kullanimi(
                     hesap_borc = _d(-isletme)
                 elif isletme > 0:
                     hesap_fazla = _d(isletme)
+                # Gelecek tarihli nakit avans NAT'ları bugünün kart borcuna / limitine
+                # topluca eklenmesin (hareket kayıtlıdır; dönem ilerledikçe girer).
+                if not tarihli_gorunum and hesap_borc > 0:
+                    gelecek_na = _gelecek_nakit_avans_borcu(
+                        s, int(hesap.id), bugun=date.today()
+                    )
+                    if gelecek_na > 0:
+                        hesap_borc = max(SIFIR, _d(hesap_borc - gelecek_na))
                 plan_only, plan_only_satirlar = _plan_only_kalan(
                     s, int(kart.id), int(bagli_id)
                 )

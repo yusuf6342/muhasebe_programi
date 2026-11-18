@@ -64,10 +64,17 @@ def _d(v, varsayilan: Decimal = Decimal("0")) -> Decimal:
 
 
 def _para(v) -> str:
+    """Toplam / matrah (2 hane)."""
     try:
         return f"{float(_d(v)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "0,00"
+
+
+def _fiyat(v) -> str:
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(v) or "0"
 
 
 def _tarih(d) -> str:
@@ -219,7 +226,7 @@ def _satir_modelleri(
                 kdv_orani=kdv,
                 satir_toplam=toplam,
                 miktar_goster=miktar_metni(miktar),
-                birim_fiyat_goster=_para(fiyat) if is_priced else "—",
+                birim_fiyat_goster=_fiyat(fiyat) if is_priced else "—",
                 iskonto_goster=f"%{miktar_metni(iskonto)}" if is_priced else "—",
                 kdv_oran_goster=f"%{miktar_metni(kdv)}" if is_priced else "—",
                 satir_toplam_goster=_para(toplam) if is_priced else "—",

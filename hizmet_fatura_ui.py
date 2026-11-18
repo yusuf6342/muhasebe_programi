@@ -141,27 +141,41 @@ class HizmetSecDialog(tk.Toplevel):
 
 
 class HizmetOdemeDialog(tk.Toplevel):
-    def __init__(self, parent, gelir_mi=False, kayit=None, varsayilan_sekil=None):
+    def __init__(
+        self,
+        parent,
+        gelir_mi=False,
+        kayit=None,
+        varsayilan_sekil=None,
+        *,
+        max_tutar: Decimal | None = None,
+    ):
         super().__init__(parent)
         self.result = None
         self.gelir_mi = gelir_mi
+        self.max_tutar = (
+            Decimal(str(max_tutar)).quantize(Decimal("0.01")) if max_tutar is not None else None
+        )
         self.title("Tahsilat" if gelir_mi else "Ödeme Yap")
-        self.geometry("420x260")
+        self.geometry("420x280")
         self.transient(parent)
         self.grab_set()
         from ui_pencere import pencere_os_krom_ac
 
         pencere_os_krom_ac(self)
         self.girdiler = {}
+        self._hesap_secenekleri: list[str] = []
+        self._hesap_id_map: dict[str, int] = {}
+        self._sekil_turu: str | None = None
         frame = ttk.Frame(self, padding=12)
         frame.pack(fill="both", expand=True)
         sekiller = list(TAHSILAT_SEKILLERI if gelir_mi else ODEME_SEKILLERI)
-        hesaplar = [h.hesap_adi for h in FinansService.hesaplar()]
         baslangic_sekil = (
             (kayit or {}).get("odeme_sekli")
             or varsayilan_sekil
             or sekiller[0]
         )
+        self._hesap_etiket = ttk.Label(frame, text="Hesap")
         for sira, (etiket, alan) in enumerate((
             ("Tarih", "tarih"),
             ("Tutar", "tutar"),
@@ -169,16 +183,14 @@ class HizmetOdemeDialog(tk.Toplevel):
             ("Hesap", "hesap"),
             ("Açıklama", "aciklama"),
         )):
-            ttk.Label(frame, text=etiket).grid(row=sira, column=0, sticky="w", pady=4)
+            lbl = self._hesap_etiket if alan == "hesap" else ttk.Label(frame, text=etiket)
+            lbl.grid(row=sira, column=0, sticky="w", pady=4)
             if alan == "odeme_sekli":
                 w = ttk.Combobox(frame, values=sekiller, state="readonly", width=28)
                 w.set(baslangic_sekil if baslangic_sekil in sekiller else sekiller[0])
+                w.bind("<<ComboboxSelected>>", lambda _e: self._sekil_degisti(), add="+")
             elif alan == "hesap":
-                w = ttk.Combobox(frame, values=hesaplar, width=28)
-                if kayit and kayit.get("hesap"):
-                    w.set(kayit["hesap"])
-                elif hesaplar:
-                    w.set(hesaplar[0])
+                w = ttk.Combobox(frame, values=(), width=28)
             else:
                 w = ttk.Entry(frame, width=30)
                 if kayit and kayit.get(alan) is not None:
@@ -189,20 +201,106 @@ class HizmetOdemeDialog(tk.Toplevel):
                     )
                 elif alan == "tarih":
                     w.insert(0, date.today().strftime("%d.%m.%Y"))
+                elif alan == "tutar" and self.max_tutar is not None and not (kayit or {}).get("tutar"):
+                    w.insert(0, f"{self.max_tutar:.2f}".replace(".", ","))
             w.grid(row=sira, column=1, padx=6, pady=4)
             self.girdiler[alan] = w
+        self._uyari_lbl = ttk.Label(frame, text="", foreground="#a33", wraplength=280)
+        self._uyari_lbl.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._onceki_hesap = ((kayit or {}).get("hesap") or "").strip()
+        self._sekil_degisti(ilk=True)
         alt = ttk.Frame(frame)
         alt.grid(row=6, column=0, columnspan=2, sticky="e", pady=10)
         ttk.Button(alt, text="İptal", command=self.destroy).pack(side="right")
         ttk.Button(alt, text="Tamam", command=self.tamam).pack(side="right", padx=8)
 
+    def _sekil_degisti(self, ilk: bool = False):
+        from database.hizmet_faturasi_service import odeme_sekli_hesap_uygun_mu
+
+        sekil = (self.girdiler["odeme_sekli"].get() or "").strip()
+        onceki = (self.girdiler["hesap"].get() or "").strip()
+        self._sekil_turu = FinansService.odeme_sekil_turu(sekil, gelir_mi=self.gelir_mi)
+        etiket_map = {
+            "KART": "POS hesabı" if self.gelir_mi else "Kredi Kartı",
+            "HAVALE": "Banka Hesabı",
+            "KASA": "Kasa",
+        }
+        self._hesap_etiket.configure(text=etiket_map.get(self._sekil_turu or "", "Hesap"))
+        self._hesap_secenekleri = []
+        self._hesap_id_map = {}
+        okuma_hatasi = None
+        try:
+            hesaplar = (
+                FinansService.tahsilat_hesaplari(sekil)
+                if self.gelir_mi
+                else FinansService.odeme_hesaplari(sekil)
+            )
+            for h in hesaplar:
+                if not getattr(h, "aktif", True):
+                    continue
+                ad = (h.hesap_adi or "").strip()
+                if not ad:
+                    continue
+                self._hesap_secenekleri.append(ad)
+                if getattr(h, "id", None) is not None:
+                    self._hesap_id_map[ad] = int(h.id)
+        except Exception as hata:
+            okuma_hatasi = str(hata)
+            self._hesap_secenekleri = []
+            self._hesap_id_map = {}
+        w = self.girdiler["hesap"]
+        w.configure(values=self._hesap_secenekleri)
+        aday = onceki if onceki in self._hesap_secenekleri else (
+            self._onceki_hesap if self._onceki_hesap in self._hesap_secenekleri else ""
+        )
+        if not aday and len(self._hesap_secenekleri) == 1:
+            aday = self._hesap_secenekleri[0]
+        w.set(aday)
+        if okuma_hatasi:
+            self._uyari_lbl.configure(text=f"Hesap listesi okunamadı: {okuma_hatasi}")
+        elif not self._hesap_secenekleri:
+            msg = odeme_sekli_hesap_uygun_mu(sekil, "", gelir_mi=self.gelir_mi) or ""
+            if not msg or "Hesap seçin" in msg:
+                if self._sekil_turu == "KART":
+                    msg = (
+                        "Bu tahsilat şekli için uygun POS hesabı yok."
+                        if self.gelir_mi
+                        else "Bu ödeme şekli için tanımlı kredi kartı hesabı yok."
+                    )
+                elif self._sekil_turu == "HAVALE":
+                    msg = "Bu şekil için uygun mevduat/KMH hesabı yok."
+                elif self._sekil_turu == "KASA":
+                    msg = "Bu şekil için uygun kasa hesabı yok."
+                else:
+                    msg = "Bu ödeme/tahsilat şekli için uygun hesap yok."
+            self._uyari_lbl.configure(text=msg)
+        else:
+            self._uyari_lbl.configure(text="")
+
     def tamam(self):
+        from database.hizmet_faturasi_service import odeme_sekli_hesap_uygun_mu
+
         try:
             veri = {a: w.get().strip() for a, w in self.girdiler.items()}
             veri["tarih"] = datetime.strptime(veri["tarih"], "%d.%m.%Y").date()
             veri["tutar"] = decimal(veri["tutar"], "Tutar", Decimal("0.01"))
-            if not veri.get("hesap"):
-                raise ValueError("Hesap seçin.")
+            if veri["tutar"] <= 0:
+                raise ValueError("Tutar 0'dan büyük olmalıdır.")
+            if self.max_tutar is not None and veri["tutar"] > self.max_tutar:
+                raise ValueError(
+                    f"Tutar kalanı aşamaz (kalan {_para(self.max_tutar).replace(' TL', '')})."
+                )
+            hesap_id = self._hesap_id_map.get((veri.get("hesap") or "").strip())
+            uyari = odeme_sekli_hesap_uygun_mu(
+                veri.get("odeme_sekli"),
+                veri.get("hesap"),
+                gelir_mi=self.gelir_mi,
+                finans_hesap_id=hesap_id,
+            )
+            if uyari:
+                raise ValueError(uyari)
+            if hesap_id is not None:
+                veri["finans_hesap_id"] = hesap_id
             self.result = veri
             self.destroy()
         except ValueError as hata:
@@ -500,30 +598,57 @@ class HizmetFaturaDialog(tk.Toplevel):
         self.aciklama.pack(fill="both", expand=True)
         self.ayrintili_notlar = self.aciklama
 
+        self._kayitli_kapatanlar: dict[str, dict] = {}
         self.odeme_tablo = ttk.Treeview(
             odeme_fr,
-            columns=("tarih", "tutar", "sekil", "hesap", "aciklama"),
+            columns=(
+                "tarih",
+                "tur",
+                "belge",
+                "sekil",
+                "hesap",
+                "evrak_toplam",
+                "uygulanan",
+                "pb",
+                "aciklama",
+                "durum",
+            ),
             show="headings",
-            height=4,
+            height=5,
+            selectmode="browse",
         )
         for k, b, w in (
-            ("tarih", "Tarih", 90),
-            ("tutar", "Tutar", 90),
-            ("sekil", "Şekil", 140),
-            ("hesap", "Hesap", 110),
-            ("aciklama", "Açıklama", 120),
+            ("tarih", "Tarih", 80),
+            ("tur", "Belge türü", 120),
+            ("belge", "Belge no", 110),
+            ("sekil", "Şekil", 90),
+            ("hesap", "Hesap", 130),
+            ("evrak_toplam", "Evrak tutarı", 90),
+            ("uygulanan", "Bu faturaya", 90),
+            ("pb", "PB", 40),
+            ("aciklama", "Açıklama", 100),
+            ("durum", "Durum", 80),
         ):
             self.odeme_tablo.heading(k, text=b)
-            self.odeme_tablo.column(k, width=w)
+            self.odeme_tablo.column(k, width=w, anchor="e" if k in ("evrak_toplam", "uygulanan") else "w")
         self.odeme_tablo.pack(fill="both", expand=True)
+        self.odeme_tablo.bind("<Double-1>", lambda _e: self.odeme_evraki_ac())
+        self.odeme_tablo.bind("<Button-1>", self._odeme_belge_tik)
         odeme_btn = ttk.Frame(odeme_fr)
         odeme_btn.pack(fill="x", pady=4)
-        ttk.Button(odeme_btn, text="Ödeme Yap" if not self.gelir_mi else "Tahsilat Ekle", command=self.odeme_ekle).pack(
-            side="left"
-        )
-        ttk.Button(odeme_btn, text="Sil", command=self.odeme_sil).pack(side="left", padx=6)
+        ttk.Button(
+            odeme_btn,
+            text="Ödeme Yap" if not self.gelir_mi else "Tahsilat Ekle",
+            command=self.odeme_ekle,
+        ).pack(side="left")
+        ttk.Button(odeme_btn, text="Evrakı Aç", command=self.odeme_evraki_ac).pack(side="left", padx=4)
+        ttk.Button(odeme_btn, text="Düzenle", command=self.odeme_duzenle).pack(side="left", padx=4)
+        ttk.Button(odeme_btn, text="Sil / İptal", command=self.odeme_sil).pack(side="left", padx=4)
+        ttk.Button(odeme_btn, text="Yenile", command=self._odeme_yenile).pack(side="left", padx=4)
         self.odeme_ozet = ttk.Label(odeme_fr, text="Ödenen: 0,00 TL | Kalan: 0,00 TL")
         self.odeme_ozet.pack(anchor="w")
+        self.odeme_uyari = ttk.Label(odeme_fr, text="", foreground="#a15c00", wraplength=520)
+        self.odeme_uyari.pack(anchor="w")
 
         sag = ttk.LabelFrame(alt, text="Toplamlar", padding=8)
         sag.grid(row=0, column=1, sticky="ne")
@@ -762,39 +887,310 @@ class HizmetFaturaDialog(tk.Toplevel):
             else:
                 self._ozet_lbls["doviz"].configure(text="—")
 
+    def _fatura_id(self) -> int | None:
+        f = getattr(self, "fatura", None)
+        return int(f.id) if f and getattr(f, "id", None) else None
+
     def odeme_ekle(self, varsayilan_sekil=None):
+        t = HizmetFaturasiService.toplam(self.satirlar)
+        # Kayıtlı faturada kalan = kapatma özeti; taslakta yerel ödemeler
+        fid = self._fatura_id()
+        if fid:
+            try:
+                bil = HizmetFaturasiService.kapatan_odemeleri(fid)
+                kalan = Decimal(str(bil.get("kalan") or 0)).quantize(Decimal("0.01"))
+            except Exception:
+                odenen = sum((decimal(o["tutar"], "Tutar") for o in self.odemeler), Decimal("0"))
+                kalan = (t["genel_toplam"] - odenen).quantize(Decimal("0.01"))
+        else:
+            odenen = sum((decimal(o["tutar"], "Tutar") for o in self.odemeler), Decimal("0"))
+            kalan = (t["genel_toplam"] - odenen).quantize(Decimal("0.01"))
+        if kalan <= 0:
+            messagebox.showwarning(
+                self.title(),
+                "Fatura kalanı yok; ek ödeme/tahsilat yapılamaz.",
+                parent=self,
+            )
+            return
         dlg = HizmetOdemeDialog(
-            self, gelir_mi=self.gelir_mi, varsayilan_sekil=varsayilan_sekil
+            self,
+            gelir_mi=self.gelir_mi,
+            varsayilan_sekil=varsayilan_sekil,
+            max_tutar=kalan,
         )
         self.wait_window(dlg)
         if dlg.result:
             self.odemeler.append(dlg.result)
             self._odeme_yenile()
 
-    def odeme_sil(self):
+    def _secili_kapatan(self) -> dict | None:
         secim = self.odeme_tablo.selection()
         if not secim:
+            return None
+        return self._kayitli_kapatanlar.get(secim[0])
+
+    def _odeme_belge_tik(self, event):
+        """Belge no sütununa tıklanınca kaynak evrakı aç."""
+        bolge = self.odeme_tablo.identify_region(event.x, event.y)
+        if bolge != "cell":
             return
-        self.odemeler.pop(int(secim[0]))
+        sutun = self.odeme_tablo.identify_column(event.x)
+        # #3 = belge
+        if sutun != "#3":
+            return
+        satir = self.odeme_tablo.identify_row(event.y)
+        if not satir:
+            return
+        self.odeme_tablo.selection_set(satir)
+        self.odeme_tablo.focus(satir)
+        self.after(10, self.odeme_evraki_ac)
+
+    def odeme_evraki_ac(self):
+        """Kaynak türü + kayıt kimliği (makbuz_id / cari_islem_id) ile gerçek evrakı aç."""
+        sat = self._secili_kapatan()
+        if not sat:
+            # Taslak yerel ödeme — açılacak kaynak yok
+            if not self._fatura_id():
+                messagebox.showinfo(
+                    "Evrak",
+                    "Ödeme henüz kaydedilmedi; kaynak evrak faturayla birlikte oluşur.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo("Evrak", "Satır seçin.", parent=self)
+            return
+        if sat.get("kaynak") == "BILINMIYOR":
+            messagebox.showinfo(
+                "Evrak",
+                "Bu pay kayıtlı bir kaynak evraka bağlanamıyor (varsayımsal ödeme üretilmez).",
+                parent=self,
+            )
+            return
+        belge = (sat.get("belge_no") or sat.get("evrak_no") or "").strip()
+        ac_tur = (sat.get("ac_tur") or sat.get("tur") or "").strip()
+        makbuz_id = sat.get("makbuz_id")
+        cari_islem_id = sat.get("cari_islem_id")
+        acildi = False
+        try:
+            if makbuz_id:
+                from kasa_makbuz_ui import KasaMakbuzDialog
+                from database.finans_service import FinansService as FS
+
+                m = FS.kasa_makbuz_getir(int(makbuz_id))
+                if m is not None:
+                    tur = (m.makbuz_turu or "TAHSILAT").upper()
+                    dlg = KasaMakbuzDialog(self, makbuz_turu=tur, makbuz_id=int(m.id))
+                    self.wait_window(dlg)
+                    acildi = True
+            if not acildi and (belge or cari_islem_id):
+                from belge_onizleme_ui import hareket_belgeyi_ac
+
+                # Kimlik biliniyorsa tür + belge_no ile aç (tahmin yok)
+                if belge and hareket_belgeyi_ac(self, ac_tur, belge):
+                    acildi = True
+        except Exception as hata:
+            messagebox.showerror("Evrak", str(hata), parent=self)
+            return
+        if not acildi:
+            messagebox.showinfo(
+                "Evrak",
+                f"{belge or '—'} için açılabilir kayıt bulunamadı "
+                f"(tür={ac_tur or '—'}, kapatma id={sat.get('kayit_id')}, "
+                f"makbuz={makbuz_id}, cari_islem={cari_islem_id}).",
+                parent=self,
+            )
+        fid = self._fatura_id()
+        if fid:
+            try:
+                HizmetFaturasiService.odeme_durumunu_senkronla(fid)
+                self.fatura = HizmetFaturasiService.getir(fid)
+            except Exception:
+                pass
+        self._odeme_yenile()
+
+    def odeme_duzenle(self):
+        sat = self._secili_kapatan()
+        if not sat:
+            # Taslak: yerel satır düzenleme yok — sil/yeniden ekle
+            if not self._fatura_id():
+                messagebox.showinfo(
+                    "Düzenle",
+                    "Kayıtlı olmayan ödeme satırını silip yeniden ekleyin.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo("Düzenle", "Satır seçin.", parent=self)
+            return
+        if sat.get("kaynak") == "BILINMIYOR":
+            messagebox.showinfo("Düzenle", "Bağlantısız pay düzenlenemez.", parent=self)
+            return
+        # Aç = düzenleme akışı (makbuz / cari işlem önizlemede Düzenle)
+        self.odeme_evraki_ac()
+        fid = self._fatura_id()
+        if fid:
+            try:
+                HizmetFaturasiService.odeme_durumunu_senkronla(fid)
+                self.fatura = HizmetFaturasiService.getir(fid)
+            except Exception:
+                pass
+        self._odeme_yenile()
+
+    def odeme_sil(self):
+        # Taslak yerel liste
+        if not self._fatura_id():
+            secim = self.odeme_tablo.selection()
+            if not secim:
+                return
+            try:
+                self.odemeler.pop(int(secim[0]))
+            except (IndexError, ValueError):
+                return
+            self._odeme_yenile()
+            return
+        sat = self._secili_kapatan()
+        if not sat:
+            messagebox.showinfo("Sil", "Satır seçin.", parent=self)
+            return
+        if sat.get("kaynak") == "BILINMIYOR":
+            messagebox.showinfo(
+                "Sil",
+                "Bağlantısız pay silinemez; önce doğrulanabilir kapatma kaydı gerekir.",
+                parent=self,
+            )
+            return
+        belge = (sat.get("belge_no") or sat.get("evrak_no") or "").strip()
+        pay = sat.get("pay")
+        etkilenen = []
+        try:
+            from database.kapatma_izleme_service import kaynak_dagitim_detayi
+
+            dag = kaynak_dagitim_detayi(belge, int(self.fatura.cari_id))
+            for s in dag.get("satirlar") or []:
+                etkilenen.append(
+                    f"  • {s.get('evrak_no') or s.get('belge_no')}: {_para(s.get('kapatilan'))}"
+                )
+        except Exception:
+            etkilenen = [f"  • {self.fatura.fatura_no}: {_para(pay)}"]
+        if not messagebox.askyesno(
+            "Sil / İptal",
+            (
+                f"Evrak: {belge}\n"
+                f"Bu faturaya uygulanan: {_para(pay)}\n"
+                f"Evrak toplamı: {_para(sat.get('evrak_toplami'))}\n\n"
+                "Etkilenecek faturalar / kalemler:\n"
+                + ("\n".join(etkilenen) if etkilenen else "  (liste okunamadı)")
+                + "\n\nKaynak evrakın mali etkileri ve kapatma bağlantıları birlikte iptal edilir.\n"
+                "Devam edilsin mi?"
+            ),
+            parent=self,
+        ):
+            return
+        try:
+            from database.finans_service import FinansService
+
+            hedef = FinansService.tahsilat_detay_hedef_coz(
+                belge, cari_id=int(self.fatura.cari_id)
+            )
+            kwargs = {"neden": f"Hizmet fatura ödeme iptal {self.fatura.fatura_no}"}
+            if hedef["tur"] == "makbuz":
+                kwargs["makbuz_id"] = hedef["id"]
+            elif hedef["tur"] == "pos_valor":
+                kwargs["pos_valor_id"] = hedef["id"]
+            else:
+                kwargs["cari_islem_id"] = hedef["id"]
+            FinansService.tahsilat_detay_iptal(**kwargs)
+            HizmetFaturasiService.odeme_durumunu_senkronla(int(self.fatura.id))
+            self.fatura = HizmetFaturasiService.getir(int(self.fatura.id))
+        except (ValueError, PermissionError) as hata:
+            messagebox.showerror("Silinemedi", str(hata), parent=self)
+            return
+        except Exception as hata:
+            # Ödeme makbuzu / EVB cari işlem — alternatif: kaynak belgenin tahsislerini geri al
+            try:
+                from database.acik_kalem_service import AcikKalemService
+                from database.database import get_session
+
+                with get_session() as session:
+                    AcikKalemService.belge_geri_al(
+                        session,
+                        int(self.fatura.cari_id),
+                        belge,
+                        neden=f"Hizmet fatura ödeme iptal {self.fatura.fatura_no}",
+                    )
+                HizmetFaturasiService.odeme_durumunu_senkronla(int(self.fatura.id))
+                self.fatura = HizmetFaturasiService.getir(int(self.fatura.id))
+            except Exception:
+                messagebox.showerror("Silinemedi", str(hata), parent=self)
+                return
+        messagebox.showinfo("Silindi", f"{belge} iptal edildi; fatura durumu güncellendi.", parent=self)
         self._odeme_yenile()
 
     def _odeme_yenile(self):
         for item in self.odeme_tablo.get_children():
             self.odeme_tablo.delete(item)
-        for i, o in enumerate(self.odemeler):
-            self.odeme_tablo.insert(
-                "",
-                "end",
-                iid=str(i),
-                values=(
-                    _tarih(o["tarih"]),
-                    _para(o["tutar"]),
-                    o.get("odeme_sekli") or "",
-                    o.get("hesap") or "",
-                    o.get("aciklama") or "",
-                ),
-            )
-        self._toplamlari_guncelle()
+        self._kayitli_kapatanlar.clear()
+        uyari = ""
+        fid = self._fatura_id()
+        if fid:
+            try:
+                bil = HizmetFaturasiService.kapatan_odemeleri(fid)
+                if bil.get("uyari"):
+                    uyari = bil["uyari"]
+                for i, s in enumerate(bil.get("satirlar") or []):
+                    iid = str(i)
+                    self._kayitli_kapatanlar[iid] = s
+                    self.odeme_tablo.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        values=(
+                            _tarih(s.get("tarih")),
+                            s.get("evrak_turu") or s.get("tur") or "",
+                            s.get("evrak_no") or s.get("belge_no") or "",
+                            s.get("odeme_sekli") or s.get("tur") or "",
+                            s.get("hesap") or "",
+                            _para(s.get("evrak_toplami")) if s.get("evrak_toplami") is not None else "—",
+                            _para(s.get("pay")),
+                            s.get("para_birimi") or "TRY",
+                            (s.get("aciklama") or "")[:40],
+                            s.get("durum") or ("Geçerli" if s.get("kaynak") == "KAYIT" else s.get("kaynak") or ""),
+                        ),
+                    )
+                # Özet: kapatma tutarları
+                odenen = Decimal(str(bil.get("kapanan") or 0))
+                kalan = Decimal(str(bil.get("kalan") or 0))
+                odenen_etiket = "Tahsil edilen" if self.gelir_mi else "Ödenen"
+                self.odeme_ozet.configure(
+                    text=f"{odenen_etiket}: {_para(odenen)} | Kalan: {_para(kalan)}"
+                )
+                self._ozet_lbls["odenen"].configure(text=_para(odenen))
+                self._ozet_lbls["kalan"].configure(text=_para(kalan))
+            except Exception as hata:
+                uyari = f"Kapatma listesi okunamadı: {hata}"
+        else:
+            for i, o in enumerate(self.odemeler):
+                iid = str(i)
+                self.odeme_tablo.insert(
+                    "",
+                    "end",
+                    iid=iid,
+                    values=(
+                        _tarih(o.get("tarih")),
+                        "Yeni ödeme (kayıt sonrası)",
+                        "—",
+                        o.get("odeme_sekli") or "",
+                        o.get("hesap") or "",
+                        _para(o.get("tutar")),
+                        _para(o.get("tutar")),
+                        "TRY",
+                        o.get("aciklama") or "",
+                        "Taslak",
+                    ),
+                )
+        if hasattr(self, "odeme_uyari"):
+            self.odeme_uyari.configure(text=uyari)
+        if not fid:
+            self._toplamlari_guncelle()
 
     def _cari_secildi(self, cari):
         self._secili_cari_id = int(cari.id)
@@ -890,16 +1286,8 @@ class HizmetFaturaDialog(tk.Toplevel):
                 }
             )
         self.odemeler.clear()
-        if f.odeme_tutari and Decimal(str(f.odeme_tutari)) > 0:
-            self.odemeler.append(
-                {
-                    "tarih": f.fatura_tarihi,
-                    "tutar": f.odeme_tutari,
-                    "odeme_sekli": f.odeme_sekli or "",
-                    "hesap": f.odeme_hesabi or "",
-                    "aciklama": "",
-                }
-            )
+        # Kayıtlı kapatmalar Ödemeler/Tahsilatlar sekmesinde gerçek kaynaklardan gelir;
+        # burada varsayımsal ödeme satırı üretilmez.
         if hasattr(self, "_doviz_para_birimi"):
             doviz_verilerini_doldur(self, f)
         self._satir_listesini_yenile()
@@ -932,10 +1320,29 @@ class HizmetFaturaDialog(tk.Toplevel):
                 self.girdiler["vade_tarihi"].get(), "%d.%m.%Y"
             ).date()
             islem_saati = saat_dogrula(self.girdiler["islem_saati"].get())
-            odeme_tutari = sum(
+            # Yeni/taslak ödemeler + mevcut kapatma senkronu
+            yeni_odeme = sum(
                 (decimal(o["tutar"], "Tutar") for o in self.odemeler), Decimal("0")
             )
             ilk = self.odemeler[0] if self.odemeler else {}
+            if self.fatura and yeni_odeme <= 0:
+                # Satır/KDV kaydı; mevcut kapatma tutarını koru (ikinci ödeme üretme)
+                odeme_tutari = Decimal(str(self.fatura.odeme_tutari or 0))
+                odeme_sekli = self.fatura.odeme_sekli
+                odeme_hesabi = self.fatura.odeme_hesabi
+            else:
+                odeme_tutari = yeni_odeme
+                odeme_sekli = ilk.get("odeme_sekli") or None
+                odeme_hesabi = ilk.get("hesap") or None
+            # Model tek ödeme satırı tutar; farklı şekil/hesap birleştirilmez
+            if len(self.odemeler) > 1:
+                sekiller = {(o.get("odeme_sekli") or "").strip() for o in self.odemeler}
+                hesaplar = {(o.get("hesap") or "").strip() for o in self.odemeler}
+                if len(sekiller) > 1 or len(hesaplar) > 1:
+                    raise ValueError(
+                        "Birden fazla ödeme/tahsilat aynı şekil ve hesapta olmalıdır. "
+                        "Farklı hesaplar için ayrı makbuz kullanın."
+                    )
             veriler = {
                 "fatura_no": self.girdiler["fatura_no"].get().strip(),
                 "fatura_turu": self.hizmet_turu,
@@ -944,8 +1351,8 @@ class HizmetFaturaDialog(tk.Toplevel):
                 "vade_tarihi": vade_tarihi,
                 "cari_id": int(self._secili_cari_id),
                 "odeme_tutari": odeme_tutari,
-                "odeme_sekli": ilk.get("odeme_sekli"),
-                "odeme_hesabi": ilk.get("hesap"),
+                "odeme_sekli": odeme_sekli,
+                "odeme_hesabi": odeme_hesabi,
                 "aciklama": self.aciklama.get("1.0", "end").strip() or None,
             }
             if hasattr(self, "_doviz_para_birimi"):

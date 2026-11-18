@@ -342,16 +342,31 @@ class TahsilatMakbuzuTest(unittest.TestCase):
         m = self._kk_odeme()
         self.assertEqual(m.makbuz_turu, "ODEME")
         self.assertTrue(m.belge_no.startswith("OMK-"))
-        hareketler = self._hareketler(m.belge_no)
-        self.assertEqual([(h.hesap_id, h.hareket_turu, h.tutar) for h in hareketler], [(self.kk_hesap_id, "KK ÖDEME", Decimal("3000.00"))])
+        # Makbuz belgesinde kart hareketi yok; 1. taksit {odeme}-T1 ile yazılır
+        self.assertEqual(self._hareketler(m.belge_no), [])
         with get_session() as s:
             islem = s.scalar(select(CariIslem).where(CariIslem.belge_no == m.belge_no))
             self.assertEqual(islem.islem_turu, "Ödeme")
             self.assertEqual((islem.borc, islem.alacak), (Decimal("3000.00"), Decimal("0.00")))
             ko = s.scalar(select(KrediKartiOdeme).where(KrediKartiOdeme.id == m.satirlar[0].kk_odeme_id))
             self.assertEqual((ko.taksit_sayisi, ko.tutar, ko.durum, len(ko.taksitler)), (3, Decimal("3000.00"), "AÇIK", 3))
+            durumlar = sorted((t.taksit_no, t.durum, t.tutar) for t in ko.taksitler)
+            self.assertEqual(
+                durumlar,
+                [
+                    (1, "KARTA_ISLENDI", Decimal("1000.00")),
+                    (2, "BEKLIYOR", Decimal("1000.00")),
+                    (3, "BEKLIYOR", Decimal("1000.00")),
+                ],
+            )
+            t1_har = self._hareketler(f"{ko.belge_no}-T1")
+            self.assertEqual(
+                [(h.hesap_id, h.hareket_turu, h.tutar) for h in t1_har],
+                [(self.kk_hesap_id, "KK ÖDEME", Decimal("1000.00"))],
+            )
             kk_hesap = s.get(FinansHesabi, self.kk_hesap_id)
-            self.assertEqual(FinansService.bakiye(kk_hesap), Decimal("3000.00"))
+            # Ledger'da yalnız işlenen 1. taksit; kalan plan-only
+            self.assertEqual(FinansService.bakiye(kk_hesap), Decimal("1000.00"))
         ozet = self._bakiye(self.tedarikci_id)
         self.assertEqual((ozet["tutar"], ozet["yon"]), (Decimal("2000.00"), "Alacaklı"))
 

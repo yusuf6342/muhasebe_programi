@@ -261,14 +261,19 @@ class GiderRaporService:
                         }
                     )
 
+            from database.kredi_gider_fisi_service import (
+                FINANSMAN_GIDER_TURLERI,
+                KrediGiderFisiService,
+            )
+
             for fis in fisler:
                 if fis.tarih < baslangic or fis.tarih > bitis:
                     continue
                 kart = kartlar.get(fis.hizmet_id) if fis.hizmet_id else None
                 sinif = GiderRaporService.kart_siniflandirma(kart)
-                # Kredi faiz/masraf → finansman
+                # Kredi / nakit avans faiz-masraf → finansman (anapara asla buraya gelmez)
                 tur = (fis.gider_turu or "").upper()
-                if tur in ("KREDI_FAIZ", "KREDI_MASRAF") and not (kart and kart.rapor_ana_grup):
+                if tur in FINANSMAN_GIDER_TURLERI and not (kart and kart.rapor_ana_grup):
                     sinif = {
                         **sinif,
                         "ana_grup_kod": "FINANSMAN",
@@ -276,6 +281,13 @@ class GiderRaporService:
                         "sonuc_yeri": "F",
                         "siniflandirilmamis": False,
                     }
+                mh_durum = (getattr(fis, "muhasebe_durum", None) or "").strip().upper()
+                if tur in FINANSMAN_GIDER_TURLERI and not mh_durum:
+                    mh_durum = (
+                        "BEKLIYOR"
+                        if not getattr(fis, "muhasebe_hesap_kodu", None)
+                        else "HAZIR"
+                    )
                 net = _q(_d(fis.tutar))
                 satirlar.append(
                     {
@@ -291,8 +303,11 @@ class GiderRaporService:
                         "vergi": _SIFIR,
                         "brut": net,
                         "iade": False,
-                        "muhasebe_durum": "",
+                        "muhasebe_durum": mh_durum,
+                        "muhasebe_durum_etiket": KrediGiderFisiService.durum_etiket(mh_durum),
+                        "muhasebe_hesap_kodu": getattr(fis, "muhasebe_hesap_kodu", None) or "",
                         "gider_turu": tur,
+                        "bagli_belge_no": fis.bagli_belge_no or "",
                         **sinif,
                     }
                 )
@@ -716,12 +731,39 @@ class GiderRaporService:
         detay = []
         for s in ozet["satirlar"]:
             if s["sonuc_yeri"] != "F" and s.get("ana_grup_kod") not in ("FINANSMAN", "POS"):
-                if s.get("gider_turu") not in ("KREDI_FAIZ", "KREDI_MASRAF"):
+                if s.get("gider_turu") not in (
+                    "KREDI_FAIZ",
+                    "KREDI_MASRAF",
+                    "KREDI_BSMV",
+                    "KREDI_KKDF",
+                    "KREDI_KOMISYON",
+                    "KREDI_SIGORTA",
+                    "KREDI_DOSYA",
+                    "KREDI_GECIKME",
+                    "NAKIT_AVANS_FAIZ",
+                    "NAKIT_AVANS_MASRAF",
+                    "NAKIT_AVANS_VERGI",
+                    "NAKIT_AVANS_KUL_MASRAF",
+                    "NAKIT_AVANS_KUL_VERGI",
+                ):
                     continue
-            tur = s.get("gider_turu") or ""
-            if tur == "KREDI_FAIZ" or "faiz" in (s.get("ana_grup_ad") or "").lower():
+            tur = (s.get("gider_turu") or "").upper()
+            if tur in ("KREDI_FAIZ", "KREDI_GECIKME", "NAKIT_AVANS_FAIZ") or "faiz" in (
+                s.get("ana_grup_ad") or ""
+            ).lower():
                 faiz += s["net"]
-            elif tur == "KREDI_MASRAF":
+            elif tur in (
+                "KREDI_MASRAF",
+                "KREDI_BSMV",
+                "KREDI_KKDF",
+                "KREDI_KOMISYON",
+                "KREDI_SIGORTA",
+                "KREDI_DOSYA",
+                "NAKIT_AVANS_MASRAF",
+                "NAKIT_AVANS_VERGI",
+                "NAKIT_AVANS_KUL_MASRAF",
+                "NAKIT_AVANS_KUL_VERGI",
+            ):
                 masraf += s["net"]
             elif s.get("ana_grup_kod") == "POS":
                 pos += s["net"]

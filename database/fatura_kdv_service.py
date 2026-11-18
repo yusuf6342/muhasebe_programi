@@ -165,6 +165,18 @@ def firma_varsayilan_kdv_ayarla(
     return deger
 
 
+def kdv_deger(deger, *, bos_varsayilan: Any = None, company_id: int | None = None) -> Decimal:
+    """KDV oranını Decimal'e çevir. ``0`` geçerlidir; ``None``/boş → varsayılan.
+
+    ``or 20`` kullanmayın — sıfır oranı yutulur.
+    """
+    if deger is None or (isinstance(deger, str) and not str(deger).strip()):
+        if bos_varsayilan is not None and str(bos_varsayilan).strip() != "":
+            return _d(bos_varsayilan, Decimal("0"))
+        return firma_varsayilan_kdv_orani(company_id)
+    return _d(deger, Decimal("0"))
+
+
 def satir_kdv_belirle(
     *,
     stok_kdv: Any = None,
@@ -173,14 +185,14 @@ def satir_kdv_belirle(
 ) -> Decimal:
     """Yeni satır için KDV oranı.
 
-    1) Kaynak belgede oran varsa onu koru
-    2) Stok kartında oran varsa onu kullan
+    1) Kaynak belgede oran varsa onu koru (0 dahil)
+    2) Stok kartında oran varsa onu kullan (0 dahil)
     3) Aksi halde firma varsayılanı
     """
     if kaynak_kdv is not None and str(kaynak_kdv).strip() != "":
-        return _d(kaynak_kdv, firma_varsayilan_kdv_orani(company_id))
+        return kdv_deger(kaynak_kdv, company_id=company_id)
     if stok_kdv is not None and str(stok_kdv).strip() != "":
-        return _d(stok_kdv, firma_varsayilan_kdv_orani(company_id))
+        return kdv_deger(stok_kdv, company_id=company_id)
     return firma_varsayilan_kdv_orani(company_id)
 
 

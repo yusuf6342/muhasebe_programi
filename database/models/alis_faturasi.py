@@ -52,6 +52,9 @@ class AlisFaturasi(Base):
     )
     row_version: Mapped[int] = mapped_column(nullable=False, default=1)
     olusturma_tarihi: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    # EVOBULUT | CIN_MUHASEBE | None (yerel / bilinmiyor)
+    kaynak_sistem: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    kaynak_kimlik: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
     cari = relationship("Cari")
     siparis = relationship("AlisSiparisi")

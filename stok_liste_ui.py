@@ -47,14 +47,16 @@ _STRIPE = "#E4EBF3"
 
 
 def para_goster_bos(tutar) -> str:
-    """None → tire; 0 → 0,00 TL; diğer → para biçimi."""
+    """None → tire; stok liste birim fiyatları → Fiyat Görünümü."""
     if tutar is None:
         return "—"
     try:
-        d = Decimal(str(tutar))
+        Decimal(str(tutar))
     except (InvalidOperation, ValueError, TypeError):
         return "—"
-    return f"{float(d):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(tutar) or "0"
 
 
 def miktar_goster(miktar) -> str:

@@ -44,6 +44,22 @@ def test_satir_kdv_stok_onceligi():
         assert satir_kdv_belirle(stok_kdv=Decimal("10")) == Decimal("10")
         assert satir_kdv_belirle(stok_kdv=None) == Decimal("20")
         assert satir_kdv_belirle(kaynak_kdv=1, stok_kdv=10) == Decimal("1")
+        # %0 geçerli; or 20 ile yutulmamalı
+        assert satir_kdv_belirle(stok_kdv=Decimal("0")) == Decimal("0")
+        assert satir_kdv_belirle(kaynak_kdv=Decimal("0"), stok_kdv=20) == Decimal("0")
+
+
+def test_kdv_deger_sifir_korunur():
+    from database.fatura_kdv_service import kdv_deger
+
+    with patch(
+        "database.fatura_kdv_service.firma_varsayilan_kdv_orani",
+        return_value=Decimal("0"),
+    ):
+        assert kdv_deger(0) == Decimal("0")
+        assert kdv_deger("0") == Decimal("0")
+        assert kdv_deger(None) == Decimal("0")
+        assert kdv_deger("") == Decimal("0")
 
 
 def test_satir_kdv_manuel_firma():

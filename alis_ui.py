@@ -88,7 +88,14 @@ _LOG = logging.getLogger("alis_ui")
 
 
 def para_goster(tutar):
+    """Parasal toplam (2 hane + TL). Birim fiyat → ``fiyat_birim_goster``."""
     return f"{float(tutar):,.2f} TL".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fiyat_birim_goster(tutar) -> str:
+    from database.fiyat_gorunum_service import fiyat_goster
+
+    return fiyat_goster(tutar)
 
 
 def tarih_goster(tarih):
@@ -1125,7 +1132,7 @@ class AlisSiparisiDialog(_AlisSatirGirisi, tk.Toplevel):
         for sira, s in enumerate(self.satirlar):
             self.satir_tablosu.insert("", "end", iid=str(sira), values=(
                 s["urun_kodu"], s["urun_adi"], s["miktar"], s["birim"],
-                para_goster(s["birim_alis_fiyati"]), self._iskonto_gosterim(s), s.get("kdv_orani", 20),
+                fiyat_birim_goster(s["birim_alis_fiyati"]), self._iskonto_gosterim(s), s.get("kdv_orani", 20),
                 para_goster(self._satir_tutari(s)),
             ))
         self._satir_ici_giris.tabloya_ekle()
@@ -1467,7 +1474,7 @@ class AlisIrsaliyesiDialog(_AlisSatirGirisi, tk.Toplevel):
             tutar = self._satir_tutari(s)
             toplam += tutar
             self.satir_tablosu.insert("", "end", iid=str(sira), values=(
-                s["urun_kodu"], s["urun_adi"], s["miktar"], s["birim"], para_goster(s["birim_fiyat"]),
+                s["urun_kodu"], s["urun_adi"], s["miktar"], s["birim"], fiyat_birim_goster(s["birim_fiyat"]),
                 s.get("iskonto_orani", 0), s.get("kdv_orani", 20), para_goster(tutar),
             ))
         self._satir_ici_giris.tabloya_ekle()
@@ -4128,10 +4135,10 @@ class AlisFaturasiDialog(tk.Toplevel):
                 veri.get("aciklama", ""),
                 miktar,
                 veri.get("birim", "Adet"),
-                para_goster(fiyat),
+                fiyat_birim_goster(fiyat),
                 isk_metin,
                 kdv_oran_metni(veri.get("kdv_orani", 0)),
-                para_goster(h["net_birim_fiyat"]),
+                fiyat_birim_goster(h["net_birim_fiyat"]),
                 lot,
                 lot_girisi,
                 para_goster(h["net_tutar"]),

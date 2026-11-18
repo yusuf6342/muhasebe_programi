@@ -1609,6 +1609,12 @@ def cari_kart_schemasini_guncelle() -> None:
                 connection.execute(
                     text(f'ALTER TABLE "{gider_fisi_tablo}" ADD COLUMN "hizmet_id" INTEGER')
                 )
+        try:
+            from database.kredi_gider_fisi_service import KrediGiderFisiService
+
+            KrediGiderFisiService.schema_hazirla()
+        except Exception:
+            pass
 
     doviz_schema_guncelle()
     donem_schemasini_guncelle()
