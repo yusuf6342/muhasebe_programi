@@ -22,3 +22,11 @@
 ## Test
 
 - `tests/test_kk_ekstre_devir_odeme.py`, `test_kk_taksit_karta_isleme.py`, `test_kredi_karti_ekstre.py`, `test_kk_ekstre_rapor_detached.py`
+
+## Derleme / paket
+
+- **Commit:** `269730a3aa6683f10269e05e1a7150c2c96e3619`
+- **EXE SHA-256:** `EB651368FC010AAF21D20988A8B0C81834AE45C18CFCC43732672B3B03FF7C1F`
+- **Güncelleme ZIP:** `paket\CinMuhasebe_DNM_D2_GUNCELLE_20261118_1916.zip`
+- **Setup:** `C:\CinMuhasebeKurulum\CinMuhasebe_Setup_1.1.15_20261118.exe`
+- **USB:** `D:\CinMuhasebe\Surumler\1.1.15_20261118_1918` + `D:\CinMuhasebe\GUNCELLE.cmd`

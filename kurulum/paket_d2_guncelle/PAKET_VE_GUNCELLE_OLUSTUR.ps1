@@ -250,17 +250,21 @@ $DeskList = @(
     (Join-Path $env:USERPROFILE 'OneDrive\Masaüstü')
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 function Set-DnmKisayol([string]$LnkPath) {
-    if (Test-Path $LnkPath) {
-        Copy-Item $LnkPath (Join-Path $Geri ((Split-Path $LnkPath -Leaf) + '.bak')) -Force -ErrorAction SilentlyContinue
+    try {
+        if (Test-Path $LnkPath) {
+            Copy-Item $LnkPath (Join-Path $Geri ((Split-Path $LnkPath -Leaf) + '.bak')) -Force -ErrorAction SilentlyContinue
+        }
+        $Lnk = $Wsh.CreateShortcut($LnkPath)
+        $Lnk.TargetPath = $HedefExe
+        $Lnk.WorkingDirectory = $HedefApp
+        $Lnk.Arguments = ''
+        $Lnk.IconLocation = "$HedefExe,0"
+        $Lnk.Description = "Cin Muhasebe — DNM_D2 ($($Prof.Rol))"
+        $Lnk.Save()
+        Write-Host "Kisayol: $LnkPath"
+    } catch {
+        Write-Warning ("Kisayol yazilamadi (atlandi): {0} — {1}" -f $LnkPath, $_.Exception.Message)
     }
-    $Lnk = $Wsh.CreateShortcut($LnkPath)
-    $Lnk.TargetPath = $HedefExe
-    $Lnk.WorkingDirectory = $HedefApp
-    $Lnk.Arguments = ''
-    $Lnk.IconLocation = "$HedefExe,0"
-    $Lnk.Description = "Cin Muhasebe — DNM_D2 ($($Prof.Rol))"
-    $Lnk.Save()
-    Write-Host "Kisayol: $LnkPath"
 }
 $KisayolAdlari = @($Prof.KisayolAdi, 'Cin Muhasebe')
 foreach ($D in $DeskList) {
