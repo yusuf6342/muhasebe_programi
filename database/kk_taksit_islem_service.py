@@ -1,11 +1,11 @@
 """Firma kredi kartı taksitlerini karta / ekstreye yansıtma.
 
 Kural:
-* Taksitli ödemede ana fiş tutarı cariye bir kez yazılır; kart hesabına her taksit
-  yansıma tarihinde ayrı ``KK ÖDEME`` satırı düşer.
-* 1. taksit çekim gününde işlenir; sonrakiler ``vade_tarihi <= bugün`` olunca
-  planlanan tarihle işlenir (program kapalıysa sonraki açılışta).
-* Aynı ``odeme_id`` + ``taksit_no`` için tek hareket (``islem_anahtari``).
+* Evrak işlendiğinde **tüm** taksitler kalıcı kart hareketi olarak yazılır.
+* Her hareket kendi ``vade_tarihi`` (yansıma) ile kaydedilir; hareket ≠ ödeme.
+* CARI: bakiyeyi artıran ``KK ÖDEME``. EVO/EVO_DEVIR/GIDER vb. zaten ledger'da
+  borcu olan kaynaklarda ``KK TAKSİT`` (nötr) — mükerrer borç yok.
+* Aynı ``odeme_id`` + ``taksit_no`` için tek hareket (``islem_anahtari`` / belge-Tn).
 """
 
 from __future__ import annotations
@@ -31,6 +31,10 @@ DURUM_BEKLIYOR = "BEKLIYOR"
 DURUM_KARTA = "KARTA_ISLENDI"
 DURUM_ODENDI = "ODENDI"
 HAREKET_KK = "KK ÖDEME"
+HAREKET_TAKSIT_DETAY = "KK TAKSİT"
+# Bu kaynaklarda taksit hareketi bakiyeyi artırmaz (açılış/devir/gider zaten yazılmış)
+KAYNAK_DETAY = frozenset({"EVO", "EVO_DEVIR", "GIDER", "NAKIT_AVANS"})
+KAYNAK_ISLENIR = frozenset({"CARI", "EVO", "EVO_DEVIR", "GIDER", "NAKIT_AVANS"})
 
 
 def _d(val) -> Decimal:
@@ -69,6 +73,26 @@ def _kk_hesap(session, kart: KrediKartiTanimi) -> FinansHesabi:
     return h
 
 
+def _hareket_turu_sec(session, odeme: KrediKartiOdeme, kk_hesap: FinansHesabi) -> str:
+    """Borç artıran KK ÖDEME mi, yoksa nötr KK TAKSİT mi?"""
+    kaynak = (getattr(odeme, "kaynak_turu", None) or "CARI").upper()
+    if kaynak in KAYNAK_DETAY:
+        return HAREKET_TAKSIT_DETAY
+    # Ana belge zaten ledger'da (toplu yazım) → taksitler ayrıntı
+    bel = (odeme.belge_no or "").strip()
+    if bel:
+        mevcut = session.scalar(
+            select(FinansHareketi.id).where(
+                FinansHareketi.belge_no == bel,
+                FinansHareketi.hesap_id == int(kk_hesap.id),
+                FinansHareketi.hareket_turu == HAREKET_KK,
+            )
+        )
+        if mevcut is not None:
+            return HAREKET_TAKSIT_DETAY
+    return HAREKET_KK
+
+
 def taksit_karta_isle_oturum(
     session,
     taksit: KrediKartiOdemeTaksit,
@@ -78,22 +102,23 @@ def taksit_karta_isle_oturum(
     sube_id: int | None = None,
     hareket_belge_no: str | None = None,
 ) -> dict[str, Any]:
-    """Açık oturumda taksiti karta yaz; durum ``KARTA_ISLENDI``."""
+    """Açık oturumda taksiti karta yaz; durum ``KARTA_ISLENDI``. Hareket ≠ ödeme."""
     schema_hazirla(bind=session.get_bind())
     durum = (taksit.durum or "").upper()
     if durum == DURUM_ODENDI and taksit.kk_hareket_belge_no:
         return _taksit_ozet(taksit)
     if durum == DURUM_KARTA and taksit.kk_hareket_belge_no:
-        return _taksit_ozet(taksit)
+        # Tutar/tarih güncellemesi (düzenleme)
+        return _taksit_hareket_guncelle(session, taksit, islem_tarihi=islem_tarihi)
+
     if durum in ("PLAN_IPTAL", "IADE") or getattr(taksit, "aktif", True) is False:
         raise ValueError("İptal / pasif taksit karta işlenemez.")
 
     odeme = taksit.odeme or session.get(KrediKartiOdeme, int(taksit.odeme_id))
     if odeme is None or (odeme.durum or "").upper() not in ("AÇIK", "ACIK"):
         raise ValueError("Kart ödeme fişi açık değil.")
-    # Gider / nakit avans kaynaklı satırlar kendi akışlarıyla yazılır
     kaynak = (getattr(odeme, "kaynak_turu", None) or "CARI").upper()
-    if kaynak not in ("CARI",):
+    if kaynak not in KAYNAK_ISLENIR:
         raise ValueError(f"Bu kaynak ({kaynak}) için taksit karta işleme uygulanmaz.")
 
     anahtar = (islem_anahtari or taksit.islem_anahtari or taksit_islem_anahtari(odeme.id, taksit.taksit_no)).strip()
@@ -106,7 +131,7 @@ def taksit_karta_isle_oturum(
         )
         if once is not None and int(once.id) != int(taksit.id):
             return _taksit_ozet(once)
-        if once is not None and once.kk_hareket_belge_no:
+        if once is not None and once.kk_hareket_belge_no and int(once.id) == int(taksit.id):
             return _taksit_ozet(once)
 
     kart = session.get(KrediKartiTanimi, int(odeme.kredi_karti_id))
@@ -117,39 +142,106 @@ def taksit_karta_isle_oturum(
     if tutar <= 0:
         raise ValueError("Taksit tutarı pozitif olmalıdır.")
 
+    # Nakit avans: borç zaten ``KK NAKİT AVANS`` satırında — ikinci -Tn üretme; bağla.
+    if kaynak == "NAKIT_AVANS":
+        ana_belge = (odeme.belge_no or "").strip()
+        na_h = session.scalar(
+            select(FinansHareketi).where(
+                FinansHareketi.belge_no == ana_belge,
+                FinansHareketi.hesap_id == int(kk_hesap.id),
+                FinansHareketi.hareket_turu == "KK NAKİT AVANS",
+            )
+        )
+        if na_h is not None:
+            # Eski mükerrer -Tn ayrıntı satırını temizle (borç artırmazdı; görüntü kirliliği)
+            tn_bel = taksit_hareket_belge(ana_belge, int(taksit.taksit_no))
+            for eski in list(
+                session.scalars(
+                    select(FinansHareketi).where(
+                        FinansHareketi.hesap_id == int(kk_hesap.id),
+                        FinansHareketi.belge_no == tn_bel,
+                        FinansHareketi.hareket_turu == HAREKET_TAKSIT_DETAY,
+                    )
+                ).all()
+            ):
+                session.delete(eski)
+            taksit.durum = DURUM_KARTA
+            taksit.kk_hareket_belge_no = ana_belge
+            taksit.islem_anahtari = anahtar
+            session.flush()
+            return _taksit_ozet(taksit)
+
     belge = (hareket_belge_no or taksit.kk_hareket_belge_no or taksit_hareket_belge(odeme.belge_no, taksit.taksit_no)).strip()
+    tur = _hareket_turu_sec(session, odeme, kk_hesap)
     mevcut_h = session.scalar(
         select(FinansHareketi).where(
             FinansHareketi.belge_no == belge,
-            FinansHareketi.hareket_turu == HAREKET_KK,
             FinansHareketi.hesap_id == int(kk_hesap.id),
+            FinansHareketi.hareket_turu.in_((HAREKET_KK, HAREKET_TAKSIT_DETAY)),
         )
     )
     tarih = islem_tarihi or taksit.vade_tarihi or odeme.tarih or date.today()
+    n = int(odeme.taksit_sayisi or 1)
+    acik = (
+        f"{odeme.aciklama or odeme.belge_no} · taksit {taksit.taksit_no}/{n}"
+        + (" · plan ayrıntı (borç mükerrer değil)" if tur == HAREKET_TAKSIT_DETAY else "")
+    )[:500]
     if mevcut_h is None:
-        n = int(odeme.taksit_sayisi or 1)
-        acik = (
-            f"{odeme.aciklama or odeme.belge_no} · taksit {taksit.taksit_no}/{n}"
-        )[:500]
         session.add(
             FinansHareketi(
                 hesap_id=int(kk_hesap.id),
                 sube_id=sube_id,
                 tarih=tarih,
-                hareket_turu=HAREKET_KK,
+                hareket_turu=tur,
                 belge_no=belge,
                 tutar=tutar,
                 aciklama=acik,
             )
         )
     else:
-        # Aynı belge ile daha önce yazılmış — tutar/tarih korunur (idempotent)
+        # Idempotent: mevcut hareketi güncelle (ikinci satır yok)
+        mevcut_h.tarih = tarih
+        mevcut_h.tutar = tutar
+        mevcut_h.hareket_turu = tur
+        mevcut_h.aciklama = acik
         belge = mevcut_h.belge_no
 
     taksit.durum = DURUM_KARTA
     taksit.kk_hareket_belge_no = belge
     taksit.islem_anahtari = anahtar
     session.flush()
+    return _taksit_ozet(taksit)
+
+
+def _taksit_hareket_guncelle(
+    session,
+    taksit: KrediKartiOdemeTaksit,
+    *,
+    islem_tarihi: date | None = None,
+) -> dict[str, Any]:
+    """Mevcut bağlantılı hareketi tutar/tarihle güncelle; ikinci hareket ekleme."""
+    odeme = taksit.odeme or session.get(KrediKartiOdeme, int(taksit.odeme_id))
+    if odeme is None:
+        return _taksit_ozet(taksit)
+    kart = session.get(KrediKartiTanimi, int(odeme.kredi_karti_id))
+    if kart is None:
+        return _taksit_ozet(taksit)
+    kk_hesap = _kk_hesap(session, kart)
+    belge = (taksit.kk_hareket_belge_no or "").strip()
+    if not belge:
+        return _taksit_ozet(taksit)
+    h = session.scalar(
+        select(FinansHareketi).where(
+            FinansHareketi.belge_no == belge,
+            FinansHareketi.hesap_id == int(kk_hesap.id),
+        )
+    )
+    if h is not None:
+        h.tarih = islem_tarihi or taksit.vade_tarihi or h.tarih
+        h.tutar = _d(taksit.tutar)
+        tur = _hareket_turu_sec(session, odeme, kk_hesap)
+        h.hareket_turu = tur
+        session.flush()
     return _taksit_ozet(taksit)
 
 
@@ -168,16 +260,21 @@ def _taksit_ozet(t: KrediKartiOdemeTaksit) -> dict[str, Any]:
     }
 
 
-def odeme_ilk_taksiti_isle(
+def odeme_tum_taksitleri_isle(
     session,
     odeme: KrediKartiOdeme,
     *,
     sube_id: int | None = None,
-) -> dict[str, Any] | None:
-    """Kayıt anında 1. taksiti çekim/vade tarihinde karta yaz."""
+) -> list[dict[str, Any]]:
+    """Kayıt anında tüm taksitleri kendi yansıma tarihleriyle karta yaz."""
     session.flush()
     taksitler = sorted(
-        [t for t in (odeme.taksitler or []) if getattr(t, "aktif", True)],
+        [
+            t
+            for t in (odeme.taksitler or [])
+            if getattr(t, "aktif", True)
+            and (t.durum or "").upper() not in ("PLAN_IPTAL", "IADE")
+        ],
         key=lambda x: int(x.taksit_no),
     )
     if not taksitler:
@@ -191,16 +288,106 @@ def odeme_ilk_taksiti_isle(
                 .order_by(KrediKartiOdemeTaksit.taksit_no)
             ).all()
         )
-    ilk = next((t for t in taksitler if int(t.taksit_no) == 1), None)
-    if ilk is None:
-        return None
-    return taksit_karta_isle_oturum(
-        session,
-        ilk,
-        islem_tarihi=ilk.vade_tarihi or odeme.tarih,
-        islem_anahtari=taksit_islem_anahtari(odeme.id, 1),
-        sube_id=sube_id,
-    )
+        taksitler = [
+            t
+            for t in taksitler
+            if (t.durum or "").upper() not in ("PLAN_IPTAL", "IADE")
+        ]
+    sonuc: list[dict[str, Any]] = []
+    for t in taksitler:
+        try:
+            sonuc.append(
+                taksit_karta_isle_oturum(
+                    session,
+                    t,
+                    islem_tarihi=t.vade_tarihi or odeme.tarih,
+                    islem_anahtari=taksit_islem_anahtari(odeme.id, int(t.taksit_no)),
+                    sube_id=sube_id,
+                )
+            )
+        except Exception as exc:
+            sonuc.append(
+                {
+                    "taksit_id": int(t.id),
+                    "taksit_no": int(t.taksit_no),
+                    "hata": str(exc),
+                }
+            )
+    return sonuc
+
+
+def odeme_ilk_taksiti_isle(
+    session,
+    odeme: KrediKartiOdeme,
+    *,
+    sube_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Geriye uyum: tüm taksitleri işler; özet olarak 1. taksiti döner."""
+    sonuc = odeme_tum_taksitleri_isle(session, odeme, sube_id=sube_id)
+    for s in sonuc:
+        if int(s.get("taksit_no") or 0) == 1 and not s.get("hata"):
+            return s
+    return sonuc[0] if sonuc else None
+
+
+def eksik_taksit_hareketlerini_tamamla(
+    *,
+    kredi_karti_id: int | None = None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """BEKLIYOR / hareketsiz taksitleri kalıcı harekete bağla (idempotent; evrak çoğalmaz)."""
+    schema_hazirla()
+    yazilan = 0
+    atlanan = 0
+    hatalar: list[dict] = []
+    with get_session() as session:
+        q = (
+            select(KrediKartiOdemeTaksit)
+            .join(KrediKartiOdeme)
+            .where(
+                KrediKartiOdeme.durum == "AÇIK",
+                KrediKartiOdeme.kaynak_turu.in_(tuple(KAYNAK_ISLENIR)),
+                KrediKartiOdemeTaksit.aktif.is_(True),
+                KrediKartiOdemeTaksit.durum.in_((DURUM_BEKLIYOR, DURUM_KARTA)),
+            )
+            .options(selectinload(KrediKartiOdemeTaksit.odeme))
+            .order_by(KrediKartiOdemeTaksit.id)
+            .limit(int(limit))
+        )
+        if kredi_karti_id is not None:
+            q = q.where(KrediKartiOdeme.kredi_karti_id == int(kredi_karti_id))
+        ids = [
+            int(t.id)
+            for t in session.scalars(q).all()
+            if not (t.kk_hareket_belge_no and (t.durum or "").upper() == DURUM_KARTA)
+        ]
+    for tid in ids:
+        try:
+            with get_session() as session:
+                t = session.get(KrediKartiOdemeTaksit, tid)
+                if t is None:
+                    continue
+                if t.kk_hareket_belge_no and (t.durum or "").upper() in (
+                    DURUM_KARTA,
+                    DURUM_ODENDI,
+                ):
+                    atlanan += 1
+                    continue
+                taksit_karta_isle_oturum(
+                    session,
+                    t,
+                    islem_tarihi=t.vade_tarihi,
+                    islem_anahtari=taksit_islem_anahtari(t.odeme_id, int(t.taksit_no)),
+                )
+                yazilan += 1
+        except Exception as exc:
+            hatalar.append({"taksit_id": tid, "hata": str(exc)})
+    return {
+        "yazilan": yazilan,
+        "atlanan": atlanan,
+        "hata_adet": len(hatalar),
+        "hatalar": hatalar[:50],
+    }
 
 
 def odeme_taksit_hareketlerini_sil(session, odeme: KrediKartiOdeme) -> int:
@@ -224,45 +411,12 @@ def vadesi_gelenleri_isle(
     kredi_karti_id: int | None = None,
     bugun: date | None = None,
 ) -> list[dict[str, Any]]:
-    """Yansıma tarihi gelmiş BEKLIYOR taksitleri planlanan tarihle karta işler."""
-    bugun = bugun or date.today()
-    schema_hazirla()
-    sonuc: list[dict[str, Any]] = []
-    with get_session() as session:
-        q = (
-            select(KrediKartiOdemeTaksit)
-            .join(KrediKartiOdeme)
-            .where(
-                KrediKartiOdeme.durum == "AÇIK",
-                KrediKartiOdeme.kaynak_turu == "CARI",
-                KrediKartiOdemeTaksit.durum == DURUM_BEKLIYOR,
-                KrediKartiOdemeTaksit.aktif.is_(True),
-                KrediKartiOdemeTaksit.vade_tarihi <= bugun,
-            )
-            .options(selectinload(KrediKartiOdemeTaksit.odeme))
-            .order_by(KrediKartiOdemeTaksit.vade_tarihi, KrediKartiOdemeTaksit.id)
-        )
-        if kredi_karti_id is not None:
-            q = q.where(KrediKartiOdeme.kredi_karti_id == int(kredi_karti_id))
-        ids = [int(t.id) for t in session.scalars(q).all()]
-    for tid in ids:
-        try:
-            with get_session() as session:
-                t = session.get(KrediKartiOdemeTaksit, tid)
-                if t is None:
-                    continue
-                if (t.durum or "").upper() != DURUM_BEKLIYOR:
-                    continue
-                ozet = taksit_karta_isle_oturum(
-                    session,
-                    t,
-                    islem_tarihi=t.vade_tarihi,
-                    islem_anahtari=taksit_islem_anahtari(t.odeme_id, t.taksit_no),
-                )
-                sonuc.append(ozet)
-        except Exception as exc:
-            sonuc.append({"taksit_id": tid, "hata": str(exc)})
-    return sonuc
+    """Geriye uyum: eksik taksit hareketlerini tamamlar (tarih filtresi yok — hepsi)."""
+    _ = bugun  # artık vade beklemeden tüm eksikler yazılır
+    ozet = eksik_taksit_hareketlerini_tamamla(kredi_karti_id=kredi_karti_id)
+    return [
+        {"yazilan": ozet["yazilan"], "atlanan": ozet["atlanan"], "hata_adet": ozet["hata_adet"]}
+    ]
 
 
 def brut_ledger_duzelt(
@@ -275,9 +429,9 @@ def brut_ledger_duzelt(
     """Eski tek kalem (tam tutar) KK ÖDEME satırını taksit planına çevir.
 
     * Tam tutarlı hareket ve varsa dengeleyen ``KK ÖDEME İPTAL`` doğrudan silinir.
-    * Vadesi gelmiş taksitler karta işlenir; gelecekler BEKLIYOR (Planlandı) kalır.
+    * Tüm taksitler kendi yansıma tarihleriyle kalıcı harekete yazılır (aktarım aşaması yok).
     """
-    bugun = bugun or date.today()
+    _ = bugun  # geriye uyum; artık vade filtresi yok
     schema_hazirla(bind=session.get_bind())
     kart = session.get(KrediKartiTanimi, int(odeme.kredi_karti_id))
     if kart is None:
@@ -327,28 +481,8 @@ def brut_ledger_duzelt(
             )
             session.delete(h)
 
-    islenen = []
-    for t in sorted(odeme.taksitler or [], key=lambda x: int(x.taksit_no)):
-        if getattr(t, "aktif", True) is False:
-            continue
-        durum = (t.durum or "").upper()
-        if durum in ("PLAN_IPTAL", "IADE", DURUM_ODENDI):
-            continue
-        if durum == DURUM_KARTA and t.kk_hareket_belge_no:
-            continue
-        if t.vade_tarihi and t.vade_tarihi <= bugun:
-            islenen.append(
-                taksit_karta_isle_oturum(
-                    session,
-                    t,
-                    islem_tarihi=t.vade_tarihi,
-                    islem_anahtari=taksit_islem_anahtari(odeme.id, t.taksit_no),
-                )
-            )
-        else:
-            t.durum = DURUM_BEKLIYOR
-            t.kk_hareket_belge_no = None
     session.flush()
+    islenen = odeme_tum_taksitleri_isle(session, odeme)
     return {
         "odeme_id": int(odeme.id),
         "belge_no": odeme.belge_no,

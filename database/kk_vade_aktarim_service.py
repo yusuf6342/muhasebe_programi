@@ -360,6 +360,14 @@ class KkVadeAktarimService:
                 ekstre_kesim_tarihi=kesim,
             )
         )
+        session.flush()
+        # Tüm taksitler kalıcı kart hareketi (EVO/devirde nötr KK TAKSİT — borç çiftlenmez)
+        try:
+            from database.kk_taksit_islem_service import odeme_tum_taksitleri_isle
+
+            odeme_tum_taksitleri_isle(session, odeme)
+        except Exception:
+            pass
         if kesim is not None:
             KkVadeAktarimService._ekstre_garanti(session, kart, kesim, vade)
         return f"yazildi:{kaynak}"

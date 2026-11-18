@@ -239,28 +239,48 @@ if (-not (Test-Path $CaPath) -and (Test-Path $CaSrc)) {
     Write-Host "Mevcut root.crt korundu"
 }
 
-# Masaüstü kısayolları → güncel DNM_D2 EXE (profil adı + ana "Cin Muhasebe.lnk")
+# Masaüstü kısayolları → güncel DNM_D2 EXE
+# 1) Profil adı + "Cin Muhasebe.lnk"  2) Hedefi zaten DNM_D2 olan mevcut kısayollar
 $Wsh = New-Object -ComObject WScript.Shell
 $DeskList = @(
     $Desk,
     [Environment]::GetFolderPath('CommonDesktopDirectory'),
     (Join-Path $env:USERPROFILE 'Desktop'),
+    (Join-Path $env:USERPROFILE 'OneDrive\Desktop'),
     (Join-Path $env:USERPROFILE 'OneDrive\Masaüstü')
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+function Set-DnmKisayol([string]$LnkPath) {
+    if (Test-Path $LnkPath) {
+        Copy-Item $LnkPath (Join-Path $Geri ((Split-Path $LnkPath -Leaf) + '.bak')) -Force -ErrorAction SilentlyContinue
+    }
+    $Lnk = $Wsh.CreateShortcut($LnkPath)
+    $Lnk.TargetPath = $HedefExe
+    $Lnk.WorkingDirectory = $HedefApp
+    $Lnk.Arguments = ''
+    $Lnk.IconLocation = "$HedefExe,0"
+    $Lnk.Description = "Cin Muhasebe — DNM_D2 ($($Prof.Rol))"
+    $Lnk.Save()
+    Write-Host "Kisayol: $LnkPath"
+}
 $KisayolAdlari = @($Prof.KisayolAdi, 'Cin Muhasebe')
 foreach ($D in $DeskList) {
     foreach ($Ad in $KisayolAdlari) {
         $LnkPath = Join-Path $D "$Ad.lnk"
         if (-not (Test-Path $LnkPath) -and $Ad -ne $Prof.KisayolAdi) { continue }
-        if (Test-Path $LnkPath) { Copy-Item $LnkPath (Join-Path $Geri "$Ad.lnk.bak") -Force -ErrorAction SilentlyContinue }
-        $Lnk = $Wsh.CreateShortcut($LnkPath)
-        $Lnk.TargetPath = $HedefExe
-        $Lnk.WorkingDirectory = $HedefApp
-        $Lnk.Arguments = ''
-        $Lnk.IconLocation = "$HedefExe,0"
-        $Lnk.Description = "Cin Muhasebe — DNM_D2 ($($Prof.Rol))"
-        $Lnk.Save()
-        Write-Host "Kisayol: $LnkPath"
+        Set-DnmKisayol $LnkPath
+    }
+    Get-ChildItem $D -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $cur = $Wsh.CreateShortcut($_.FullName)
+            $tp = [string]$cur.TargetPath
+            if ($tp -and ($tp -like '*\CinMuhasebe\DNM_D2\*' -or $tp -like '*\CinMuhasebe\DNM_D2\*')) {
+                if ($tp -ne $HedefExe -or [string]$cur.WorkingDirectory -ne $HedefApp) {
+                    Set-DnmKisayol $_.FullName
+                } else {
+                    Write-Host ("Kisayol zaten dogru: {0}" -f $_.FullName)
+                }
+            }
+        } catch {}
     }
 }
 $LnkPath = Join-Path $Desk "$($Prof.KisayolAdi).lnk"

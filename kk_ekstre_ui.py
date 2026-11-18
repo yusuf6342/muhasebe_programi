@@ -232,7 +232,7 @@ class KkEkstreDetayDialog(tk.Toplevel):
         ttk.Button(btn, text="Yenile", command=self._yenile_detay).pack(side="left", padx=2)
         ttk.Button(btn, text="Kapat", command=self.destroy).pack(side="right", padx=2)
 
-        cols = ("tarih", "aciklama", "tur", "taksit", "borc", "alacak", "etki", "belge", "kaynak")
+        cols = ("tarih", "aciklama", "tur", "taksit", "borc", "alacak", "belge", "kaynak")
         self.tv = ttk.Treeview(self, columns=cols, show="headings", height=10)
         basliklar = (
             ("tarih", "İşlem tarihi", 90),
@@ -241,7 +241,6 @@ class KkEkstreDetayDialog(tk.Toplevel):
             ("taksit", "Taksit", 90),
             ("borc", "Borç", 90),
             ("alacak", "Alacak", 90),
-            ("etki", "Etki", 90),
             ("belge", "Evrak", 110),
             ("kaynak", "Kaynak gider", 200),
         )
@@ -328,7 +327,7 @@ class KkEkstreDetayDialog(tk.Toplevel):
     def _detay_filtre_yenile(self):
         from liste_filtre_ui import satir_kolon_filtre_uygun
 
-        cols = ("tarih", "aciklama", "tur", "taksit", "borc", "alacak", "etki", "belge", "kaynak")
+        cols = ("tarih", "aciklama", "tur", "taksit", "borc", "alacak", "belge", "kaynak")
         for i in self.tv.get_children():
             self.tv.delete(i)
         for item in self._detay_ham:
@@ -373,7 +372,6 @@ class KkEkstreDetayDialog(tk.Toplevel):
                 s.get("tek_cekim_taksit") or "",
                 _para(s.get("borc")),
                 _para(s.get("alacak")),
-                _para(s.get("etki")),
                 s.get("kaynak_evrak") or "",
                 s.get("kaynak_gider") or "",
             )
@@ -761,16 +759,21 @@ class KkEkstreOdemeDialog(tk.Toplevel):
         except Exception as exc:
             messagebox.showerror("Ödeme", str(exc), parent=self)
 
+
 class KkDonemBorcuRaporDialog(tk.Toplevel):
-    """Ekstre / Dönem Borcu Raporu — seçili kart; kesin ve gelecek dönemler ayrı."""
+    """Ekstre / Dönem Borcu Raporu — ekstre dönemi veya iki tarih arası; salt okunur."""
+
+    MOD_EKSTRE = "ekstre"
+    MOD_TARIH = "tarih_araligi"
 
     def __init__(self, parent, kredi_karti_id: int, *, yenile_cb=None):
         super().__init__(parent)
         self.kredi_karti_id = int(kredi_karti_id)
         self.yenile_cb = yenile_cb
         self.title("Ekstre / Dönem Borcu Raporu")
-        self.geometry("1100x720")
-        self.minsize(960, 600)
+        self.geometry("1280x820")
+        self.minsize(1100, 700)
+        self.resizable(True, True)
         self.transient(parent)
         try:
             self.grab_set()
@@ -794,67 +797,253 @@ class KkDonemBorcuRaporDialog(tk.Toplevel):
             if d.get("kesim_tarihi") and d["kesim_tarihi"] <= bugun:
                 self._idx = i
         if not self._donemler:
-            # Kesim günü yoksa bile ozet göster
+            # Kesim günü yoksa bile özet göster
             self._donemler = [{"kesim_tarihi": None, "ekstre_id": None, "kesin": False}]
 
+        self._rapor = None
+        self._har_belge: dict[str, str] = {}
+        self._odeme_belge: dict[str, str] = {}
+        self.var_mod = tk.StringVar(value=self.MOD_EKSTRE)
+
+        # --- Başlık / özet
         ust = ttk.Frame(self, padding=8)
         ust.pack(fill="x")
         self.lbl_baslik = ttk.Label(ust, font=("Segoe UI", 11, "bold"))
         self.lbl_baslik.pack(anchor="w")
-        self.lbl_ozet = ttk.Label(ust, wraplength=1040)
-        self.lbl_ozet.pack(anchor="w", pady=(4, 0))
-        self.lbl_ayrim = ttk.Label(ust, foreground="#1a2b4a", font=("Segoe UI", 9, "bold"))
-        self.lbl_ayrim.pack(anchor="w", pady=(2, 0))
+        self.lbl_donem = ttk.Label(ust)
+        self.lbl_donem.pack(anchor="w", pady=(2, 0))
 
-        nav = ttk.Frame(self, padding=(8, 0))
+        ozet = ttk.LabelFrame(ust, text="Özet", padding=6)
+        ozet.pack(fill="x", pady=(6, 0))
+        self._ozet_lbl: dict[str, ttk.Label] = {}
+        alanlar = (
+            ("kesim_tutari", "Kesim tutarı"),
+            ("onceki_devir", "Önceki dönemden devir"),
+            ("odenen", "Ödenen"),
+            ("kalan", "Kalan"),
+            ("kullanilan_limit", "Kullanılan limit"),
+            ("hesap_bakiyesi", "Hesap bakiyesi"),
+            ("gelecek_kalan", "Gelecek dönem kalan"),
+        )
+        for i, (anahtar, baslik) in enumerate(alanlar):
+            kutu = ttk.Frame(ozet)
+            kutu.grid(row=0, column=i, padx=10, sticky="w")
+            ttk.Label(kutu, text=baslik, foreground="#555555").pack(anchor="w")
+            lbl = ttk.Label(kutu, text="—", font=("Segoe UI", 10, "bold"))
+            lbl.pack(anchor="w")
+            self._ozet_lbl[anahtar] = lbl
+        self.lbl_kapsam = ttk.Label(ust, foreground="#1a2b4a", wraplength=1200, justify="left")
+        self.lbl_kapsam.pack(anchor="w", pady=(6, 0))
+        self.bind("<Configure>", self._kapsam_wrap, add="+")
+
+        # --- Mod / tarih / navigasyon
+        mod_f = ttk.Frame(self, padding=(8, 2))
+        mod_f.pack(fill="x")
+        ttk.Radiobutton(
+            mod_f, text="Ekstre dönemi", value=self.MOD_EKSTRE,
+            variable=self.var_mod, command=self._mod_degisti,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Radiobutton(
+            mod_f, text="İki tarih arası", value=self.MOD_TARIH,
+            variable=self.var_mod, command=self._mod_degisti,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Label(mod_f, text="Başlangıç:").pack(side="left", padx=(12, 2))
+        self.ent_bas = ttk.Entry(mod_f, width=11)
+        self.ent_bas.pack(side="left")
+        ttk.Label(mod_f, text="Bitiş:").pack(side="left", padx=(8, 2))
+        self.ent_bit = ttk.Entry(mod_f, width=11)
+        self.ent_bit.pack(side="left")
+        try:
+            from ui_takvim import takvim_butonu
+
+            takvim_butonu(mod_f, self.ent_bas)
+            takvim_butonu(mod_f, self.ent_bit)
+        except Exception:
+            pass
+        self.btn_uygula = ttk.Button(mod_f, text="Uygula", command=self._uygula)
+        self.btn_uygula.pack(side="left", padx=(8, 2))
+        self.btn_temizle = ttk.Button(mod_f, text="Temizle", command=self._temizle)
+        self.btn_temizle.pack(side="left", padx=2)
+
+        nav = ttk.Frame(self, padding=(8, 2))
         nav.pack(fill="x")
-        ttk.Button(nav, text="◀ Önceki dönem", command=self._onceki).pack(side="left", padx=2)
-        ttk.Button(nav, text="Sonraki dönem ▶", command=self._sonraki).pack(side="left", padx=2)
+        self.btn_onceki = ttk.Button(nav, text="◀ Önceki dönem", command=self._onceki)
+        self.btn_onceki.pack(side="left", padx=2)
+        self.btn_sonraki = ttk.Button(nav, text="Sonraki dönem ▶", command=self._sonraki)
+        self.btn_sonraki.pack(side="left", padx=2)
         ttk.Button(nav, text="PDF", command=self._pdf).pack(side="left", padx=8)
         ttk.Button(nav, text="Excel", command=self._excel).pack(side="left", padx=2)
         ttk.Button(nav, text="Yenile", command=self._yenile).pack(side="left", padx=8)
         ttk.Button(nav, text="Kapat", command=self.destroy).pack(side="right", padx=2)
 
+        # --- Tablolar
         orta = ttk.Panedwindow(self, orient="vertical")
         orta.pack(fill="both", expand=True, padx=8, pady=6)
 
-        har_f = ttk.LabelFrame(orta, text="Dönem kalemleri", padding=4)
-        cols = ("tarih", "belge", "aciklama", "taksit", "borc", "odeme", "kalan")
-        self.tv = ttk.Treeview(har_f, columns=cols, show="headings", height=12)
-        for k, b, w in (
-            ("tarih", "İşlem / yansıma", 100),
-            ("belge", "Belge", 120),
-            ("aciklama", "Açıklama", 220),
-            ("taksit", "Taksit", 80),
-            ("borc", "Borç", 90),
-            ("odeme", "Ödeme", 90),
-            ("kalan", "Etki", 90),
-        ):
-            self.tv.heading(k, text=b)
-            self.tv.column(k, width=w, anchor="w")
-        self.tv.pack(fill="both", expand=True)
-        orta.add(har_f, weight=3)
+        har_f = ttk.LabelFrame(orta, text="Dönem kalemleri — çift tık belge", padding=4)
+        self.tv = self._tablo_olustur(
+            har_f,
+            (
+                ("kaynak_tarihi", "Kaynak tarihi", 95, "center"),
+                ("yansima", "Yansıma", 95, "center"),
+                ("vade", "Vade", 95, "center"),
+                ("belge", "Belge", 130, "w"),
+                ("aciklama", "Açıklama", 260, "w"),
+                ("taksit", "Taksit", 65, "center"),
+                ("ekstre_kesim", "Ekstre kesim", 95, "center"),
+                ("son_odeme", "Son ödeme", 95, "center"),
+                ("borc", "Borç", 100, "e"),
+                ("odeme", "Ödeme / iade", 100, "e"),
+                ("bakiye", "Bakiye", 105, "e"),
+            ),
+            height=11,
+        )
+        self.tv.bind("<Double-1>", lambda _e: self._belge_ac(self.tv, self._har_belge))
+        orta.add(har_f, weight=4)
 
-        gel_f = ttk.LabelFrame(orta, text="Gelecek dönem planlı borçları (ödeme/gider üretmez)", padding=4)
-        gcols = ("donem", "bas", "kesim", "son", "adet", "tutar", "tur")
-        self.tv_gel = ttk.Treeview(gel_f, columns=gcols, show="headings", height=8)
-        for k, b, w in (
-            ("donem", "Dönem", 70),
-            ("bas", "Başlangıç", 90),
-            ("kesim", "Hesap kesimi", 100),
-            ("son", "Son ödeme", 90),
-            ("adet", "Taksit", 60),
-            ("tutar", "Planlı borç", 100),
-            ("tur", "Tür", 140),
-        ):
-            self.tv_gel.heading(k, text=b)
-            self.tv_gel.column(k, width=w, anchor="w")
-        self.tv_gel.pack(fill="both", expand=True)
-        orta.add(gel_f, weight=2)
+        odeme_f = ttk.LabelFrame(orta, text="Ödemeler / mahsup — çift tık belge", padding=4)
+        self.tv_odeme = self._tablo_olustur(
+            odeme_f,
+            (
+                ("tarih", "Tarih", 95, "center"),
+                ("belge", "Belge", 130, "w"),
+                ("tutar", "Tutar", 105, "e"),
+                ("mahsup", "Mahsup", 105, "e"),
+                ("ekstre_kesim", "Ekstre kesim", 100, "center"),
+                ("kaynak", "Kaynak", 130, "w"),
+                ("aciklama", "Açıklama", 360, "w"),
+            ),
+            height=5,
+        )
+        self.tv_odeme.bind(
+            "<Double-1>", lambda _e: self._belge_ac(self.tv_odeme, self._odeme_belge)
+        )
+        orta.add(odeme_f, weight=2)
 
-        self._rapor = None
+        dag_f = ttk.LabelFrame(orta, text="Dönemlere göre borç dağılımı", padding=4)
+        self.tv_dag = self._tablo_olustur(
+            dag_f,
+            (
+                ("kesim", "Kesim", 95, "center"),
+                ("bas", "Dönem başı", 95, "center"),
+                ("bitis", "Dönem sonu", 95, "center"),
+                ("son", "Son ödeme", 95, "center"),
+                ("adet", "Adet", 60, "center"),
+                ("kesim_tutari", "Kesim tutarı", 115, "e"),
+                ("odenen", "Ödenen", 110, "e"),
+                ("kalan", "Kalan", 110, "e"),
+                ("durum", "Durum", 150, "w"),
+            ),
+            height=6,
+        )
+        orta.add(dag_f, weight=3)
+
+        self._mod_ui_guncelle()
         self._yenile()
 
+    # ------------------------------------------------------------------ yardımcılar
+    @staticmethod
+    def _tablo_olustur(parent, kolonlar, *, height: int) -> ttk.Treeview:
+        cerceve = ttk.Frame(parent)
+        cerceve.pack(fill="both", expand=True)
+        tv = ttk.Treeview(
+            cerceve,
+            columns=tuple(k for k, _b, _w, _a in kolonlar),
+            show="headings",
+            height=height,
+        )
+        for k, b, w, a in kolonlar:
+            tv.heading(k, text=b)
+            tv.column(k, width=w, anchor=a, stretch=True)
+        yscroll = ttk.Scrollbar(cerceve, orient="vertical", command=tv.yview)
+        xscroll = ttk.Scrollbar(cerceve, orient="horizontal", command=tv.xview)
+        tv.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tv.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        cerceve.rowconfigure(0, weight=1)
+        cerceve.columnconfigure(0, weight=1)
+        return tv
+
+    def _kapsam_wrap(self, event=None):
+        try:
+            if event is not None and event.widget is not self:
+                return
+            self.lbl_kapsam.configure(wraplength=max(400, self.winfo_width() - 40))
+        except tk.TclError:
+            pass
+
+    def _mod(self) -> str:
+        return self.var_mod.get() or self.MOD_EKSTRE
+
+    def _mod_ui_guncelle(self) -> None:
+        tarih_modu = self._mod() == self.MOD_TARIH
+        tarih_durum = "normal" if tarih_modu else "disabled"
+        nav_durum = "disabled" if tarih_modu else "normal"
+        for w in (self.ent_bas, self.ent_bit, self.btn_uygula, self.btn_temizle):
+            w.configure(state=tarih_durum)
+        for w in (self.btn_onceki, self.btn_sonraki):
+            w.configure(state=nav_durum)
+
+    def _mod_degisti(self) -> None:
+        self._mod_ui_guncelle()
+        if self._mod() == self.MOD_EKSTRE:
+            self._yenile()
+        elif (self.ent_bas.get() or "").strip() and (self.ent_bit.get() or "").strip():
+            self._yenile()
+        else:
+            self._tablolari_temizle()
+            self.lbl_kapsam.configure(
+                text="İki tarih arası: başlangıç ve bitiş tarihini (GG.AA.YYYY) girip «Uygula» düğmesine basın."
+            )
+
+    def _uygula(self) -> None:
+        if self._mod() != self.MOD_TARIH:
+            self.var_mod.set(self.MOD_TARIH)
+            self._mod_ui_guncelle()
+        self._yenile()
+
+    def _temizle(self) -> None:
+        self.ent_bas.delete(0, "end")
+        self.ent_bit.delete(0, "end")
+        self.var_mod.set(self.MOD_EKSTRE)
+        self._mod_ui_guncelle()
+        self._yenile()
+
+    def _tarih_oku(self, entry: ttk.Entry, alan: str) -> date | None:
+        from datetime import datetime
+
+        ham = (entry.get() or "").strip()
+        if not ham:
+            return None
+        try:
+            return datetime.strptime(ham, "%d.%m.%Y").date()
+        except ValueError as exc:
+            raise ValueError(f"{alan} tarihi GG.AA.YYYY biçiminde olmalıdır.") from exc
+
+    def _tablolari_temizle(self) -> None:
+        for t in (self.tv, self.tv_odeme, self.tv_dag):
+            for i in t.get_children():
+                t.delete(i)
+        self._har_belge.clear()
+        self._odeme_belge.clear()
+
+    def _belge_ac(self, tablo: ttk.Treeview, harita: dict[str, str]) -> None:
+        sec = tablo.selection()
+        if not sec:
+            return
+        belge = (harita.get(sec[0]) or "").strip()
+        if not belge:
+            return
+        try:
+            from belge_onizleme_ui import finans_belge_ac
+
+            if not finans_belge_ac(self, "FİNANS", belge):
+                messagebox.showinfo("Belge", f"Belge açılamadı: {belge}", parent=self)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ dönem gezinme
     def _secili_donem(self) -> dict:
         if not self._donemler:
             return {}
@@ -862,81 +1051,154 @@ class KkDonemBorcuRaporDialog(tk.Toplevel):
         return self._donemler[self._idx]
 
     def _onceki(self):
+        if self._mod() != self.MOD_EKSTRE:
+            return
         self._idx = max(0, self._idx - 1)
         self._yenile()
 
     def _sonraki(self):
+        if self._mod() != self.MOD_EKSTRE:
+            return
         self._idx = min(len(self._donemler) - 1, self._idx + 1)
         self._yenile()
 
+    # ------------------------------------------------------------------ rapor
     def _yenile(self):
-        for t in (self.tv, self.tv_gel):
-            for i in t.get_children():
-                t.delete(i)
-        d = self._secili_donem()
+        self._tablolari_temizle()
+        mod = self._mod()
         try:
-            self._rapor = self._rapor_verisi(
-                self.kredi_karti_id,
-                ekstre_id=d.get("ekstre_id"),
-                kesim_tarihi=d.get("kesim_tarihi"),
-            )
+            if mod == self.MOD_TARIH:
+                bas = self._tarih_oku(self.ent_bas, "Başlangıç")
+                bit = self._tarih_oku(self.ent_bit, "Bitiş")
+                r = self._rapor_verisi(
+                    self.kredi_karti_id,
+                    mod=self.MOD_TARIH,
+                    baslangic=bas,
+                    bitis=bit,
+                    kesim_tarihi=None,
+                    ekstre_id=None,
+                )
+            else:
+                d = self._secili_donem()
+                r = self._rapor_verisi(
+                    self.kredi_karti_id,
+                    mod=self.MOD_EKSTRE,
+                    baslangic=None,
+                    bitis=None,
+                    kesim_tarihi=d.get("kesim_tarihi"),
+                    ekstre_id=d.get("ekstre_id"),
+                )
+        except ValueError as exc:
+            messagebox.showwarning("Rapor", str(exc), parent=self)
+            return
         except Exception as exc:
             messagebox.showerror("Rapor", str(exc), parent=self)
             return
-        r = self._rapor
-        kesin_metin = "Kesilmiş ekstre" if r.get("kesin") else "Henüz kesilmemiş / hesaplanan dönem"
+        self._rapor = r
+        self._baslik_ozet_doldur(r)
+        self._hareketleri_doldur(r)
+        self._odemeleri_doldur(r)
+        self._dagilimi_doldur(r)
+
+    def _baslik_ozet_doldur(self, r: dict) -> None:
+        if r.get("mod") == self.MOD_TARIH:
+            tur = "İki tarih arası hareket raporu"
+        else:
+            tur = "Kesilmiş ekstre" if r.get("kesin") else "Henüz kesilmemiş / hesaplanan dönem"
         self.lbl_baslik.configure(
-            text=(
-                f"{r.get('banka_adi')} / {r.get('kart_adi')} / {r.get('maskeli_no')}  ·  "
-                f"{kesin_metin}"
-            )
+            text=f"{r.get('banka_adi')} / {r.get('kart_adi')} / {r.get('maskeli_no')}  ·  {tur}"
         )
-        self.lbl_ozet.configure(
+        self.lbl_donem.configure(
             text=(
                 f"Dönem: {_tarih(r.get('donem_baslangic'))} – {_tarih(r.get('donem_bitis'))}  ·  "
-                f"Kesim: {_tarih(r.get('kesim_tarihi'))}  ·  Son ödeme: {_tarih(r.get('son_odeme_tarihi')) or 'tanımsız'}  ·  "
-                f"Rapor: {_tarih(r.get('rapor_tarihi'))}\n"
-                f"Kesim tutarı: {_para(r.get('kesim_tutari'))}  ·  Ödenen: {_para(r.get('donem_odenen'))}  ·  "
-                f"Kalan ödenecek: {_para(r.get('kalan_odenecek'))}  ·  "
-                f"Toplam kart borcu: {_para(r.get('toplam_kart_borcu'))}  ·  "
-                f"Kullanılan limit: {_para(r.get('kullanilan_limit'))}"
+                f"Kesim: {_tarih(r.get('kesim_tarihi')) or '—'}  ·  "
+                f"Son ödeme: {_tarih(r.get('son_odeme_tarihi')) or 'tanımsız'}  ·  "
+                f"Rapor: {_tarih(r.get('rapor_tarihi'))}"
             )
         )
-        self.lbl_ayrim.configure(
-            text=(
-                "Kesim tutarı ile kalan ödenecek ayrı izlenir. "
-                "Gelecek planlı taksitler bugünkü ödeme/gider toplamına eklenmez."
-            )
-        )
-        for h in r.get("hareketler") or []:
+        hb = r.get("hesap_bakiyesi")
+        degerler = {
+            "kesim_tutari": _para(r.get("kesim_tutari")),
+            "onceki_devir": _para(r.get("onceki_devir")),
+            "odenen": _para(r.get("donem_odenen")),
+            "kalan": _para(r.get("kalan_odenecek")),
+            "kullanilan_limit": _para(r.get("kullanilan_limit")),
+            "hesap_bakiyesi": _para(hb) if hb is not None else "—",
+            "gelecek_kalan": _para(r.get("gelecek_taksit_toplami")),
+        }
+        for k, v in degerler.items():
+            self._ozet_lbl[k].configure(text=v)
+        self.lbl_kapsam.configure(text=r.get("kapsam") or "")
+
+    def _hareketleri_doldur(self, r: dict) -> None:
+        for n, h in enumerate(r.get("hareketler") or []):
+            bakiye = h.get("bakiye") if h.get("bakiye") is not None else h.get("kalan")
+            iid = f"h{n}"
+            self._har_belge[iid] = h.get("belge") or ""
             self.tv.insert(
                 "",
                 "end",
+                iid=iid,
                 values=(
-                    _tarih(h.get("tarih") or h.get("plan_vadesi")),
+                    _tarih(h.get("kaynak_tarihi")),
+                    _tarih(h.get("yansima_tarihi") or h.get("tarih")),
+                    _tarih(h.get("vade_tarihi")),
                     h.get("belge") or "",
-                    (h.get("aciklama") or "")[:80],
+                    (h.get("aciklama") or "")[:120],
                     h.get("taksit_no") or "",
+                    _tarih(h.get("ekstre_kesim_tarihi")),
+                    _tarih(h.get("son_odeme_tarihi")),
                     _para(h.get("borc")),
                     _para(h.get("odeme")),
-                    _para(h.get("kalan")),
-                ),
-            )
-        for g in r.get("gelecek_donemler") or []:
-            self.tv_gel.insert(
-                "",
-                "end",
-                values=(
-                    _tarih(g.get("kesim_tarihi"))[:7] if g.get("kesim_tarihi") else "—",
-                    _tarih(g.get("donem_baslangic")),
-                    _tarih(g.get("kesim_tarihi")),
-                    _tarih(g.get("son_odeme_tarihi")) or "—",
-                    g.get("taksit_sayisi") or 0,
-                    _para(g.get("planli_borc")),
-                    g.get("etiket") or "",
+                    _para(bakiye),
                 ),
             )
 
+    def _odemeleri_doldur(self, r: dict) -> None:
+        satirlar = list(r.get("odemeler") or []) + list(r.get("onceki_odeme_mahsuplari") or [])
+        for n, o in enumerate(satirlar):
+            iid = f"o{n}"
+            self._odeme_belge[iid] = o.get("belge_no") or ""
+            self.tv_odeme.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    _tarih(o.get("tarih")),
+                    o.get("belge_no") or "",
+                    _para(o.get("tutar")),
+                    _para(o.get("mahsup")),
+                    _tarih(o.get("ekstre_kesim_tarihi")),
+                    KAYNAK_ETIKET.get(o.get("kaynak"), o.get("kaynak") or ""),
+                    " · ".join(x for x in (o.get("dekont_no"), o.get("aciklama")) if x),
+                ),
+            )
+
+    def _dagilimi_doldur(self, r: dict) -> None:
+        for g in r.get("donem_dagilimi") or r.get("gelecek_donemler") or []:
+            kesim_tutari = g.get("kesim_tutari")
+            if kesim_tutari is None:
+                kesim_tutari = g.get("planli_borc")
+            kalan = g.get("kalan")
+            if kalan is None:
+                kalan = g.get("planli_borc")
+            self.tv_dag.insert(
+                "",
+                "end",
+                values=(
+                    _tarih(g.get("kesim_tarihi")) or "—",
+                    _tarih(g.get("donem_baslangic")) or "—",
+                    _tarih(g.get("donem_bitis")) or "—",
+                    _tarih(g.get("son_odeme_tarihi")) or "—",
+                    g.get("taksit_sayisi") or 0,
+                    _para(kesim_tutari),
+                    _para(g.get("odenen")),
+                    _para(kalan),
+                    g.get("durum") or g.get("etiket") or "",
+                ),
+            )
+
+    # ------------------------------------------------------------------ çıktı
     def _pdf(self):
         if not self._rapor:
             return

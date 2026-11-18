@@ -412,6 +412,9 @@ class FinansService:
         # yön bilinmiyorsa 0 (nötr) — GİRİŞ/ÇIKIŞ etiketleri kullanılmalı.
         if tur == "KASA VİRMAN":
             return 0
+        # EVO/devir/gider ayrıntısı: kart hareketlerinde görünür, bakiyeyi artırmaz
+        if tur in ("KK TAKSİT", "KK TAKSİT DETAY"):
+            return 0
         if tur in {t.upper() for t in GIRIS_HAREKETLERI} or "TAHSİLAT" in tur or tur.endswith("GİRİŞ"):
             return 1
         if tur in {t.upper() for t in CIKIS_HAREKETLERI} or "ÖDEME" in tur or tur.endswith("ÇIKIŞ"):
@@ -6365,7 +6368,108 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                         "odeme_id": None,
                     }
                 )
+            try:
+                FinansService._kk_hareket_taksit_zenginlestir(session, sonuc)
+            except Exception:
+                # Zenginleştirme yalnız görüntü içindir; liste hiçbir koşulda düşmesin.
+                pass
             return sonuc
+
+    @staticmethod
+    def _kk_hareket_taksit_zenginlestir(session, sonuc: list[dict]) -> None:
+        """Hareket satırlarına taksit / ekstre kesim / son ödeme bilgisini ekler (salt okunur).
+
+        Eşleşme: ``KrediKartiOdemeTaksit.kk_hareket_belge_no == belge_no`` veya
+        belge ``{odeme.belge_no}-T{n}`` biçimindeyse (odeme, taksit_no) çifti.
+        """
+        if not sonuc:
+            return
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+
+        belge_set: set[str] = set()
+        taban_set: set[str] = set()
+        taban_re = re.compile(r"^(.+)-T(\d+)$")
+        for r in sonuc:
+            b = (r.get("belge_no") or "").strip()
+            if not b:
+                continue
+            belge_set.add(b)
+            m = taban_re.match(b)
+            if m:
+                taban_set.add(m.group(1))
+
+        by_belge: dict[str, KrediKartiOdemeTaksit] = {}
+        by_taban: dict[tuple[str, int], KrediKartiOdemeTaksit] = {}
+
+        def _parcalar(degerler: list[str], n: int = 400):
+            for i in range(0, len(degerler), n):
+                yield degerler[i:i + n]
+
+        def _topla(t: KrediKartiOdemeTaksit) -> None:
+            if getattr(t, "aktif", True) is False:
+                return
+            if (t.durum or "").upper() == "PLAN_IPTAL":
+                return
+            kb = (getattr(t, "kk_hareket_belge_no", None) or "").strip()
+            if kb:
+                by_belge[kb] = t
+            o = t.odeme
+            if o is not None and o.belge_no:
+                by_taban[(o.belge_no, int(t.taksit_no))] = t
+
+        opts = selectinload(KrediKartiOdemeTaksit.odeme).selectinload(KrediKartiOdeme.kredi_karti)
+        for parca in _parcalar(sorted(belge_set)):
+            for t in session.scalars(
+                select(KrediKartiOdemeTaksit)
+                .where(KrediKartiOdemeTaksit.kk_hareket_belge_no.in_(parca))
+                .options(opts)
+            ).all():
+                _topla(t)
+        for parca in _parcalar(sorted(taban_set)):
+            for t in session.scalars(
+                select(KrediKartiOdemeTaksit)
+                .join(KrediKartiOdeme, KrediKartiOdemeTaksit.odeme_id == KrediKartiOdeme.id)
+                .where(KrediKartiOdeme.belge_no.in_(parca))
+                .options(opts)
+            ).all():
+                _topla(t)
+
+        nat_re = re.compile(r"taksit\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+        for r in sonuc:
+            b = (r.get("belge_no") or "").strip()
+            t = by_belge.get(b) if b else None
+            if t is None and b:
+                m = taban_re.match(b)
+                if m:
+                    t = by_taban.get((m.group(1), int(m.group(2))))
+            if t is not None:
+                o = t.odeme
+                r["taksit_id"] = int(t.id)
+                r["odeme_id"] = int(o.id) if o is not None else None
+                r["taksit_no"] = int(t.taksit_no)
+                r["taksit_sayisi"] = int(o.taksit_sayisi) if o is not None and o.taksit_sayisi else None
+                kart_t = o.kredi_karti if o is not None else None
+                kesim = None
+                son = getattr(t, "banka_vade_tarihi", None)
+                if kart_t is not None:
+                    try:
+                        donem = KrediKartiEkstreService.taksit_kesimi(o, t, kart_t)
+                    except Exception:
+                        donem = None
+                    if donem:
+                        kesim = donem.get("kesim_tarihi")
+                        son = son or donem.get("son_odeme_tarihi")
+                if kesim is None:
+                    kesim = getattr(t, "ekstre_kesim_tarihi", None)
+                r["ekstre_kesim_tarihi"] = kesim
+                r["son_odeme_tarihi"] = son
+            # NAT: açıklamada "taksit N/M" varsa ve kayıt tek çekim görünüyorsa N/M tercih edilir
+            m2 = nat_re.search(r.get("aciklama") or "")
+            if m2:
+                n_p, m_p = int(m2.group(1)), int(m2.group(2))
+                if m_p > 1 and (r.get("taksit_sayisi") in (None, 0, 1)):
+                    r["taksit_no"] = n_p
+                    r["taksit_sayisi"] = m_p
 
     @staticmethod
     def kredi_karti_birlesik_hareketler(
@@ -6379,10 +6483,11 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         planlilari_dahil: bool = True,
         yalniz_planli: bool = False,
     ) -> list[dict]:
-        """Ledger hareketleri + planlı (BEKLIYOR) taksit satırları — mali evrak üretmez.
+        """Ledger hareketleri (taksitler kayıtta kalıcı ``-Tn`` satırları).
 
-        Aynı ekonomik taksit hem planda hem ``{belge}-Tn`` hareketinde varsa yalnız
-        kesin hareket sayılır (mükerrer borç yok). Planlı satırlar ``planli=True``.
+        ``planlilari_dahil`` / ``yalniz_planli`` geriye uyum için korunur: eksik
+        bağlantılı BEKLIYOR kalırsa geçici görüntü satırı eklenir; asıl yol
+        ``eksik_taksit_hareketlerini_tamamla`` ile kalıcı harekettir.
         """
         ledger = FinansService.kredi_karti_hesap_hareketleri(
             banka_karti_id,
@@ -6400,6 +6505,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             for h in ledger
             if (h.get("belge_no") or "").strip()
         }
+        # Eksik bağlantı güvenlik ağı (normalde boş; backfill sonrası kalıcı -Tn var)
         planlar: list[dict] = []
         for t in FinansService.kredi_karti_bekleyen_taksitler(
             banka_karti_id,
@@ -6433,17 +6539,17 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     "hareket_turu": "PLANLI TAKSİT",
                     "belge_no": kaynak_belge,
                     "tutar": Decimal(str(t.get("tutar") or 0)),
-                    "isaret": 1,
+                    "isaret": 0,
                     "aciklama": (
-                        f"Planlı taksit {t.get('taksit_no')}/{t.get('taksit_sayisi')}"
-                        f" — ekstreye dönemsel yansır; bugün ödeme/gider üretmez"
+                        f"Eksik bağlantı — taksit {t.get('taksit_no')}/{t.get('taksit_sayisi')}"
+                        f" (kalıcı hareket bekleniyor; borç artırmaz)"
                     ),
                     "kart": t.get("kart") or "",
                     "kredi_karti_id": t.get("kredi_karti_id"),
                     "esleme_bekliyor": False,
                     "planli": True,
                     "durum": "PLANLI",
-                    "durum_etiket": "Planlı",
+                    "durum_etiket": "Eksik bağlantı",
                     "taksit_no": t.get("taksit_no"),
                     "taksit_sayisi": t.get("taksit_sayisi"),
                     "ekstre_kesim_tarihi": t.get("ekstre_kesim_tarihi"),
@@ -7027,17 +7133,30 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     continue
                 o = t.odeme
                 son_odeme = getattr(t, "banka_vade_tarihi", None)
-                kesim = t.ekstre_kesim_tarihi
-                if (son_odeme is None or kesim is None) and o and o.kredi_karti:
+                kesim = None
+                # Hesap kesim = kart takviminden; vade/yansıma kesim sütununa yazılmaz
+                if o and o.kredi_karti:
                     try:
                         from database.kredi_karti_ekstre_service import KrediKartiEkstreService
 
                         donem = KrediKartiEkstreService.taksit_kesimi(o, t, o.kredi_karti)
                         if donem:
-                            kesim = kesim or donem.get("kesim_tarihi")
+                            kesim = donem.get("kesim_tarihi")
                             son_odeme = son_odeme or donem.get("son_odeme_tarihi")
                     except Exception:
-                        pass
+                        kayitli = getattr(t, "ekstre_kesim_tarihi", None)
+                        if kayitli is not None:
+                            try:
+                                from database.kredi_karti_ekstre_service import (
+                                    KrediKartiEkstreService,
+                                )
+
+                                if KrediKartiEkstreService.kesim_gecerli_mi(
+                                    kayitli, o.kredi_karti
+                                ):
+                                    kesim = kayitli
+                            except Exception:
+                                pass
                 from database.kk_taksit_islem_service import taksit_durum_etiket
 
                 sonuc.append({

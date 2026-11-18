@@ -5230,33 +5230,6 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         self.kart_tablo.bind("<<TreeviewSelect>>", self._kart_secildi)
         self.kart_tablo.bind("<Double-1>", lambda _e: self._kart_duzenle_secili())
 
-        taksit_f = ttk.LabelFrame(self, text="Bekleyen taksitler", padding=8)
-        taksit_f.pack(fill="x", padx=10, pady=4)
-        self.taksit_tablo = ttk.Treeview(
-            taksit_f,
-            columns=("belge", "kart", "no", "yansima", "kesim", "son_odeme", "tutar"),
-            show="headings",
-            height=4,
-        )
-        for k, b, w in (
-            ("belge", "Belge", 120),
-            ("kart", "Kart", 130),
-            ("no", "Taksit", 60),
-            ("yansima", "Taksit vadesi", 100),
-            ("kesim", "Hesap kesim", 95),
-            ("son_odeme", "Ekstre son ödeme", 110),
-            ("tutar", "Tutar", 90),
-        ):
-            self.taksit_tablo.heading(k, text=b)
-            self.taksit_tablo.column(k, width=w, anchor="w")
-        self.taksit_tablo.pack(fill="x")
-        self.taksit_tablo.bind("<<TreeviewSelect>>", self._taksit_secildi)
-        self.taksit_tablo.bind("<Double-1>", self._taksit_belge_ac)
-        self.taksit_tablo.bind("<Return>", self._taksit_belge_ac)
-        self._taksit_odeme_map: dict[str, int] = {}
-        self._taksit_belge: dict[str, str] = {}
-        self._secili_odeme_id: int | None = None
-
         filtre = ttk.Frame(self, padding=(10, 0))
         filtre.pack(fill="x")
         ttk.Label(filtre, text="Hareket:").pack(side="left")
@@ -5277,17 +5250,9 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         ttk.Button(
             filtre, text="Kart eşleştirmesi gereken hareketler", command=self._eslesmesiz_sec
         ).pack(side="left", padx=10)
-        self._yalniz_planli = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            filtre,
-            text="Yalnız planlı",
-            variable=self._yalniz_planli,
-            command=self._detay_yenile,
-        ).pack(side="left", padx=8)
-
         self.orta = ttk.LabelFrame(
             self,
-            text="KK hareketleri (kesin + planlı taksitler) — çift tık belge",
+            text="KK hareketleri (taksitler kalıcı hareket) — çift tık belge",
             padding=8,
         )
         self.orta.pack(fill="both", expand=True, padx=10, pady=6)
@@ -5297,7 +5262,7 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
             cerceve,
             columns=(
                 "tarih", "belge", "hesap", "kart", "tur", "taksit", "kesim",
-                "tutar", "yon", "durum", "aciklama",
+                "son_odeme", "tutar", "yon", "durum", "aciklama",
             ),
             show="headings",
         )
@@ -5309,6 +5274,7 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
             ("tur", "Hareket", 110),
             ("taksit", "Taksit", 55),
             ("kesim", "Ekstre kesim", 90),
+            ("son_odeme", "Son ödeme", 90),
             ("tutar", "Tutar", 85),
             ("yon", "Yön", 50),
             ("durum", "Durum", 70),
@@ -5599,14 +5565,9 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         """Seçilen karta göre bakiye özeti, taksitler ve hareketleri birlikte yenile."""
         self._yenile_no += 1
         no = self._yenile_no
-        for t in (self.taksit_tablo, self.tablo):
-            for item in t.get_children():
-                t.delete(item)
+        for item in self.tablo.get_children():
+            self.tablo.delete(item)
         self._hareket_belge.clear()
-        self._taksit_odeme_map.clear()
-        self._taksit_belge = getattr(self, "_taksit_belge", {})
-        self._taksit_belge.clear()
-        self._secili_odeme_id = None
 
         # Yenileme mali evrak üretmez; planlı taksitler birleşik listede görünür.
 
@@ -5686,32 +5647,6 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         if no != self._yenile_no:
             return
 
-        taksit_kk = None if secim in ("TUM", "ESLEMESIZ") else kk_filtre
-        if secim != "ESLEMESIZ":
-            for t in FinansService.kredi_karti_bekleyen_taksitler(
-                self.kart_id, kredi_karti_id=taksit_kk
-            ):
-                if no != self._yenile_no:
-                    return
-                iid = f"t{t.get('taksit_id') or len(self._taksit_odeme_map)}"
-                if t.get("odeme_id"):
-                    self._taksit_odeme_map[iid] = int(t["odeme_id"])
-                self._taksit_belge[iid] = (t.get("belge_no") or "").strip()
-                self.taksit_tablo.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    values=(
-                        t["belge_no"],
-                        t["kart"],
-                        f"{t['taksit_no']}/{t['taksit_sayisi']}",
-                        _tarih(t.get("yansima_tarihi") or t["vade_tarihi"]),
-                        _tarih(t.get("ekstre_kesim_tarihi")),
-                        _tarih(t.get("son_odeme_tarihi") or t.get("banka_vade_tarihi")),
-                        _para(t["tutar"]),
-                    ),
-                )
-
         try:
             bas = self._tarih_oku(self.har_bas)
             bit = self._tarih_oku(self.har_bit)
@@ -5727,7 +5662,6 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
             kredi_karti_id=kk_filtre,
             yalniz_eslesmesiz=yalniz_eslesmesiz,
             planlilari_dahil=not yalniz_eslesmesiz,
-            yalniz_planli=bool(self._yalniz_planli.get()),
         )
         if no != self._yenile_no:
             return
@@ -5743,7 +5677,16 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
         for har in hareketler:
             if no != self._yenile_no:
                 return
-            yon = "Borç" if har["isaret"] > 0 else ("Alacak" if har["isaret"] < 0 else "—")
+            if har["isaret"] > 0:
+                yon = "Borç"
+            elif har["isaret"] < 0:
+                yon = "Alacak"
+            else:
+                yon = (
+                    "Ayrıntı"
+                    if "TAKSİT" in (har.get("hareket_turu") or "").upper()
+                    else "—"
+                )
             planli = bool(har.get("planli"))
             iid = har.get("virtual_id") if planli else f"h{har['id']}"
             self._hareket_belge[iid] = har.get("belge_no") or ""
@@ -5763,7 +5706,8 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
                     har.get("kart") or "—",
                     har.get("hareket_turu") or "—",
                     tk_metin or "—",
-                    _tarih(har.get("ekstre_kesim_tarihi")) if planli else "—",
+                    _tarih(har.get("ekstre_kesim_tarihi")) or "—",
+                    _tarih(har.get("son_odeme_tarihi")) or "—",
                     _para(har["tutar"]),
                     yon,
                     har.get("durum_etiket")
@@ -6090,31 +6034,6 @@ class KrediKartiIslemleriDialog(tk.Toplevel):
             kart_adi=(kart.kart_adi if kart else ""),
         )
         self.wait_window(dlg)
-        self.listeyi_yenile()
-
-    def _taksit_secildi(self, _e=None):
-        sec = self.taksit_tablo.selection()
-        if not sec:
-            self._secili_odeme_id = None
-            return
-        self._secili_odeme_id = self._taksit_odeme_map.get(sec[0])
-
-    def _taksit_belge_ac(self, _e=None):
-        """Bekleyen taksit → kaynak evrak (NAV nakit avans veya KK ödeme belgesi)."""
-        sec = self.taksit_tablo.selection()
-        if not sec:
-            return
-        belge = (getattr(self, "_taksit_belge", {}) or {}).get(sec[0]) or ""
-        if not belge:
-            vals = self.taksit_tablo.item(sec[0], "values") or ()
-            belge = (vals[0] if vals else "") or ""
-        if not belge:
-            messagebox.showinfo("Belge", "Bu taksit satırında kaynak belge yok.", parent=self)
-            return
-        from belge_onizleme_ui import finans_belge_ac
-
-        if not finans_belge_ac(self, "FİNANS", belge):
-            messagebox.showinfo("Belge", f"Belge açılamadı: {belge}", parent=self)
         self.listeyi_yenile()
 
     def _secili_kk_id(self):
