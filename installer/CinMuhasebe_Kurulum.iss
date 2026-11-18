@@ -422,6 +422,60 @@ begin
   end;
 end;
 
+function KisayolHedefiYanlisMi(Hedef: String; AppDir: String): Boolean;
+var
+  U: String;
+begin
+  Result := False;
+  U := UpperCase(Hedef);
+  if U = '' then
+    exit;
+  if Pos('CINMUHASEBE.EXE', U) = 0 then
+    exit;
+  { Zaten dogru kalici kurulum }
+  if CompareText(RemoveBackslashUnlessRoot(ExtractFilePath(Hedef)), AppDir) = 0 then
+    exit;
+  { USB / derleme / test / eski Programs kopyalari → kaliciya cek }
+  if (Pos('\CINMUHASEBEDERLEME\', U) > 0) or
+     (Pos('\_GUNCELLE_TEST\', U) > 0) or
+     (Pos('\SURUMLER\', U) > 0) or
+     (Pos('\CINMUHASEBEKURULUM\', U) > 0) or
+     (Pos('\DNM_D2\', U) > 0) or
+     (Pos('\PROGRAMS\CIN MUHASEBE', U) > 0) or
+     (Pos('\CINMUHASEBE\', U) > 0) then
+    Result := True;
+end;
+
+procedure MasaustuKlasorKisayollariniTara(Klasor, Exe, Calisma, AppDir: String);
+var
+  Bul: TFindRec;
+  Yol, Hedef: String;
+  Shell, Lnk: Variant;
+begin
+  if (Klasor = '') or not DirExists(Klasor) then
+    exit;
+  if FindFirst(AddBackslash(Klasor) + '*.lnk', Bul) then
+  try
+    repeat
+      if (Bul.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+      begin
+        Yol := AddBackslash(Klasor) + Bul.Name;
+        try
+          Shell := CreateOleObject('WScript.Shell');
+          Lnk := Shell.CreateShortcut(Yol);
+          Hedef := String(Lnk.TargetPath);
+        except
+          Hedef := '';
+        end;
+        if KisayolHedefiYanlisMi(Hedef, AppDir) then
+          KisayolYaz(Yol, Exe, Calisma);
+      end;
+    until not FindNext(Bul);
+  finally
+    FindClose(Bul);
+  end;
+end;
+
 procedure MasaustuKisayollariniGuncelle();
 var
   Exe, Calisma, Ad, Yol, AppDir: String;
@@ -455,6 +509,22 @@ begin
   Yol := ExpandConstant('{autodesktop}\CİN MUHASEBE — DNM D2 — ANA.lnk');
   if FileExists(Yol) then
     KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{userdesktop}\CİN MUHASEBE — DNM D2 — TERMINAL.lnk');
+  if FileExists(Yol) then
+    KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{userdesktop}\CİN MUHASEBE — DNM D2 — ANA.lnk');
+  if FileExists(Yol) then
+    KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{commondesktop}\CİN MUHASEBE — DNM D2 — TERMINAL.lnk');
+  if FileExists(Yol) then
+    KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{commondesktop}\CİN MUHASEBE — DNM D2 — ANA.lnk');
+  if FileExists(Yol) then
+    KisayolYaz(Yol, Exe, Calisma);
+  { Uc masaustunde CinMuhasebe.exe hedefleyen eski/USB/derleme kisayollarini tara }
+  MasaustuKlasorKisayollariniTara(ExpandConstant('{autodesktop}'), Exe, Calisma, AppDir);
+  MasaustuKlasorKisayollariniTara(ExpandConstant('{userdesktop}'), Exe, Calisma, AppDir);
+  MasaustuKlasorKisayollariniTara(ExpandConstant('{commondesktop}'), Exe, Calisma, AppDir);
 end;
 
 { /DIR= komut satirinda verildiyse sihirbaz bunu ezmesin (klon/test veya ozel hedef). }
