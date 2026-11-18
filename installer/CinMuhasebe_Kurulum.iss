@@ -166,7 +166,48 @@ end;
 function MasaustuKisayoluYazilsin(): Boolean;
 begin
   Result := WizardIsTaskSelected('desktopicon') or
-    FileExists(ExpandConstant('{autodesktop}\{#AppName}.lnk'));
+    FileExists(ExpandConstant('{autodesktop}\{#AppName}.lnk')) or
+    FileExists(ExpandConstant('{userdesktop}\{#AppName}.lnk'));
+end;
+
+procedure KisayolYaz(Yol, Exe, Calisma: String);
+var
+  Shell, Lnk: Variant;
+begin
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Lnk := Shell.CreateShortcut(Yol);
+    Lnk.TargetPath := Exe;
+    Lnk.WorkingDirectory := Calisma;
+    Lnk.Arguments := '';
+    Lnk.IconLocation := Exe + ',0';
+    Lnk.Description := '{#AppName} {#AppVersion}';
+    Lnk.Save;
+    Log('Kisayol guncellendi: ' + Yol);
+  except
+    Log('Kisayol yazilamadi: ' + Yol + ' — ' + GetExceptionMessage);
+  end;
+end;
+
+{ OneDrive / klasik / ortak masaustunde mevcut "Cin Muhasebe.lnk" dosyalarini
+  yeni kurulum EXE yoluna baglar (eski derleme veya USB hedefi kalmasin). }
+procedure MasaustuKisayollariniGuncelle();
+var
+  Exe, Calisma, Ad, Yol: String;
+begin
+  Exe := ExpandConstant('{app}\{#AppExe}');
+  Calisma := ExpandConstant('{app}');
+  Ad := '{#AppName}.lnk';
+  Yol := ExpandConstant('{autodesktop}\') + Ad;
+  if WizardIsTaskSelected('desktopicon') or FileExists(Yol) then
+    KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{userdesktop}\') + Ad;
+  if (Yol <> ExpandConstant('{autodesktop}\') + Ad) and
+     (WizardIsTaskSelected('desktopicon') or FileExists(Yol)) then
+    KisayolYaz(Yol, Exe, Calisma);
+  Yol := ExpandConstant('{commondesktop}\') + Ad;
+  if FileExists(Yol) or WizardIsTaskSelected('desktopicon') then
+    KisayolYaz(Yol, Exe, Calisma);
 end;
 
 procedure InitializeWizard();
@@ -319,6 +360,7 @@ begin
   begin
     KonumDosyasiYaz;
     VeriPaketiYukle;
+    MasaustuKisayollariniGuncelle;
   end;
 end;
 
