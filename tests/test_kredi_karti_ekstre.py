@@ -228,10 +228,49 @@ class KesimGunOnDonemSinirTest(unittest.TestCase):
     def test_kayitli_erken_kesim_takvime_doner(self):
         """Takvimden önceki geçerli kayıtlı kesim yok sayılır (sınır taşması önlenir)."""
         odeme = SimpleNamespace(tarih=date(2026, 11, 11))
-        t = SimpleNamespace(taksit_no=1, ekstre_kesim_tarihi=date(2026, 11, 10))
+        t = SimpleNamespace(
+            taksit_no=1, ekstre_kesim_tarihi=date(2026, 11, 10), vade_tarihi=None
+        )
         d = KrediKartiEkstreService.taksit_kesimi(odeme, t, self.kart)
         self.assertEqual(d["kesim_tarihi"], date(2026, 12, 10))
         self.assertEqual(d["donem_baslangic"], date(2026, 11, 11))
+
+
+class Kesim16YansimaTest(unittest.TestCase):
+    """Kesim günü 16 — kullanıcı örneği + yansıma tarihi dönemi belirler."""
+
+    def setUp(self):
+        self.kart = {"hesap_kesim_gunu": 16, "son_odeme_gunu": 26}
+
+    def test_kasim_aralik_ocak_donemleri(self):
+        kasim = KrediKartiEkstreService.donem_bilgisi(date(2026, 10, 20), self.kart)
+        self.assertEqual(kasim["donem_baslangic"], date(2026, 10, 17))
+        self.assertEqual(kasim["kesim_tarihi"], date(2026, 11, 16))
+        aralik = KrediKartiEkstreService.donem_bilgisi(date(2026, 11, 17), self.kart)
+        self.assertEqual(aralik["donem_baslangic"], date(2026, 11, 17))
+        self.assertEqual(aralik["kesim_tarihi"], date(2026, 12, 16))
+        ocak = KrediKartiEkstreService.donem_bilgisi(date(2026, 12, 17), self.kart)
+        self.assertEqual(ocak["donem_baslangic"], date(2026, 12, 17))
+        self.assertEqual(ocak["kesim_tarihi"], date(2027, 1, 16))
+
+    def test_kesim_gunu_dahil_ertesi_sonraki(self):
+        a = KrediKartiEkstreService.donem_bilgisi(date(2026, 11, 16), self.kart)
+        b = KrediKartiEkstreService.donem_bilgisi(date(2026, 11, 17), self.kart)
+        self.assertEqual(a["kesim_tarihi"], date(2026, 11, 16))
+        self.assertEqual(b["kesim_tarihi"], date(2026, 12, 16))
+
+    def test_taksit_kesimi_yansima_tarihine_gore(self):
+        odeme = SimpleNamespace(tarih=date(2026, 5, 1))  # eski çekim
+        t = SimpleNamespace(
+            taksit_no=6,
+            vade_tarihi=date(2026, 10, 19),
+            ekstre_kesim_tarihi=None,
+        )
+        d = KrediKartiEkstreService.taksit_kesimi(odeme, t, self.kart)
+        self.assertEqual(d["kesim_tarihi"], date(2026, 11, 16))
+        self.assertEqual(d["donem_baslangic"], date(2026, 10, 17))
+        # Son ödeme dönemi kaydırmaz
+        self.assertEqual(d["son_odeme_tarihi"], date(2026, 11, 26))
 
 
 if __name__ == "__main__":

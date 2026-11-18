@@ -463,18 +463,8 @@ def main():
             GunlukFaizService.otomatik_acilis_calistir(sessiz=True)
         except Exception:
             pass
-        try:
-            from database.nakit_avans_service import NakitAvansService
-
-            NakitAvansService.vadesi_gelenleri_isle()
-        except Exception:
-            pass
-        try:
-            from database.kk_taksit_islem_service import vadesi_gelenleri_isle as kk_taksit_vadesi_isle
-
-            kk_taksit_vadesi_isle()
-        except Exception:
-            pass
+        # Açılışta vadesi gelen taksit işleme yapılmaz (mali evrak çoğalmaz).
+        # Planlı taksitler KK hareket/ekstre görünümünde salt okunur birleşir.
 
     threading.Thread(target=_arka_plan_bakim, daemon=True).start()
 

@@ -289,12 +289,12 @@ class KrediKartiEkstreService:
     @staticmethod
     def taksit_kesimi(odeme: KrediKartiOdeme, taksit: KrediKartiOdemeTaksit,
                       kart: KrediKartiTanimi | dict) -> dict[str, date] | None:
-        """Taksitin ekstre dönemi — kart kesim takvimi esas; her hareket tek döneme girer.
+        """Taksitin ekstre dönemi — karta yansıma/işlenme tarihi esas.
 
-        Kesim günü tanımlıysa dönem ``çekim tarihi + taksit no`` ile hesaplanır
-        (önceki kesim+1 .. kesim dahil). Kayıtlı ``ekstre_kesim_tarihi`` yalnızca
-        bankanın takvime göre ertelediği (daha sonraki geçerli kesim) durumda kullanılır;
-        vade sızıntısı veya takvimden önceki kesim yok sayılır.
+        Dönemi ``taksit.vade_tarihi`` (yansıma) belirler; yoksa çekim+(n-1) ay
+        takvimine düşülür. Son ödeme tarihi dönemi kaydırmaz.
+        Kayıtlı ``ekstre_kesim_tarihi`` yalnızca bankanın takvime göre ertelediği
+        (daha sonraki geçerli kesim) durumda kullanılır.
 
         Kesim günü yoksa kayıtlı kesim köprüdür; o da yoksa None (dönem belirsiz; borca girer).
         """
@@ -303,9 +303,13 @@ class KrediKartiEkstreService:
             if kayitli is not None:
                 return KrediKartiEkstreService.kesim_donemi(kayitli, kart)
             return None
-        calendar = KrediKartiEkstreService.taksit_donem_bilgisi(
-            odeme.tarih, taksit.taksit_no, kart
-        )
+        yansima = getattr(taksit, "vade_tarihi", None)
+        if isinstance(yansima, date):
+            calendar = KrediKartiEkstreService.donem_bilgisi(yansima, kart)
+        else:
+            calendar = KrediKartiEkstreService.taksit_donem_bilgisi(
+                odeme.tarih, taksit.taksit_no, kart
+            )
         # Banka ertelemesi: kayıtlı kesim kart gününe uyuyor ve takvimden sonra
         if (
             kayitli is not None
@@ -877,6 +881,74 @@ class KrediKartiEkstreService:
             session=session,
             limit_tarih=tarih,
         )
+
+    @staticmethod
+    def gelecek_donem_ozeti(
+        kredi_karti_id: int,
+        *,
+        bugun: date | None = None,
+        max_donem: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Kalan planlı taksitleri ekstre dönemlerine dağıtır (salt okunur; evrak üretmez).
+
+        ``max_donem`` 0 → son taksite kadar; >0 → en fazla N gelecek dönem (varsayılan UI: 12).
+        Henüz oluşmamış faiz/masraf üretilmez. Dönem borcu / limit ayrı kavramlardır.
+        """
+        KrediKartiEkstreService.schema_hazirla()
+        bugun = bugun or date.today()
+        with get_session() as session:
+            kart = session.get(KrediKartiTanimi, int(kredi_karti_id))
+            if kart is None:
+                raise ValueError("Kredi kartı bulunamadı.")
+            veri = KrediKartiEkstreService.donem_borclari(
+                session, kart_ids=[int(kredi_karti_id)]
+            ).get(int(kredi_karti_id))
+            if not veri:
+                return []
+            satirlar: list[dict[str, Any]] = []
+            for kesim, g in sorted(veri["donemler"].items(), key=lambda x: x[0]):
+                plan_satir = [
+                    s
+                    for s in (g.get("satirlar") or [])
+                    if (s.get("taksit_durum") or "").upper()
+                    in ("BEKLIYOR", "PLANLANDI", "KARTA_ISLENDI")
+                ]
+                # Yalnız henüz ödenmemiş / kalan plan
+                kalan_satir = []
+                for s in plan_satir:
+                    if (s.get("taksit_durum") or "").upper() == "ODENDI":
+                        continue
+                    kalan_satir.append(s)
+                if not kalan_satir and kesim < bugun:
+                    continue
+                # Gelecek veya henüz kesilmemiş dönemler (+ son kesilen açık dönem)
+                toplam = sum((_d(s.get("tutar")) for s in kalan_satir), SIFIR)
+                if toplam == 0 and kesim < bugun:
+                    continue
+                kesin = kesim <= bugun
+                satirlar.append(
+                    {
+                        "kesim_tarihi": kesim,
+                        "donem_baslangic": g.get("donem_baslangic"),
+                        "donem_bitis": g.get("donem_bitis") or kesim,
+                        "son_odeme_tarihi": g.get("son_odeme_tarihi"),
+                        "taksit_sayisi": len(kalan_satir),
+                        "planli_borc": toplam,
+                        "kesin": kesin,
+                        "etiket": (
+                            "Kesilmiş dönem"
+                            if kesin
+                            else "Gelecek / kesilmemiş dönem"
+                        ),
+                    }
+                )
+            if max_donem and max_donem > 0:
+                # İlk ekranda: bugünden önceki en son + sonraki (max_donem-1)
+                gecmis = [s for s in satirlar if s["kesim_tarihi"] <= bugun]
+                gelecek = [s for s in satirlar if s["kesim_tarihi"] > bugun]
+                son_kesilen = gecmis[-1:] if gecmis else []
+                satirlar = son_kesilen + gelecek[: max(0, int(max_donem) - len(son_kesilen))]
+            return satirlar
 
     @staticmethod
     def limit_kontrol(session, kart: KrediKartiTanimi, ek_tutar) -> None:

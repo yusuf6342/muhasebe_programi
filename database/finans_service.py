@@ -6354,9 +6354,120 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                         "kart": kk.kart_adi if kk else "",
                         "kredi_karti_id": int(kk.id) if kk else None,
                         "esleme_bekliyor": kk is None,
+                        "planli": False,
+                        "durum": "KESIN",
+                        "durum_etiket": "Kesin",
+                        "taksit_no": None,
+                        "taksit_sayisi": None,
+                        "ekstre_kesim_tarihi": None,
+                        "son_odeme_tarihi": None,
+                        "taksit_id": None,
+                        "odeme_id": None,
                     }
                 )
             return sonuc
+
+    @staticmethod
+    def kredi_karti_birlesik_hareketler(
+        banka_karti_id,
+        *,
+        baslangic: date | None = None,
+        bitis: date | None = None,
+        limit: int = 800,
+        kredi_karti_id: int | None = None,
+        yalniz_eslesmesiz: bool = False,
+        planlilari_dahil: bool = True,
+        yalniz_planli: bool = False,
+    ) -> list[dict]:
+        """Ledger hareketleri + planlı (BEKLIYOR) taksit satırları — mali evrak üretmez.
+
+        Aynı ekonomik taksit hem planda hem ``{belge}-Tn`` hareketinde varsa yalnız
+        kesin hareket sayılır (mükerrer borç yok). Planlı satırlar ``planli=True``.
+        """
+        ledger = FinansService.kredi_karti_hesap_hareketleri(
+            banka_karti_id,
+            baslangic=baslangic,
+            bitis=bitis,
+            limit=limit,
+            kredi_karti_id=kredi_karti_id,
+            yalniz_eslesmesiz=yalniz_eslesmesiz,
+        )
+        if yalniz_eslesmesiz or not planlilari_dahil:
+            return ledger if not yalniz_planli else []
+
+        belge_set = {
+            (h.get("belge_no") or "").strip().upper()
+            for h in ledger
+            if (h.get("belge_no") or "").strip()
+        }
+        planlar: list[dict] = []
+        for t in FinansService.kredi_karti_bekleyen_taksitler(
+            banka_karti_id,
+            limit=max(limit, 500),
+            kredi_karti_id=kredi_karti_id,
+        ):
+            yansima = t.get("yansima_tarihi") or t.get("vade_tarihi")
+            if baslangic and yansima and yansima < baslangic:
+                continue
+            if bitis and yansima and yansima > bitis:
+                continue
+            kaynak_belge = (t.get("belge_no") or "").strip()
+            tn = int(t.get("taksit_no") or 0)
+            adaylar = set()
+            if kaynak_belge:
+                adaylar.add(kaynak_belge.upper())
+                if tn:
+                    adaylar.add(f"{kaynak_belge}-T{tn}".upper())
+            kk_har = (t.get("kk_hareket_belge_no") or "").strip()
+            if kk_har:
+                adaylar.add(kk_har.upper())
+            if adaylar & belge_set:
+                continue  # zaten kesin hareket var
+            planlar.append(
+                {
+                    "id": None,
+                    "virtual_id": f"p{t.get('taksit_id')}",
+                    "hesap_id": None,
+                    "hesap_adi": "",
+                    "tarih": yansima,
+                    "hareket_turu": "PLANLI TAKSİT",
+                    "belge_no": kaynak_belge,
+                    "tutar": Decimal(str(t.get("tutar") or 0)),
+                    "isaret": 1,
+                    "aciklama": (
+                        f"Planlı taksit {t.get('taksit_no')}/{t.get('taksit_sayisi')}"
+                        f" — ekstreye dönemsel yansır; bugün ödeme/gider üretmez"
+                    ),
+                    "kart": t.get("kart") or "",
+                    "kredi_karti_id": t.get("kredi_karti_id"),
+                    "esleme_bekliyor": False,
+                    "planli": True,
+                    "durum": "PLANLI",
+                    "durum_etiket": "Planlı",
+                    "taksit_no": t.get("taksit_no"),
+                    "taksit_sayisi": t.get("taksit_sayisi"),
+                    "ekstre_kesim_tarihi": t.get("ekstre_kesim_tarihi"),
+                    "son_odeme_tarihi": t.get("son_odeme_tarihi")
+                    or t.get("banka_vade_tarihi"),
+                    "taksit_id": t.get("taksit_id"),
+                    "odeme_id": t.get("odeme_id"),
+                    "kaynak": t.get("kaynak"),
+                }
+            )
+
+        if yalniz_planli:
+            birlesik = planlar
+        else:
+            birlesik = list(ledger) + planlar
+        birlesik.sort(
+            key=lambda r: (
+                r.get("tarih") or date.min,
+                0 if r.get("planli") else 1,
+                int(r.get("id") or r.get("taksit_id") or 0),
+            ),
+            reverse=True,
+        )
+        return birlesik[: int(limit)]
 
     @staticmethod
     def kredi_karti_isletme_bakiyesi(kredi_karti_id) -> dict:
@@ -6945,6 +7056,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     "banka_vade_tarihi": getattr(t, "banka_vade_tarihi", None),
                     "ekstre_kesim_tarihi": kesim,
                     "son_odeme_tarihi": son_odeme,
+                    "kk_hareket_belge_no": getattr(t, "kk_hareket_belge_no", None) or "",
                     "odenen_tutar": Decimal(str(getattr(t, "odenen_tutar", None) or 0)),
                     "tutar": Decimal(str(t.tutar)),
                     "durum": t.durum,

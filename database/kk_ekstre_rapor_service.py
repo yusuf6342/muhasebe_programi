@@ -140,10 +140,22 @@ def rapor_verisi(
                 "kalan": _d(t.get("tutar")) - _d(t.get("odenen_tutar") or 0),
                 "durum": t.get("durum") or "BEKLIYOR",
                 "belge_no": t.get("belge_no"),
+                "ekstre_kesim_tarihi": t.get("ekstre_kesim_tarihi"),
             })
     except Exception:
         gelecek_taksitler = []
 
+    gelecek_donemler = []
+    try:
+        gelecek_donemler = KrediKartiEkstreService.gelecek_donem_ozeti(
+            int(kredi_karti_id), bugun=rapor_tarihi, max_donem=0
+        )
+    except Exception:
+        gelecek_donemler = []
+
+    kesim_tutari = _d(detay.get("tl_tutar"))
+    donem_odenen = _d(detay.get("odenen"))
+    donem_kalan = _d(detay.get("kalan"))
     pb = (ozet.get("para_birimi") or getattr(kart, "para_birimi", None) or "TRY").upper()
     donem_etiket = (
         kesim_tarihi.strftime("%Y%m%d")
@@ -166,10 +178,14 @@ def rapor_verisi(
         "donem_baslangic": detay.get("donem_baslangic"),
         "donem_bitis": detay.get("donem_bitis"),
         "son_odeme_tarihi": detay.get("son_odeme_tarihi"),
-        "donem_borc": _d(detay.get("tl_tutar")),
-        "donem_odenen": _d(detay.get("odenen")),
-        "donem_kalan": _d(detay.get("kalan")),
+        "donem_borc": kesim_tutari,
+        "kesim_tutari": kesim_tutari,
+        "donem_odenen": donem_odenen,
+        "donem_kalan": donem_kalan,
+        "kalan_odenecek": donem_kalan,
         "toplam_kart_borcu": _d(ozet.get("toplam_borc")),
+        "hesap_bakiyesi": ozet.get("hesap_borc"),
+        "kullanilan_limit": _d(ozet.get("kullanilan")),
         "gelecek_taksit_toplami": _d(ozet.get("kesilmemis")),
         "asgari_tutar": _d(asgari) if asgari is not None else None,
         "asgari_metin": asgari_metin,
@@ -181,6 +197,7 @@ def rapor_verisi(
         "hareketler": hareketler,
         "odemeler": detay.get("odemeler") or [],
         "gelecek_taksitler": gelecek_taksitler,
+        "gelecek_donemler": gelecek_donemler,
         "dosya_kok": _dosya_ad_parca(kart, donem_etiket),
         # Hassas alan yok
         "cvv": None,
@@ -252,6 +269,19 @@ def excel_kaydet(rapor: dict, yol: str | Path) -> Path:
             t.get("durum"), t.get("belge_no"),
         ])
     wt.freeze_panes = "A2"
+
+    wd = wb.create_sheet("Gelecek Dönemler")
+    wd.append([
+        "Kesim", "Başlangıç", "Bitiş", "Son ödeme", "Taksit sayısı",
+        "Planlı borç", "Tür",
+    ])
+    for g in rapor.get("gelecek_donemler") or []:
+        wd.append([
+            g.get("kesim_tarihi"), g.get("donem_baslangic"), g.get("donem_bitis"),
+            g.get("son_odeme_tarihi"), g.get("taksit_sayisi"),
+            float(g.get("planli_borc") or 0), g.get("etiket"),
+        ])
+    wd.freeze_panes = "A2"
 
     wf = wb.create_sheet("Faiz Detayı")
     wf.append(["Bilgi", "Değer"])

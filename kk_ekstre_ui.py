@@ -760,3 +760,215 @@ class KkEkstreOdemeDialog(tk.Toplevel):
             self.destroy()
         except Exception as exc:
             messagebox.showerror("Ödeme", str(exc), parent=self)
+
+class KkDonemBorcuRaporDialog(tk.Toplevel):
+    """Ekstre / Dönem Borcu Raporu — seçili kart; kesin ve gelecek dönemler ayrı."""
+
+    def __init__(self, parent, kredi_karti_id: int, *, yenile_cb=None):
+        super().__init__(parent)
+        self.kredi_karti_id = int(kredi_karti_id)
+        self.yenile_cb = yenile_cb
+        self.title("Ekstre / Dönem Borcu Raporu")
+        self.geometry("1100x720")
+        self.minsize(960, 600)
+        self.transient(parent)
+        try:
+            self.grab_set()
+            from ui_pencere import pencere_os_krom_ac
+            pencere_os_krom_ac(self)
+        except tk.TclError:
+            pass
+
+        from database.kredi_karti_ekstre_service import KrediKartiEkstreService
+        from database.kk_ekstre_rapor_service import rapor_verisi
+
+        self._svc = KrediKartiEkstreService
+        self._rapor_verisi = rapor_verisi
+        self._donemler = self._svc.ekstreleri_hesapla(
+            kredi_karti_id=self.kredi_karti_id, odenenleri_dahil=True
+        )
+        # Son kesilen + kesilmemiş ayırt
+        bugun = date.today()
+        self._idx = 0
+        for i, d in enumerate(self._donemler):
+            if d.get("kesim_tarihi") and d["kesim_tarihi"] <= bugun:
+                self._idx = i
+        if not self._donemler:
+            # Kesim günü yoksa bile ozet göster
+            self._donemler = [{"kesim_tarihi": None, "ekstre_id": None, "kesin": False}]
+
+        ust = ttk.Frame(self, padding=8)
+        ust.pack(fill="x")
+        self.lbl_baslik = ttk.Label(ust, font=("Segoe UI", 11, "bold"))
+        self.lbl_baslik.pack(anchor="w")
+        self.lbl_ozet = ttk.Label(ust, wraplength=1040)
+        self.lbl_ozet.pack(anchor="w", pady=(4, 0))
+        self.lbl_ayrim = ttk.Label(ust, foreground="#1a2b4a", font=("Segoe UI", 9, "bold"))
+        self.lbl_ayrim.pack(anchor="w", pady=(2, 0))
+
+        nav = ttk.Frame(self, padding=(8, 0))
+        nav.pack(fill="x")
+        ttk.Button(nav, text="◀ Önceki dönem", command=self._onceki).pack(side="left", padx=2)
+        ttk.Button(nav, text="Sonraki dönem ▶", command=self._sonraki).pack(side="left", padx=2)
+        ttk.Button(nav, text="PDF", command=self._pdf).pack(side="left", padx=8)
+        ttk.Button(nav, text="Excel", command=self._excel).pack(side="left", padx=2)
+        ttk.Button(nav, text="Yenile", command=self._yenile).pack(side="left", padx=8)
+        ttk.Button(nav, text="Kapat", command=self.destroy).pack(side="right", padx=2)
+
+        orta = ttk.Panedwindow(self, orient="vertical")
+        orta.pack(fill="both", expand=True, padx=8, pady=6)
+
+        har_f = ttk.LabelFrame(orta, text="Dönem kalemleri", padding=4)
+        cols = ("tarih", "belge", "aciklama", "taksit", "borc", "odeme", "kalan")
+        self.tv = ttk.Treeview(har_f, columns=cols, show="headings", height=12)
+        for k, b, w in (
+            ("tarih", "İşlem / yansıma", 100),
+            ("belge", "Belge", 120),
+            ("aciklama", "Açıklama", 220),
+            ("taksit", "Taksit", 80),
+            ("borc", "Borç", 90),
+            ("odeme", "Ödeme", 90),
+            ("kalan", "Etki", 90),
+        ):
+            self.tv.heading(k, text=b)
+            self.tv.column(k, width=w, anchor="w")
+        self.tv.pack(fill="both", expand=True)
+        orta.add(har_f, weight=3)
+
+        gel_f = ttk.LabelFrame(orta, text="Gelecek dönem planlı borçları (ödeme/gider üretmez)", padding=4)
+        gcols = ("donem", "bas", "kesim", "son", "adet", "tutar", "tur")
+        self.tv_gel = ttk.Treeview(gel_f, columns=gcols, show="headings", height=8)
+        for k, b, w in (
+            ("donem", "Dönem", 70),
+            ("bas", "Başlangıç", 90),
+            ("kesim", "Hesap kesimi", 100),
+            ("son", "Son ödeme", 90),
+            ("adet", "Taksit", 60),
+            ("tutar", "Planlı borç", 100),
+            ("tur", "Tür", 140),
+        ):
+            self.tv_gel.heading(k, text=b)
+            self.tv_gel.column(k, width=w, anchor="w")
+        self.tv_gel.pack(fill="both", expand=True)
+        orta.add(gel_f, weight=2)
+
+        self._rapor = None
+        self._yenile()
+
+    def _secili_donem(self) -> dict:
+        if not self._donemler:
+            return {}
+        self._idx = max(0, min(self._idx, len(self._donemler) - 1))
+        return self._donemler[self._idx]
+
+    def _onceki(self):
+        self._idx = max(0, self._idx - 1)
+        self._yenile()
+
+    def _sonraki(self):
+        self._idx = min(len(self._donemler) - 1, self._idx + 1)
+        self._yenile()
+
+    def _yenile(self):
+        for t in (self.tv, self.tv_gel):
+            for i in t.get_children():
+                t.delete(i)
+        d = self._secili_donem()
+        try:
+            self._rapor = self._rapor_verisi(
+                self.kredi_karti_id,
+                ekstre_id=d.get("ekstre_id"),
+                kesim_tarihi=d.get("kesim_tarihi"),
+            )
+        except Exception as exc:
+            messagebox.showerror("Rapor", str(exc), parent=self)
+            return
+        r = self._rapor
+        kesin_metin = "Kesilmiş ekstre" if r.get("kesin") else "Henüz kesilmemiş / hesaplanan dönem"
+        self.lbl_baslik.configure(
+            text=(
+                f"{r.get('banka_adi')} / {r.get('kart_adi')} / {r.get('maskeli_no')}  ·  "
+                f"{kesin_metin}"
+            )
+        )
+        self.lbl_ozet.configure(
+            text=(
+                f"Dönem: {_tarih(r.get('donem_baslangic'))} – {_tarih(r.get('donem_bitis'))}  ·  "
+                f"Kesim: {_tarih(r.get('kesim_tarihi'))}  ·  Son ödeme: {_tarih(r.get('son_odeme_tarihi')) or 'tanımsız'}  ·  "
+                f"Rapor: {_tarih(r.get('rapor_tarihi'))}\n"
+                f"Kesim tutarı: {_para(r.get('kesim_tutari'))}  ·  Ödenen: {_para(r.get('donem_odenen'))}  ·  "
+                f"Kalan ödenecek: {_para(r.get('kalan_odenecek'))}  ·  "
+                f"Toplam kart borcu: {_para(r.get('toplam_kart_borcu'))}  ·  "
+                f"Kullanılan limit: {_para(r.get('kullanilan_limit'))}"
+            )
+        )
+        self.lbl_ayrim.configure(
+            text=(
+                "Kesim tutarı ile kalan ödenecek ayrı izlenir. "
+                "Gelecek planlı taksitler bugünkü ödeme/gider toplamına eklenmez."
+            )
+        )
+        for h in r.get("hareketler") or []:
+            self.tv.insert(
+                "",
+                "end",
+                values=(
+                    _tarih(h.get("tarih") or h.get("plan_vadesi")),
+                    h.get("belge") or "",
+                    (h.get("aciklama") or "")[:80],
+                    h.get("taksit_no") or "",
+                    _para(h.get("borc")),
+                    _para(h.get("odeme")),
+                    _para(h.get("kalan")),
+                ),
+            )
+        for g in r.get("gelecek_donemler") or []:
+            self.tv_gel.insert(
+                "",
+                "end",
+                values=(
+                    _tarih(g.get("kesim_tarihi"))[:7] if g.get("kesim_tarihi") else "—",
+                    _tarih(g.get("donem_baslangic")),
+                    _tarih(g.get("kesim_tarihi")),
+                    _tarih(g.get("son_odeme_tarihi")) or "—",
+                    g.get("taksit_sayisi") or 0,
+                    _para(g.get("planli_borc")),
+                    g.get("etiket") or "",
+                ),
+            )
+
+    def _pdf(self):
+        if not self._rapor:
+            return
+        from tkinter import filedialog
+        from database.kk_ekstre_rapor_service import pdf_kaydet
+        yol = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".pdf",
+            initialfile=f"{self._rapor.get('dosya_kok')}.pdf",
+            filetypes=[("PDF", "*.pdf")],
+        )
+        if not yol:
+            return
+        try:
+            pdf_kaydet(self._rapor, yol)
+            messagebox.showinfo("PDF", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("PDF", str(exc), parent=self)
+
+    def _excel(self):
+        if not self._rapor:
+            return
+        from tkinter import filedialog
+        from database.kk_ekstre_rapor_service import excel_kaydet
+        yol = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".xlsx",
+            initialfile=f"{self._rapor.get('dosya_kok')}.xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+        )
+        if not yol:
+            return
+        try:
+            excel_kaydet(self._rapor, yol)
+            messagebox.showinfo("Excel", f"Kaydedildi:\n{yol}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Excel", str(exc), parent=self)

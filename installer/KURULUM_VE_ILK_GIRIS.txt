@@ -5,23 +5,23 @@ GEREKSİNİMLER
 - Windows 10 / 11, 64 bit. Python veya başka bir program gerekmez.
 - Yönetici (admin) yetkisi gerekmez; program yalnız kuran kullanıcı için kurulur.
 
-KURULUM
+KURULUM / GÜNCELLEME
 1. CinMuhasebe_Setup_<sürüm>_<tarih>.exe dosyasını çalıştırın.
 2. Cin Muhasebe açıksa önce programı normal şekilde kapatın. Program açıkken kurulum
    dosyaları değiştirmez; kapatmanız istenir.
-3. İlk kurulumda "Firma verisi" adımında seçin:
-   - Boş firma ile başla: program "YENİ FİRMA" adıyla boş bir firma açar. Firma adı ve
-     bilgilerini program içinden girin (Kullanıcı ve Firma Yönetimi > Firmalar).
-   - Veri paketinden (yedekten) yükle: başka bilgisayarda "Veri Paketi Oluştur" ile
-     alınmış .zip dosyasını seçin. Paket doğrulanır ve yalnız boş veri klasörüne yüklenir;
-     mevcut veri hiçbir zaman üzerine yazılmaz.
+3. Kurulum, masaüstü kısayolu ve DNM_D2 klasörüne bakarak mevcut kurulumu arar.
+   - Bulursa "Mevcut kurulumu güncelle" önerilir. baglanti_ayari.json, firma verileri ve
+     PostgreSQL bağlantısı korunur. Boş firma / yedekten yükleme adımı gösterilmez.
+   - Bulunmazsa ilk kurulumda "Firma verisi" adımında seçin:
+     · Boş firma ile başla
+     · Veri paketinden (yedekten) yükle
 4. İsteğe bağlı: Masaüstü kısayolu. Başlat menüsünde "Cin Muhasebe" klasörü oluşur.
 
 KONUMLAR
-- Program dosyaları : %LOCALAPPDATA%\Programs\Cin Muhasebe
-- Firma verileri    : %LOCALAPPDATA%\MuhasebeProgrami\data
-  Program dosyaları ile veriler ayrı klasördedir. Veri klasörünü OneDrive, Dropbox,
-  Google Drive gibi eşitleme klasörlerine veya ağ klasörüne taşımayın (veri bozulabilir).
+- Yeni kurulum     : %LOCALAPPDATA%\Programs\Cin Muhasebe
+- DNM_D2 (varsa)   : %LOCALAPPDATA%\CinMuhasebe\DNM_D2\CinMuhasebe  (güncelleme buraya)
+- Firma verileri   : %LOCALAPPDATA%\MuhasebeProgrami\data (SQLite) veya PostgreSQL (bağlantı ayarı)
+  Veri klasörünü OneDrive / ağ paylaşımına taşımayın.
 
 İLK GİRİŞ (BOŞ FİRMA)
 1. Programı açın. Giriş ekranında bu kuruluma özel üretilmiş geçici yönetici şifresi
@@ -37,12 +37,14 @@ KONUMLAR
   değiştirmez.
 
 GÜNCELLEME
-- Yeni sürümün kurulum dosyasını aynı kullanıcıyla çalıştırın. Firma verileri, kullanıcılar,
-  şifreler ve ayarlar korunur.
-- Kurulum, dosyaları değiştirmeden önce veritabanlarını şu klasöre kopyalar:
+- Yeni sürümün kurulum dosyasını aynı kullanıcıyla çalıştırın. "Güncelle" seçin.
+- Program dosyaları önce şuraya yedeklenir:
+  %LOCALAPPDATA%\CinMuhasebe\KURULUM_GERI_<tarih_saat>
+  Başarısızlıkta bu yedekten geri yüklenir.
+- baglanti_ayari.json, kullanıcı ayarları, şifreler ve PostgreSQL bağlantısı korunur.
+- SQLite kullanılıyorsa veri klasörü ayrıca yedeklenebilir:
   %LOCALAPPDATA%\MuhasebeProgrami\data\yedekler\kurulum_oncesi_<tarih_saat>
-- Yeni sürüm veritabanı yapısında değişiklik gerektiriyorsa program ilk açılışta önce
-  doğrulanmış bir yedek alır, sonra güncellemeyi yapar.
+- Şema değişikliği gerekirse program ilk açılışta doğrulanmış yedekle geçiş yapar.
 
 YEDEK / BAŞKA BİLGİSAYARA TAŞIMA
 - Başlat > Cin Muhasebe > "Veri Paketi Oluştur (yedek)": program kapalıyken veri klasörünü
