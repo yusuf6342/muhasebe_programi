@@ -1062,11 +1062,15 @@ class FinansService:
             ad = (h.hesap_adi or "").casefold()
             if tur == "KREDI_KARTI":
                 yer = "— kredi kartı hesabı" in ad or ad.endswith("kredi kartı hesabı")
+                # POS bağlı / tahsilat hesabı firma kartı borcu değildir
+                pos = "pos" in ad
             else:
                 yer = "— krediler hesabı" in ad or ad.endswith("krediler hesabı")
+                pos = False
             bak = abs(FinansService.bakiye(h))
             return (
                 1 if h.aktif else 0,
+                0 if pos else 1,  # POS'u en sona
                 0 if yer else 1,
                 1 if bak > 0 else 0,
                 int(h.id or 0),
@@ -1991,6 +1995,8 @@ class FinansService:
 
     @staticmethod
     def _finans_belge_no(session, on_ek: str) -> str:
+        from database.models.finans import FinansBelgeNoRezerv
+
         yil = date.today().year
         like = f"{on_ek}-{yil}-%"
         mevcut = list(session.scalars(
@@ -2003,6 +2009,16 @@ class FinansService:
             mevcut += session.scalars(
                 select(KrediKartiOdeme.belge_no).where(KrediKartiOdeme.belge_no.like(like))
             ).all()
+        # Kalıcı silinen numaralar yeniden verilmez
+        try:
+            from sqlalchemy import inspect as sa_inspect
+
+            if sa_inspect(session.connection()).has_table(FinansBelgeNoRezerv.__tablename__):
+                mevcut += session.scalars(
+                    select(FinansBelgeNoRezerv.belge_no).where(FinansBelgeNoRezerv.belge_no.like(like))
+                ).all()
+        except Exception:
+            pass
         sira = 1
         for no in mevcut:
             try:
@@ -2045,6 +2061,21 @@ class FinansService:
         for h in hareketler:
             session.delete(h)
         return len(hareketler)
+
+    @staticmethod
+    def _fatura_ici_pos_cari_ci_yazma(session, belge_no: str) -> bool:
+        """Fatura_no ile saklanan peşin/POS: cari etki SatisHareketi sessiz alacaktan gelir.
+
+        Aynı belge_no ile CariIslem yazılırsa defter SH'yi atlayıp yalnız alacak gösterir
+        (RAY-00347 / ABERRA kök nedeni). True → _cari_tahsilat_satiri çağırma.
+        """
+        no = (belge_no or "").strip()
+        if not no:
+            return False
+        from database.models.satis_faturasi import SatisFaturasi
+
+        fatura = session.scalar(select(SatisFaturasi).where(SatisFaturasi.fatura_no == no))
+        return fatura is not None
 
     @staticmethod
     def _havale_cari_geri_al(session, belge_no: str) -> None:
@@ -3413,13 +3444,34 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 )
                 dis_giris += giris - ic_giris
                 dis_cikis += cikis - ic_cikis
+            pb_ozet: dict[str, dict[str, Decimal]] = {}
+            for s in satirlar:
+                pb = s["pb"]
+                g = pb_ozet.setdefault(
+                    pb,
+                    {
+                        "devir": Decimal("0"),
+                        "tahsilat": Decimal("0"),
+                        "odeme": Decimal("0"),
+                        "bakiye": Decimal("0"),
+                    },
+                )
+                g["devir"] += s["devir"]
+                g["tahsilat"] += s["tahsilat"]
+                g["odeme"] += s["odeme"]
+                g["bakiye"] += s["bakiye"]
             return {
                 "gun": gun,
                 "satirlar": satirlar,
                 "dis_giris": dis_giris,
                 "dis_cikis": dis_cikis,
                 "toplam_devir": sum((s["devir"] for s in satirlar), Decimal("0")),
+                "toplam_tahsilat": sum((s["tahsilat"] for s in satirlar), Decimal("0")),
+                "toplam_odeme": sum((s["odeme"] for s in satirlar), Decimal("0")),
                 "toplam_bakiye": sum((s["bakiye"] for s in satirlar), Decimal("0")),
+                "pb_toplamlar": {
+                    pb: {k: v for k, v in oz.items()} for pb, oz in pb_ozet.items()
+                },
             }
 
     @staticmethod
@@ -3666,6 +3718,12 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                         "yeni_kalan": yeni_kalan,
                     }
                 )
+                try:
+                    from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+                    PosKomisyonGiderService.senkronize(session, k, kesin=False)
+                except Exception:
+                    pass
 
             session.flush()
             return {
@@ -3691,6 +3749,23 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             }
 
     @staticmethod
+    def _pos_kayit_imza(k: "PosValorKaydi") -> dict:
+        """Eşzamanlı düzenleme için kayıt anlık görüntüsü (kimlik alanları)."""
+        return {
+            "id": int(k.id),
+            "brut": str(Decimal(str(k.brut_tutar or 0))),
+            "komisyon": str(Decimal(str(k.komisyon_tutari or 0))),
+            "net": str(Decimal(str(k.net_tutar or 0))),
+            "durum": (k.durum or "").strip().upper(),
+            "gercek_yatis": str(Decimal(str(k.gercek_yatis_tutari or 0))),
+            "cari_id": str(k.cari_id or ""),
+            "pos_hesap_id": str(k.pos_hesap_id),
+            "hedef_hesap_id": str(
+                getattr(k, "hedef_hesap_id", None) or k.kmh_hesap_id
+            ),
+        }
+
+    @staticmethod
     def pos_tahsilat(
         banka_karti_id,
         tarih,
@@ -3709,6 +3784,9 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         valor_tarihi=None,
         hedef_hesap_id=None,
         pos_hesap_id=None,
+        pos_valor_id=None,
+        beklenen_imza=None,
+        pva_duzelt=False,
     ) -> dict:
         """POS'a brüt giriş + komisyon; net beklenen valörde hedef hesaba planlanır.
 
@@ -3716,6 +3794,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         (kart sonradan değişince geçmiş yeniden hesaplanmaz).
         ``pos_hesap_id`` ile çoklu POS'tan biri seçilir; taşınmış POS'ta kaynak
         kart ayarları (``[POS_KAYNAK_KART]``) kullanılır.
+        Güncellemede ``pos_valor_id`` belge numarasından önce gelir.
         """
         yazma_zorunlu("finans_duzenleme")
         brut = _decimal(brut_tutar, "Tahsilat tutarı", Decimal("0.01"))
@@ -3738,12 +3817,16 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         if belge_no and str(belge_no).startswith(_MAKBUZ_BAGLI_ONEKLER):
             raise ValueError("Bu POS tahsilatı bir makbuza bağlı; makbuz ekranından düzenleyin.")
         with get_session() as session:
-            if belge_no:
+            eski = None
+            if pos_valor_id is not None:
+                eski = session.get(PosValorKaydi, int(pos_valor_id))
+            elif belge_no:
                 eski = session.scalar(
                     select(PosValorKaydi).where(PosValorKaydi.belge_no == belge_no)
                 )
-                if not eski:
-                    raise ValueError("Güncellenecek POS tahsilat fişi bulunamadı.")
+            if eski is not None:
+                if (eski.durum or "").strip().upper() in ("IPTAL", "İPTAL"):
+                    raise ValueError("İptal edilmiş POS tahsilatı güncellenemez.")
                 # Yerinde güncelleme: aktarılmış/kısmi dahil — ikinci tahsilat/PVA üretmez
                 return FinansService._pos_tahsilat_bagli_guncelle(
                     session,
@@ -3762,7 +3845,12 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     valor_gun=valor_gun,
                     valor_tarihi=valor_tarihi,
                     hedef_hesap_id=hedef_hesap_id,
+                    pos_hesap_id=pos_hesap_id,
+                    beklenen_imza=beklenen_imza,
+                    pva_duzelt=pva_duzelt,
                 )
+            if belge_no or pos_valor_id is not None:
+                raise ValueError("Güncellenecek POS tahsilat fişi bulunamadı.")
 
             kart = session.scalar(
                 select(BankaKarti)
@@ -3910,7 +3998,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                         aciklama="Diğer kesinti",
                     )
                 )
-            if cari_id:
+            if cari_id and not FinansService._fatura_ici_pos_cari_ci_yazma(session, belgeno):
                 FinansService._cari_tahsilat_satiri(
                     session, cari_id, tarih, brut, belgeno, pos.hesap_adi, acik
                 )
@@ -3941,6 +4029,12 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             from database.muhasebe_entegrasyon import muhasebe_hook
 
             muhasebe_hook("pos_tahsilat_fisi", int(kayit.id), session=session)
+            try:
+                from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+                PosKomisyonGiderService.senkronize(session, kayit, kesin=False)
+            except Exception:
+                pass
             return {
                 "belge_no": belgeno,
                 "brut": brut,
@@ -4168,9 +4262,31 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         valor_gun,
         valor_tarihi,
         hedef_hesap_id,
+        pos_hesap_id=None,
+        beklenen_imza=None,
+        pva_duzelt=False,
     ) -> dict:
         """Aktarılmış/kısmi POS fişini yerinde günceller; PVA bağlantısını koparmaz."""
         yazma_zorunlu("finans_duzenleme")
+        if beklenen_imza:
+            guncel = FinansService._pos_kayit_imza(eski)
+            bek = {k: str(v) for k, v in dict(beklenen_imza).items()}
+            for anahtar in (
+                "id",
+                "brut",
+                "komisyon",
+                "net",
+                "durum",
+                "gercek_yatis",
+                "cari_id",
+                "pos_hesap_id",
+                "hedef_hesap_id",
+            ):
+                if anahtar in bek and bek[anahtar] != str(guncel.get(anahtar)):
+                    raise ValueError(
+                        "Bu POS evrakı başka bir oturumda değişmiş. "
+                        "Kaydetmeden önce fişi yeniden açın."
+                    )
         brut = _decimal(brut_tutar, "Tahsilat tutarı", Decimal("0.01"))
         tip = (kart_tipi or "KREDI_KARTI").strip().upper()
         n = int(taksit_sayisi or 1)
@@ -4186,6 +4302,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             "valor_tarihi": str(eski.valor_tarihi),
             "cari_id": str(eski.cari_id or ""),
             "banka_karti_id": str(eski.banka_karti_id),
+            "pos_hesap_id": str(eski.pos_hesap_id),
             "hedef_hesap_id": str(getattr(eski, "hedef_hesap_id", None) or eski.kmh_hesap_id),
             "aciklama": eski.aciklama or "",
             "durum": eski.durum,
@@ -4200,7 +4317,25 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         )
         if not kart:
             raise ValueError("Banka kartı bulunamadı.")
-        pos = next((h for h in kart.alt_hesaplar if (h.alt_hesap_turu or "") == "POS"), None)
+        pos_adaylari = [
+            h for h in (kart.alt_hesaplar or []) if (h.alt_hesap_turu or "").upper() == "POS"
+        ]
+        pos = None
+        if pos_hesap_id is not None and str(pos_hesap_id).strip() != "":
+            pos = next(
+                (h for h in pos_adaylari if int(h.id) == int(pos_hesap_id)),
+                None,
+            )
+            if pos is None:
+                raise ValueError("Seçilen POS hesabı bu banka kartına ait değil.")
+        elif int(eski.banka_karti_id) == int(kart.id):
+            # Aynı bankada mevcut POS hesabını koru (PayTR / çoklu POS)
+            pos = next(
+                (h for h in pos_adaylari if int(h.id) == int(eski.pos_hesap_id)),
+                None,
+            )
+        if pos is None:
+            pos = pos_adaylari[0] if pos_adaylari else None
         hedef = FinansService._pos_hedef_hesap(kart)
         if hedef_hesap_id:
             alt = next((h for h in kart.alt_hesaplar if int(h.id) == int(hedef_hesap_id)), None)
@@ -4300,20 +4435,29 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     aciklama="Diğer kesinti",
                 )
             )
-        if cari_id:
+        # Fatura içi peşin: _havale_cari_geri_al yukarıda hatalı CI'yi siler; yeniden yazma
+        if cari_id and not FinansService._fatura_ici_pos_cari_ci_yazma(session, belgeno):
             FinansService._cari_tahsilat_satiri(
                 session, cari_id, tarih, brut, belgeno, pos.hesap_adi, acik
             )
 
         eski_net = Decimal(str(eski.net_tutar or 0))
-        # Ortak/tekil PVA: tutar-komisyon değişince bağlı PVA toplamını Σ gercek_yatis yap
+        # Ortak/tekil PVA: yalnızca açıkça istenirse veya aktarılan tutar değişmediyse yenile.
+        # Komisyon/net değişince gerçek banka geçiş tutarını kendiliğinden eşitleme.
         pva_tokenleri = [
             t.strip()
             for t in (getattr(eski, "aktarim_belge_no", None) or "").split(",")
             if t.strip()
         ]
-        # Tam aktarılmış satırda yeni nete çek; kısmi ise aktarılmış tutarı koru
-        if akt > 0 and abs(akt - eski_net) <= Decimal("0.005") and abs(net - eski_net) > Decimal("0.005"):
+        net_degisti = abs(net - eski_net) > Decimal("0.005")
+        if (
+            pva_duzelt
+            and akt > 0
+            and abs(akt - eski_net) <= Decimal("0.005")
+            and net_degisti
+            and net + Decimal("0.005") >= akt
+        ):
+            # Kullanıcı onayladı: aktarılmış tutarı yeni nete çek (yalnız bu POS payı)
             akt = net
             eski.gercek_yatis_tutari = net
 
@@ -4335,6 +4479,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         eski.aciklama = acik
         if akt <= Decimal("0.005"):
             eski.durum = "BEKLIYOR"
+            eski.gercek_yatis_tutari = Decimal("0")
         elif akt + Decimal("0.005") >= net:
             eski.durum = "AKTARILDI"
             eski.gercek_yatis_tutari = akt
@@ -4343,9 +4488,16 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             eski.gercek_yatis_tutari = akt
         session.flush()
         # Bağlı PVA fişlerini yeniden topla (diğer POS satırları korunur; mükerrer fiş yok)
-        for pva_belge in pva_tokenleri:
-            FinansService._pos_pva_toplam_yenile(session, pva_belge)
+        if pva_tokenleri and (pva_duzelt or not net_degisti or akt <= Decimal("0.005")):
+            for pva_belge in pva_tokenleri:
+                FinansService._pos_pva_toplam_yenile(session, pva_belge)
         muhasebe_hook("pos_tahsilat_fisi", int(eski.id), session=session)
+        try:
+            from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+            PosKomisyonGiderService.senkronize(session, eski)
+        except Exception:
+            pass
         yeni_snap = {
             "tarih": str(tarih),
             "brut": str(brut),
@@ -4357,6 +4509,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             "valor_tarihi": str(v_tarih),
             "cari_id": str(cari_id or ""),
             "banka_karti_id": str(kart.id),
+            "pos_hesap_id": str(pos.id),
             "hedef_hesap_id": str(hedef.id),
             "aciklama": acik,
             "durum": eski.durum,
@@ -4375,9 +4528,14 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             "valor_saati": eski.valor_saati or POS_VALOR_SAATI,
             "hedef_hesap_id": hedef.id,
             "hedef_hesap_adi": hedef.hesap_adi,
+            "pos_hesap_id": int(pos.id),
+            "pos_hesap_adi": pos.hesap_adi,
             "kayit_id": eski.id,
             "bagli_guncelleme": True,
             "durum": eski.durum,
+            "gercek_yatis_tutari": Decimal(str(eski.gercek_yatis_tutari or 0)),
+            "aktarim_belge_no": getattr(eski, "aktarim_belge_no", None) or "",
+            "pva_yenilendi": bool(pva_tokenleri and (pva_duzelt or not net_degisti or akt <= 0)),
         }
 
     @staticmethod
@@ -4452,8 +4610,9 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             if hesap_ids:
                 for h in session.scalars(select(FinansHesabi).where(FinansHesabi.id.in_(hesap_ids))).all():
                     hesap_map[h.id] = h.hesap_adi
-            # Makbuz/fatura bağı
-            fatura_map: dict[str, str] = {}
+            # Makbuz/fatura bağı — pos_valor_id → fatura_id listesi (tahmin yok)
+            fatura_map: dict[int, str] = {}
+            fatura_id_map: dict[int, list[int]] = {}
             try:
                 from database.models.finans import KasaMakbuzSatiri, SatisFaturaMakbuzBagi
                 from database.models.satis_faturasi import SatisFaturasi
@@ -4489,9 +4648,34 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 for s in satirlar:
                     fid = baglar.get(int(s.makbuz_id)) if s.makbuz_id else None
                     if fid and s.pos_valor_id:
-                        fatura_map[int(s.pos_valor_id)] = fat_no.get(fid, "")
+                        pvid = int(s.pos_valor_id)
+                        fatura_map[pvid] = fat_no.get(fid, "")
+                        fatura_id_map.setdefault(pvid, [])
+                        if int(fid) not in fatura_id_map[pvid]:
+                            fatura_id_map[pvid].append(int(fid))
+                # Fatura içi KK tahsilatı: belge_no = fatura_no (makbuz bağı yok)
+                eksik_belgeler = {
+                    (k.belge_no or "").strip()
+                    for k in kayitlar
+                    if int(k.id) not in fatura_map and (k.belge_no or "").strip()
+                }
+                if eksik_belgeler:
+                    for f in session.scalars(
+                        select(SatisFaturasi).where(SatisFaturasi.fatura_no.in_(eksik_belgeler))
+                    ).all():
+                        no = (f.fatura_no or "").strip()
+                        if not no:
+                            continue
+                        for k in kayitlar:
+                            pvid = int(k.id)
+                            if (k.belge_no or "").strip() == no and pvid not in fatura_map:
+                                fatura_map[pvid] = no
+                                fatura_id_map.setdefault(pvid, [])
+                                if int(f.id) not in fatura_id_map[pvid]:
+                                    fatura_id_map[pvid].append(int(f.id))
             except Exception:
                 fatura_map = {}
+                fatura_id_map = {}
 
             sonuc = []
             ara_q = (ara or "").strip().casefold()
@@ -4547,6 +4731,8 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     "banka_teyidi_notu": getattr(k, "banka_teyidi_notu", None) or "",
                     "banka_teyidi_kullanici": getattr(k, "banka_teyidi_kullanici", None) or "",
                     "fatura_no": fatura_map.get(int(k.id), ""),
+                    "fatura_id": (fatura_id_map.get(int(k.id)) or [None])[0],
+                    "fatura_idler": list(fatura_id_map.get(int(k.id)) or []),
                     "aciklama": k.aciklama or "",
                     "para_birimi": "TRY",
                 }
@@ -4577,18 +4763,43 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             return sonuc
 
     @staticmethod
-    def pos_tahsilat_getir(belge_no: str) -> dict:
+    def pos_tahsilat_getir(belge_no: str | None = None, *, pos_valor_id=None) -> dict:
         from database.models.cari import Cari
 
         belge_no = (belge_no or "").strip()
         with get_session() as session:
-            k = session.scalar(
-                select(PosValorKaydi).where(PosValorKaydi.belge_no == belge_no)
-            )
+            k = None
+            if pos_valor_id is not None:
+                k = session.get(PosValorKaydi, int(pos_valor_id))
+            elif belge_no:
+                k = session.scalar(
+                    select(PosValorKaydi)
+                    .where(PosValorKaydi.belge_no == belge_no)
+                    .where(~PosValorKaydi.durum.in_(("IPTAL", "İPTAL")))
+                    .order_by(PosValorKaydi.id.desc())
+                )
+                if k is None:
+                    k = session.scalar(
+                        select(PosValorKaydi)
+                        .where(PosValorKaydi.belge_no == belge_no)
+                        .order_by(PosValorKaydi.id.desc())
+                    )
             if not k:
                 raise ValueError("POS tahsilat fişi bulunamadı.")
             cari = session.get(Cari, k.cari_id) if k.cari_id else None
+            pos_hesap = session.get(FinansHesabi, k.pos_hesap_id)
+            hedef = session.get(
+                FinansHesabi, int(getattr(k, "hedef_hesap_id", None) or k.kmh_hesap_id)
+            )
+            banka = session.get(BankaKarti, k.banka_karti_id)
             bil = FinansService.pos_aktarim_durum_bilgisi(k)
+            makbuz_satir = session.scalar(
+                select(KasaMakbuzSatiri).where(KasaMakbuzSatiri.pos_valor_id == int(k.id))
+            )
+            makbuz_no = None
+            if makbuz_satir is not None:
+                makbuz = session.get(KasaMakbuzu, makbuz_satir.makbuz_id)
+                makbuz_no = (makbuz.belge_no if makbuz else None) or None
             ref = ""
             acik = k.aciklama or ""
             if "| Ref:" in acik:
@@ -4601,10 +4812,15 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 "tarih": k.tahsilat_tarihi,
                 "tutar": Decimal(str(k.brut_tutar)),
                 "banka_karti_id": k.banka_karti_id,
+                "banka_adi": (banka.banka_adi if banka else "") or "",
                 "pos_hesap_id": int(k.pos_hesap_id),
+                "pos_hesap_adi": (pos_hesap.hesap_adi if pos_hesap else "") or "",
                 "hedef_hesap_id": int(getattr(k, "hedef_hesap_id", None) or k.kmh_hesap_id),
+                "hedef_hesap_adi": (hedef.hesap_adi if hedef else "") or "",
                 "cari_id": k.cari_id,
                 "cari_etiket": f"{cari.cari_kodu} - {cari.unvan}" if cari else "",
+                "cari_kodu": cari.cari_kodu if cari else "",
+                "cari_unvan": cari.unvan if cari else "",
                 "taksit_sayisi": int(getattr(k, "taksit_sayisi", None) or 1),
                 "kart_tipi": k.kart_tipi,
                 "komisyon_orani": Decimal(str(k.komisyon_orani)),
@@ -4623,9 +4839,260 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 "ek_isaret": bil["ek_isaret"],
                 "referans_no": ref,
                 "aciklama": acik,
-                "diger_kesinti": Decimal(str(getattr(k, "diger_kesinti", 0) or 0)),
-                "valor_gun": getattr(k, "valor_gun", None),
-                "valor_tarihi": k.valor_tarihi,
+                "makbuz_bagli": makbuz_satir is not None,
+                "makbuz_belge_no": makbuz_no,
+                "imza": FinansService._pos_kayit_imza(k),
+            }
+
+    @staticmethod
+    def pos_valor_aktif_bul(
+        belge_no: str | None = None, *, pos_valor_id=None, cari_id=None
+    ) -> dict | None:
+        """Aktif (iptal olmayan) POS kaydını belge no veya id ile bulur."""
+        no = (belge_no or "").strip()
+        with get_session() as session:
+            k = None
+            if pos_valor_id is not None:
+                k = session.get(PosValorKaydi, int(pos_valor_id))
+            elif no:
+                q = select(PosValorKaydi).where(
+                    PosValorKaydi.belge_no == no,
+                    ~PosValorKaydi.durum.in_(("IPTAL", "İPTAL")),
+                )
+                if cari_id is not None:
+                    q = q.where(
+                        or_(
+                            PosValorKaydi.cari_id == int(cari_id),
+                            PosValorKaydi.cari_id.is_(None),
+                        )
+                    )
+                k = session.scalar(q.order_by(PosValorKaydi.id.desc()))
+            if k is None or (k.durum or "").strip().upper() in ("IPTAL", "İPTAL"):
+                return None
+            makbuz_satir = session.scalar(
+                select(KasaMakbuzSatiri).where(KasaMakbuzSatiri.pos_valor_id == int(k.id))
+            )
+            makbuz_no = None
+            if makbuz_satir is not None:
+                makbuz = session.get(KasaMakbuzu, makbuz_satir.makbuz_id)
+                makbuz_no = makbuz.belge_no if makbuz else None
+            from database.models.cari import Cari
+
+            cari = session.get(Cari, k.cari_id) if k.cari_id else None
+            pos_hesap = session.get(FinansHesabi, k.pos_hesap_id)
+            return {
+                "id": int(k.id),
+                "belge_no": k.belge_no,
+                "tarih": k.tahsilat_tarihi,
+                "brut": Decimal(str(k.brut_tutar or 0)),
+                "komisyon": Decimal(str(k.komisyon_tutari or 0)),
+                "net": Decimal(str(k.net_tutar or 0)),
+                "cari": f"{cari.cari_kodu} — {cari.unvan}" if cari else "—",
+                "cari_id": k.cari_id,
+                "pos_hesap": (pos_hesap.hesap_adi if pos_hesap else "") or "—",
+                "makbuz_bagli": makbuz_satir is not None,
+                "makbuz_belge_no": makbuz_no,
+                "aktarim_belge_no": getattr(k, "aktarim_belge_no", None) or "",
+                "gercek_yatis_tutari": Decimal(str(k.gercek_yatis_tutari or 0)),
+                "durum": k.durum,
+            }
+
+    @staticmethod
+    def pos_bagli_faturalar(pos_valor_id) -> list[dict]:
+        """POS valör kaydına bağlı satış faturaları (id, no, tarih, tutar).
+
+        Zincir: pos_valor_id → KasaMakbuzSatiri → SatisFaturaMakbuzBagi → SatisFaturasi.
+        Yedek: belge_no == fatura_no (fatura içi POS). Tahmin/benzerlik kullanılmaz.
+        """
+        from database.models.satis_faturasi import SatisFaturasi
+
+        try:
+            pvid = int(pos_valor_id)
+        except (TypeError, ValueError):
+            return []
+        with get_session() as session:
+            pv = session.get(PosValorKaydi, pvid)
+            if pv is None:
+                return []
+            fatura_ids: list[int] = []
+            seen: set[int] = set()
+            satirlar = list(
+                session.scalars(
+                    select(KasaMakbuzSatiri).where(KasaMakbuzSatiri.pos_valor_id == pvid)
+                ).all()
+            )
+            makbuz_ids = {int(s.makbuz_id) for s in satirlar if s.makbuz_id}
+            if makbuz_ids and FinansService._bag_tablosu_var(session):
+                from database.models.finans import SatisFaturaMakbuzBagi
+
+                for b in session.scalars(
+                    select(SatisFaturaMakbuzBagi).where(
+                        SatisFaturaMakbuzBagi.makbuz_id.in_(makbuz_ids)
+                    )
+                ).all():
+                    fid = int(b.fatura_id)
+                    if fid not in seen:
+                        seen.add(fid)
+                        fatura_ids.append(fid)
+            belge = (pv.belge_no or "").strip()
+            if belge:
+                fat = session.scalar(
+                    select(SatisFaturasi).where(
+                        SatisFaturasi.fatura_no == belge,
+                        SatisFaturasi.is_deleted.is_(False),
+                    )
+                )
+                if fat is not None and int(fat.id) not in seen:
+                    seen.add(int(fat.id))
+                    fatura_ids.append(int(fat.id))
+            if not fatura_ids:
+                return []
+            sonuc: list[dict] = []
+            for fid in fatura_ids:
+                f = session.get(SatisFaturasi, fid)
+                if f is None or bool(getattr(f, "is_deleted", False)):
+                    continue
+                try:
+                    tutar = Decimal(
+                        str(
+                            getattr(f, "tl_genel_toplam", None)
+                            or getattr(f, "genel_toplam", None)
+                            or getattr(f, "toplam", 0)
+                            or 0
+                        )
+                    )
+                except Exception:
+                    tutar = Decimal("0")
+                sonuc.append(
+                    {
+                        "fatura_id": int(f.id),
+                        "fatura_no": (f.fatura_no or "").strip(),
+                        "tarih": getattr(f, "fatura_tarihi", None),
+                        "tutar": tutar,
+                        "cari_id": getattr(f, "cari_id", None),
+                    }
+                )
+            return sonuc
+
+    @staticmethod
+    def pos_bagli_evraklar(belge_no: str, *, cari_id=None) -> list[dict]:
+        """Aynı belge numarasına bağlı açılabilir evraklar (POS / fatura / makbuz)."""
+        no = (belge_no or "").strip()
+        if not no:
+            return []
+        sonuc: list[dict] = []
+        with get_session() as session:
+            pv = FinansService.pos_valor_aktif_bul(no, cari_id=cari_id)
+            if pv:
+                sonuc.append(
+                    {
+                        "tur": "pos_tahsilat",
+                        "etiket": f"POS tahsilatı · {pv['belge_no']} · {_fmt(pv['brut'])} TL",
+                        "belge_no": pv["belge_no"],
+                        "pos_valor_id": pv["id"],
+                        "makbuz_bagli": pv["makbuz_bagli"],
+                        "makbuz_belge_no": pv.get("makbuz_belge_no"),
+                    }
+                )
+            from database.models.satis_faturasi import SatisFaturasi
+
+            fat = session.scalar(
+                select(SatisFaturasi).where(
+                    SatisFaturasi.fatura_no == no,
+                    SatisFaturasi.is_deleted.is_(False),
+                )
+            )
+            if fat is not None:
+                sonuc.append(
+                    {
+                        "tur": "satis_faturasi",
+                        "etiket": f"Satış faturası · {fat.fatura_no}",
+                        "belge_no": fat.fatura_no,
+                        "belge_id": int(fat.id),
+                    }
+                )
+            makbuz = session.scalar(
+                select(KasaMakbuzu).where(
+                    KasaMakbuzu.belge_no == no,
+                    ~KasaMakbuzu.durum.in_(("IPTAL", "İPTAL")),
+                )
+            )
+            if makbuz is not None:
+                sonuc.append(
+                    {
+                        "tur": "makbuz",
+                        "etiket": f"Tahsilat makbuzu · {makbuz.belge_no}",
+                        "belge_no": makbuz.belge_no,
+                        "makbuz_id": int(makbuz.id),
+                    }
+                )
+        return sonuc
+
+    @staticmethod
+    def pos_silme_ozeti(pos_valor_id: int) -> dict:
+        """Silme onayında gösterilecek özet + etkilenecek bağlı kayıtlar."""
+        with get_session() as session:
+            pv = session.get(PosValorKaydi, int(pos_valor_id))
+            if pv is None:
+                raise ValueError("POS tahsilat kaydı bulunamadı.")
+            if (pv.durum or "").strip().upper() in ("IPTAL", "İPTAL"):
+                raise ValueError("POS tahsilatı zaten iptal.")
+            from database.models.cari import Cari, SatisHareketi
+
+            cari = session.get(Cari, pv.cari_id) if pv.cari_id else None
+            pos_hesap = session.get(FinansHesabi, pv.pos_hesap_id)
+            hedef = session.get(
+                FinansHesabi, int(getattr(pv, "hedef_hesap_id", None) or pv.kmh_hesap_id)
+            )
+            makbuz_satir = session.scalar(
+                select(KasaMakbuzSatiri).where(KasaMakbuzSatiri.pos_valor_id == int(pv.id))
+            )
+            baglilar: list[str] = []
+            if makbuz_satir is not None:
+                makbuz = session.get(KasaMakbuzu, makbuz_satir.makbuz_id)
+                baglilar.append(
+                    f"Makbuz satırı: {(makbuz.belge_no if makbuz else '—')} "
+                    "(makbuz ekranından silinmeli)"
+                )
+            akt = Decimal(str(pv.gercek_yatis_tutari or 0))
+            pva = (getattr(pv, "aktarim_belge_no", None) or "").strip()
+            if akt > 0 or pva:
+                baglilar.append(
+                    f"Banka aktarımı: {pva or '—'} · aktarılan {_fmt(akt)} TL "
+                    "(önce geri alınır; toplu PVA’daki diğer POS payları korunur)"
+                )
+            baglilar.append(
+                f"Cari tahsilat etkisi: {_fmt(pv.brut_tutar)} TL "
+                f"({cari.cari_kodu if cari else '—'})"
+            )
+            baglilar.append(
+                f"POS alacağı / komisyon: net {_fmt(pv.net_tutar)} · "
+                f"komisyon {_fmt(pv.komisyon_tutari)}"
+            )
+            if pv.cari_id and pv.belge_no:
+                sh = session.scalar(
+                    select(SatisHareketi).where(
+                        SatisHareketi.belge_no == pv.belge_no,
+                        SatisHareketi.cari_id == int(pv.cari_id),
+                    )
+                )
+                if sh is not None:
+                    baglilar.append(
+                        f"Bağlı satış faturası {pv.belge_no} kalır; "
+                        "tahsilat etkisi kaldırılır, kalan borç yeniden açılır"
+                    )
+            return {
+                "id": int(pv.id),
+                "belge_no": pv.belge_no,
+                "tarih": pv.tahsilat_tarihi,
+                "cari": f"{cari.cari_kodu} — {cari.unvan}" if cari else "—",
+                "brut": Decimal(str(pv.brut_tutar or 0)),
+                "komisyon": Decimal(str(pv.komisyon_tutari or 0)),
+                "net": Decimal(str(pv.net_tutar or 0)),
+                "pos_hesap": (pos_hesap.hesap_adi if pos_hesap else "") or "—",
+                "hedef_hesap": (hedef.hesap_adi if hedef else "") or "—",
+                "makbuz_bagli": makbuz_satir is not None,
+                "baglilar": baglilar,
             }
 
     @staticmethod
@@ -5078,6 +5545,13 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                     from database.muhasebe_entegrasyon import muhasebe_hook
 
                     muhasebe_hook("pos_valor_aktarimi_fisi", int(k.id), session=session)
+                    try:
+                        from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+                        # Aktarım komisyon gideri üretmez; mevcut tahmini gideri kesinleştirir
+                        PosKomisyonGiderService.senkronize(session, k, kesin=True)
+                    except Exception:
+                        pass
                     # Tam kapanışta beklenen net ile gerçekleşen farkı bildir
                     fark = Decimal("0")
                     if k.durum == "AKTARILDI":
@@ -5457,6 +5931,12 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 },
             )
             session.flush()
+            try:
+                from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+                PosKomisyonGiderService.senkronize(session, kayit, kesin=False)
+            except Exception:
+                pass
             return {
                 "kayit_id": int(kayit.id),
                 "belge_no": kayit.belge_no,
@@ -6025,16 +6505,22 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             vade = FinansService._ay_ekle(base, i - 1)
             kesim = None
             banka_vade = None
+            donem_bas = None
             if ekstre_servis is not None:
                 donem = ekstre_servis.taksit_donem_bilgisi(cekim_tarihi, i, kart)
                 kesim = donem.get("kesim_tarihi")
                 banka_vade = donem.get("son_odeme_tarihi") or kesim
+                donem_bas = donem.get("donem_baslangic")
             plan.append({
                 "taksit_no": i,
                 "vade_tarihi": vade,
                 "tutar": taksit_tutar,
+                "anapara": taksit_tutar,
+                "faiz_ucret": Decimal("0.00"),
                 "ekstre_kesim_tarihi": kesim,
                 "banka_vade_tarihi": banka_vade,
+                "donem_baslangic": donem_bas,
+                "yansima_tarihi": vade,
             })
         return plan
 
@@ -6573,7 +7059,84 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             ),
             reverse=True,
         )
+        # Tek çekim: ana borç + 1/1 ayrıntı aynı listede iki satır olmasın (mali kayıt silinmez)
+        birlesik = FinansService._kk_tek_cekim_hareket_birlestir(birlesik)
         return birlesik[: int(limit)]
+
+    @staticmethod
+    def _kk_tek_cekim_hareket_birlestir(sonuc: list[dict]) -> list[dict]:
+        """Tek çekimde ana ödeme ile ``-T1`` (1/1) satırını tek satırda birleştir.
+
+        Mali kayıtlar silinmez; yalnız liste görünümü birleşir. Çok taksitte
+        (``taksit_sayisi > 1`` veya aynı ana için ``-T2+`` varsa) dokunulmaz.
+        Ana satır (borç / ``KK ÖDEME``) korunur; taksit / ekstre alanları ``-T1``'den gelir.
+        """
+        if not sonuc:
+            return sonuc
+        taban_re = re.compile(r"^(.+)-T(\d+)$")
+        by_belge: dict[str, int] = {}
+        for i, r in enumerate(sonuc):
+            b = (r.get("belge_no") or "").strip()
+            if b and b not in by_belge:
+                by_belge[b] = i
+
+        def _diger_tn_var(ana: str) -> bool:
+            for b in by_belge:
+                m = taban_re.match(b)
+                if m and m.group(1) == ana and int(m.group(2)) != 1:
+                    return True
+            return False
+
+        gizle: set[int] = set()
+        for b, i in list(by_belge.items()):
+            m = taban_re.match(b)
+            if not m or int(m.group(2)) != 1:
+                continue
+            ana = m.group(1)
+            det = sonuc[i]
+            if det.get("planli"):
+                continue
+            n = det.get("taksit_sayisi")
+            try:
+                n_i = int(n) if n is not None else None
+            except (TypeError, ValueError):
+                n_i = None
+            if n_i is not None and n_i > 1:
+                continue
+            if n_i is None and _diger_tn_var(ana):
+                continue
+            ana_i = by_belge.get(ana)
+            if ana_i is None:
+                # Yalnız -T1 görünüyorsa 1/1 bilgisini tamamla; satırı bırak
+                if det.get("taksit_no") is None:
+                    det["taksit_no"] = 1
+                if det.get("taksit_sayisi") is None:
+                    det["taksit_sayisi"] = 1
+                continue
+            ana_r = sonuc[ana_i]
+            if ana_r.get("planli"):
+                continue
+            # Taksit / ekstre alanlarını ana (borç) satıra taşı
+            for k in (
+                "taksit_id",
+                "odeme_id",
+                "taksit_no",
+                "taksit_sayisi",
+                "ekstre_kesim_tarihi",
+                "son_odeme_tarihi",
+            ):
+                if det.get(k) is not None and ana_r.get(k) is None:
+                    ana_r[k] = det.get(k)
+            if ana_r.get("taksit_no") is None:
+                ana_r["taksit_no"] = 1
+            if ana_r.get("taksit_sayisi") is None:
+                ana_r["taksit_sayisi"] = 1
+            # Açma/düzenleme ana belge_no üzerinden (kk_odeme_belge_coz -T1'i de çözer)
+            gizle.add(i)
+
+        if not gizle:
+            return sonuc
+        return [r for j, r in enumerate(sonuc) if j not in gizle]
 
     @staticmethod
     def kredi_karti_isletme_bakiyesi(kredi_karti_id) -> dict:
@@ -6874,6 +7437,8 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             raise ValueError(f"Taksit sayısı 1-{KK_MAX_TAKSIT} arasında olmalıdır.")
         if tarih > date.today():
             raise ValueError("İşlem tarihi gelecek olamaz.")
+        # Yansıma: 1. taksit = işlem tarihi (manuel sapma yok); taksitli aylar _ay_ekle ile
+        ilk_taksit_tarihi = tarih
         if belge_no and str(belge_no).startswith(_MAKBUZ_BAGLI_ONEKLER):
             raise ValueError("Bu kart ödemesi bir ödeme makbuzuna bağlı; makbuz ekranından düzenleyin.")
 
@@ -7006,10 +7571,57 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
             }
 
     @staticmethod
+    def kk_odeme_belge_coz(belge_no: str) -> str:
+        """Kart hareketi / taksit satırı belgesini ana ``KrediKartiOdeme.belge_no``'ya çözer.
+
+        Desteklenen girişler:
+        - Ana ödeme: ``KKO-2026-0009``
+        - Taksit hareketi: ``KKO-2026-0009-T1`` (``kk_hareket_belge_no`` veya ``{ana}-T{n}``)
+        Yalnız metin kesmekle kalmaz; kayıtlı taksit / ödeme ilişkisi kullanılır.
+        """
+        bn = (belge_no or "").strip()
+        if not bn:
+            raise ValueError("Belge no gerekli.")
+        taban_re = re.compile(r"^(.+)-T(\d+)$")
+        with get_session() as session:
+            o = session.scalar(
+                select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no == bn)
+            )
+            if o is not None:
+                return o.belge_no
+            t = session.scalar(
+                select(KrediKartiOdemeTaksit)
+                .where(KrediKartiOdemeTaksit.kk_hareket_belge_no == bn)
+                .options(selectinload(KrediKartiOdemeTaksit.odeme))
+            )
+            if t is not None and t.odeme is not None:
+                return t.odeme.belge_no
+            m = taban_re.match(bn)
+            if m:
+                ana, tno = m.group(1), int(m.group(2))
+                t2 = session.scalar(
+                    select(KrediKartiOdemeTaksit)
+                    .join(KrediKartiOdeme, KrediKartiOdemeTaksit.odeme_id == KrediKartiOdeme.id)
+                    .where(
+                        KrediKartiOdeme.belge_no == ana,
+                        KrediKartiOdemeTaksit.taksit_no == tno,
+                    )
+                    .options(selectinload(KrediKartiOdemeTaksit.odeme))
+                )
+                if t2 is not None and t2.odeme is not None:
+                    return t2.odeme.belge_no
+                o2 = session.scalar(
+                    select(KrediKartiOdeme).where(KrediKartiOdeme.belge_no == ana)
+                )
+                if o2 is not None:
+                    return o2.belge_no
+        raise ValueError("KK ödeme fişi bulunamadı.")
+
+    @staticmethod
     def kredi_karti_odeme_getir(belge_no: str) -> dict:
         from database.models.cari import Cari
 
-        belge_no = (belge_no or "").strip()
+        belge_no = FinansService.kk_odeme_belge_coz(belge_no)
         with get_session() as session:
             o = session.scalar(
                 select(KrediKartiOdeme)
@@ -7040,6 +7652,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 "referans_no": o.referans_no or "",
                 "aciklama": o.aciklama or "",
                 "kart_adi": o.kredi_karti.kart_adi if o.kredi_karti else "",
+                "gider_kart_odeme_id": int(o.gider_kart_odeme_id) if o.gider_kart_odeme_id else None,
             }
 
     @staticmethod
@@ -7300,21 +7913,36 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
 
     @staticmethod
     def _kredi_kalan_anapara(kredi, session=None) -> Decimal:
-        """Kredi kalan anaparası = açık plan satırlarının anapara bileşenleri.
+        """Kredi kalan anaparası = açık satırlarda (plan anapara − ödenen anapara).
 
         Açık durumlar: BEKLIYOR / YAKLASIYOR / VADESI_GECTI / KISMEN_ODENDI.
-        Yalnız ``t.anapara`` toplanır (faiz/masraf/toplam taksit eklenmez).
+        Kısmen ödenmiş taksitte yalnızca kalan anapara sayılır; faiz/masraf
+        ve toplam taksit tutarı eklenmez. Ödenen anapara okunamazsa satır
+        ödenmiş sayılmaz (tam plan anaparası kalır).
         Plan yoksa bağlı KREDILER hesabı ledger bakiyesinin mutlak değeri.
         """
-        kalan = sum(
-            (
-                Decimal(str(t.anapara or 0))
-                for t in (kredi.taksitler or [])
-                if (t.durum or "").upper()
-                in {"BEKLIYOR", "YAKLASIYOR", "VADESI_GECTI", "KISMEN_ODENDI"}
-            ),
-            Decimal("0"),
-        )
+        acik = {"BEKLIYOR", "YAKLASIYOR", "VADESI_GECTI", "KISMEN_ODENDI"}
+        kalan = Decimal("0")
+        for t in kredi.taksitler or []:
+            if (t.durum or "").upper() not in acik:
+                continue
+            try:
+                ana = Decimal(str(t.anapara if t.anapara is not None else 0))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            try:
+                odenen_ana = Decimal(
+                    str(
+                        t.odenen_anapara
+                        if getattr(t, "odenen_anapara", None) is not None
+                        else 0
+                    )
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                odenen_ana = Decimal("0")
+            fark = ana - odenen_ana
+            if fark > 0:
+                kalan += fark
         if kalan > 0 or (kredi.taksitler or []):
             return kalan.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         bagli_id = getattr(kredi, "bagli_hesap_id", None)
@@ -7983,30 +8611,75 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
 
     @staticmethod
     def banka_kredi_taksit_detay(taksit_id) -> dict:
+        """Taksit ödeme UI için plan + kalan bileşenler (liste ile aynı hesap)."""
+        from database.banka_kredi_service import BILESEN_ALANLARI, BankaKrediService
+
         with get_session() as session:
             t = session.scalar(
                 select(BankaKrediTaksit)
                 .where(BankaKrediTaksit.id == int(taksit_id))
-                .options(selectinload(BankaKrediTaksit.kredi))
+                .options(
+                    selectinload(BankaKrediTaksit.kredi).selectinload(
+                        BankaKredisi.taksitler
+                    )
+                )
             )
             if not t or not t.kredi:
                 raise ValueError("Taksit bulunamadı.")
-            anapara = Decimal(str(t.anapara))
-            faiz = Decimal(str(t.faiz or 0))
-            masraf = Decimal(str(t.masraf or 0))
+
+            plan = BankaKrediService.taksit_bilesenleri(t)
+            odenmis = BankaKrediService._odenen_bilesenler(session, t.id)
+            kalan_bilesen = {
+                alan: max(Decimal("0.00"), plan.get(alan, Decimal("0")) - odenmis[alan])
+                for alan in BILESEN_ALANLARI
+            }
+            # Legacy masraf alanı: plan masraf − ödenen masraf bileşenleri
+            plan_masraf = Decimal(str(t.masraf or 0))
+            odenen_masraf = BankaKrediService._d(
+                getattr(t, "odenen_masraf", None) or 0, "Ödenen masraf"
+            )
+            kalan_masraf = max(Decimal("0.00"), plan_masraf - odenen_masraf)
+            odenen_tutar = BankaKrediService._d(t.odenen_tutar or 0, "Ödenen tutar")
+            kalan = BankaKrediService._taksit_kalan(t)
+            # Ekran sırası 1..N (banka taksit_no 17–24 olabilir → 17/8 hatası olmasın)
+            plan_satir = sorted(
+                (
+                    x
+                    for x in (t.kredi.taksitler or [])
+                    if (x.durum or "").upper() != "IPTAL"
+                ),
+                key=lambda x: (int(x.taksit_no or 0), int(x.id or 0)),
+            )
+            plan_adet = len(plan_satir) or int(t.kredi.taksit_sayisi or 0)
+            plan_sira = next(
+                (i + 1 for i, x in enumerate(plan_satir) if int(x.id) == int(t.id)),
+                int(t.taksit_no or 0),
+            )
             return {
                 "taksit_id": t.id,
                 "kredi_id": t.kredi.id,
                 "kredi_adi": t.kredi.kredi_adi,
                 "taksit_no": t.taksit_no,
-                "taksit_sayisi": t.kredi.taksit_sayisi,
+                "taksit_sayisi": int(t.kredi.taksit_sayisi or plan_adet or 0),
+                "plan_sira": plan_sira,
+                "plan_adet": plan_adet,
                 "vade_tarihi": t.vade_tarihi,
-                "anapara": anapara,
-                "faiz": faiz,
-                "masraf": masraf,
-                "toplam": anapara + faiz + masraf,
+                # Ödeme önizlemesi: kalan tutarlar (kısmi ödemede faiz/masraf kalır)
+                "anapara": kalan_bilesen["anapara"],
+                "faiz": kalan_bilesen["faiz"],
+                "masraf": kalan_masraf,
+                "toplam": kalan if kalan > 0 else BankaKrediService.taksit_toplam(kalan_bilesen),
+                "plan_anapara": plan["anapara"],
+                "plan_faiz": plan["faiz"],
+                "plan_masraf": plan_masraf,
+                "plan_toplam": plan["toplam"],
+                "odenen_tutar": odenen_tutar,
+                "odenen_anapara": odenmis["anapara"],
+                "kalan": kalan,
                 "odeme_hesap_turu": t.kredi.odeme_hesap_turu or "MEVDUAT",
                 "durum": t.durum,
+                "odeme_belge_no": t.odeme_belge_no or "",
+                "gider_belge_no": t.gider_belge_no or "",
             }
 
     @staticmethod
@@ -8060,7 +8733,7 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 session.scalars(
                     select(GiderFisi)
                     .options(selectinload(GiderFisi.finans_hesap))
-                    .where(GiderFisi.gider_turu == "HIZMET")
+                    .where(GiderFisi.gider_turu.in_(("HIZMET", "POS_KOMISYON", "POS_KESINTI")))
                     .order_by(GiderFisi.tarih.desc(), GiderFisi.id.desc())
                     .limit(limit)
                 ).all()
@@ -8071,6 +8744,181 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
                 else:
                     fis.hizmet = None
             return fisler
+
+    @staticmethod
+    def gider_evraklari_listele(limit: int = 8000) -> list[dict]:
+        """Hizmet alış (GIDER) faturaları + HIZMET/POS gider fişleri — birleşik liste satırları.
+
+        Aynı sayısal kimlik karışmasın diye ``kayit_turu`` + ``kayit_id`` ile tanımlanır.
+        Yeni fatura üretmez; yalnızca mevcut kayıtları okur.
+
+        ``cari`` = ekrandaki «Cari / Hizmet» (hizmet/açıklama veya fatura carisi metni).
+        ``cari_hesap`` = gerçek cari kart etiketi (yoksa «—»); POS tahsilat müşterisi kullanılmaz.
+        ``para_birimi`` = gösterim (TL…); ``para_birimi_kod`` = TRY/USD…
+        """
+        from database.hizmet_faturasi_service import HizmetFaturasiService
+        from database.gider_kart_odeme_service import gider_fisi_mahsup_toplami
+        from database.gider_fisi_liste_service import gider_fisi_cari_coz
+        from database.models.hizmet import HizmetKarti
+        from database.models.finans import GiderKartOdeme, KrediKartiOdeme
+        from database.teklif_customer_view import para_birimi_etiket
+
+        limit = max(1, min(int(limit or 8000), 20000))
+        satirlar: list[dict] = []
+
+        for kayit in HizmetFaturasiService.listele("GIDER"):
+            f = kayit["fatura"]
+            genel = _decimal(kayit.get("genel_toplam"), "toplam", Decimal("0"))
+            odenen = _decimal(getattr(f, "odeme_tutari", 0) or 0, "odenen", Decimal("0"))
+            if odenen < 0:
+                odenen = Decimal("0.00")
+            kalan = max(Decimal("0.00"), (genel - odenen).quantize(Decimal("0.01")))
+            cari_ad = f"{f.cari.cari_kodu} - {f.cari.unvan}" if getattr(f, "cari", None) else "—"
+            pb_kod = (getattr(f, "para_birimi", None) or "TRY").strip().upper() or "TRY"
+            if pb_kod in ("TL", "YTL"):
+                pb_kod = "TRY"
+            cari_idler = [int(f.cari_id)] if getattr(f, "cari_id", None) else []
+            satirlar.append(
+                {
+                    "kayit_turu": "HIZMET_FATURA",
+                    "kayit_id": int(f.id),
+                    "belge_no": f.fatura_no,
+                    "belge_turu": "Hizmet Alış",
+                    "olusturma_kaynagi": "",
+                    "tarih": f.fatura_tarihi,
+                    "cari": cari_ad,
+                    "cari_hesap": cari_ad if cari_idler else "—",
+                    "cari_idler": cari_idler,
+                    "cari_coklu": False,
+                    "toplam": genel,
+                    "odenen": odenen,
+                    "kalan": kalan,
+                    "para_birimi_kod": pb_kod,
+                    "para_birimi": para_birimi_etiket(pb_kod),
+                    "durum": f.durum or "",
+                    "odeme_belge_no": "",
+                    "gider_kart_odeme_id": None,
+                }
+            )
+
+        with get_session() as session:
+            fisler = list(
+                session.scalars(
+                    select(GiderFisi)
+                    .options(selectinload(GiderFisi.finans_hesap))
+                    .where(GiderFisi.gider_turu.in_(("HIZMET", "POS_KOMISYON", "POS_KESINTI")))
+                    .order_by(GiderFisi.tarih.desc(), GiderFisi.id.desc())
+                    .limit(limit)
+                ).all()
+            )
+            hizmet_ids = {int(f.hizmet_id) for f in fisler if f.hizmet_id}
+            hizmetler = {
+                h.id: h
+                for h in session.scalars(
+                    select(HizmetKarti).where(HizmetKarti.id.in_(hizmet_ids or [-1]))
+                ).all()
+            }
+            gko_map: dict[int, GiderKartOdeme] = {}
+            for g in session.scalars(
+                select(GiderKartOdeme).where(
+                    GiderKartOdeme.gider_fisi_id.in_([int(f.id) for f in fisler] or [-1]),
+                    GiderKartOdeme.durum == "AÇIK",
+                )
+            ).all():
+                gko_map[int(g.gider_fisi_id)] = g
+            kk_ids = {int(g.kk_odeme_id) for g in gko_map.values() if g.kk_odeme_id}
+            kk_map = {
+                int(k.id): k
+                for k in session.scalars(
+                    select(KrediKartiOdeme).where(KrediKartiOdeme.id.in_(kk_ids or [-1]))
+                ).all()
+            }
+            for fis in fisler:
+                hiz = hizmetler.get(int(fis.hizmet_id)) if fis.hizmet_id else None
+                tur_u = (fis.gider_turu or "").upper()
+                # «Cari / Hizmet» sütunu: hizmet veya açıklama (tahsilat müşterisi değil)
+                if tur_u in ("POS_KOMISYON", "POS_KESINTI"):
+                    cari_ad = fis.aciklama or (
+                        "POS komisyon" if tur_u == "POS_KOMISYON" else "POS kesinti"
+                    )
+                else:
+                    cari_ad = (
+                        f"{hiz.hizmet_kodu} - {hiz.hizmet_adi}" if hiz else (fis.aciklama or "—")
+                    )
+                # Gerçek cari kart — POS tahsilat carisi kullanılmaz
+                cari_coz = gider_fisi_cari_coz(session, fis)
+                toplam = _decimal(fis.tutar, "tutar", Decimal("0.01"))
+                if (fis.durum or "") == "IPTAL":
+                    odenen = Decimal("0.00")
+                    kalan = Decimal("0.00")
+                    durum = "IPTAL"
+                    kaynak = ""
+                    odeme_no = fis.bagli_belge_no or ""
+                    gko_id = None
+                elif tur_u in ("POS_KOMISYON", "POS_KESINTI"):
+                    # POS bakiyesinden düşüldü; ayrı ödeme/mahsup yok
+                    odenen = toplam
+                    kalan = Decimal("0.00")
+                    durum = "KAPALI"
+                    kaynak = "POS"
+                    odeme_no = fis.bagli_belge_no or ""
+                    gko_id = None
+                else:
+                    mahsup = gider_fisi_mahsup_toplami(session, int(fis.id))
+                    odenen = mahsup
+                    kalan = max(Decimal("0.00"), (toplam - mahsup).quantize(Decimal("0.01")))
+                    durum = "KAPALI" if kalan == 0 and mahsup > 0 else "AÇIK"
+                    g = gko_map.get(int(fis.id))
+                    gko_id = int(g.id) if g is not None else None
+                    ko = kk_map.get(int(g.kk_odeme_id)) if g is not None and g.kk_odeme_id else None
+                    odeme_no = (ko.belge_no if ko else None) or (fis.bagli_belge_no or "")
+                    kaynak = "Kart" if g is not None or (odeme_no or "").upper().startswith("KKO") else "Manuel"
+                if tur_u == "POS_KOMISYON":
+                    belge_turu = "POS Komisyon"
+                elif tur_u == "POS_KESINTI":
+                    belge_turu = "POS Kesinti"
+                else:
+                    belge_turu = "Gider Fişi"
+                hesap = fis.finans_hesap
+                pb_kod = "TRY"
+                if hesap is not None:
+                    pb_kod = (getattr(hesap, "para_birimi", None) or "TRY").strip().upper() or "TRY"
+                    if pb_kod in ("TL", "YTL"):
+                        pb_kod = "TRY"
+                satirlar.append(
+                    {
+                        "kayit_turu": "GIDER_FISI",
+                        "kayit_id": int(fis.id),
+                        "belge_no": fis.belge_no,
+                        "belge_turu": belge_turu,
+                        "olusturma_kaynagi": kaynak,
+                        "tarih": fis.tarih,
+                        "cari": cari_ad,
+                        "cari_hesap": cari_coz.get("cari_etiket") or "—",
+                        "cari_idler": list(cari_coz.get("cari_idler") or []),
+                        "cari_coklu": bool(cari_coz.get("coklu")),
+                        "cari_detay": list(cari_coz.get("cari_detay") or []),
+                        "toplam": toplam,
+                        "odenen": odenen,
+                        "kalan": kalan,
+                        "para_birimi_kod": pb_kod,
+                        "para_birimi": para_birimi_etiket(pb_kod),
+                        "durum": durum,
+                        "odeme_belge_no": odeme_no or "",
+                        "gider_kart_odeme_id": gko_id,
+                        "kaynak_pos_valor_id": getattr(fis, "kaynak_pos_valor_id", None),
+                    }
+                )
+
+        satirlar.sort(
+            key=lambda s: (
+                s["tarih"] or date.min,
+                0 if s["kayit_turu"] == "HIZMET_FATURA" else 1,
+                -int(s["kayit_id"]),
+            ),
+            reverse=True,
+        )
+        return satirlar[:limit]
 
     @staticmethod
     def gider_fisi_getir(fisi_id):
@@ -8231,6 +9079,110 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
 
         muhasebe_hook("gider_fisi_iptal", int(fis.id), f"Gider fişi iptal {fis.belge_no}", session=session)
 
+    @staticmethod
+    def gider_fisi_guncelle(fisi_id: int, veriler: dict) -> GiderFisi:
+        """Mevcut gider fişini aynı kimlikle günceller.
+
+        Kart ödemesi tutarını değiştirmez. Tutar değişirse mahsup/kalan fiş tarafında
+        yeniden hesaplanır; mahsup toplamının altına inilemez.
+        """
+        yazma_zorunlu("finans_duzenleme", "duzenleme")
+        from database.gider_kart_odeme_service import fis_karta_bagli_mi, gider_fisi_mahsup_toplami
+        from database.masraf_dagitim_service import KAYNAK_GIDER_FISI, MasrafDagitimService
+        from database.models.hizmet import HizmetHareketi, HizmetKarti
+        from database.muhasebe_entegrasyon import muhasebe_hook
+
+        MasrafDagitimService.kilit_kontrol(kaynak_id=int(fisi_id), kaynak_turu=KAYNAK_GIDER_FISI)
+        with get_session() as session:
+            fis = session.get(GiderFisi, int(fisi_id))
+            if fis is None:
+                raise ValueError("Gider fişi bulunamadı.")
+            if (fis.durum or "") == "IPTAL":
+                raise ValueError("İptal edilmiş gider fişi düzenlenemez.")
+            if (fis.gider_turu or "") != "HIZMET":
+                raise ValueError("Bu fiş buradan düzenlenemez.")
+
+            tarih = veriler.get("tarih", fis.tarih)
+            if isinstance(tarih, str):
+                raise ValueError("Tarih geçersiz.")
+            if tarih > date.today():
+                raise ValueError("Tarih gelecek olamaz.")
+
+            hizmet_id = int(veriler["hizmet_id"]) if veriler.get("hizmet_id") is not None else int(fis.hizmet_id or 0)
+            if not hizmet_id:
+                raise ValueError("Gider hizmet kartı seçin.")
+            hizmet = session.get(HizmetKarti, hizmet_id)
+            if not hizmet or not hizmet.aktif:
+                raise ValueError("Gider hizmet kartı seçin.")
+            if (hizmet.hizmet_turu or "").upper() != "GIDER":
+                raise ValueError("Yalnızca gider hizmet kartı seçilebilir.")
+
+            yeni_tutar = _decimal(veriler.get("tutar", fis.tutar), "Tutar", Decimal("0.01"))
+            mahsup = gider_fisi_mahsup_toplami(session, int(fis.id))
+            if yeni_tutar < mahsup:
+                raise ValueError(
+                    f"Tutar ({yeni_tutar} TL) mahsup edilen tutarın ({mahsup} TL) altına inemez. "
+                    "Kart ödeme tutarı bu ekrandan değişmez."
+                )
+            if fis_karta_bagli_mi(session, int(fis.id)) and yeni_tutar != _decimal(fis.tutar, "eski", Decimal("0")):
+                # Kart borcu / KKO tutarı korunur; yalnız gider fişi tutarı güncellenir.
+                pass
+
+            aciklama = (veriler.get("aciklama") if "aciklama" in veriler else fis.aciklama) or None
+            if isinstance(aciklama, str):
+                aciklama = aciklama.strip() or None
+            acik = aciklama or f"{hizmet.hizmet_kodu} — {hizmet.hizmet_adi}"
+
+            eski_tutar = _decimal(fis.tutar, "eski", Decimal("0"))
+            fis.tarih = tarih
+            fis.hizmet_id = hizmet.id
+            fis.tutar = yeni_tutar
+            fis.aciklama = acik
+
+            # Bağlı hizmet hareketini aynı belge no ile senkron tut
+            har = session.scalar(
+                select(HizmetHareketi).where(
+                    HizmetHareketi.belge_no == fis.belge_no,
+                    HizmetHareketi.hareket_turu == "GİDER FİŞİ",
+                )
+            )
+            if har is not None:
+                har.tarih = tarih
+                har.hizmet_id = hizmet.id
+                har.birim_fiyat = yeni_tutar
+                har.tutar = yeni_tutar
+                har.kdv_orani = Decimal(str(hizmet.kdv_orani or 0))
+                har.aciklama = acik
+
+            # Kasa/banka çıkışlı (kartsız) fişte finans hareket tutarını güncelle
+            if not fis_karta_bagli_mi(session, int(fis.id)) and fis.finans_hesap_id:
+                fh = session.scalar(
+                    select(FinansHareketi).where(
+                        FinansHareketi.belge_no == fis.belge_no,
+                        FinansHareketi.hareket_turu == "GİDER FİŞİ",
+                    )
+                )
+                if fh is not None and eski_tutar != yeni_tutar:
+                    hesap = session.scalar(
+                        select(FinansHesabi)
+                        .where(FinansHesabi.id == int(fis.finans_hesap_id))
+                        .options(
+                            selectinload(FinansHesabi.hareketler),
+                            selectinload(FinansHesabi.banka_karti),
+                        )
+                    )
+                    if hesap is not None:
+                        fark = yeni_tutar - eski_tutar
+                        if fark > 0:
+                            FinansService.cikis_kontrol(hesap, fark, kart=hesap.banka_karti)
+                        fh.tutar = yeni_tutar
+                        fh.tarih = tarih
+                        fh.aciklama = acik
+
+            session.flush()
+            muhasebe_hook("gider_fisi_fisi", int(fis.id), session=session)
+        return FinansService.gider_fisi_getir(int(fisi_id))
+
     # --- Kasa tahsilat / ödeme makbuzu ---
 
     @staticmethod
@@ -8281,6 +9233,27 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                     selectinload(KasaMakbuzu.satirlar).selectinload(KasaMakbuzSatiri.finans_hesap),
                 )
                 .where(KasaMakbuzu.belge_no == belge_no)
+            )
+            if makbuz:
+                makbuz.cari = session.get(Cari, makbuz.cari_id)
+            return makbuz
+
+    @staticmethod
+    def kasa_makbuz_makbuz_no_ile(makbuz_no: str):
+        """Kullanıcıya görünen makbuz no (MKB-00046) ile kayıt bulur."""
+        from database.models.cari import Cari
+
+        makbuz_no = (makbuz_no or "").strip()
+        if not makbuz_no:
+            return None
+        with get_session() as session:
+            makbuz = session.scalar(
+                select(KasaMakbuzu)
+                .options(
+                    selectinload(KasaMakbuzu.finans_hesap),
+                    selectinload(KasaMakbuzu.satirlar).selectinload(KasaMakbuzSatiri.finans_hesap),
+                )
+                .where(KasaMakbuzu.makbuz_no == makbuz_no)
             )
             if makbuz:
                 makbuz.cari = session.get(Cari, makbuz.cari_id)
@@ -8832,6 +9805,11 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 FinansService._makbuz_hesap_uyumu(s, hesap, tur)
 
                 if tur == "TAHSILAT" and sekil_turu == "KART":
+                    if not hesap.banka_karti_id:
+                        raise ValueError(
+                            f"Satır {s['sira_no']}: «{hesap.hesap_adi}» bir banka kartına bağlı değil — "
+                            "POS hesabını banka kartından kaydedin."
+                        )
                     kart = session.scalar(
                         select(BankaKarti)
                         .where(BankaKarti.id == int(hesap.banka_karti_id))
@@ -8840,14 +9818,18 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                             selectinload(BankaKarti.pos_taksit_komisyonlari),
                         )
                     )
-                    kmh = next(
-                        (h for h in kart.alt_hesaplar if (h.alt_hesap_turu or "") == "KMH"), None
-                    ) if kart else None
-                    if not kart or not kmh:
+                    # Aktarım hedefi MEVDUAT veya KMH olabilir (pos_aktarim_hesap_id / tür).
+                    # Yalnızca KMH aramak Enpara 002 gibi mevduat hedefli kartlarda hatalı engel üretirdi.
+                    hedef = FinansService._pos_hedef_hesap(kart) if kart else None
+                    if not kart or not hedef:
+                        banka_ad = (kart.banka_adi if kart else "") or "—"
+                        pos_ad = (hesap.hesap_adi or "").strip() or "POS"
                         raise ValueError(
-                            f"Satır {s['sira_no']}: POS hesabının KMH hesabı eksik — banka kartını kaydedin."
+                            f"Satır {s['sira_no']}: «{pos_ad}» (banka: {banka_ad}) için "
+                            "aktarım hesabı (mevduat veya KMH) eksik — banka kartında "
+                            "«Aktarımın yatacağı hesap» bağlantısını kaydedin."
                         )
-                    cozulmus.append((s, hesap, "POS", (kart, kmh)))
+                    cozulmus.append((s, hesap, "POS", (kart, hedef)))
                     continue
 
                 if tur == "ODEME":
@@ -9372,6 +10354,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
         )
         session.add(kayit)
         session.flush()
+        try:
+            from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+            PosKomisyonGiderService.senkronize(session, kayit, kesin=False)
+        except Exception:
+            pass
         return kayit
 
     @staticmethod
@@ -9542,6 +10530,157 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
             session.flush()
 
     @staticmethod
+    def kasa_makbuz_silme_ozeti(makbuz_id) -> dict:
+        """Kalıcı silme onay metni için özet (yazmaz)."""
+        from database.models.cari import Cari
+
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
+        with get_session() as session:
+            makbuz = session.scalar(
+                select(KasaMakbuzu)
+                .options(selectinload(KasaMakbuzu.satirlar))
+                .where(KasaMakbuzu.id == int(makbuz_id))
+            )
+            if makbuz is None:
+                raise ValueError("Makbuz bulunamadı.")
+            cari = session.get(Cari, makbuz.cari_id) if makbuz.cari_id else None
+            pos_kayitlari, kk_odemeleri = FinansService._makbuz_bagli_kayitlar(session, makbuz)
+            bag = FinansService._fatura_bagi(session, makbuz.id)
+            aktarilan = [
+                pv for pv in pos_kayitlari
+                if (pv.durum or "").upper() == "AKTARILDI"
+                or Decimal(str(getattr(pv, "gercek_yatis_tutari", 0) or 0)) > Decimal("0.005")
+            ]
+            etkiler = [
+                f"Makbuz {makbuz.makbuz_no or makbuz.belge_no} veritabanından kalıcı silinir (IPTAL satırı kalmaz)",
+                f"Belge no {makbuz.belge_no} yeniden kullanılmaz",
+                "Cari tahsilat/ödeme ve fatura kapamaları çözülür",
+                f"{len(list(makbuz.satirlar or []))} tahsilat/ödeme satırı kaldırılır",
+            ]
+            if pos_kayitlari:
+                etkiler.append(f"{len(pos_kayitlari)} POS kaydı (komisyon/net) kaldırılır")
+            if aktarilan:
+                etkiler.append(
+                    f"{len(aktarilan)} KMH/valör aktarımı önce geri alınır, sonra POS silinir"
+                )
+            if kk_odemeleri:
+                etkiler.append(f"{len(kk_odemeleri)} şirket kartı ödeme satırı kaldırılır")
+            return {
+                "makbuz_id": int(makbuz.id),
+                "belge_no": makbuz.belge_no,
+                "makbuz_no": makbuz.makbuz_no,
+                "tarih": makbuz.tarih,
+                "tutar": Decimal(str(makbuz.tutar or 0)),
+                "makbuz_turu": makbuz.makbuz_turu,
+                "durum": makbuz.durum,
+                "cari": (
+                    f"{cari.cari_kodu} — {cari.unvan}" if cari else "—"
+                ),
+                "satir_sayisi": len(list(makbuz.satirlar or [])),
+                "pos_sayisi": len(pos_kayitlari),
+                "kk_odeme_sayisi": len(kk_odemeleri),
+                "aktarim_sayisi": len(aktarilan),
+                "bagli_fatura": bag.fatura_no if bag else None,
+                "etkilenecek": etkiler,
+                "kalici": True,
+            }
+
+    @staticmethod
+    def kasa_makbuz_kalici_sil(makbuz_id, *, neden: str, istek_anahtari: str | None = None) -> dict:
+        """Makbuzu ve yalnız ona ait mali etkileri veritabanından kalıcı siler.
+
+        Valörü KMH'ye aktarılmış POS varsa önce aktarım geri alınır; ardından POS/KK/cari
+        etkileri ve makbuz satırları silinir. IPTAL bayrağı / ters fiş üretilmez.
+        """
+        from database.gider_kart_odeme_service import _belge_no_rezerve_et
+        from database.muhasebe_entegrasyon import muhasebe_hook
+        from database.odeme_sozu_service import OdemeSozuService
+
+        yazma_zorunlu("finans_duzenleme", "iptal")
+        if not (neden or "").strip():
+            raise ValueError("Silme nedeni yazın.")
+        neden = neden.strip()[:300]
+        ozet = FinansService.kasa_makbuz_silme_ozeti(int(makbuz_id))
+        FinansService.fatura_makbuz_bag_tablosu_hazirla()
+
+        # Aktarılmış POS: önce banka/KMH etkisini geri al (ayrı transaction — mevcut API)
+        with get_session() as session:
+            makbuz0 = session.scalar(
+                select(KasaMakbuzu)
+                .options(selectinload(KasaMakbuzu.satirlar))
+                .where(KasaMakbuzu.id == int(makbuz_id))
+            )
+            if makbuz0 is None:
+                raise ValueError("Makbuz bulunamadı (zaten silinmiş olabilir).")
+            pos0, _kk0 = FinansService._makbuz_bagli_kayitlar(session, makbuz0)
+            aktar_idler = [
+                int(pv.id)
+                for pv in pos0
+                if (pv.durum or "").upper() == "AKTARILDI"
+                or Decimal(str(getattr(pv, "gercek_yatis_tutari", 0) or 0)) > Decimal("0.005")
+            ]
+        for pid in aktar_idler:
+            FinansService.pos_aktarim_geri_al(
+                pid, gerekce=f"Makbuz kalıcı silme: {ozet['belge_no']}"
+            )
+
+        with get_session() as session:
+            makbuz = session.scalar(
+                select(KasaMakbuzu)
+                .options(selectinload(KasaMakbuzu.satirlar))
+                .where(KasaMakbuzu.id == int(makbuz_id))
+            )
+            if makbuz is None:
+                raise ValueError("Makbuz bulunamadı (zaten silinmiş olabilir).")
+            belge = makbuz.belge_no
+            makbuz_no = makbuz.makbuz_no
+            # Ödenmiş kart taksiti hâlâ engel (aktarım geri alındıktan sonra da)
+            _pos, kk_odemeleri = FinansService._makbuz_bagli_kayitlar(session, makbuz)
+            for ko in kk_odemeleri:
+                if any((t.durum or "") == "ODENDI" for t in (ko.taksitler or [])):
+                    raise ValueError(
+                        f"{ko.belge_no} taksiti ekstrede ödendi; makbuz kalıcı silinemez."
+                    )
+
+            try:
+                muhasebe_hook(
+                    "kasa_makbuzu_iptal",
+                    int(makbuz.id),
+                    f"Makbuz kalıcı silindi {belge}",
+                    session=session,
+                )
+            except Exception:
+                pass
+
+            # iptal=False → POS/KK satırlarını sil; cari/finans etkilerini kaldır
+            FinansService._makbuz_etkilerini_geri_al(session, makbuz, iptal=False)
+            OdemeSozuService.evrak_baglantilarini_iptal(
+                session, belge, neden=f"Makbuz kalıcı silindi {belge}"
+            )
+            bag = FinansService._fatura_bagi(session, makbuz.id)
+            if bag is not None:
+                session.delete(bag)
+            for satir in list(makbuz.satirlar or []):
+                session.delete(satir)
+            session.flush()
+            session.delete(makbuz)
+            session.flush()
+            _belge_no_rezerve_et(session, belge, evrak_turu="MAKBUZ", neden=neden)
+            if makbuz_no and makbuz_no != belge:
+                _belge_no_rezerve_et(session, makbuz_no, evrak_turu="MAKBUZ_NO", neden=neden)
+            session.flush()
+
+        return {
+            "makbuz_id": int(makbuz_id),
+            "belge_no": ozet["belge_no"],
+            "makbuz_no": ozet.get("makbuz_no"),
+            "kalici": True,
+            "neden": neden,
+            "aktarim_geri_alindi": len(aktar_idler),
+            "istek_anahtari": (istek_anahtari or "")[:64] or None,
+        }
+
+    @staticmethod
     def pos_valor_iptal(pv_id, *, neden: str = "") -> dict:
         """Makbuza bağlı olmayan POS tahsilatını iptal eder (cari + finans + bekleyen valör).
 
@@ -9605,6 +10744,12 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                 f"{neden} ({belge_no})",
                 session=session,
             )
+            try:
+                from database.pos_komisyon_gider_service import PosKomisyonGiderService
+
+                PosKomisyonGiderService.iptal(session, int(pv.id), neden=neden)
+            except Exception:
+                pass
             # Fatura no ile yazılmış POS (RAY-…): aynı belgede SatisHareketi varken
             # CariIslem silinirse defter satış satırını B+A ile geri basar ve toplamlar bozulur.
             # Bu durumda cari satırını silmek yerine tutarı sıfırla (maske kalır, kapama yoksa reopen yok).

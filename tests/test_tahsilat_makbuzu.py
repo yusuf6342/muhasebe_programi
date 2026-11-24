@@ -321,6 +321,95 @@ class TahsilatMakbuzuTest(unittest.TestCase):
                 }
             )
 
+    def test_pos_tahsilat_yalniz_mevduat_hedefli_kart(self):
+        """Enpara 002 gibi: KMH yok, aktarım MEVDUAT — makbuz engellenmemeli."""
+        with get_session() as s:
+            banka = BankaKarti(
+                banka_adi="MEVDUAT HEDEF BANK",
+                kk_komisyon_orani=Decimal("1"),
+                pos_valor_gun=1,
+                pos_hedef_hesap_turu="MEVDUAT",
+            )
+            s.add(banka)
+            s.flush()
+            mev = FinansHesabi(
+                hesap_adi="MEV-HEDEF — MEVDUAT",
+                hesap_turu="BANKA",
+                banka_karti_id=banka.id,
+                alt_hesap_turu="MEVDUAT",
+                acilis_bakiyesi=Decimal("0"),
+            )
+            pos = FinansHesabi(
+                hesap_adi="MEV-HEDEF — POS",
+                hesap_turu="BANKA",
+                banka_karti_id=banka.id,
+                alt_hesap_turu="POS",
+                acilis_bakiyesi=Decimal("0"),
+            )
+            s.add_all([mev, pos])
+            s.flush()
+            banka.pos_aktarim_hesap_id = int(mev.id)
+            pos_id = int(pos.id)
+            mev_id = int(mev.id)
+        m = FinansService.kasa_tahsilat_makbuzu_kaydet(
+            {
+                "tarih": date.today(),
+                "cari_id": self.musteri_id,
+                "makbuz_no_otomatik": True,
+                "satirlar": [
+                    {
+                        "odeme_sekli": "KREDİ KARTIYLA TAHSİLAT",
+                        "finans_hesap_id": pos_id,
+                        "tutar": "200",
+                        "kart_tipi": "KREDI_KARTI",
+                        "taksit_sayisi": 1,
+                    }
+                ],
+            }
+        )
+        with get_session() as s:
+            pv = s.scalar(select(PosValorKaydi).where(PosValorKaydi.belge_no == m.belge_no))
+            self.assertIsNotNone(pv)
+            self.assertEqual(int(pv.hedef_hesap_id or pv.kmh_hesap_id), mev_id)
+            self.assertEqual(pv.brut_tutar, Decimal("200.00"))
+
+    def test_pos_tahsilat_hedef_yoksa_acik_mesaj(self):
+        with get_session() as s:
+            banka = BankaKarti(banka_adi="HEDEFSİZ BANK", kk_komisyon_orani=Decimal("0"), pos_valor_gun=1)
+            s.add(banka)
+            s.flush()
+            pos = FinansHesabi(
+                hesap_adi="HEDEFSİZ — POS",
+                hesap_turu="BANKA",
+                banka_karti_id=banka.id,
+                alt_hesap_turu="POS",
+            )
+            s.add(pos)
+            s.flush()
+            pos_id = int(pos.id)
+        with self.assertRaises(ValueError) as ctx:
+            FinansService.kasa_tahsilat_makbuzu_kaydet(
+                {
+                    "tarih": date.today(),
+                    "cari_id": self.musteri_id,
+                    "satirlar": [
+                        {
+                            "odeme_sekli": "KREDİ KARTIYLA TAHSİLAT",
+                            "finans_hesap_id": pos_id,
+                            "tutar": "50",
+                            "kart_tipi": "KREDI_KARTI",
+                            "taksit_sayisi": 1,
+                        }
+                    ],
+                }
+            )
+        msg = str(ctx.exception)
+        self.assertTrue(
+            "aktarım hesabı" in msg.lower() or "aktarim hesabi" in msg.lower()
+            or "Aktarım hesabı" in msg
+        )
+        self.assertIn("HEDEFSİZ — POS", msg)
+
     # —— tedarikçiye şirket kartıyla ödeme ——
     def _kk_odeme(self, tutar="3000", taksit=3):
         return FinansService.kasa_odeme_makbuzu_kaydet(
