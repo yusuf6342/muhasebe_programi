@@ -1,12 +1,13 @@
 ﻿#Requires -Version 5.1
 <#
-  Güncel dist\CinMuhasebe → D2 güncelleme ZIP'i.
-  İçinde tek betik: 00_D2_GUNCELLE.ps1 (3 makine kimliği).
-  PG kurulum / DB oluşturma / aktarım YOK.
+  Güncel dist\CinMuhasebe → D2 güncelleme ZIP + (varsa) USB CinMuhasebe klasörü.
+  PG kurulum / DB / aktarım YOK. baglanti_ayari pakete girmez.
 #>
 param(
     [string]$RepoKok = "",
-    [string]$CiktiZip = ""
+    [string]$CiktiZip = "",
+    [string]$AppVersion = "",
+    [switch]$UsbYok
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,12 @@ if (-not $RepoKok) {
 $Dist = Join-Path $RepoKok "dist\CinMuhasebe"
 $Exe = Join-Path $Dist "CinMuhasebe.exe"
 if (-not (Test-Path $Exe)) { throw "EXE yok: $Exe — once PyInstaller" }
+if (-not (Test-Path (Join-Path $Dist "_internal"))) { throw "dist\_internal yok — eksik derleme" }
+
+if (-not $AppVersion) {
+    $brand = Get-Content (Join-Path $RepoKok "branding.py") -Raw -Encoding UTF8
+    if ($brand -match 'APP_VERSION\s*=\s*"([^"]+)"') { $AppVersion = $Matches[1] } else { $AppVersion = "0.0.0" }
+}
 
 $Stamp = Get-Date -Format "yyyyMMdd_HHmm"
 $PaketAd = "CinMuhasebe_DNM_D2_GUNCELLE_$Stamp"
@@ -28,13 +35,23 @@ $sha = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToUpperInvariant()
 $mtime = (Get-Item $Exe).LastWriteTime.ToString("o")
 $size = (Get-Item $Exe).Length
 
+# BUILD_INFO (paket + dist)
+$buildInfo = @"
+APP_VERSION=$AppVersion
+EXE_SHA256=$sha
+EXE_SIZE=$size
+EXE_MTIME=$mtime
+BUILD_STAMP=$Stamp
+BUILD_PC=$env:COMPUTERNAME
+"@
+Set-Content -Path (Join-Path $Dist "BUILD_INFO.txt") -Value $buildInfo -Encoding ASCII
+
 if (Test-Path $StageRoot) { Remove-Item -Recurse -Force $StageRoot }
 $stageDist = Join-Path $StageApp "CinMuhasebe"
 $stageKur = Join-Path $StageApp "kurulum"
 New-Item -ItemType Directory -Force -Path $stageDist, $stageKur, $OutDir | Out-Null
 
-Write-Host "dist kopyalanıyor (canlı güncelleme YOK; yalnız ZIP; 00_D2_GUNCELLE.ps1 çalıştırılmaz)..."
-# Kullanıcı verisi / DB / bağlantı / yazıcı tercihleri pakete girmez
+Write-Host "dist kopyalanıyor (canlı güncelleme YOK; yalnız paket)..."
 $rc = Start-Process robocopy.exe -ArgumentList @(
     "`"$Dist`"", "`"$stageDist`"", "/E", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS",
     "/XF", "baglanti_ayari.json", "kullanici_ayarlari.json", "ayarlar.json",
@@ -44,277 +61,9 @@ $rc = Start-Process robocopy.exe -ArgumentList @(
 ) -Wait -PassThru -NoNewWindow
 if ($rc.ExitCode -ge 8) { throw "robocopy exit $($rc.ExitCode)" }
 
-$guncelle = @'
-#Requires -Version 5.1
-<#
-  D2 program güncellemesi — tek betik, makine kimliğine göre.
-  - DESKTOP-CGSE5GK (ana): host 127.0.0.1 korunur
-  - DESKTOP-FL08BVD / DESKTOP-NB7SBPA (terminal): host 192.168.1.114 korunur
-  PG kurulumu, DB oluşturma/geri yükleme, Evo aktarım, mali kayıt YOK.
-  Aktif baglanti_ayari.json, kullanıcı ayarları, sertifika ve kimlik bilgileri korunur.
-#>
-param(
-    [string]$PaketKok = "",
-    [switch]$Force
-)
-$ErrorActionPreference = "Stop"
-
-$MakineProfil = @{
-    "DESKTOP-CGSE5GK" = @{
-        Rol = "ANA"
-        KisayolAdi = "CİN MUHASEBE — DNM D2 — ANA"
-        BeklenenHost = "127.0.0.1"
-        TerminalKimligi = "DNM-D2-ANA"
-    }
-    "DESKTOP-FL08BVD" = @{
-        Rol = "TERMINAL"
-        KisayolAdi = "CİN MUHASEBE — DNM D2 — TERMINAL"
-        BeklenenHost = "192.168.1.114"
-        TerminalKimligi = "DNM-D2-FL08BVD"
-    }
-    "DESKTOP-NB7SBPA" = @{
-        Rol = "TERMINAL"
-        KisayolAdi = "CİN MUHASEBE — DNM D2 — TERMINAL"
-        BeklenenHost = "192.168.1.114"
-        TerminalKimligi = "DNM-D2-NB7SBPA"
-    }
-}
-
-$Pc = $env:COMPUTERNAME
-Write-Host "PC=$Pc"
-if (-not $MakineProfil.ContainsKey($Pc)) {
-    throw "YANLIS MAKINE: desteklenenler DESKTOP-CGSE5GK / DESKTOP-FL08BVD / DESKTOP-NB7SBPA. Su an: $Pc"
-}
-$Prof = $MakineProfil[$Pc]
-Write-Host ("Rol={0} beklenen_host={1}" -f $Prof.Rol, $Prof.BeklenenHost)
-
-if (-not $PaketKok) {
-    $PaketKok = Split-Path -Parent $PSScriptRoot
-    if (-not (Test-Path (Join-Path $PaketKok "CinMuhasebe\CinMuhasebe.exe"))) { $PaketKok = $PSScriptRoot }
-}
-$Src = Join-Path $PaketKok "CinMuhasebe"
-$SrcExe = Join-Path $Src "CinMuhasebe.exe"
-if (-not (Test-Path $SrcExe)) { throw "EXE yok: $SrcExe" }
-
-$BeklenenSha = Get-Content (Join-Path $PSScriptRoot "BEKLENEN_SHA256.txt") -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-$SrcSha = (Get-FileHash $SrcExe -Algorithm SHA256).Hash.ToUpperInvariant()
-if ($BeklenenSha -and ($SrcSha -ne $BeklenenSha.Trim().ToUpperInvariant()) -and -not $Force) {
-    throw "EXE SHA uyusmuyor. Beklenen=$BeklenenSha Gelen=$SrcSha (Force ile gecebilirsiniz)"
-}
-
-$HedefKok = Join-Path $env:LOCALAPPDATA "CinMuhasebe\DNM_D2"
-$HedefApp = Join-Path $HedefKok "CinMuhasebe"
-$HedefExe = Join-Path $HedefApp "CinMuhasebe.exe"
-$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$Geri = Join-Path $env:LOCALAPPDATA "CinMuhasebe\DNM_D2_GERI_$Stamp"
-New-Item -ItemType Directory -Force -Path $HedefKok, $Geri | Out-Null
-
-Write-Host "Koruma: PG/DB dokunulmaz; mali kayit yok; baglanti_ayari.json korunur"
-
-# Acik uygulamayi nazikce kapat (kullanici oturumu / Stop-Process -Force YOK)
-Get-Process CinMuhasebe -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "Nazik kapanis isteniyor PID=$($_.Id)"
-    try { $_.CloseMainWindow() | Out-Null } catch {}
-}
-$deadline = (Get-Date).AddSeconds(20)
-while ((Get-Date) -lt $deadline) {
-    $alive = @(Get-Process CinMuhasebe -ErrorAction SilentlyContinue)
-    if ($alive.Count -eq 0) { break }
-    Start-Sleep -Seconds 2
-}
-$alive = @(Get-Process CinMuhasebe -ErrorAction SilentlyContinue)
-if ($alive.Count -gt 0) {
-    throw ("CinMuhasebe hala acik (PID={0}). Kaydedip kapatip yeniden calistirin; zorla kapatma yapilmaz." -f ($alive.Id -join ","))
-}
-Start-Sleep -Seconds 1
-
-# --- yedek: program + ayarlar ---
-if (Test-Path $HedefApp) {
-    robocopy $HedefApp (Join-Path $Geri "CinMuhasebe") /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
-}
-Get-ChildItem $HedefKok -Filter "baglanti*.json" -ErrorAction SilentlyContinue | Copy-Item -Destination $Geri -Force
-$Desk = [Environment]::GetFolderPath("Desktop")
-Get-ChildItem $Desk -Filter "*.lnk" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "*MUHASEBE*" -or $_.Name -like "*Cin*" -or $_.Name -like "*DNM*" } |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $Geri $_.Name) -Force }
-
-$CaDir = Join-Path $env:APPDATA "postgresql"
-$CaPath = Join-Path $CaDir "root.crt"
-if (Test-Path $CaPath) { Copy-Item -Force $CaPath (Join-Path $Geri "root.crt") }
-
-# Aktif baglanti + olasi kullanıcı ayarlarını kenara al (robocopy üzerine yazmasın)
-$Korunan = Join-Path $Geri "_korunan_aktif"
-New-Item -ItemType Directory -Force -Path $Korunan | Out-Null
-$KorunanDosyalar = @(
-    (Join-Path $HedefApp "baglanti_ayari.json"),
-    (Join-Path $HedefKok "baglanti_ayari.json"),
-    (Join-Path $HedefApp "kullanici_ayarlari.json"),
-    (Join-Path $HedefApp "ayarlar.json"),
-    (Join-Path $HedefApp "credentials.json"),
-    (Join-Path $HedefApp "evo_credentials.json"),
-    (Join-Path $HedefApp "evobulut_credentials.json")
-)
-foreach ($p in $KorunanDosyalar) {
-    if (Test-Path $p) {
-        $rel = $p.Substring($HedefKok.Length).TrimStart('\')
-        $dest = Join-Path $Korunan $rel
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-        Copy-Item -Force $p $dest
-        Write-Host "Korundu: $rel"
-    }
-}
-# keyring / credential store dokunulmaz (Windows Credential Manager)
-
-# Program dosyalarını güncelle
-New-Item -ItemType Directory -Force -Path $HedefApp | Out-Null
-$rc2 = Start-Process robocopy.exe -ArgumentList @(
-    "`"$Src`"", "`"$HedefApp`"", "/E", "/R:2", "/W:2", "/NFL", "/NDL", "/NJH", "/NJS"
-) -Wait -PassThru -NoNewWindow
-if ($rc2.ExitCode -ge 8) { throw "robocopy guncelleme exit $($rc2.ExitCode)" }
-
-# Korunan ayarları geri yaz
-Get-ChildItem $Korunan -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-    $rel = $_.FullName.Substring($Korunan.Length).TrimStart('\')
-    $dest = Join-Path $HedefKok $rel
-    New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-    Copy-Item -Force $_.FullName $dest
-    Write-Host "Geri yazildi: $rel"
-}
-
-# baglanti_ayari.json yoksa oluşturma — mevcut aktif profil zorunlu korunur.
-# Yalnız örnek profil (bilinçli inceleme için) güncellenir; host makineye göre.
-$Ornek = @{
-    kipi = "yerel_ag_postgres"
-    schema_surum = 1
-    profil_adi = "DNM İKİNCİ DÖNEM DENEME"
-    postgres = @{
-        host = $Prof.BeklenenHost
-        port = 5432
-        sistem_db = "cin_sistem_dnm_d2_20260901"
-        firma_db = "cin_firma_dnm_d2_20260901"
-        kullanici = "cin_app"
-        sslmode = "verify-full"
-        ortam = "DENEME"
-        terminal_kimligi = $Prof.TerminalKimligi
-    }
-    otomatik_aktarim = $false
-    sqlite_zorlama_yok = $true
-}
-$Ornek | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $HedefKok "baglanti_ayari.D2_ORNEK.json") -Encoding UTF8
-
-# Aktif baglanti host doğrulama (değiştirmeden uyar)
-$AktifBag = Join-Path $HedefApp "baglanti_ayari.json"
-if (-not (Test-Path $AktifBag)) { $AktifBag = Join-Path $HedefKok "baglanti_ayari.json" }
-if (Test-Path $AktifBag) {
-    try {
-        $aktif = Get-Content $AktifBag -Raw -Encoding UTF8 | ConvertFrom-Json
-        $h = [string]$aktif.postgres.host
-        Write-Host "Aktif baglanti host=$h db=$($aktif.postgres.sistem_db)/$($aktif.postgres.firma_db)"
-        if ($h -and ($h -ne $Prof.BeklenenHost) -and -not $Force) {
-            Write-Warning "Aktif host ($h) beklenen $($Prof.BeklenenHost) degil — DOSYA DEGISTIRILMEDI. Kontrol edin."
-        }
-        $sd = [string]$aktif.postgres.sistem_db
-        $fd = [string]$aktif.postgres.firma_db
-        if ($sd -and $sd -ne "cin_sistem_dnm_d2_20260901") {
-            Write-Warning "Aktif sistem_db beklenmeyen: $sd — DOSYA DEGISTIRILMEDI."
-        }
-        if ($fd -and $fd -ne "cin_firma_dnm_d2_20260901") {
-            Write-Warning "Aktif firma_db beklenmeyen: $fd — DOSYA DEGISTIRILMEDI."
-        }
-    } catch {
-        Write-Warning "baglanti_ayari.json okunamadi: $_"
-    }
-} else {
-    Write-Warning "Aktif baglanti_ayari.json bulunamadi; ornek profil yazildi. Bilinçli kopyalayın."
-}
-
-# Sertifika: mevcut root.crt korunur; yoksa paketten kopyala
-$CaSrc = Join-Path $PSScriptRoot "root.crt"
-if (-not (Test-Path $CaPath) -and (Test-Path $CaSrc)) {
-    New-Item -ItemType Directory -Force -Path $CaDir | Out-Null
-    Copy-Item -Force $CaSrc $CaPath
-    Write-Host "root.crt ilk kez kopyalandi"
-} elseif (Test-Path $CaPath) {
-    Write-Host "Mevcut root.crt korundu"
-}
-
-# Masaüstü kısayolları → güncel DNM_D2 EXE
-# 1) Profil adı + "Cin Muhasebe.lnk"  2) Hedefi zaten DNM_D2 olan mevcut kısayollar
-$Wsh = New-Object -ComObject WScript.Shell
-$DeskList = @(
-    $Desk,
-    [Environment]::GetFolderPath('CommonDesktopDirectory'),
-    (Join-Path $env:USERPROFILE 'Desktop'),
-    (Join-Path $env:USERPROFILE 'OneDrive\Desktop'),
-    (Join-Path $env:USERPROFILE 'OneDrive\Masaüstü')
-) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-function Set-DnmKisayol([string]$LnkPath) {
-    try {
-        if (Test-Path $LnkPath) {
-            Copy-Item $LnkPath (Join-Path $Geri ((Split-Path $LnkPath -Leaf) + '.bak')) -Force -ErrorAction SilentlyContinue
-        }
-        $Lnk = $Wsh.CreateShortcut($LnkPath)
-        $Lnk.TargetPath = $HedefExe
-        $Lnk.WorkingDirectory = $HedefApp
-        $Lnk.Arguments = ''
-        $Lnk.IconLocation = "$HedefExe,0"
-        $Lnk.Description = "Cin Muhasebe — DNM_D2 ($($Prof.Rol))"
-        $Lnk.Save()
-        Write-Host "Kisayol: $LnkPath"
-    } catch {
-        Write-Warning ("Kisayol yazilamadi (atlandi): {0} — {1}" -f $LnkPath, $_.Exception.Message)
-    }
-}
-$KisayolAdlari = @($Prof.KisayolAdi, 'Cin Muhasebe')
-foreach ($D in $DeskList) {
-    foreach ($Ad in $KisayolAdlari) {
-        $LnkPath = Join-Path $D "$Ad.lnk"
-        if (-not (Test-Path $LnkPath) -and $Ad -ne $Prof.KisayolAdi) { continue }
-        Set-DnmKisayol $LnkPath
-    }
-    Get-ChildItem $D -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            $cur = $Wsh.CreateShortcut($_.FullName)
-            $tp = [string]$cur.TargetPath
-            if ($tp -and ($tp -like '*\CinMuhasebe\DNM_D2\*' -or $tp -like '*\CinMuhasebe\DNM_D2\*')) {
-                if ($tp -ne $HedefExe -or [string]$cur.WorkingDirectory -ne $HedefApp) {
-                    Set-DnmKisayol $_.FullName
-                } else {
-                    Write-Host ("Kisayol zaten dogru: {0}" -f $_.FullName)
-                }
-            }
-        } catch {}
-    }
-}
-$LnkPath = Join-Path $Desk "$($Prof.KisayolAdi).lnk"
-
-$YeniSha = (Get-FileHash $HedefExe -Algorithm SHA256).Hash.ToUpperInvariant()
-$Sonuc = @{
-    format = "d2-guncelleme-sonuc-v1"
-    zaman = (Get-Date -Format o)
-    makine = $Pc
-    rol = $Prof.Rol
-    hedef_exe = $HedefExe
-    exe_sha256 = $YeniSha
-    paket_sha_beklenen = $BeklenenSha
-    yedek = $Geri
-    baglanti_korundu = (Test-Path $AktifBag)
-    kisayol = $LnkPath
-}
-($Sonuc | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $HedefKok "SON_GUNCELLEME.json") -Encoding UTF8
-($Sonuc | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $Geri "SON_GUNCELLEME.json") -Encoding UTF8
-
-Write-Host "GUNCELLEME TAMAM"
-Write-Host "EXE: $HedefExe"
-Write-Host "SHA: $YeniSha"
-Write-Host "Yedek: $Geri"
-Write-Host "Kisayol: $LnkPath"
-if ($YeniSha -ne $SrcSha) { throw "Hedef EXE SHA kaynakla uyusmuyor" }
-'@
-
-Set-Content -Path (Join-Path $stageKur "00_D2_GUNCELLE.ps1") -Value $guncelle -Encoding UTF8
+Copy-Item -Force (Join-Path $PSScriptRoot "00_D2_GUNCELLE.ps1") (Join-Path $stageKur "00_D2_GUNCELLE.ps1")
 $sha | Set-Content (Join-Path $stageKur "BEKLENEN_SHA256.txt") -Encoding ASCII
+Set-Content -Path (Join-Path $stageDist "BUILD_INFO.txt") -Value $buildInfo -Encoding ASCII
 
 $CaSrc = Join-Path $env:APPDATA "postgresql\root.crt"
 if (-not (Test-Path $CaSrc)) {
@@ -325,6 +74,7 @@ if (Test-Path $CaSrc) { Copy-Item -Force $CaSrc (Join-Path $stageKur "root.crt")
 @"
 Cin Muhasebe — DNM D2 GÜNCELLEME paketi
 =======================================
+Sürüm       : $AppVersion
 EXE SHA-256 : $sha
 EXE mtime   : $mtime
 EXE size    : $size
@@ -332,28 +82,25 @@ Kaynak      : $Dist
 Üretim PC   : $env:COMPUTERNAME
 Paket       : $PaketAd
 
-Desteklenen makineler
-- DESKTOP-CGSE5GK (ana)     → host 127.0.0.1
-- DESKTOP-FL08BVD (terminal)→ host 192.168.1.114
-- DESKTOP-NB7SBPA (terminal)→ host 192.168.1.114
+Desteklenen makineler / roller
+- DESKTOP-CGSE5GK → Ana Makine (host 127.0.0.1)
+- DESKTOP-FL08BVD → Terminal 1 (host 192.168.1.114)
+- DESKTOP-NB7SBPA → Terminal 2 (host 192.168.1.114)
 
-DB (degismez)
-- cin_sistem_dnm_d2_20260901
-- cin_firma_dnm_d2_20260901
-
-Güncelleme
-powershell -ExecutionPolicy Bypass -File .\kurulum\00_D2_GUNCELLE.ps1
+USB: CinMuhasebe\GUNCELLE.cmd → rol seç → güncelle/kur → program açılır
+ZIP: GUNCELLE_CALISTIR.bat veya kurulum\00_D2_GUNCELLE.ps1
 
 Koruma
-- PostgreSQL kurulumu / DB oluşturma / restore YOK
+- PostgreSQL / DB oluşturma / restore YOK
 - Evo aktarım / mali kayıt YOK
-- Aktif baglanti_ayari.json, kullanıcı ayarları, sertifika, kimlik bilgileri korunur
-- Önce yedek: %LOCALAPPDATA%\CinMuhasebe\DNM_D2_GERI_<zaman>
+- Aktif baglanti_ayari.json ve kullanıcı ayarları korunur
+- Yedek: %LOCALAPPDATA%\CinMuhasebe\DNM_D2_GERI_<zaman>
 "@ | Set-Content (Join-Path $StageApp "OKU_BENI.txt") -Encoding UTF8
 
 $manifest = @{
-    format = "d2-guncelle-paket-v1"
+    format = "d2-guncelle-paket-v2"
     paket_ad = $PaketAd
+    app_version = $AppVersion
     olusturma = (Get-Date -Format o)
     kaynak_makine = $env:COMPUTERNAME
     exe_path = $Exe
@@ -361,6 +108,7 @@ $manifest = @{
     exe_mtime = $mtime
     exe_size = $size
     makineler = @("DESKTOP-CGSE5GK", "DESKTOP-FL08BVD", "DESKTOP-NB7SBPA")
+    roller = @("ANA", "TERMINAL1", "TERMINAL2")
     pg_host_ana = "127.0.0.1"
     pg_host_terminal = "192.168.1.114"
     sistem_db = "cin_sistem_dnm_d2_20260901"
@@ -371,29 +119,16 @@ $manifest = @{
 }
 ($manifest | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $StageApp "PAKET_MANIFEST.json") -Encoding UTF8
 
-# UNC ag yolundan calisan baslatici (cd /d UNC basarisiz — tam yol + -PaketKok)
 $bat = @"
 @echo off
-REM UNC ag yolundan da calisir (cd /d UNC basarisiz olur).
 setlocal
 set "KOK=%~dp0"
-set "STAGE=%KOK%stage"
-REM %~dp0 sonunda \ vardir; ayri 'stage' alt klasoru yok — paket kokunu kullan
-set "STAGE=%KOK%"
-if "%STAGE:~-1%"=="\" set "STAGE=%STAGE:~0,-1%"
-set "PS1=%STAGE%\kurulum\00_D2_GUNCELLE.ps1"
-if not exist "%PS1%" (
-  echo HATA: Betik bulunamadi:
-  echo   %PS1%
-  pause
-  exit /b 1
-)
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -PaketKok "%STAGE%"
+if "%KOK:~-1%"=="\" set "KOK=%KOK:~0,-1%"
+set "PS1=%KOK%\kurulum\00_D2_GUNCELLE.ps1"
+if not exist "%PS1%" ( echo HATA: %PS1% & pause & exit /b 1 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -PaketKok "%KOK%" -Rol AUTO
 set ERR=%ERRORLEVEL%
-if not "%ERR%"=="0" (
-  echo.
-  echo Guncelleme hata kodu: %ERR%
-)
+if not "%ERR%"=="0" ( echo Hata: %ERR% )
 echo.
 pause
 exit /b %ERR%
@@ -405,7 +140,66 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($StageApp, $CiktiZip)
 $zipSha = (Get-FileHash $CiktiZip -Algorithm SHA256).Hash.ToUpperInvariant()
 
+# USB: CinMuhasebe klasörü (sürücü harfi sabit değil)
+$usbKok = $null
+foreach ($letter in @('D', 'E', 'F', 'G', 'H')) {
+    $cand = "${letter}:\CinMuhasebe"
+    if (Test-Path $cand) { $usbKok = $cand; break }
+}
+$usbSurum = $null
+$usbAktif = $null
+$usbCmd = $null
+if ($usbKok -and -not $UsbYok) {
+    Write-Host "USB bulundu: $usbKok"
+    $surumAd = "${AppVersion}_$Stamp"
+    $usbSurum = Join-Path $usbKok "Surumler\$surumAd"
+    $usbAktif = Join-Path $usbKok "SonGuncelleme\paket"
+    $usbOnceki = Join-Path $usbKok ("SonGuncelleme\paket_onceki_" + (Get-Date -Format "yyyyMMdd_HHmmss"))
+    New-Item -ItemType Directory -Force -Path (Split-Path $usbSurum) | Out-Null
+    if (Test-Path $usbAktif) {
+        if (Test-Path $usbOnceki) { Remove-Item -Recurse -Force $usbOnceki }
+        Rename-Item $usbAktif (Split-Path $usbOnceki -Leaf) -ErrorAction SilentlyContinue
+        if (Test-Path $usbAktif) {
+            # rename fail → kopyala kenara
+            New-Item -ItemType Directory -Force -Path $usbOnceki | Out-Null
+            robocopy $usbAktif $usbOnceki /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+            Remove-Item -Recurse -Force $usbAktif
+        } else {
+            # renamed into SonGuncelleme\paket_onceki_* — move under SonGuncelleme
+            $renamed = Join-Path (Split-Path $usbAktif) (Split-Path $usbOnceki -Leaf)
+            if ((Test-Path $renamed) -and ($renamed -ne $usbOnceki)) {
+                Move-Item $renamed $usbOnceki -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $usbAktif, $usbSurum | Out-Null
+    robocopy $StageApp $usbAktif /E /R:2 /W:2 /NFL /NDL /NJH /NJS | Out-Null
+    robocopy $StageApp $usbSurum /E /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+    $usbCmd = Join-Path $usbKok "GUNCELLE.cmd"
+    Copy-Item -Force (Join-Path $PSScriptRoot "GUNCELLE.cmd") $usbCmd
+    Copy-Item -Force (Join-Path $PSScriptRoot "GUNCELLE_PAKET_SEC.ps1") (Join-Path $usbKok "GUNCELLE_PAKET_SEC.ps1")
+    # Sürüm satırını CMD'ye gömmek için küçük not
+    $usbOkun = @"
+Cin Muhasebe USB — $AppVersion ($Stamp)
+=====================================
+GUNCELLE.cmd → rol seç → güncelle/kur
+Aktif paket : SonGuncelleme\paket
+Arsiv       : Surumler\$surumAd
+EXE SHA256  : $sha
+
+Ana Makine / Terminal 2: GUNCELLE.cmd → [2] veya [3]
+Terminal 1 (bu uretim PC): masaüstü kısayolu veya [1] Otomatik
+"@
+    Set-Content (Join-Path $usbKok "OKU_BENI.txt") -Value $usbOkun -Encoding UTF8
+    Write-Host "USB aktif: $usbAktif"
+    Write-Host "USB GUNCELLE.cmd: $usbCmd"
+} elseif (-not $UsbYok) {
+    Write-Warning "USB CinMuhasebe klasoru bulunamadi — yerel paket hazir: $CiktiZip"
+}
+
 $son = @{
+    format = "d2-guncelle-paket-son-v2"
+    app_version = $AppVersion
     zip = $CiktiZip
     zip_sha256 = $zipSha
     exe = $Exe
@@ -415,9 +209,15 @@ $son = @{
     paket_ad = $PaketAd
     stage = $StageApp
     betik = "kurulum\00_D2_GUNCELLE.ps1"
+    usb_kok = $usbKok
+    usb_surum = $usbSurum
+    usb_aktif = $usbAktif
+    usb_guncelle_cmd = $usbCmd
 }
 ($son | ConvertTo-Json) | Set-Content (Join-Path $OutDir "D2_GUNCELLE_PAKET_SON.json") -Encoding UTF8
+($son | ConvertTo-Json) | Set-Content (Join-Path $OutDir "D2_SON_DAGITIM_$AppVersion.json") -Encoding UTF8
 Write-Host "ZIP: $CiktiZip"
 Write-Host "ZIP SHA: $zipSha"
 Write-Host "EXE SHA: $sha"
+Write-Host "SURUM: $AppVersion"
 Write-Host "STAGE: $StageApp"
