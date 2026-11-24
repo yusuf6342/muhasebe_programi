@@ -5235,17 +5235,29 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
 
     @staticmethod
     def _pos_hedef_hesap(kart) -> FinansHesabi | None:
-        """Kartın varsayılan aktarım hesabı: önce pos_aktarim_hesap_id, yoksa tür yedeği."""
-        alts = list(kart.alt_hesaplar or [])
+        """Kartın varsayılan aktarım hesabı: önce pos_aktarim_hesap_id, yoksa tür yedeği.
+
+        Tüm POS kartları için ortak çözüm (MEVDUAT veya KMH). Pasif hesaplar
+        seçilmez; id başka karta aitse yok sayılır.
+        """
+        if kart is None:
+            return None
+        alts = [h for h in list(kart.alt_hesaplar or []) if getattr(h, "aktif", True) is not False]
+        kid = int(getattr(kart, "id", 0) or 0)
+
+        def _uygun(h) -> bool:
+            if h is None:
+                return False
+            if (h.alt_hesap_turu or "").upper() not in POS_HEDEF_HESAP_TURLERI:
+                return False
+            if kid and int(getattr(h, "banka_karti_id", 0) or 0) not in (0, kid):
+                return False
+            return True
+
         hid = getattr(kart, "pos_aktarim_hesap_id", None)
         if hid:
             hedef = next(
-                (
-                    h
-                    for h in alts
-                    if int(h.id) == int(hid)
-                    and (h.alt_hesap_turu or "").upper() in POS_HEDEF_HESAP_TURLERI
-                ),
+                (h for h in alts if int(h.id) == int(hid) and _uygun(h)),
                 None,
             )
             if hedef is not None:
@@ -5254,14 +5266,14 @@ Banka hesabından çıkış; alıcı cari zorunlu (ödeme)."""
         if tur not in POS_HEDEF_HESAP_TURLERI:
             tur = "MEVDUAT"
         hedef = next(
-            (h for h in alts if (h.alt_hesap_turu or "").upper() == tur),
+            (h for h in alts if (h.alt_hesap_turu or "").upper() == tur and _uygun(h)),
             None,
         )
         if hedef:
             return hedef
         yedek = "KMH" if tur == "MEVDUAT" else "MEVDUAT"
         return next(
-            (h for h in alts if (h.alt_hesap_turu or "").upper() == yedek),
+            (h for h in alts if (h.alt_hesap_turu or "").upper() == yedek and _uygun(h)),
             None,
         )
 
@@ -9818,16 +9830,20 @@ Cari olmadan kasa/bankadan gider; hizmet kartı zorunlu."""
                             selectinload(BankaKarti.pos_taksit_komisyonlari),
                         )
                     )
-                    # Aktarım hedefi MEVDUAT veya KMH olabilir (pos_aktarim_hesap_id / tür).
-                    # Yalnızca KMH aramak Enpara 002 gibi mevduat hedefli kartlarda hatalı engel üretirdi.
+                    # Ortak çözüm: karttaki gerçek hedef (MEVDUAT veya KMH).
                     hedef = FinansService._pos_hedef_hesap(kart) if kart else None
-                    if not kart or not hedef:
+                    if not kart or not hedef or getattr(hedef, "aktif", True) is False:
                         banka_ad = (kart.banka_adi if kart else "") or "—"
                         pos_ad = (hesap.hesap_adi or "").strip() or "POS"
                         raise ValueError(
                             f"Satır {s['sira_no']}: «{pos_ad}» (banka: {banka_ad}) için "
-                            "aktarım hesabı (mevduat veya KMH) eksik — banka kartında "
+                            "geçerli aktarım hesabı (mevduat veya KMH) yok — banka kartında "
                             "«Aktarımın yatacağı hesap» bağlantısını kaydedin."
+                        )
+                    if int(getattr(hedef, "banka_karti_id", 0) or 0) != int(kart.id):
+                        raise ValueError(
+                            f"Satır {s['sira_no']}: «{hesap.hesap_adi}» aktarım hesabı "
+                            "bu banka kartına ait değil."
                         )
                     cozulmus.append((s, hesap, "POS", (kart, hedef)))
                     continue
