@@ -27,12 +27,220 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# Güncelleyici asla hedef uygulama klasöründe çalışmasın (Rename-Item kilidi).
+$script:UpdaterCwd = Join-Path $env:TEMP ("CinMuhasebe_D2_Guncelle_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $script:UpdaterCwd | Out-Null
+Set-Location -LiteralPath $script:UpdaterCwd
+[Environment]::CurrentDirectory = $script:UpdaterCwd
+
 function Write-Log([string]$Msg, [string]$Level = "INFO") {
     $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Msg
     Write-Host $line
     if ($script:LogFile) {
         Add-Content -Path $script:LogFile -Value $line -Encoding UTF8
     }
+}
+
+function Ensure-UpdaterCwdDisarida([string]$YasakKok) {
+    $cur = [Environment]::CurrentDirectory
+    $pwdPath = (Get-Location).Path
+    $yasak = $YasakKok.TrimEnd('\')
+    foreach ($p in @($cur, $pwdPath)) {
+        if ($p -and ($p.Equals($yasak, [StringComparison]::OrdinalIgnoreCase) -or
+                $p.StartsWith($yasak + '\', [StringComparison]::OrdinalIgnoreCase))) {
+            Set-Location -LiteralPath $script:UpdaterCwd
+            [Environment]::CurrentDirectory = $script:UpdaterCwd
+            Write-Log "Calisma dizini hedef disina alindi: $script:UpdaterCwd (onceki=$p)"
+        }
+    }
+}
+
+function Get-KlasorKilitBilgisi([string]$Klasor) {
+    <# PID / yol / acik pencere / guncelleyici cwd — zorla kapatma YOK. #>
+    $sonuc = New-Object System.Collections.Generic.List[object]
+    $kok = $Klasor.TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $kok)) { return @() }
+
+    $cur = [Environment]::CurrentDirectory
+    $pwdPath = (Get-Location).Path
+    foreach ($p in @(@{Ad = 'CurrentDirectory'; Yol = $cur }, @{ Ad = 'PWD'; Yol = $pwdPath })) {
+        if ($p.Yol -and ($p.Yol.Equals($kok, [StringComparison]::OrdinalIgnoreCase) -or
+                $p.Yol.StartsWith($kok + '\', [StringComparison]::OrdinalIgnoreCase))) {
+            $sonuc.Add([pscustomobject]@{
+                    Tur = 'GUNCELLEYICI_CWD'
+                    Pid = $PID
+                    Ad  = "powershell($($p.Ad))"
+                    Yol = $p.Yol
+                    Detay = "Guncelleme betiginin calisma dizini hedef klasorde — klasor yeniden adlandirilamaz."
+                })
+        }
+    }
+
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $ep = [string]$_.ExecutablePath
+        if (-not $ep) { return }
+        if ($ep.Equals($kok, [StringComparison]::OrdinalIgnoreCase) -or
+            $ep.StartsWith($kok + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            $sonuc.Add([pscustomobject]@{
+                    Tur = 'PROCESS'
+                    Pid = $_.ProcessId
+                    Ad  = $_.Name
+                    Yol = $ep
+                    Detay = "Bu surec hedef klasordeki EXE/DLL'i acik tutuyor olabilir."
+                })
+        }
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        foreach ($w in @($shell.Windows())) {
+            try {
+                $loc = [string]$w.Document.Folder.Self.Path
+                if ($loc -and ($loc.Equals($kok, [StringComparison]::OrdinalIgnoreCase) -or
+                        $loc.StartsWith($kok + '\', [StringComparison]::OrdinalIgnoreCase))) {
+                    $sonuc.Add([pscustomobject]@{
+                            Tur = 'EXPLORER'
+                            Pid = [int]$w.HWND
+                            Ad  = 'explorer-pencere'
+                            Yol = $loc
+                            Detay = "Dosya Gezgini bu klasoru acik tutuyor — pencereyi kapatin."
+                        })
+                }
+            } catch {}
+        }
+    } catch {}
+
+    # Restart Manager — acik dosya tutamaci olan PID'ler
+    try {
+        if (-not ('RmHelper.Native' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace RmHelper {
+  public static class Native {
+    [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)] public static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, string strSessionKey);
+    [DllImport("rstrtmgr.dll")] public static extern int RmEndSession(uint pSessionHandle);
+    [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)] public static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames, uint nApplications, IntPtr rgApplications, uint nServices, string[] rgsServiceNames);
+    [DllImport("rstrtmgr.dll")] public static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo, [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+    public const int CCH_RM_SESSION_KEY = 32;
+    public const int CCH_RM_MAX_APP_NAME = 255;
+    public const int CCH_RM_MAX_SVC_NAME = 63;
+    [StructLayout(LayoutKind.Sequential)] public struct RM_UNIQUE_PROCESS { public int dwProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime; }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct RM_PROCESS_INFO {
+      public RM_UNIQUE_PROCESS Process;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst=CCH_RM_MAX_APP_NAME+1)] public string strAppName;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst=CCH_RM_MAX_SVC_NAME+1)] public string strServiceShortName;
+      public uint ApplicationType; public uint AppStatus; public uint TSSessionId;
+      [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+    }
+  }
+}
+"@ -ErrorAction Stop
+        }
+        $files = @(Get-ChildItem -LiteralPath $kok -Recurse -File -ErrorAction SilentlyContinue |
+                Select-Object -First 80 -ExpandProperty FullName)
+        if ($files.Count -gt 0) {
+            $sessionKey = [guid]::NewGuid().ToString()
+            $handle = [uint32]0
+            $rc = [RmHelper.Native]::RmStartSession([ref]$handle, 0, $sessionKey)
+            if ($rc -eq 0) {
+                try {
+                    [void][RmHelper.Native]::RmRegisterResources($handle, [uint32]$files.Count, [string[]]$files, 0, [IntPtr]::Zero, 0, $null)
+                    $needed = [uint32]0
+                    $count = [uint32]0
+                    $reason = [uint32]0
+                    $rc2 = [RmHelper.Native]::RmGetList($handle, [ref]$needed, [ref]$count, $null, [ref]$reason)
+                    if ($needed -gt 0) {
+                        $arr = New-Object RmHelper.Native+RM_PROCESS_INFO[] $needed
+                        $count = $needed
+                        $rc2 = [RmHelper.Native]::RmGetList($handle, [ref]$needed, [ref]$count, $arr, [ref]$reason)
+                        if ($rc2 -eq 0) {
+                            foreach ($info in $arr) {
+                                $pidRm = $info.Process.dwProcessId
+                                $procYol = $null
+                                try { $procYol = (Get-Process -Id $pidRm -ErrorAction SilentlyContinue).Path } catch {}
+                                $sonuc.Add([pscustomobject]@{
+                                        Tur = 'RESTART_MANAGER'
+                                        Pid = $pidRm
+                                        Ad  = $info.strAppName
+                                        Yol = $procYol
+                                        Detay = "Restart Manager: bu surec hedef klasordeki en az bir dosyayi kilitliyor."
+                                    })
+                            }
+                        }
+                    }
+                } finally {
+                    [void][RmHelper.Native]::RmEndSession($handle)
+                }
+            }
+        }
+    } catch {
+        Write-Log "Restart Manager kilit taramasi atlandi: $($_.Exception.Message)" "WARN"
+    }
+
+    # Tekrarlari PID+Tur ile sadeleştir
+    $uniq = @{}
+    $liste = @()
+    foreach ($x in $sonuc) {
+        $k = "{0}|{1}" -f $x.Tur, $x.Pid
+        if ($uniq.ContainsKey($k)) { continue }
+        $uniq[$k] = $true
+        $liste += $x
+    }
+    return $liste
+}
+
+function Assert-HedefKlasorYazilabilir([string]$Klasor) {
+    Ensure-UpdaterCwdDisarida $Klasor
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+    $kilitler = @(Get-KlasorKilitBilgisi $Klasor)
+    if ($kilitler.Count -gt 0) {
+        Write-Host ""
+        Write-Host "HEDEF KLASOR KILITLI — asagidaki surec/pencereyi NORMAL kapatin (zorla kapatma YOK):" -ForegroundColor Yellow
+        foreach ($k in $kilitler) {
+            $satir = "  [{0}] PID={1} ad={2}" -f $k.Tur, $k.Pid, $k.Ad
+            if ($k.Yol) { $satir += " yol=$($k.Yol)" }
+            Write-Host $satir
+            Write-Host ("    {0}" -f $k.Detay)
+            Write-Log ("KILIT {0}" -f $satir)
+        }
+        Write-Host ""
+        $mesaj = "Hedef klasor kilitli. "
+        $exp = @($kilitler | Where-Object { $_.Tur -eq 'EXPLORER' })
+        $app = @($kilitler | Where-Object { $_.Ad -like '*CinMuhasebe*' -or ($_.Yol -and $_.Yol -like '*CinMuhasebe.exe') })
+        if ($app.Count -gt 0) {
+            $mesaj += "CinMuhasebe penceresini kaydedip normal kapatin. "
+        }
+        if ($exp.Count -gt 0) {
+            $mesaj += ("Dosya Gezgini'nde acik klasoru kapatin: {0}. " -f $exp[0].Yol)
+        }
+        $cwd = @($kilitler | Where-Object { $_.Tur -eq 'GUNCELLEYICI_CWD' })
+        if ($cwd.Count -gt 0) {
+            $mesaj += "Guncelleyici calisma dizini hedefteydi; disina alindi — yeniden deneyin. "
+        }
+        $diger = @($kilitler | Where-Object { $_.Tur -eq 'RESTART_MANAGER' -or $_.Tur -eq 'PROCESS' })
+        if ($diger.Count -gt 0 -and $app.Count -eq 0) {
+            $mesaj += ("Kilitleyen: {0} (PID {1}). " -f $diger[0].Ad, $diger[0].Pid)
+        }
+        $mesaj += "Otomatik kayit yok. GUNCELLE.cmd'yi yeniden calistirin."
+        throw $mesaj
+    }
+}
+
+function Clear-BizimGeciciKlasorler([string]$Kok, [string]$AktifStage) {
+    # Yalniz bu betigin _stage_yeni_* / _eski_swap_* kalintilari
+    Get-ChildItem -LiteralPath $Kok -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '_stage_yeni_*' -or $_.Name -like '_eski_swap_*' } |
+        ForEach-Object {
+            if ($AktifStage -and $_.FullName -eq $AktifStage) { return }
+            try {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                Write-Log "Gecici kalinti silindi: $($_.Name)"
+            } catch {
+                Write-Log "Gecici kalinti silinemedi (kilitli olabilir): $($_.Name) — $($_.Exception.Message)" "WARN"
+            }
+        }
 }
 
 $RolProfil = @{
@@ -197,15 +405,25 @@ try {
     }
 
     if (-not $skipCopy) {
-        # Geçici alana kopyala → bütünlük → swap
+        Ensure-UpdaterCwdDisarida $HedefApp
+        Clear-BizimGeciciKlasorler -Kok $HedefKok -AktifStage $null
+
+        # Kilit kontrolü — ağır kopya / klasör değiştirmeden ÖNCE
+        if (Test-Path -LiteralPath $HedefApp) {
+            Assert-HedefKlasorYazilabilir $HedefApp
+        }
+
+        # Geçici alana kopyala → bütünlük → yerinde MIR (klasör Rename-Item YOK — cwd/explorer kilidi)
         if (Test-Path $StageApp) { Remove-Item -Recurse -Force $StageApp }
         New-Item -ItemType Directory -Force -Path $StageApp | Out-Null
-        Write-Log "Stage kopya: $Src -> $StageApp"
-        $rc = Start-Process robocopy.exe -ArgumentList @(
-            "`"$Src`"", "`"$StageApp`"", "/E", "/R:2", "/W:2", "/NFL", "/NDL", "/NJH", "/NJS",
-            "/XF", "baglanti_ayari.json", "kullanici_ayarlari.json", "ayarlar.json",
+        Write-Log "Stage kopya: $Src -> $StageApp (cwd=$([Environment]::CurrentDirectory))"
+        $stageArgs = @(
+            $Src, $StageApp, "/E", "/R:2", "/W:2", "/NFL", "/NDL", "/NJH", "/NJS", "/XF",
+            "baglanti_ayari.json", "kullanici_ayarlari.json", "ayarlar.json",
             "credentials.json", "evo_credentials.json", "evobulut_credentials.json"
-        ) -Wait -PassThru -NoNewWindow
+        )
+        $rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" -WorkingDirectory $script:UpdaterCwd `
+            -ArgumentList $stageArgs -Wait -PassThru -NoNewWindow
         if ($rc.ExitCode -ge 8) { throw "robocopy stage exit $($rc.ExitCode)" }
 
         $StageExe = Join-Path $StageApp "CinMuhasebe.exe"
@@ -214,17 +432,31 @@ try {
         $StageSha = (Get-FileHash $StageExe -Algorithm SHA256).Hash.ToUpperInvariant()
         if ($StageSha -ne $SrcSha) { throw "Stage SHA uyusmuyor: $StageSha <> $SrcSha" }
 
-        # Eski uygulamayı kenara al, stage'i yerine koy
-        $OldSwapName = "_eski_swap_" + $Stamp
-        $OldSwap = Join-Path $HedefKok $OldSwapName
-        if (Test-Path $HedefApp) {
-            Rename-Item -Path $HedefApp -NewName $OldSwapName
+        Ensure-UpdaterCwdDisarida $HedefApp
+        if (Test-Path -LiteralPath $HedefApp) {
+            Assert-HedefKlasorYazilabilir $HedefApp
+        } else {
+            New-Item -ItemType Directory -Force -Path $HedefApp | Out-Null
         }
-        Rename-Item -Path $StageApp -NewName "CinMuhasebe"
-        if (Test-Path $OldSwap) {
-            Write-Log "Eski klasor yedek adinda: $OldSwap"
+
+        Write-Log "Yerinde guncelleme (MIR, klasor adi sabit): $StageApp -> $HedefApp"
+        $xf = @(
+            "baglanti_ayari.json", "kullanici_ayarlari.json", "ayarlar.json",
+            "credentials.json", "evo_credentials.json", "evobulut_credentials.json",
+            "veri_konumu.txt", "VERITABANI_KONUMU.txt", "ILK_YONETICI_SIFRE.txt"
+        )
+        $mirArgs = @(
+            $StageApp, $HedefApp, "/MIR", "/R:2", "/W:2", "/NFL", "/NDL", "/NJH", "/NJS", "/XF"
+        ) + $xf
+        $rc2 = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" -WorkingDirectory $script:UpdaterCwd `
+            -ArgumentList $mirArgs -Wait -PassThru -NoNewWindow
+        if ($rc2.ExitCode -ge 8) {
+            Assert-HedefKlasorYazilabilir $HedefApp
+            throw "robocopy yerinde guncelleme exit $($rc2.ExitCode)"
         }
-        Write-Log "Program dosyalari guncellendi"
+        Remove-Item -LiteralPath $StageApp -Recurse -Force -ErrorAction SilentlyContinue
+        Clear-BizimGeciciKlasorler -Kok $HedefKok -AktifStage $null
+        Write-Log "Program dosyalari guncellendi (yerinde MIR; Rename-Item kullanilmadi)"
     }
 
     # Korunan ayarları geri yaz
