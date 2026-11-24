@@ -26,7 +26,6 @@ from cari_arama_alani import CariAramaAlani
 from hizli_satis_musteri import (
     IZIN_ACIK_HESAP,
     IZIN_IPTAL,
-    PERAKENDE_MUSTERI_UNVAN,
     FiyatDegisiklikGunlugu,
     acik_hesap_risk_degerlendir,
     cari_ozet_coz,
@@ -35,7 +34,6 @@ from hizli_satis_musteri import (
     fiyat_listesi_coz,
     iptal_iade_izinli,
     iskonto_degistirme_sonucu,
-    varsayilan_cari_coz,
 )
 from hizli_satis_sepet import HizliSatisSepet, KDV_ORANLARI, VARSAYILAN_KDV
 from hizli_satis_tahsilat_ui import HizliSatisTahsilatDialog
@@ -479,7 +477,7 @@ class HizliSatisPencere(tk.Toplevel):
         )
         self.musteri_entry = ttk.Entry(ust, width=28)
         self.musteri_entry.grid(row=0, column=6, sticky="ew")
-        self.musteri_entry.insert(0, PERAKENDE_MUSTERI_UNVAN)
+        # Başlangıç metni ayardan gelir (_varsayilan_musteri_yukle); boş olabilir.
         self._musteri_arama = CariAramaAlani(
             self,
             self.musteri_entry,
@@ -1009,13 +1007,19 @@ class HizliSatisPencere(tk.Toplevel):
 
     def _musteri_gorunen_metin(self) -> str:
         cari = self.secili_cari or {}
-        metin = cari.get("unvan") or PERAKENDE_MUSTERI_UNVAN
-        kod = cari.get("cari_kodu") or ""
+        if int(cari.get("id") or 0) <= 0 and not (cari.get("unvan") or "").strip():
+            return ""
+        metin = (cari.get("unvan") or "").strip()
+        kod = (cari.get("cari_kodu") or "").strip()
+        if not metin and not kod:
+            return ""
         return f"{kod} — {metin}" if kod else metin
 
     def _musteri_alani_goster(self) -> None:
         self.musteri_entry.delete(0, "end")
-        self.musteri_entry.insert(0, self._musteri_gorunen_metin())
+        metin = self._musteri_gorunen_metin()
+        if metin:
+            self.musteri_entry.insert(0, metin)
 
     def _musteri_metin_geri_yukle(self) -> None:
         """Listeden seçim yapılmadan çıkılırsa kutu seçili müşteriyi göstermeye döner."""
@@ -1047,34 +1051,37 @@ class HizliSatisPencere(tk.Toplevel):
         self.after_idle(self._barkod_odak)
 
     def _varsayilan_musteri_yukle(self) -> None:
-        try:
-            from database.database import perakende_cari_hazirla
+        """Ayarlar → Hızlı Satış başlangıç müşterisini uygular (açık sepeti ezmez — yalnızca yeni satış)."""
+        from database.hizli_satis_ayarlari_service import baslangic_musteri_coz
 
-            perakende_cari_hazirla()
-        except Exception:
-            pass
-        ozet = None
         try:
-            ozet = varsayilan_cari_coz()
+            sonuc = baslangic_musteri_coz()
         except Exception:
-            ozet = None
-        if ozet:
-            self._musteri_uygula(ozet, risk_kontrol=False, uyari_goster=False)
-        else:
-            self.secili_cari = {
-                "id": 0,
-                "cari_kodu": "",
-                "unvan": PERAKENDE_MUSTERI_UNVAN,
-                "musteri_grubu": PERAKENDE_MUSTERI_UNVAN,
-                "satis_fiyat_listesi": "SATIŞ FİYATI 1",
-                "acik_hesap_risk_limiti": None,
-                "bakiye": Decimal("0"),
+            sonuc = {
+                "ozet": {
+                    "id": 0,
+                    "cari_kodu": "",
+                    "unvan": "",
+                    "musteri_grubu": None,
+                    "satis_fiyat_listesi": None,
+                    "acik_hesap_risk_limiti": None,
+                    "bakiye": None,
+                },
+                "uyari": None,
+                "mod": "BOS",
             }
-            self._musteri_alani_goster()
-            self._bakiye_valor_yenile()
-            self._fiyat_grup_etiket_guncelle()
+        ozet = sonuc.get("ozet") or {}
+        self._musteri_uygula(ozet, risk_kontrol=False, uyari_goster=False)
+        uyari = sonuc.get("uyari")
+        if uyari:
+            self.durum_lbl.configure(text=uyari)
+            try:
+                messagebox.showwarning("Başlangıç müşterisi", uyari, parent=self)
+            except Exception:
+                pass
+        elif int(ozet.get("id") or 0) <= 0:
             self.durum_lbl.configure(
-                text="Varsayılan perakende cari bulunamadı — görünen ad kullanılıyor."
+                text="Müşteri seçilmedi — F2 ile seçin. Barkod ve sepet kullanılabilir."
             )
 
     def _musteri_sec_ac(self, _event=None):
@@ -1289,7 +1296,9 @@ class HizliSatisPencere(tk.Toplevel):
             self._barkod_odak()
             return "break"
 
-        self._sepete_ekle_kayit(bulunan, miktar_odak=True)
+        # Okutma → +1 (veya kayıt miktarı) sepete; miktar hücresini AÇMA —
+        # aksi halde sonraki okutma rakamları Miktar'a yazılır (260811… × fiyat).
+        self._sepete_ekle_kayit(bulunan, miktar_odak=False)
         lot_bilgi = ""
         if bulunan.get("lot_barkod") and bulunan.get("lot_no"):
             lot_bilgi = f"  |  Lot: {bulunan['lot_no']}"
@@ -1301,6 +1310,7 @@ class HizliSatisPencere(tk.Toplevel):
                 f"{_para(bulunan['birim_fiyat'])}{lot_bilgi}"
             )
         )
+        self._barkod_odak()
         return "break"
 
     def _manuel_arama_ac(self, _event=None):
@@ -2715,33 +2725,48 @@ class HizliSatisPencere(tk.Toplevel):
         def uygula(_e=None):
             if getattr(self, "_miktar_enter_koruma", False):
                 return "break"
-            ham = editor.get().strip().replace(",", ".")
-            if not ham:
+            from fatura_satir_birim_service import (
+                miktar_metninden_barkod_adayi,
+                miktar_metnini_coz,
+            )
+
+            ham0 = editor.get().strip()
+            if not ham0:
                 iptal()
                 return "break"
+            # Okuyucu miktar odaktayken yazdıysa → miktarı bozma; barkod yoluna al
+            barkod_aday = miktar_metninden_barkod_adayi(ham0)
+            if barkod_aday:
+                self._miktar_editor_kapat()
+                self.barkod_entry.delete(0, "end")
+                self.barkod_entry.insert(0, barkod_aday)
+                self.after_idle(self._barkod_okut)
+                return "break"
+            # Satır silmek için 0
+            if ham0.replace(" ", "") in ("0", "0,0", "0.0", "0,00", "0.00"):
+                hedef = getattr(self, "_miktar_editor_idx", idx)
+                self._miktar_editor_kapat()
+                self.sepet_model.sil(hedef)
+                self._sepet_yenile()
+                self._barkod_odak()
+                return "break"
             try:
-                yeni = Decimal(ham)
-            except Exception:
-                messagebox.showerror("Miktar", "Geçersiz miktar.", parent=self)
+                yeni = miktar_metnini_coz(ham0)
+            except ValueError as exc:
+                messagebox.showerror("Miktar", str(exc), parent=self)
                 editor.focus_set()
                 editor.selection_range(0, "end")
                 return "break"
-            if yeni < 0:
-                messagebox.showerror("Miktar", "Miktar negatif olamaz.", parent=self)
-                return "break"
             hedef = getattr(self, "_miktar_editor_idx", idx)
             self._miktar_editor_kapat()
-            if yeni == 0:
-                self.sepet_model.sil(hedef)
-                self._sepet_yenile()
-            else:
-                self.sepet_model.miktar_ayarla(hedef, yeni)
-                self._sepet_yenile(secili=hedef)
+            self.sepet_model.miktar_ayarla(hedef, yeni)
+            self._sepet_yenile(secili=hedef)
             self._barkod_odak()
             return "break"
 
         editor.bind("<Return>", uygula)
         editor.bind("<KP_Enter>", uygula)
+        editor.bind("<Tab>", uygula)
         editor.bind("<Escape>", iptal)
         editor.bind("<FocusOut>", lambda _e: self.after(10, self._miktar_editor_focusout))
 
@@ -3002,6 +3027,8 @@ class HizliSatisPencere(tk.Toplevel):
         self.sepet_model.temizle()
         self.fiyat_gunlugu.temizle()
         self._sepet_yenile()
+        # Yeni satış: firma başlangıç müşterisine dön (işlemdeki seçim ayarı değiştirmez)
+        self._varsayilan_musteri_yukle()
         self.durum_lbl.configure(
             text=(
                 f"Sepet bekletildi #{sonuc.get('id')} — "
@@ -3067,12 +3094,12 @@ class HizliSatisPencere(tk.Toplevel):
         self.odeme_niyeti = veri.get("odeme_niyeti") or None
 
         cari_id = veri.get("cari_id")
-        if cari_id:
+        if cari_id and int(cari_id) > 0:
             try:
                 cari = CariService.getir(int(cari_id))
                 if cari is not None:
                     ozet = cari_ozet_dict(cari)
-                    # Beklenen fiyatları koru — müşteri değişiminde fiyat yenileme yok
+                    # Bekleyen belgenin müşterisi korunur; firma varsayılanı ezilmez
                     self.secili_cari = ozet
                     self._musteri_alani_goster()
                     self._bakiye_valor_yenile()
@@ -3082,7 +3109,10 @@ class HizliSatisPencere(tk.Toplevel):
             except Exception:
                 self._varsayilan_musteri_yukle()
         else:
-            self._varsayilan_musteri_yukle()
+            # Bekleyende müşteri yoksa boş bırak (ayar varsayılanını belgeye dayatma)
+            from database.hizli_satis_ayarlari_service import bos_musteri_ozeti
+
+            self._musteri_uygula(bos_musteri_ozeti(), risk_kontrol=False, uyari_goster=False)
 
         self._sepet_yenile()
         if getattr(self, "urun_panel", None) is not None:
@@ -3219,7 +3249,8 @@ class HizliSatisPencere(tk.Toplevel):
         self.fiyat_gunlugu.temizle()
         self.odeme_niyeti = None
         self._sepet_yenile()
-        self._bakiye_valor_yenile()
+        # Sonraki yeni satış firma başlangıç ayarına döner (işlemdeki müşteri varsayılan olmaz)
+        self._varsayilan_musteri_yukle()
         if getattr(self, "urun_panel", None) is not None:
             try:
                 self.urun_panel.kartlari_yenile()
@@ -3255,6 +3286,7 @@ class HizliSatisPencere(tk.Toplevel):
             self.sepet_model.temizle()
             self.fiyat_gunlugu.temizle()
             self._sepet_yenile()
+            self._varsayilan_musteri_yukle()
             self.durum_lbl.configure(text="Sepet temizlendi")
             self._barkod_odak()
             return "break"

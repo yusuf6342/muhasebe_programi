@@ -855,6 +855,12 @@ class HizliSatisService:
             HizliSatisHizliUrun.__table__,
         ):
             tablo.create(engine, checkfirst=True)
+        try:
+            from database.hizli_satis_ayarlari_service import schema_hazirla as _hs_ayar_sema
+
+            _hs_ayar_sema(engine)
+        except Exception:
+            pass
 
         anahtar = str(engine.url)
         if anahtar in _REFERANS_KOLON_HAZIR:

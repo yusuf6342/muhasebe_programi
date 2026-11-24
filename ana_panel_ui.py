@@ -1685,6 +1685,11 @@ def ayarlar_goster(app) -> None:
 
         muhasebelestirme_ayarlari_goster(app)
 
+    def _hizli_satis_ayarlari():
+        from hizli_satis_ayarlari_ui import hizli_satis_ayarlari_goster
+
+        hizli_satis_ayarlari_goster(app)
+
     def _kart_turleri():
         from kart_turleri_gruplari_ui import kart_turleri_gruplari_goster
 
@@ -1711,6 +1716,7 @@ def ayarlar_goster(app) -> None:
             ("FİYAT GÖRÜNÜMÜ", _fiyat_gorunum),
             ("KART TÜRLERİ VE GRUPLARI", _kart_turleri),
             ("SATIŞ AYARLARI", lambda: satis_ayarlari_goster(app)),
+            ("HIZLI SATIŞ AYARLARI", _hizli_satis_ayarlari),
             ("MUHASEBELEŞTİRME AYARLARI", _muhasebelestirme),
             ("FİRMA VE DÖNEM İŞLEMLERİ", _firma_donem),
             ("FİRMA DEĞİŞTİR", app.firma_degistir_ac),
